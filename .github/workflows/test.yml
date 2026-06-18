@@ -1,0 +1,78 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.3.app/Contents/Developer
+
+      - name: Cache SPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: Resolve dependencies
+        run: swift package resolve
+
+      - name: Build
+        run: swift build
+
+      - name: Run deterministic consensus simulator
+        run: swift run LatticeSim --seed 42
+
+      - name: Run tests
+        timeout-minutes: 10
+        run: >-
+          swift test --parallel
+          --skip TCPIntegrationTests
+          --skip MultiNodeLifecycleTests
+          --skip MultiNodeSpawnTests
+          --skip MultiNodeTransactionTests
+
+  #: cross-host determinism. The full LatticeTests XCTest
+  # suite is not Linux-portable (pre-existing, out of scope), so instead
+  # of `swift test` this lane runs the dedicated `lattice-determinism-check`
+  # executable. It asserts the SAME golden vectors that HostDeterminismGoldenTests
+  # pins on macOS (both import the shared DeterminismGoldens source of truth),
+  # so macOS↔Linux parity for the canonical encoder, CAS hashing, and the
+  # WasmPolicy execution profile is enforced by construction.
+  test-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: swift:6.1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache SPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: Resolve dependencies
+        run: swift package resolve
+
+      - name: Run determinism gate
+        timeout-minutes: 20
+        run: swift run -c release lattice-determinism-check
