@@ -278,7 +278,6 @@ final class ConsensusSimulatorTests: XCTestCase {
         XCTAssertTrue(md.contains("(b) Selfish mining"))
         XCTAssertTrue(md.contains("(c) Balancing attack"))
         XCTAssertTrue(md.contains(" C5"))
-        XCTAssertTrue(md.contains(""))
     }
 
     func testDiscreteEventScenarioHonorsConfiguredTopologyLatencyAndWork() async throws {
