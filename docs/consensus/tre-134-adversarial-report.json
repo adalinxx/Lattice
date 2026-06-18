@@ -1,0 +1,210 @@
+{
+  "balancing" : [
+    {
+      "hashrateFraction" : 0.1,
+      "maxStallRounds" : 2,
+      "meanAttackerBlocksSpent" : 0.11,
+      "meanStallRounds" : 0.11,
+      "survivalProbability" : 0,
+      "trials" : 200
+    },
+    {
+      "hashrateFraction" : 0.2,
+      "maxStallRounds" : 3,
+      "meanAttackerBlocksSpent" : 0.24,
+      "meanStallRounds" : 0.24,
+      "survivalProbability" : 0,
+      "trials" : 200
+    },
+    {
+      "hashrateFraction" : 0.25,
+      "maxStallRounds" : 5,
+      "meanAttackerBlocksSpent" : 0.395,
+      "meanStallRounds" : 0.395,
+      "survivalProbability" : 0,
+      "trials" : 200
+    },
+    {
+      "hashrateFraction" : 0.3,
+      "maxStallRounds" : 4,
+      "meanAttackerBlocksSpent" : 0.54,
+      "meanStallRounds" : 0.54,
+      "survivalProbability" : 0,
+      "trials" : 200
+    },
+    {
+      "hashrateFraction" : 0.33,
+      "maxStallRounds" : 6,
+      "meanAttackerBlocksSpent" : 0.56,
+      "meanStallRounds" : 0.56,
+      "survivalProbability" : 0,
+      "trials" : 200
+    },
+    {
+      "hashrateFraction" : 0.4,
+      "maxStallRounds" : 7,
+      "meanAttackerBlocksSpent" : 0.765,
+      "meanStallRounds" : 0.765,
+      "survivalProbability" : 0,
+      "trials" : 200
+    },
+    {
+      "hashrateFraction" : 0.45,
+      "maxStallRounds" : 12,
+      "meanAttackerBlocksSpent" : 0.92,
+      "meanStallRounds" : 0.92,
+      "survivalProbability" : 0,
+      "trials" : 200
+    },
+    {
+      "hashrateFraction" : 0.5,
+      "maxStallRounds" : 9,
+      "meanAttackerBlocksSpent" : 0.985,
+      "meanStallRounds" : 0.985,
+      "survivalProbability" : 0,
+      "trials" : 200
+    },
+    {
+      "hashrateFraction" : 0.6,
+      "maxStallRounds" : 8,
+      "meanAttackerBlocksSpent" : 1.45,
+      "meanStallRounds" : 1.45,
+      "survivalProbability" : 0,
+      "trials" : 200
+    }
+  ],
+  "balancingHorizon" : 64,
+  "deepReorg" : [
+    {
+      "hashrateFraction" : 0.1,
+      "honestDepth" : 24,
+      "maxReorgDepth" : 0,
+      "meanReorgDepth" : 0,
+      "reorgProbability" : 0,
+      "trials" : 200
+    },
+    {
+      "hashrateFraction" : 0.2,
+      "honestDepth" : 24,
+      "maxReorgDepth" : 0,
+      "meanReorgDepth" : 0,
+      "reorgProbability" : 0,
+      "trials" : 200
+    },
+    {
+      "hashrateFraction" : 0.25,
+      "honestDepth" : 24,
+      "maxReorgDepth" : 0,
+      "meanReorgDepth" : 0,
+      "reorgProbability" : 0,
+      "trials" : 200
+    },
+    {
+      "hashrateFraction" : 0.3,
+      "honestDepth" : 24,
+      "maxReorgDepth" : 24,
+      "meanReorgDepth" : 0.12,
+      "reorgProbability" : 0.005,
+      "trials" : 200
+    },
+    {
+      "hashrateFraction" : 0.33,
+      "honestDepth" : 24,
+      "maxReorgDepth" : 24,
+      "meanReorgDepth" : 0.12,
+      "reorgProbability" : 0.005,
+      "trials" : 200
+    },
+    {
+      "hashrateFraction" : 0.4,
+      "honestDepth" : 24,
+      "maxReorgDepth" : 24,
+      "meanReorgDepth" : 0.72,
+      "reorgProbability" : 0.03,
+      "trials" : 200
+    },
+    {
+      "hashrateFraction" : 0.45,
+      "honestDepth" : 24,
+      "maxReorgDepth" : 24,
+      "meanReorgDepth" : 4.32,
+      "reorgProbability" : 0.18,
+      "trials" : 200
+    },
+    {
+      "hashrateFraction" : 0.5,
+      "honestDepth" : 24,
+      "maxReorgDepth" : 24,
+      "meanReorgDepth" : 8.88,
+      "reorgProbability" : 0.37,
+      "trials" : 200
+    },
+    {
+      "hashrateFraction" : 0.6,
+      "honestDepth" : 24,
+      "maxReorgDepth" : 24,
+      "meanReorgDepth" : 21.48,
+      "reorgProbability" : 0.895,
+      "trials" : 200
+    }
+  ],
+  "honestSegmentDepth" : 24,
+  "seed" : 42,
+  "selfishMining" : [
+    {
+      "attackerRevenueShare" : 0.03564131668558457,
+      "hashrateFraction" : 0.1,
+      "relativeGain" : -0.06435868331441544,
+      "totalRounds" : 400
+    },
+    {
+      "attackerRevenueShare" : 0.1296703296703297,
+      "hashrateFraction" : 0.2,
+      "relativeGain" : -0.0703296703296703,
+      "totalRounds" : 400
+    },
+    {
+      "attackerRevenueShare" : 0.1951219512195122,
+      "hashrateFraction" : 0.25,
+      "relativeGain" : -0.0548780487804878,
+      "totalRounds" : 400
+    },
+    {
+      "attackerRevenueShare" : 0.27312614259597795,
+      "hashrateFraction" : 0.3,
+      "relativeGain" : -0.02687385740402204,
+      "totalRounds" : 400
+    },
+    {
+      "attackerRevenueShare" : 0.326965257704292,
+      "hashrateFraction" : 0.33,
+      "relativeGain" : -0.003034742295707993,
+      "totalRounds" : 400
+    },
+    {
+      "attackerRevenueShare" : 0.4837209302325583,
+      "hashrateFraction" : 0.4,
+      "relativeGain" : 0.08372093023255828,
+      "totalRounds" : 400
+    },
+    {
+      "attackerRevenueShare" : 0.6517734250926417,
+      "hashrateFraction" : 0.45,
+      "relativeGain" : 0.20177342509264168,
+      "totalRounds" : 400
+    },
+    {
+      "attackerRevenueShare" : 1,
+      "hashrateFraction" : 0.5,
+      "relativeGain" : 0.5,
+      "totalRounds" : 400
+    },
+    {
+      "attackerRevenueShare" : 1,
+      "hashrateFraction" : 0.6,
+      "relativeGain" : 0.4,
+      "totalRounds" : 400
+    }
+  ],
+  "selfishRounds" : 400
+}
