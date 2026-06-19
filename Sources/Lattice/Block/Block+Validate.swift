@@ -53,13 +53,24 @@ public extension Block {
         return data
     }
 
+    /// Fixed-width (8-byte, big-endian) encoding of the PoW nonce — the single
+    /// source of truth for how the nonce is appended to the preimage. Fixed width
+    /// keeps the total preimage length constant across every nonce, so the SHA-256
+    /// padding and block count are identical for all attempts. That is what makes
+    /// the per-nonce work divergence-free on a GPU and lets miners reuse a single
+    /// prefix midstate (a variable-length ASCII-decimal nonce broke both). External
+    /// miners MUST encode the nonce with this exact function. Consensus-breaking.
+    public static func proofOfWorkNonceBytes(_ nonce: UInt64) -> [UInt8] {
+        withUnsafeBytes(of: nonce.bigEndian) { Array($0) }
+    }
+
     /// Canonical proof-of-work preimage. This is the single source of truth for the
     /// bytes hashed during mining and PoW validation; downstream nodes/miners must
     /// reuse this rather than re-deriving it (see / #135, where a hand-copy
     /// drifted by omitting `version`). Any change here is consensus-breaking.
     public static func makeProofOfWorkPreimage(block: Block, nonce: UInt64) -> Data {
         var data = makeProofOfWorkPreimagePrefix(block: block)
-        data.append(contentsOf: String(nonce).utf8)
+        data.append(contentsOf: proofOfWorkNonceBytes(nonce))
         return data
     }
 
