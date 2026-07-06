@@ -255,9 +255,22 @@ public struct ChildBlockProof: Sendable {
 
     // MARK: - Inherited work (F5-4)
 
-    /// The parent/root block identities whose PoW contributes inherited work to
-    /// the proven child. The leaf's own work is intentionally excluded; it is
-    /// same-chain subtree work, not inherited parent work.
+    /// The inherited work this proof's ROOT GRIND contributes to the proven child.
+    ///
+    /// A single grind (one PoW hash) is graded against every level's target, but it is
+    /// ONE unit of work: a hash that clears the hardest target it meets clears every
+    /// easier level for FREE. So the grind is counted ONCE, at the MAX `workForTarget`
+    /// over the levels it clears — never the per-level SUM, which counts one grind once
+    /// per level it happens to cover. That over-count is worst at EQUAL targets: an
+    /// N-deep equal-difficulty path (lockstep, adding no independent security) would be
+    /// credited N× a single grind — an inflation vector that max closes.
+    ///
+    /// The contribution is keyed by `rootCID` — the grind's identity — so the caller's
+    /// dedup-by-id counts THIS grind once while summing genuinely INDEPENDENT grinds
+    /// (distinct roots each doing real work): "count each grind once; independent grinds
+    /// sum." The leaf's own work is excluded (same-chain subtree work, not inherited).
+    /// At depth 1 (only the root above the leaf) max == the old sum, so direct children
+    /// are unchanged; the correction only bites at depth >= 2.
     public func securingWorkContributions() async -> [(id: String, work: UInt256)] {
         guard !entries.isEmpty, !directoryPath.isEmpty else { return [] }
 
@@ -269,46 +282,40 @@ public struct ChildBlockProof: Sendable {
               try! VolumeImpl<Block>(node: rootBlock).rawCID == rootCID else { return [] }
 
         let powHash = rootBlock.proofOfWorkHash()
-        func contribution(cid: String, block: Block) -> (id: String, work: UInt256)? {
-            guard block.validateProofOfWork(nexusHash: powHash) else { return nil }
-            return (id: cid, work: workForTarget(block.target))
+        // Work this grind's hash actually clears at a level, or zero. `validateProofOfWork`
+        // self-guards: a level claiming a harder target than the hash achieved clears nothing.
+        func clearedWork(_ block: Block) -> UInt256 {
+            block.validateProofOfWork(nexusHash: powHash) ? workForTarget(block.target) : .zero
         }
 
-        var contributions: [(id: String, work: UInt256)] = []
-        if let rootContribution = contribution(cid: rootCID, block: rootBlock) {
-            contributions.append(rootContribution)
-        }
-
+        var maxWork = clearedWork(rootBlock)
         var current = rootBlock
         for dir in directoryPath.dropLast() {
             guard let childrenNode = try? await current.children.resolve(
                 paths: [[dir]: .targeted], fetcher: fetcher).node,
             let childHeader: VolumeImpl<Block> = try? childrenNode.get(key: dir),
             let next = try? await childHeader.resolve(fetcher: fetcher).node else { return [] }
-            if let nextContribution = contribution(cid: childHeader.rawCID, block: next) {
-                contributions.append(nextContribution)
-            }
+            let levelWork = clearedWork(next)
+            if levelWork > maxWork { maxWork = levelWork }
             current = next
         }
-        return contributions
+        // ONE contribution per grind, keyed by the grind's identity (rootCID).
+        return maxWork > .zero ? [(id: rootCID, work: maxWork)] : []
     }
 
-    /// The total work securing the proven block — the sum of `workForTarget`
-    /// (`max/target`) over every level ABOVE the leaf (the PoW root block plus
-    /// each intermediate block) **that the blocktree's hash actually clears**. This
-    /// is the design's per-level crediting: a single blocktree hash is checked
-    /// against each level's own target, and every level it exceeds credits that
-    /// level's work, counted once per chain. The leaf's own work is excluded —
-    /// that's its own-chain subtree weight, not inherited.
+    /// The work this proof's ROOT GRIND contributes toward securing the proven block:
+    /// the MAX `workForTarget` (`max/target`) over the levels above the leaf that the
+    /// grind's single hash clears — counted ONCE, because one hash clearing the hardest
+    /// target also clears every easier level for free (see `securingWorkContributions`).
+    /// Distinct grinds are summed by the caller, not here. The leaf's own work is
+    /// excluded — that's own-chain subtree weight, not inherited.
     ///
     /// The PoW hash is intrinsic to the proof — the root block's `proofOfWorkHash()`
     /// (the grind result; a forger can't fake a small one without doing the work) —
-    /// so no `rootHash` is passed and none can be passed wrong. The caller is
-    /// expected to have `verify`-ed the path against the *expected* PoW solution
-    /// first (that's where a proof is bound to the right blocktree); this then just
-    /// sums. Per-level crediting also self-guards: a level claiming a harder target
-    /// than the hash achieved fails `validateProofOfWork` and earns nothing.
-    /// `.zero` if the path can't be walked.
+    /// so no `rootHash` is passed and none can be passed wrong. The caller is expected
+    /// to have `verify`-ed the path against the *expected* PoW solution first. Per-level
+    /// crediting self-guards: a level claiming a harder target than the hash achieved
+    /// fails `validateProofOfWork` and earns nothing. `.zero` if the path can't be walked.
     public func securingWork() async -> UInt256 {
         await securingWorkContributions().reduce(UInt256.zero) { total, contribution in
             saturatingWorkSum(total, contribution.work)
