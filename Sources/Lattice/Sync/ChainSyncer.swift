@@ -578,6 +578,15 @@ public actor ChainSyncer {
     ///   work beyond the fork) or the insufficientWork gate compares
     ///   incomparable quantities. Empty preserves the historical fail-closed
     ///   behavior: segments must anchor at genesis.
+    ///
+    ///   CONTRACT — the returned `SyncResult.persisted` contains ONLY the
+    ///   validated segment (never the anchor context or the caller's prefix).
+    ///   Applying it via `ChainState.resetFrom` verbatim shrinks the in-memory
+    ///   window to the segment and under-counts windowed cumulative work until
+    ///   the window refills. Callers adopting an anchored result must
+    ///   re-project the full retained window from their durable store after
+    ///   committing the segment (prefix + segment are contiguous there), or
+    ///   otherwise merge rather than reset.
     public func syncFromHeaders(
         _ headers: [SyncBlockHeader],
         cumulativeWork: UInt256,
