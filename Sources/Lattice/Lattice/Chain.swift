@@ -571,6 +571,29 @@ public actor ChainState {
         return total
     }
 
+    /// Sum cumulative PoW of the main-chain blocks STRICTLY ABOVE `height`,
+    /// walking tip → parent inside the actor. This is the local side of a
+    /// segment-anchored sync comparison: a synced segment that attaches to the
+    /// local chain at `height` competes only against the local blocks beyond
+    /// that fork point, never against the shared prefix (comparing a partial
+    /// segment to the whole local chain wrongly refuses every catch-up).
+    /// Missing metadata below the walk (retention pruning) cannot occur while
+    /// the walk stays above `height` on the un-pruned suffix; a break on a
+    /// missing entry fails toward UNDER-counting local work, which errs on the
+    /// side of admitting — callers gate adoption behind full segment
+    /// validation, so this is a liveness-safe direction.
+    public func getCumulativeWork(aboveHeight height: UInt64) -> UInt256 {
+        var total = UInt256.zero
+        var current: String? = chainTip
+        while let hash = current {
+            guard let meta = hashToBlock[hash], meta.blockHeight > height else { break }
+            // Same CFC-A2 saturating clamp as getCumulativeWork(limit:).
+            total = saturatingWorkSum(total, meta.work)
+            current = meta.parentBlockHash
+        }
+        return total
+    }
+
     /// Exact total proof-of-work from genesis to the current chain tip, read
     /// from the stored prefix sum. Unlike `getCumulativeWork(limit:)`, this does
     /// not underestimate once retention has pruned ancestors, because each
@@ -1783,7 +1806,15 @@ public actor ChainState {
 
     // MARK: - Main Chain Queries
 
-    func mainChainHashesFrom(index blockHeight: UInt64) -> Set<String> {
+    /// Public for segment-anchored sync: the node passes these retained
+    /// main-chain CIDs to the header download walk as stop points, so a
+    /// catch-up sync terminates at the fork point instead of walking (and
+    /// requiring peers to serve) the whole path back to genesis. Bounded by
+    /// retention: the walk breaks on the first pruned ancestor, so every
+    /// returned CID is on the un-pruned suffix — which is what makes it safe
+    /// to compare segment work via `getCumulativeWork(aboveHeight:)` against
+    /// an anchor drawn from this set.
+    public func mainChainHashesFrom(index blockHeight: UInt64) -> Set<String> {
         var hashes: Set<String> = Set()
         var currentHash = chainTip
         // (3): the tip may be absent from the body store; an absent tip yields
