@@ -553,10 +553,45 @@ public actor ChainSyncer {
     /// that syncSnapshot performs. downloadHeaders already fetched and stored all
     /// block bytes and verified PoW + state chain continuity — re-walking via
     /// IvyFetcher is redundant and fails if DiskBroker writes were lost under load.
+    /// How deep an anchor context must be (attach block + ancestors) for
+    /// `syncFromHeaders(knownAnchors:)` to consensus-validate the first segment
+    /// headers: the retarget window (nextTarget recomputation) and the MTP
+    /// window both reach this many blocks behind the attach point. Callers
+    /// truncate at genesis when the attach point is shallower.
+    public static func requiredAnchorContextDepth(retargetWindow: UInt64) -> UInt64 {
+        max(retargetWindow, Block.mtpDepth) + 1
+    }
+
+    /// - Parameter knownAnchors: headers for blocks the CALLER already holds on
+    ///   its own main chain, oldest-first, ending at the block the segment's
+    ///   oldest header attaches to. Anchors are LOCAL data (never peer input):
+    ///   the caller builds them from its own ChainState, so attaching the
+    ///   segment to them is exactly as trusted as the local chain itself. With
+    ///   anchors the segment no longer needs to reach genesis — this is what
+    ///   lets a node catch up from peers that serve only their retained window
+    ///   (no peer can serve a full genesis walk once the chain outgrows
+    ///   retention). The context must be deep enough for consensus validation
+    ///   of the first segment headers: at least min(retargetWindow, attach
+    ///   height) ancestors, so the retarget/MTP windows can be evaluated.
+    ///   When anchoring mid-chain, `cumulativeWork` and `localCumulativeWork`
+    ///   MUST both be measured ABOVE the attach point (segment work vs local
+    ///   work beyond the fork) or the insufficientWork gate compares
+    ///   incomparable quantities. Empty preserves the historical fail-closed
+    ///   behavior: segments must anchor at genesis.
+    ///
+    ///   CONTRACT — the returned `SyncResult.persisted` contains ONLY the
+    ///   validated segment (never the anchor context or the caller's prefix).
+    ///   Applying it via `ChainState.resetFrom` verbatim shrinks the in-memory
+    ///   window to the segment and under-counts windowed cumulative work until
+    ///   the window refills. Callers adopting an anchored result must
+    ///   re-project the full retained window from their durable store after
+    ///   committing the segment (prefix + segment are contiguous there), or
+    ///   otherwise merge rather than reset.
     public func syncFromHeaders(
         _ headers: [SyncBlockHeader],
         cumulativeWork: UInt256,
-        localCumulativeWork: UInt256 = .zero
+        localCumulativeWork: UInt256 = .zero,
+        knownAnchors: [SyncBlockHeader] = []
     ) async throws -> SyncResult {
         guard !headers.isEmpty else { throw SyncError.emptyChain }
         // A child chain cannot sync headers-first: headers carry no anchoring proof,
@@ -567,7 +602,7 @@ public actor ChainSyncer {
         if cumulativeWork < localCumulativeWork { throw SyncError.insufficientWork }
 
         if validateBlockConsensus {
-            try await validateHeaderConsensus(headers)
+            try await validateHeaderConsensus(headers, knownAnchors: knownAnchors)
         }
 
         let blocks = headers.map {
@@ -576,14 +611,40 @@ public actor ChainSyncer {
         return buildResult(from: blocks, cumulativeWork: cumulativeWork)
     }
 
-    private func validateHeaderConsensus(_ headers: [SyncBlockHeader]) async throws {
+    private func validateHeaderConsensus(_ headers: [SyncBlockHeader], knownAnchors: [SyncBlockHeader] = []) async throws {
         guard let first = headers.first else { throw SyncError.emptyChain }
         let validationHeaders: [SyncBlockHeader]
+        var trustedPrefixCount = 1
         if first.cid == genesisBlockHash {
             guard first.height == 0, first.previousBlockCID == nil else {
                 throw SyncError.genesisMismatch
             }
             validationHeaders = headers
+        } else if let anchor = knownAnchors.last {
+            // Segment anchored at a caller-held block instead of genesis. The
+            // anchor context is trusted-local (built by the caller from its own
+            // chain), so it seeds the continuity walk exactly like the synthetic
+            // genesis seed below: the first segment header must attach to the
+            // LAST anchor, and every subsequent link is checked identically.
+            // The deeper context headers exist so the retarget and MTP windows
+            // of the first segment headers can be evaluated — links WITHIN the
+            // trusted prefix are not re-validated (they are the local chain).
+            // Fail closed on any mismatch — an anchor the segment doesn't
+            // actually extend proves nothing.
+            guard first.previousBlockCID == anchor.cid,
+                  first.height == anchor.height + 1 else {
+                throw SyncError.genesisMismatch
+            }
+            // The context itself must be contiguous ancestry (defense against a
+            // caller bug assembling it): each anchor is the parent of the next.
+            for i in 1..<knownAnchors.count {
+                guard knownAnchors[i].previousBlockCID == knownAnchors[i - 1].cid,
+                      knownAnchors[i].height == knownAnchors[i - 1].height + 1 else {
+                    throw SyncError.genesisMismatch
+                }
+            }
+            validationHeaders = knownAnchors + headers
+            trustedPrefixCount = knownAnchors.count
         } else {
             guard first.previousBlockCID == genesisBlockHash,
                   let genesisData = try? await fetchBlockVolume(rawCid: genesisBlockHash),
@@ -606,13 +667,13 @@ public actor ChainSyncer {
                 )
             ] + headers
         }
-        guard validationHeaders.count > 1 else { return }
+        guard validationHeaders.count > trustedPrefixCount else { return }
 
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         // R9 (wave-4): the shared consensus constant, not a re-hardcoded copy.
         let maxFutureDrift = Block.maxFutureDriftMilliseconds
         var specs: [String: ChainSpec] = [:]
-        for i in 1..<validationHeaders.count {
+        for i in trustedPrefixCount..<validationHeaders.count {
             let parent = validationHeaders[i - 1]
             let header = validationHeaders[i]
             guard header.previousBlockCID == parent.cid,
