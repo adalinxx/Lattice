@@ -116,7 +116,8 @@ final class ChainLocalAdmissionTests: XCTestCase {
         }
 
         let siblingCID = try VolumeImpl<Block>(node: sibling).rawCID
-        XCTAssertTrue(await lattice.nexus.chain.contains(blockHash: siblingCID))
+        let containsSibling = await lattice.nexus.chain.contains(blockHash: siblingCID)
+        XCTAssertTrue(containsSibling)
     }
 
     func testStorageFailurePreventsVisibleConsensusMutation() async throws {
@@ -136,8 +137,10 @@ final class ChainLocalAdmissionTests: XCTestCase {
         guard case .storageFailed = result else {
             return XCTFail("expected storage failure, got \(result)")
         }
-        XCTAssertEqual(await lattice.nexus.chain.getMainChainTip(), beforeTip)
-        XCTAssertFalse(await lattice.nexus.chain.contains(blockHash: blockCID))
+        let afterTip = await lattice.nexus.chain.getMainChainTip()
+        let containsBlock = await lattice.nexus.chain.contains(blockHash: blockCID)
+        XCTAssertEqual(afterTip, beforeTip)
+        XCTAssertFalse(containsBlock)
     }
 
     func testParentReorganizationDoesNotMutateChildChain() async throws {
@@ -186,8 +189,9 @@ final class ChainLocalAdmissionTests: XCTestCase {
             return XCTFail("longer parent fork did not canonicalize")
         }
 
+        let childTipAfter = await childLevel.chain.getMainChainTip()
         XCTAssertEqual(
-            await childLevel.chain.getMainChainTip(),
+            childTipAfter,
             childTipBefore,
             "a parent reorganization must not directly mutate child canonicity"
         )
