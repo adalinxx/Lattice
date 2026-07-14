@@ -26,12 +26,12 @@ final class FullPipelineAcceptanceTests: XCTestCase {
 
     func testBuildMineSubmitBroadcastCycle() async throws {
         let spec = testSpec()
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: spec, timestamp: 1_000_000, target: UInt256.max, fetcher: fetcher
         )
         let chain = ChainState.fromGenesis(block: genesis)
 
-        let block1 = try await BlockBuilder.buildBlock(
+        let block1 = try await buildAndStoreBlock(
             previous: genesis, timestamp: 2_000_000,
             target: UInt256.max, nonce: 1, fetcher: fetcher
         )
@@ -52,10 +52,10 @@ final class FullPipelineAcceptanceTests: XCTestCase {
         let nexusSpec = testSpec("Nexus")
         let childSpec = testSpec("Child")
 
-        let nexusGenesis = try await BlockBuilder.buildGenesis(
+        let nexusGenesis = try await buildAndStoreGenesis(
             spec: nexusSpec, timestamp: 1_000_000, target: UInt256(1000), fetcher: fetcher
         )
-        let childGenesis = try await BlockBuilder.buildGenesis(
+        let childGenesis = try await buildAndStoreGenesis(
             spec: childSpec, timestamp: 1_000_000, target: UInt256(1000), fetcher: fetcher
         )
 
@@ -66,7 +66,7 @@ final class FullPipelineAcceptanceTests: XCTestCase {
 
         var nexusPrev = nexusGenesis
         for i in 1...5 {
-            let block = try await BlockBuilder.buildBlock(
+            let block = try await buildAndStoreBlock(
                 previous: nexusPrev, timestamp: 1_000_000 + Int64(i) * 1000,
                 nonce: UInt64(i), fetcher: fetcher
             )
@@ -80,7 +80,7 @@ final class FullPipelineAcceptanceTests: XCTestCase {
         let nexusHeight = await nexusChain.getHighestBlockHeight()
         XCTAssertEqual(nexusHeight, 5)
 
-        let childBlock1 = try await BlockBuilder.buildBlock(
+        let childBlock1 = try await buildAndStoreBlock(
             previous: childGenesis, timestamp: 2_000_000, nonce: 1, fetcher: fetcher
         )
         let nexusBlockHeader = try! VolumeImpl<Block>(node: nexusPrev)
@@ -102,12 +102,12 @@ final class FullPipelineAcceptanceTests: XCTestCase {
 
     private func buildLongChain(length: Int) async throws -> [Block] {
         var blocks: [Block] = []
-        let g = try await BlockBuilder.buildGenesis(
+        let g = try await buildAndStoreGenesis(
             spec: testSpec(), timestamp: 1_000_000, target: UInt256(1000), fetcher: fetcher
         )
         blocks.append(g)
         for i in 1..<length {
-            let b = try await BlockBuilder.buildBlock(
+            let b = try await buildAndStoreBlock(
                 previous: blocks.last!, timestamp: 1_000_000 + Int64(i) * 1000,
                 nonce: UInt64(i), fetcher: fetcher
             )

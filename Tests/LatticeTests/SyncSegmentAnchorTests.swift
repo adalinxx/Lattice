@@ -21,9 +21,7 @@ private func spec() -> ChainSpec {
 private func now() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
 private func storeBlock(_ block: Block, to fetcher: StorableFetcher) async throws {
-    let storer = CollectingStorer()
-    try VolumeImpl<Block>(node: block).storeRecursively(storer: storer)
-    await storer.flush(to: fetcher)
+    try await VolumeImpl<Block>(node: block).storeBlock(storer: fetcher)
 }
 
 private let noopStore: @Sendable (String, Data) async -> Void = { _, _ in }
@@ -47,12 +45,12 @@ final class SyncSegmentAnchorTests: XCTestCase {
     /// Build genesis + `count` blocks; return all blocks oldest-first.
     private func buildBlocks(count: Int, into fetcher: StorableFetcher) async throws -> [Block] {
         let base = now() - 100_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: spec(), timestamp: base, target: easy, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: spec(), timestamp: base, target: easy, fetcher: fetcher)
         try await storeBlock(genesis, to: fetcher)
         var blocks = [genesis]
         var prev = genesis
         for i in 1...count {
-            let b = try await BlockBuilder.buildBlock(
+            let b = try await buildAndStoreBlock(
                 previous: prev, timestamp: base + Int64(i) * 1000,
                 target: easy, nonce: UInt64(i), fetcher: fetcher)
             try await storeBlock(b, to: fetcher)

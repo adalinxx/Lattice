@@ -35,20 +35,20 @@ final class TrueCumWorkForkChoiceTests: XCTestCase {
         let diff = UInt256(1000)
         let w = workForTarget(diff)
         let base = now() - 50_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
         let chain = ChainState.fromGenesis(block: genesis)
-        let a = try await BlockBuilder.buildBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
+        let a = try await buildAndStoreBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
         _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: a), block: a)
 
         // Longer, self-mined fork off A: A→L1→L2 (own work 2w, no inheritance).
-        let l1 = try await BlockBuilder.buildBlock(previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
-        let l2 = try await BlockBuilder.buildBlock(previous: l1, timestamp: base + 3000, target: diff, nonce: 3, fetcher: fetcher)
+        let l1 = try await buildAndStoreBlock(previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
+        let l2 = try await buildAndStoreBlock(previous: l1, timestamp: base + 3000, target: diff, nonce: 3, fetcher: fetcher)
         for blk in [l1, l2] {
             _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
         }
         // Shorter, anchored fork off A: A→S1, with a big inherited parent weight
         // supplied live by the node's provider (no value stored on the block).
-        let s1 = try await BlockBuilder.buildBlock(previous: a, timestamp: base + 2500, target: diff, nonce: 99, fetcher: fetcher)
+        let s1 = try await buildAndStoreBlock(previous: a, timestamp: base + 2500, target: diff, nonce: 99, fetcher: fetcher)
         let s1hash = try! VolumeImpl<Block>(node: s1).rawCID
         let bigInherited = w &* UInt256(100)   // parent chain work far exceeds 2w
         await chain.setInheritedWeightProvider { $0 == s1hash ? bigInherited : .zero }
@@ -64,16 +64,16 @@ final class TrueCumWorkForkChoiceTests: XCTestCase {
         let fetcher = f()
         let diff = UInt256(1000)
         let base = now() - 50_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
         let chain = ChainState.fromGenesis(block: genesis)
-        let a = try await BlockBuilder.buildBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
+        let a = try await buildAndStoreBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
         _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: a), block: a)
         // Fork 1: A→B (1 block).
-        let b = try await BlockBuilder.buildBlock(previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
+        let b = try await buildAndStoreBlock(previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
         _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: b), block: b)
         // Fork 2: A→X→Y (2 blocks, heavier subtree).
-        let x = try await BlockBuilder.buildBlock(previous: a, timestamp: base + 2500, target: diff, nonce: 99, fetcher: fetcher)
-        let y = try await BlockBuilder.buildBlock(previous: x, timestamp: base + 3500, target: diff, nonce: 100, fetcher: fetcher)
+        let x = try await buildAndStoreBlock(previous: a, timestamp: base + 2500, target: diff, nonce: 99, fetcher: fetcher)
+        let y = try await buildAndStoreBlock(previous: x, timestamp: base + 3500, target: diff, nonce: 100, fetcher: fetcher)
         for blk in [x, y] {
             _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
         }
@@ -90,9 +90,9 @@ final class TrueCumWorkForkChoiceTests: XCTestCase {
         let diff = UInt256(1000)
         let w = workForTarget(diff)
         let base = now() - 50_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
         let chain = ChainState.fromGenesis(block: genesis)
-        let a = try await BlockBuilder.buildBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
+        let a = try await buildAndStoreBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
         let aHash = cid(a)
         let inherited = w &* UInt256(7)
         await chain.setInheritedWeightProvider { $0 == aHash ? inherited : .zero }

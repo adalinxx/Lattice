@@ -30,7 +30,7 @@ final class SecuringWorkPerGrindTests: XCTestCase {
             parent: nil, transactions: emptyTransactions(),
             target: target, nextTarget: target,
             spec: try! VolumeImpl<ChainSpec>(node: testChainSpec()),
-            parentState: Reference(emptyLatticeState()), prevState: Reference(emptyLatticeState()),
+            parentState: emptyLatticeState().removingNode(), prevState: emptyLatticeState().removingNode(),
             postState: emptyLatticeState(), children: children,
             height: 0, timestamp: 1_000_000, nonce: nonce
         )
@@ -58,9 +58,9 @@ final class SecuringWorkPerGrindTests: XCTestCase {
         return nil
     }
 
-    private func entries(_ headers: VolumeImpl<Block>...) throws -> [(cid: String, data: Data)] {
+    private func entries(_ headers: VolumeImpl<Block>...) async throws -> [(cid: String, data: Data)] {
         let storer = _CollectingStorer()
-        for h in headers { try h.storeRecursively(storer: storer) }
+        for h in headers { try await h.storeBlockContent(storer: storer) }
         return dedupedEntries(storer.entries)
     }
 
@@ -82,7 +82,7 @@ final class SecuringWorkPerGrindTests: XCTestCase {
 
         let proof = ChildBlockProof(rootCID: rootHeader.rawCID,
                                     directoryPath: [childDir, "leaf"],
-                                    entries: try entries(rootHeader, xHeader))
+                                    entries: try await entries(rootHeader, xHeader))
         let contributions = await proof.securingWorkContributions()
         let work = await proof.securingWork()
 
@@ -106,7 +106,7 @@ final class SecuringWorkPerGrindTests: XCTestCase {
         // Direct child: directoryPath length 1, only the root above the leaf.
         let proof = ChildBlockProof(rootCID: rootHeader.rawCID,
                                     directoryPath: [childDir],
-                                    entries: try entries(rootHeader, cHeader))
+                                    entries: try await entries(rootHeader, cHeader))
         let contributions = await proof.securingWorkContributions()
 
         XCTAssertEqual(contributions.count, 1, "depth-1 has exactly the root above the leaf")
@@ -136,7 +136,7 @@ final class SecuringWorkPerGrindTests: XCTestCase {
 
         let proof = ChildBlockProof(rootCID: rootHeader.rawCID,
                                     directoryPath: [childDir, "leaf"],
-                                    entries: try entries(rootHeader, xHeader))
+                                    entries: try await entries(rootHeader, xHeader))
         let contributions = await proof.securingWorkContributions()
 
         XCTAssertEqual(contributions.count, 1, "still ONE contribution")
@@ -165,9 +165,9 @@ final class SecuringWorkPerGrindTests: XCTestCase {
         XCTAssertNotEqual(r1Header.rawCID, r2Header.rawCID, "distinct grinds must have distinct root CIDs")
 
         let p1 = ChildBlockProof(rootCID: r1Header.rawCID, directoryPath: [childDir],
-                                 entries: try entries(r1Header, cHeader))
+                                 entries: try await entries(r1Header, cHeader))
         let p2 = ChildBlockProof(rootCID: r2Header.rawCID, directoryPath: [childDir],
-                                 entries: try entries(r2Header, cHeader))
+                                 entries: try await entries(r2Header, cHeader))
 
         let store = InheritedWeightStore()
         store.recordVerifiedWorkContributions(await p1.securingWorkContributions(), committingChild: childHash)
@@ -197,7 +197,7 @@ final class SecuringWorkPerGrindTests: XCTestCase {
 
         let proof = ChildBlockProof(rootCID: rootHeader.rawCID,
                                     directoryPath: [childDir, "leaf"],
-                                    entries: try entries(rootHeader, xHeader))
+                                    entries: try await entries(rootHeader, xHeader))
         let contributions = await proof.securingWorkContributions()
         let work = await proof.securingWork()
         XCTAssertEqual(contributions.count, 1)
@@ -228,7 +228,7 @@ final class SecuringWorkPerGrindTests: XCTestCase {
         // directoryPath [childDir, midDir, leaf]: walk grades root + X + Y (leaf excluded).
         let proof = ChildBlockProof(rootCID: rootHeader.rawCID,
                                     directoryPath: [childDir, midDir, "leaf"],
-                                    entries: try entries(rootHeader, xHeader, yHeader))
+                                    entries: try await entries(rootHeader, xHeader, yHeader))
         let contributions = await proof.securingWorkContributions()
         let work = await proof.securingWork()
         XCTAssertEqual(contributions.count, 1, "one grind → one contribution across three levels")
@@ -252,7 +252,7 @@ final class SecuringWorkPerGrindTests: XCTestCase {
 
         let proof = ChildBlockProof(rootCID: rootHeader.rawCID,
                                     directoryPath: [childDir, "leaf"],
-                                    entries: try entries(rootHeader, xHeader))
+                                    entries: try await entries(rootHeader, xHeader))
         let contributions = await proof.securingWorkContributions()
         let work = await proof.securingWork()
         XCTAssertEqual(contributions.count, 0, "no cleared level → no contribution")

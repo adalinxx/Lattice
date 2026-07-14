@@ -50,7 +50,7 @@ final class DifficultyRetargetTests: XCTestCase {
     }
 
     private func makeGenesis(spec: ChainSpec, timestamp: Int64, target: UInt256, fetcher: StorableFetcher) async throws -> Block {
-        try await BlockBuilder.buildGenesis(
+        try await buildAndStoreGenesis(
             spec: spec,
             timestamp: timestamp,
             target: target,
@@ -59,7 +59,7 @@ final class DifficultyRetargetTests: XCTestCase {
     }
 
     private func makeNext(previous: Block, timestamp: Int64, target: UInt256, nextTarget: UInt256, fetcher: StorableFetcher) async throws -> Block {
-        try await BlockBuilder.buildBlock(
+        try await buildAndStoreBlock(
             previous: previous,
             timestamp: timestamp,
             target: target,
@@ -69,9 +69,7 @@ final class DifficultyRetargetTests: XCTestCase {
     }
 
     private func storeBlock(_ block: Block, to fetcher: StorableFetcher) async throws {
-        let storer = CollectingStorer()
-        try VolumeImpl<Block>(node: block).storeRecursively(storer: storer)
-        await storer.flush(to: fetcher)
+        try await VolumeImpl<Block>(node: block).storeBlock(storer: fetcher)
     }
 
     private func cid(_ block: Block) -> String {
@@ -365,7 +363,7 @@ final class DifficultyRetargetTests: XCTestCase {
 
         var blocks = [genesis]
         for offset in 1...5 {
-            let block = try await BlockBuilder.buildBlock(
+            let block = try await buildAndStoreBlock(
                 previous: blocks.last!,
                 timestamp: 1_000 + Int64(offset * 1_000),
                 fetcher: fetcher

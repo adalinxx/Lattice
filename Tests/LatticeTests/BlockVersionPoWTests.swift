@@ -28,7 +28,7 @@ final class BlockVersionPoWTests: XCTestCase {
         timestamp: Int64? = nil,
         fetcher: StorableFetcher = StorableFetcher()
     ) async throws -> Block {
-        try await BlockBuilder.buildGenesis(
+        try await buildAndStoreGenesis(
             spec: spec(directory),
             timestamp: timestamp ?? now() - 20_000,
             target: UInt256(1000),
@@ -123,7 +123,7 @@ final class BlockVersionPoWTests: XCTestCase {
     }
 
     private func deterministicGenesis(version: UInt16 = 1) async throws -> Block {
-        try await BlockBuilder.buildGenesis(
+        try await buildAndStoreGenesis(
             spec: spec("Nexus"),
             timestamp: 1_000_000_000_000,
             target: UInt256.max,

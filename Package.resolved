@@ -1,5 +1,5 @@
 {
-  "originHash": "83c126b06f5f8eeff5ad6e636cb53f2b59a0122de66032e6cb1c128d327ef0b6",
+  "originHash": "b35d257a82b22f006955835c0849a253f1d71e8551220871166db76b246cc2a1",
   "pins": [
     {
       "identity": "arraytrie",
@@ -15,8 +15,7 @@
       "kind": "remoteSourceControl",
       "location": "https://github.com/adalinxx/cashew.git",
       "state": {
-        "revision": "bee730d3580eea6b9f5aad3f17fab45450496372",
-        "version": "3.3.0"
+        "revision": "24831f2e1a9d995f6e303602828db9c192216249"
       }
     },
     {

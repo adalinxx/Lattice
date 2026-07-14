@@ -46,8 +46,8 @@ func makeGenesisBlock(
         nextTarget: target,
         // known-valid local node; CID computation cannot fail (no Float/Double fields)
         spec: try! VolumeImpl<ChainSpec>(node: s),
-        parentState: Reference(emptyState),
-        prevState: Reference(emptyState),
+        parentState: emptyState.removingNode(),
+        prevState: emptyState.removingNode(),
         postState: emptyState,
         children: emptyChildBlocks(),
         height: 0,
@@ -68,13 +68,13 @@ func makeBlock(
     let prevHeader = try! VolumeImpl<Block>(node: previous)
     let emptyState = emptyLatticeState()
     return Block(
-        parent: Reference(prevHeader),
+        parent: prevHeader.removingNode(),
         transactions: emptyTransactions(),
         target: target,
         nextTarget: target,
         spec: previous.spec,
-        parentState: Reference(emptyState),
-        prevState: Reference(previous.postState),
+        parentState: emptyState.removingNode(),
+        prevState: previous.postState.removingNode(),
         postState: emptyState,
         children: children ?? emptyChildBlocks(),
         height: height,

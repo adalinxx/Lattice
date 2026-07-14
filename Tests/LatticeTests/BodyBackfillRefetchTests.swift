@@ -161,9 +161,7 @@ final class BodyBackfillRefetchTests: XCTestCase {
     private func cid(_ b: Block) -> String { try! VolumeImpl<Block>(node: b).rawCID }
 
     private func storeBlock(_ block: Block, to fetcher: StorableFetcher) async throws {
-        let storer = CollectingStorer()
-        try VolumeImpl<Block>(node: block).storeRecursively(storer: storer)
-        await storer.flush(to: fetcher)
+        try await VolumeImpl<Block>(node: block).storeBlock(storer: fetcher)
     }
 
     // Build the oracle (node B): a CAS holding the FULL DAG, plus the real blocks.
@@ -174,14 +172,14 @@ final class BodyBackfillRefetchTests: XCTestCase {
     private func buildOracle(into fetcher: StorableFetcher) async throws
         -> (genesis: Block, main: [Block], fork: [Block]) {
         let base = Self.now() - 200_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: Self.spec(), timestamp: base, target: easy, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: Self.spec(), timestamp: base, target: easy, fetcher: fetcher)
         try await storeBlock(genesis, to: fetcher)
 
         // Main extension.
         var main: [Block] = []
         var prev = genesis
         for i in 1...2 {
-            let b = try await BlockBuilder.buildBlock(previous: prev, timestamp: base + Int64(i) * 1000,
+            let b = try await buildAndStoreBlock(previous: prev, timestamp: base + Int64(i) * 1000,
                                                       target: easy, nonce: UInt64(100 + i), fetcher: fetcher)
             try await storeBlock(b, to: fetcher)
             main.append(b)
@@ -192,7 +190,7 @@ final class BodyBackfillRefetchTests: XCTestCase {
         var fork: [Block] = []
         prev = genesis
         for i in 1...5 {
-            let b = try await BlockBuilder.buildBlock(previous: prev, timestamp: base + Int64(i) * 1000,
+            let b = try await buildAndStoreBlock(previous: prev, timestamp: base + Int64(i) * 1000,
                                                       target: easy, nonce: UInt64(200 + i), fetcher: fetcher)
             try await storeBlock(b, to: fetcher)
             fork.append(b)

@@ -460,16 +460,16 @@ final class PrunedWeightIndexForkChoiceTests: XCTestCase {
         let diff = UInt256(1000)
         let w = workForTarget(diff)
         let base = bnow() - 50_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: bspec(), timestamp: base, target: diff, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: bspec(), timestamp: base, target: diff, fetcher: fetcher)
         let chain = ChainState.fromGenesis(block: genesis)
         // Linear G(h0) -> A(h1) -> B(h2) -> C(h3) -> D(h4) -> E(h5) -> F(h6, tip).
         // C/D are INTERIOR so the main tip F stays live across pruning.
-        let a = try await BlockBuilder.buildBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
-        let b = try await BlockBuilder.buildBlock(previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
-        let c = try await BlockBuilder.buildBlock(previous: b, timestamp: base + 3000, target: diff, nonce: 3, fetcher: fetcher)
-        let d = try await BlockBuilder.buildBlock(previous: c, timestamp: base + 4000, target: diff, nonce: 4, fetcher: fetcher)
-        let e = try await BlockBuilder.buildBlock(previous: d, timestamp: base + 5000, target: diff, nonce: 5, fetcher: fetcher)
-        let fb = try await BlockBuilder.buildBlock(previous: e, timestamp: base + 6000, target: diff, nonce: 6, fetcher: fetcher)
+        let a = try await buildAndStoreBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
+        let b = try await buildAndStoreBlock(previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
+        let c = try await buildAndStoreBlock(previous: b, timestamp: base + 3000, target: diff, nonce: 3, fetcher: fetcher)
+        let d = try await buildAndStoreBlock(previous: c, timestamp: base + 4000, target: diff, nonce: 4, fetcher: fetcher)
+        let e = try await buildAndStoreBlock(previous: d, timestamp: base + 5000, target: diff, nonce: 5, fetcher: fetcher)
+        let fb = try await buildAndStoreBlock(previous: e, timestamp: base + 6000, target: diff, nonce: 6, fetcher: fetcher)
         for blk in [a, b, c, d, e, fb] {
             _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
         }
@@ -488,7 +488,7 @@ final class PrunedWeightIndexForkChoiceTests: XCTestCase {
 
         // Insert a NEW sibling child C2(h3) under the still-live B. This drives the
         // incremental recompute of B from its children {C (pruned), C2 (live)}.
-        let c2 = try await BlockBuilder.buildBlock(previous: b, timestamp: base + 3500, target: diff, nonce: 99, fetcher: fetcher)
+        let c2 = try await buildAndStoreBlock(previous: b, timestamp: base + 3500, target: diff, nonce: 99, fetcher: fetcher)
         _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: c2), block: c2)
 
         // B's subtree must still count the pruned tail: {B, C, D, E, F, C2} = 6w.
@@ -507,15 +507,15 @@ final class PrunedWeightIndexForkChoiceTests: XCTestCase {
         let diff = UInt256(1000)
         let w = workForTarget(diff)
         let base = bnow() - 50_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: bspec(), timestamp: base, target: diff, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: bspec(), timestamp: base, target: diff, fetcher: fetcher)
         let chain = ChainState.fromGenesis(block: genesis)
         // Linear G -> A -> B -> C(h3) -> D(h4) -> E(h5, tip). C/D interior so the
         // main tip E stays live across pruning.
-        let a = try await BlockBuilder.buildBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
-        let b = try await BlockBuilder.buildBlock(previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
-        let c = try await BlockBuilder.buildBlock(previous: b, timestamp: base + 3000, target: diff, nonce: 3, fetcher: fetcher)
-        let d = try await BlockBuilder.buildBlock(previous: c, timestamp: base + 4000, target: diff, nonce: 4, fetcher: fetcher)
-        let e = try await BlockBuilder.buildBlock(previous: d, timestamp: base + 5000, target: diff, nonce: 5, fetcher: fetcher)
+        let a = try await buildAndStoreBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
+        let b = try await buildAndStoreBlock(previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
+        let c = try await buildAndStoreBlock(previous: b, timestamp: base + 3000, target: diff, nonce: 3, fetcher: fetcher)
+        let d = try await buildAndStoreBlock(previous: c, timestamp: base + 4000, target: diff, nonce: 4, fetcher: fetcher)
+        let e = try await buildAndStoreBlock(previous: d, timestamp: base + 5000, target: diff, nonce: 5, fetcher: fetcher)
         for blk in [a, b, c, d, e] {
             _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
         }

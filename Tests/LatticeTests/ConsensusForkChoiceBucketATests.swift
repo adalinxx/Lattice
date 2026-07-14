@@ -183,14 +183,14 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
         let base = now() - 50_000
         let maxWorkDiff = UInt256(1) // workForTarget(1) == UInt256.max
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: spec(), timestamp: base, target: maxWorkDiff, fetcher: fetcher
         )
         XCTAssertEqual(workForTarget(maxWorkDiff), UInt256.max, "target 1 ⇒ max work per block")
 
         let chain = ChainState.fromGenesis(block: genesis)
         // Add a second max-work block: windowed sum = max + max, which wraps a bare &+.
-        let b1 = try await BlockBuilder.buildBlock(
+        let b1 = try await buildAndStoreBlock(
             previous: genesis, timestamp: base + 1000,
             target: maxWorkDiff, nextTarget: maxWorkDiff, nonce: 1, fetcher: fetcher
         )
@@ -335,7 +335,7 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
 
         // A throwaway genesis chain we then resetFrom the corrupt snapshot.
         let fetcher = f()
-        let realGenesis = try? await BlockBuilder.buildGenesis(
+        let realGenesis = try? await buildAndStoreGenesis(
             spec: spec(), timestamp: now() - 10_000, target: goodDiff, fetcher: fetcher
         )
         guard let realGenesis else { return XCTFail("genesis build failed") }

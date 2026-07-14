@@ -18,9 +18,7 @@ private func spec(_ dir: String = "Nexus") -> ChainSpec {
 private func now() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
 private func storeBlock(_ block: Block, to fetcher: StorableFetcher) async throws {
-    let storer = CollectingStorer()
-    try VolumeImpl<Block>(node: block).storeRecursively(storer: storer)
-    await storer.flush(to: fetcher)
+    try await VolumeImpl<Block>(node: block).storeBlock(storer: fetcher)
 }
 
 private let noopStore: @Sendable (String, Data) async -> Void = { _, _ in }
@@ -46,9 +44,9 @@ final class SyncWalkErrorClassTests: XCTestCase {
     /// genesis + one extending block, both fully stored. Returns the CIDs.
     private func buildTwoBlockChain(into fetcher: StorableFetcher) async throws -> (genesis: String, tip: String) {
         let base = now() - 50_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: spec(), timestamp: base, target: easy, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: spec(), timestamp: base, target: easy, fetcher: fetcher)
         try await storeBlock(genesis, to: fetcher)
-        let b1 = try await BlockBuilder.buildBlock(
+        let b1 = try await buildAndStoreBlock(
             previous: genesis, timestamp: base + 1000, target: easy, nonce: 1, fetcher: fetcher)
         try await storeBlock(b1, to: fetcher)
         return (try! VolumeImpl<Block>(node: genesis).rawCID, try! VolumeImpl<Block>(node: b1).rawCID)
@@ -108,7 +106,7 @@ final class SyncStateOnlyErrorClassTests: XCTestCase {
     private let easy = UInt256.max
 
     private func buildStoredGenesis(into fetcher: StorableFetcher) async throws -> String {
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: spec(), timestamp: now() - 50_000, target: easy, fetcher: fetcher)
         try await storeBlock(genesis, to: fetcher)
         return try! VolumeImpl<Block>(node: genesis).rawCID
@@ -150,7 +148,7 @@ final class SyncStateOnlyErrorClassTests: XCTestCase {
         let cas = StorableFetcher()
         let genesisCID = try await buildStoredGenesis(into: cas)
         // Serve a DIFFERENT valid block's canonical bytes under the advertised CID.
-        let other = try await BlockBuilder.buildGenesis(
+        let other = try await buildAndStoreGenesis(
             spec: spec(), timestamp: now() - 40_000, target: easy, fetcher: cas)
         cas.store(rawCid: genesisCID, data: other.toData()!)
 

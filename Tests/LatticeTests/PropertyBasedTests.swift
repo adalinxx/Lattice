@@ -633,11 +633,11 @@ final class BlockStructurePropertyTests: XCTestCase {
         XCTAssertEqual(Set(names).count, 5)
     }
 
-    // Property: Block has exactly 4 owned (addressable) child properties —
-    // transactions, spec, postState, children. parent/parentState/prevState are
-    // References (commitments, not children) and are intentionally excluded.
+    // Property: Block has 6 required addressable child properties. The optional
+    // parent is exposed separately when present; storage policy decides which
+    // content-addressed edges to traverse.
     func testBlockPropertyCount() {
-        XCTAssertEqual(BLOCK_PROPERTIES.count, 4)
+        XCTAssertEqual(BLOCK_PROPERTIES.count, 6)
     }
 
     // Property: Transaction has exactly 1 addressable property

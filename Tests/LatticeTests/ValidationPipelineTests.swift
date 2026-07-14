@@ -30,7 +30,7 @@ func genesisBlock(
     target: UInt256 = UInt256(1000),
     nonce: UInt64 = 0
 ) async throws -> Block {
-    try await BlockBuilder.buildGenesis(
+    try await buildAndStoreGenesis(
         spec: spec ?? testSpec(),
         timestamp: timestamp,
         target: target,
@@ -45,7 +45,7 @@ func nextBlock(
     target: UInt256? = nil,
     nonce: UInt64 = 0
 ) async throws -> Block {
-    try await BlockBuilder.buildBlock(
+    try await buildAndStoreBlock(
         previous: previous,
         timestamp: timestamp,
         target: target,
@@ -547,7 +547,7 @@ final class WasmPolicyTests: XCTestCase {
 
     func testTransactionPolicyAccepts() async throws {
         let fetcher = StorableFetcher()
-        let policy = try storeWasmPolicy(accepts: true, scope: .transaction, fetcher: fetcher)
+        let policy = try await storeWasmPolicy(accepts: true, scope: .transaction, fetcher: fetcher)
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
@@ -568,7 +568,7 @@ final class WasmPolicyTests: XCTestCase {
 
     func testTransactionPolicyRejects() async throws {
         let fetcher = StorableFetcher()
-        let policy = try storeWasmPolicy(accepts: false, scope: .transaction, fetcher: fetcher)
+        let policy = try await storeWasmPolicy(accepts: false, scope: .transaction, fetcher: fetcher)
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
@@ -589,7 +589,7 @@ final class WasmPolicyTests: XCTestCase {
 
     func testTransactionPolicyCanInspectContextBytes() async throws {
         let fetcher = StorableFetcher()
-        let policy = try storeWasmPolicy(requiringSubstring: "high-signer", scope: .transaction, fetcher: fetcher)
+        let policy = try await storeWasmPolicy(requiringSubstring: "high-signer", scope: .transaction, fetcher: fetcher)
         let lowFee = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
@@ -617,7 +617,7 @@ final class WasmPolicyTests: XCTestCase {
 
     func testTransactionPolicyCanInspectChainPath() async throws {
         let fetcher = StorableFetcher()
-        let policy = try storeWasmPolicy(requiringSubstring: "policy-chain-sentinel", scope: .transaction, fetcher: fetcher)
+        let policy = try await storeWasmPolicy(requiringSubstring: "policy-chain-sentinel", scope: .transaction, fetcher: fetcher)
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
@@ -644,8 +644,8 @@ final class WasmPolicyTests: XCTestCase {
 
     func testMultiplePoliciesAreAllRequired() async throws {
         let fetcher = StorableFetcher()
-        let acceptingPolicy = try storeWasmPolicy(accepts: true, scope: .transaction, fetcher: fetcher)
-        let rejectingPolicy = try storeWasmPolicy(accepts: false, scope: .transaction, fetcher: fetcher)
+        let acceptingPolicy = try await storeWasmPolicy(accepts: true, scope: .transaction, fetcher: fetcher)
+        let rejectingPolicy = try await storeWasmPolicy(accepts: false, scope: .transaction, fetcher: fetcher)
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
@@ -712,7 +712,7 @@ final class WasmPolicyTests: XCTestCase {
 
     func testActionPolicyAccepts() async throws {
         let fetcher = StorableFetcher()
-        let policy = try storeWasmPolicy(accepts: true, scope: .action, fetcher: fetcher)
+        let policy = try await storeWasmPolicy(accepts: true, scope: .action, fetcher: fetcher)
         let action = Action(key: "test/key", oldValue: nil, newValue: "hello")
         let body = TransactionBody(
             accountActions: [], actions: [action], depositActions: [],
@@ -734,7 +734,7 @@ final class WasmPolicyTests: XCTestCase {
 
     func testActionPolicyCanInspectContextBytes() async throws {
         let fetcher = StorableFetcher()
-        let policy = try storeWasmPolicy(requiringSubstring: "app", scope: .action, fetcher: fetcher)
+        let policy = try await storeWasmPolicy(requiringSubstring: "app", scope: .action, fetcher: fetcher)
         let goodAction = Action(key: "app/v1/data", oldValue: nil, newValue: "value")
         let badAction = Action(key: "forbidden/data", oldValue: nil, newValue: "value")
         let spec = ChainSpec(
@@ -756,7 +756,7 @@ final class WasmPolicyTests: XCTestCase {
 
     func testUnsupportedAbiRejects() async throws {
         let fetcher = StorableFetcher()
-        let storedPolicy = try storeWasmPolicy(accepts: true, scope: .transaction, fetcher: fetcher)
+        let storedPolicy = try await storeWasmPolicy(accepts: true, scope: .transaction, fetcher: fetcher)
         let policy = WasmPolicyRef(
             moduleCID: storedPolicy.moduleCID,
             abiVersion: WasmPolicyRef.currentABIVersion + 1,
@@ -810,7 +810,7 @@ final class WasmPolicyTests: XCTestCase {
         )
         """
         let module = try! WasmPolicyModuleHeader(node: WasmPolicyModule(bytes: Data(try wat2wasm(wat))))
-        try module.storeRecursively(storer: fetcher)
+        try await module.storeRecursively(storer: fetcher)
         let policy = WasmPolicyRef(
             moduleCID: module.rawCID,
             scope: .transaction,
@@ -1087,7 +1087,7 @@ final class WasmPolicyTests: XCTestCase {
         cache.onParse = { _ in parseCount += 1 }
 
         let fetcher = StorableFetcher()
-        let policy = try storeWasmPolicy(accepts: true, scope: .transaction, fetcher: fetcher)
+        let policy = try await storeWasmPolicy(accepts: true, scope: .transaction, fetcher: fetcher)
         let context = cacheTestContext(policy: policy)
 
         for _ in 0..<4 {
@@ -1105,7 +1105,7 @@ final class WasmPolicyTests: XCTestCase {
 
         for accepts in [true, false] {
             let fetcher = StorableFetcher()
-            let policy = try storeWasmPolicy(accepts: accepts, scope: .transaction, fetcher: fetcher)
+            let policy = try await storeWasmPolicy(accepts: accepts, scope: .transaction, fetcher: fetcher)
             let context = cacheTestContext(policy: policy)
 
             cache.removeAll() // force a cold parse
@@ -1135,9 +1135,9 @@ final class WasmPolicyTests: XCTestCase {
 
         let fetcher = StorableFetcher()
         // Three distinct modules (distinct content ids via distinct sentinel substrings).
-        let policyA = try storeWasmPolicy(requiringSubstring: "module-a", scope: .transaction, fetcher: fetcher)
-        let policyB = try storeWasmPolicy(requiringSubstring: "module-b", scope: .transaction, fetcher: fetcher)
-        let policyC = try storeWasmPolicy(requiringSubstring: "module-c", scope: .transaction, fetcher: fetcher)
+        let policyA = try await storeWasmPolicy(requiringSubstring: "module-a", scope: .transaction, fetcher: fetcher)
+        let policyB = try await storeWasmPolicy(requiringSubstring: "module-b", scope: .transaction, fetcher: fetcher)
+        let policyC = try await storeWasmPolicy(requiringSubstring: "module-c", scope: .transaction, fetcher: fetcher)
         let ctxA = cacheTestContext(policy: policyA)
         let ctxB = cacheTestContext(policy: policyB)
         let ctxC = cacheTestContext(policy: policyC)

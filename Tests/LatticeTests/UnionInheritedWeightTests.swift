@@ -29,9 +29,9 @@ final class UnionInheritedWeightTests: XCTestCase {
         let fetcher = f()
         let diff = UInt256(1000)
         let base = now() - 50_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
         let chain = ChainState.fromGenesis(block: genesis)
-        let p = try await BlockBuilder.buildBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
+        let p = try await buildAndStoreBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
         _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: p), block: p)
         let inh = UInt256(100)
         await chain.setInheritedWeightProvider { $0 == cid(p) ? inh : .zero }
@@ -52,14 +52,14 @@ final class UnionInheritedWeightTests: XCTestCase {
         let diff = UInt256(1000)
         let w = workForTarget(diff)
         let base = now() - 50_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
         let chain = ChainState.fromGenesis(block: genesis)
-        let b0 = try await BlockBuilder.buildBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
+        let b0 = try await buildAndStoreBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
         // Fork A committer P1 — a tip, subtree = {P1} = 1w.
-        let p1 = try await BlockBuilder.buildBlock(previous: b0, timestamp: base + 2000, target: diff, nonce: 10, fetcher: fetcher)
+        let p1 = try await buildAndStoreBlock(previous: b0, timestamp: base + 2000, target: diff, nonce: 10, fetcher: fetcher)
         // Fork B committer P2 + a descendant P2b — subtree = {P2,P2b} = 2w.
-        let p2 = try await BlockBuilder.buildBlock(previous: b0, timestamp: base + 2500, target: diff, nonce: 20, fetcher: fetcher)
-        let p2b = try await BlockBuilder.buildBlock(previous: p2, timestamp: base + 3500, target: diff, nonce: 21, fetcher: fetcher)
+        let p2 = try await buildAndStoreBlock(previous: b0, timestamp: base + 2500, target: diff, nonce: 20, fetcher: fetcher)
+        let p2b = try await buildAndStoreBlock(previous: p2, timestamp: base + 3500, target: diff, nonce: 21, fetcher: fetcher)
         for blk in [b0, p1, p2, p2b] {
             _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
         }
@@ -90,10 +90,10 @@ final class UnionInheritedWeightTests: XCTestCase {
         let fetcher = f()
         let diff = UInt256(1000)
         let base = now() - 50_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
         let chain = ChainState.fromGenesis(block: genesis)
-        let p1 = try await BlockBuilder.buildBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
-        let p2 = try await BlockBuilder.buildBlock(previous: p1, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
+        let p1 = try await buildAndStoreBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
+        let p2 = try await buildAndStoreBlock(previous: p1, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
         for blk in [p1, p2] {
             _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
         }
