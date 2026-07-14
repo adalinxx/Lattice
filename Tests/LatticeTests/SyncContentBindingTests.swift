@@ -24,9 +24,7 @@ private func spec(_ dir: String = "Nexus") -> ChainSpec {
 private func now() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
 private func storeBlock(_ block: Block, to fetcher: StorableFetcher) async throws {
-    let storer = CollectingStorer()
-    try VolumeImpl<Block>(node: block).storeRecursively(storer: storer)
-    await storer.flush(to: fetcher)
+    try await VolumeImpl<Block>(node: block).storeBlock(storer: fetcher)
 }
 
 private let noopStore: @Sendable (String, Data) async -> Void = { _, _ in }
@@ -54,8 +52,8 @@ final class SyncContentBindingTests: XCTestCase {
     private func fetcherServingEvilUnderGenesis() async throws -> (String, StorableFetcher) {
         let fetcher = StorableFetcher()
         let base = now() - 50_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: spec(), timestamp: base, target: easy, fetcher: fetcher)
-        let evil = try await BlockBuilder.buildGenesis(spec: spec(), timestamp: base + 5_000, target: easy, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: spec(), timestamp: base, target: easy, fetcher: fetcher)
+        let evil = try await buildAndStoreGenesis(spec: spec(), timestamp: base + 5_000, target: easy, fetcher: fetcher)
         let genesisCID = try! VolumeImpl<Block>(node: genesis).rawCID
         let evilCID = try! VolumeImpl<Block>(node: evil).rawCID
         XCTAssertNotEqual(genesisCID, evilCID, "distinct content must yield distinct CIDs")
@@ -119,7 +117,7 @@ final class SyncContentBindingTests: XCTestCase {
     func testHonestContentPassesBindingAndSyncs() async throws {
         let fetcher = StorableFetcher()
         let base = now() - 50_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: spec(), timestamp: base, target: easy, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: spec(), timestamp: base, target: easy, fetcher: fetcher)
         let genesisCID = try! VolumeImpl<Block>(node: genesis).rawCID
         try await storeBlock(genesis, to: fetcher)
 
@@ -135,7 +133,7 @@ final class SyncContentBindingTests: XCTestCase {
     func testAcceptedSyncStoresCanonicalBytes() async throws {
         let fetcher = StorableFetcher()
         let base = now() - 50_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: spec(), timestamp: base, target: easy, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: spec(), timestamp: base, target: easy, fetcher: fetcher)
         let genesisCID = try! VolumeImpl<Block>(node: genesis).rawCID
         let canonical = genesis.toData()
         XCTAssertNotNil(canonical)

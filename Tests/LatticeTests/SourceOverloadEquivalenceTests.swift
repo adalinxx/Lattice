@@ -57,7 +57,7 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         let premineSig = TransactionSigning.sign(bodyHeader: premineHeader, privateKeyHex: alice.privateKey)!
         let premineTx = Transaction(signatures: [alice.publicKey: premineSig], body: premineHeader)
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, transactions: [premineTx],
             timestamp: t - 20_000, target: UInt256.max, fetcher: fetcher
         )
@@ -77,16 +77,16 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         let transferTx = Transaction(signatures: [alice.publicKey: transferSig], body: transferHeader)
 
         // A child block so the content package exercises the child-link list path.
-        let child = try await BlockBuilder.buildGenesis(
+        let child = try await buildAndStoreGenesis(
             spec: spec("Child"), timestamp: t - 20_000, target: UInt256.max, fetcher: fetcher
         )
 
-        let block = try await BlockBuilder.buildBlock(
+        let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [transferTx], children: ["Child": child],
             timestamp: t - 10_000, target: UInt256.max, nonce: 1, fetcher: fetcher
         )
         // Persist the full block volume so both paths can resolve it by CID.
-        try VolumeImpl<Block>(node: block).storeRecursively(storer: fetcher)
+        try await VolumeImpl<Block>(node: block).storeBlockContent(storer: fetcher)
 
         let genesisHeader = try! VolumeImpl<Block>(node: genesis)
         let blockHeader = VolumeImpl<Block>(rawCID: try! VolumeImpl<Block>(node: block).rawCID)
@@ -169,7 +169,7 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         let miner = CryptoUtils.generateKeyPair()
         let minerAddr = addr(miner.publicKey)
         let s = spec("Nexus")
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: ChainSpec(
                 maxNumberOfTransactionsPerBlock: 100,
                 maxStateGrowth: 100_000, maxBlockSize: 1_000_000, premine: 0,
@@ -189,11 +189,11 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         let bodyHeader = try! HeaderImpl<TransactionBody>(node: overclaimBody)
         let sig = TransactionSigning.sign(bodyHeader: bodyHeader, privateKeyHex: miner.privateKey)!
         let tx = Transaction(signatures: [miner.publicKey: sig], body: bodyHeader)
-        let block = try await BlockBuilder.buildBlock(
+        let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [tx],
             timestamp: t - 10_000, target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
-        try VolumeImpl<Block>(node: block).storeRecursively(storer: fetcher)
+        try await VolumeImpl<Block>(node: block).storeBlockContent(storer: fetcher)
         let source = FetcherContentSource(fetcher)
 
         let viaFetcher = try await block.validateNexus(fetcher: fetcher).0

@@ -210,11 +210,11 @@ final class GhostReorgEdgeCaseTests: XCTestCase {
                              maxStateGrowth: 100_000, maxBlockSize: 1_000_000, premine: 0,
                              targetBlockTime: 1_000, initialReward: 1024, halvingInterval: 10_000,
                              retargetWindow: 5)
-        let genesis = try await BlockBuilder.buildGenesis(spec: spec, timestamp: base, target: diff, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: spec, timestamp: base, target: diff, fetcher: fetcher)
         let chain = ChainState.fromGenesis(block: genesis)
         // Main chain G→A→B (2 blocks).
-        let a = try await BlockBuilder.buildBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
-        let b = try await BlockBuilder.buildBlock(previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
+        let a = try await buildAndStoreBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
+        let b = try await buildAndStoreBlock(previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
         for blk in [a, b] {
             _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
         }
@@ -223,9 +223,9 @@ final class GhostReorgEdgeCaseTests: XCTestCase {
         XCTAssertEqual(tipBefore, cid(b))
 
         // Heavier fork G→X→Y→Z (3 blocks), delivered Z, Y, X (children before parents).
-        let x = try await BlockBuilder.buildBlock(previous: genesis, timestamp: base + 1500, target: diff, nonce: 91, fetcher: fetcher)
-        let y = try await BlockBuilder.buildBlock(previous: x, timestamp: base + 2500, target: diff, nonce: 92, fetcher: fetcher)
-        let z = try await BlockBuilder.buildBlock(previous: y, timestamp: base + 3500, target: diff, nonce: 93, fetcher: fetcher)
+        let x = try await buildAndStoreBlock(previous: genesis, timestamp: base + 1500, target: diff, nonce: 91, fetcher: fetcher)
+        let y = try await buildAndStoreBlock(previous: x, timestamp: base + 2500, target: diff, nonce: 92, fetcher: fetcher)
+        let z = try await buildAndStoreBlock(previous: y, timestamp: base + 3500, target: diff, nonce: 93, fetcher: fetcher)
         for blk in [z, y, x] {
             _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
         }
@@ -258,20 +258,20 @@ final class TRE88ReorgBookkeepingTests: XCTestCase {
                              maxStateGrowth: 100_000, maxBlockSize: 1_000_000, premine: 0,
                              targetBlockTime: 1_000, initialReward: 1024, halvingInterval: 10_000,
                              retargetWindow: 5)
-        let genesis = try await BlockBuilder.buildGenesis(spec: spec, timestamp: base, target: diff, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: spec, timestamp: base, target: diff, fetcher: fetcher)
         let chain = ChainState.fromGenesis(block: genesis)
         let cid = { (blk: Block) in try! VolumeImpl<Block>(node: blk).rawCID }
 
         // C0 extends genesis and becomes the tip.
-        let c0 = try await BlockBuilder.buildBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
+        let c0 = try await buildAndStoreBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
         _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: c0), block: c0)
         let tipAfterC0 = await chain.getMainChainTip()
         XCTAssertEqual(tipAfterC0, cid(c0))
 
         // C1 extends C0; G extends C1. Deliver G FIRST (out of order, before C1) so it
         // is attached but not on the main chain; then deliver C1 whose parent is the tip.
-        let c1 = try await BlockBuilder.buildBlock(previous: c0, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
-        let gg = try await BlockBuilder.buildBlock(previous: c1, timestamp: base + 3000, target: diff, nonce: 3, fetcher: fetcher)
+        let c1 = try await buildAndStoreBlock(previous: c0, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
+        let gg = try await buildAndStoreBlock(previous: c1, timestamp: base + 3000, target: diff, nonce: 3, fetcher: fetcher)
         _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: gg), block: gg)
 
         let result = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: c1), block: c1)

@@ -89,20 +89,10 @@ public struct ChildBlockProof: Sendable {
         childDirectory: String,
         fetcher: Fetcher
     ) async throws -> ChildBlockProof {
-        let cashewPath: [[String]: SparseMerkleProof] = [["children", childDirectory]: .existence]
-        let sparse = try await rootHeader.proof(paths: cashewPath, fetcher: fetcher)
-
+        let path: [[String]: ResolutionStrategy] = [["children", childDirectory]: .targeted]
+        let resolvedRoot = try await rootHeader.resolve(paths: path, fetcher: fetcher)
         let storer = _CollectingStorer()
-        try sparse.storeRecursively(storer: storer)
-
-        // The `.existence` proof captures the radix path to `children[childDirectory]`
-        // but leaves the leaf child Header's node unresolved, so its volume is not in
-        // `storer.entries`. Verification walks `children[dir]` and reads that header's
-        // CID, which requires the header volume to be present. Resolve the targeted
-        // child header and fold its volumes in so the proof is self-contained.
-        let resolvedRoot = try await rootHeader.resolve(
-            paths: [["children", childDirectory]: .targeted], fetcher: fetcher)
-        try resolvedRoot.storeRecursively(storer: storer)
+        try await resolvedRoot.store(paths: path, storer: storer)
 
         return ChildBlockProof(rootCID: rootHeader.rawCID, directoryPath: [childDirectory], entries: dedupedEntries(storer.entries))
     }
@@ -387,9 +377,17 @@ public struct ChildBlockProof: Sendable {
 // MARK: - Internal helpers
 
 public final class _CollectingStorer: Storer, @unchecked Sendable {
-    public var entries: [(cid: String, data: Data)] = []
+    private let lock = NSLock()
+    private var storedEntries: [String: Data] = [:]
     public init() {}
-    public func store(rawCid: String, data: Data) throws { entries.append((rawCid, data)) }
+    public func store(entries: [String: Data]) async {
+        lock.withLock { storedEntries.merge(entries) { _, new in new } }
+    }
+    public var entries: [(cid: String, data: Data)] {
+        lock.withLock {
+            storedEntries.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
+        }
+    }
 }
 
 /// Drop duplicate CIDs (content-addressed, so identical bytes per CID), preserving

@@ -19,9 +19,7 @@ private func spec(_ dir: String = "Mid") -> ChainSpec {
 private func now() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
 private func storeBlock(_ block: Block, to fetcher: StorableFetcher) async throws {
-    let storer = CollectingStorer()
-    try VolumeImpl<Block>(node: block).storeRecursively(storer: storer)
-    await storer.flush(to: fetcher)
+    try await VolumeImpl<Block>(node: block).storeBlock(storer: fetcher)
 }
 
 private let noopStore: @Sendable (String, Data) async -> Void = { _, _ in }
@@ -35,7 +33,7 @@ final class SyncAnchoredPoWTests: XCTestCase {
 
     private func makeGenesis() async throws -> (String, StorableFetcher) {
         let fetcher = StorableFetcher()
-        let genesis = try await BlockBuilder.buildGenesis(spec: spec(), timestamp: now() - 50_000, target: easy, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: spec(), timestamp: now() - 50_000, target: easy, fetcher: fetcher)
         let cid = try! VolumeImpl<Block>(node: genesis).rawCID
         try await storeBlock(genesis, to: fetcher)
         return (cid, fetcher)

@@ -9,6 +9,18 @@ public enum BlockBuilderError: Error {
     case invalidTransactionBody
 }
 
+public struct BlockBuildResult: Sendable {
+    public let block: Block
+    public let stateDiff: StateDiff
+    public let materializedPostState: LatticeState?
+
+    public init(block: Block, stateDiff: StateDiff, materializedPostState: LatticeState?) {
+        self.block = block
+        self.stateDiff = stateDiff
+        self.materializedPostState = materializedPostState
+    }
+}
+
 public struct BlockBuilder {
 
     // MARK: - Build Genesis Block
@@ -23,11 +35,33 @@ public struct BlockBuilder {
         version: UInt16 = 1,
         fetcher: Fetcher
     ) async throws -> Block {
+        try await buildGenesisWithTransition(
+            spec: spec,
+            transactions: transactions,
+            children: children,
+            timestamp: timestamp,
+            target: target,
+            nonce: nonce,
+            version: version,
+            fetcher: fetcher
+        ).block
+    }
+
+    public static func buildGenesisWithTransition(
+        spec: ChainSpec,
+        transactions: [Transaction] = [],
+        children: [String: Block] = [:],
+        timestamp: Int64,
+        target: UInt256,
+        nonce: UInt64 = 0,
+        version: UInt16 = 1,
+        fetcher: Fetcher
+    ) async throws -> BlockBuildResult {
         let emptyState = LatticeState.emptyState()
         let prevState = try LatticeStateHeader(node: emptyState)
 
         let transactionBodies = transactions.compactMap { $0.body.node }
-        let postState = try await computePostState(
+        let (postState, stateDiff) = try await computePostState(
             prevState: prevState,
             transactionBodies: transactionBodies,
             fetcher: fetcher
@@ -40,25 +74,19 @@ public struct BlockBuilder {
             target: target,
             nextTarget: target,
             spec: try VolumeImpl<ChainSpec>(node: spec),
-            parentState: Reference(prevState),
-            prevState: Reference(prevState),
+            parentState: prevState.removingNode(),
+            prevState: prevState.removingNode(),
             postState: postState,
             children: try buildChildrenDictionary(children),
             height: 0,
             timestamp: timestamp,
             nonce: nonce
         )
-        if let storer = fetcher as? Storer {
-            try BlockHeader(node: block).storeRecursively(storer: storer)
-            // The genesis prevState (empty state) is a Reference — not part of the
-            // block's owned closure, so block storage does not persist it. Unlike a
-            // later block (whose prevState is the prior block's already-stored,
-            // owned postState), genesis has no prior producer, so persist the empty
-            // state here. Without it, validating a premine genesis — where
-            // postState != prevState — cannot resolve prevState to recompute.
-            try prevState.storeRecursively(storer: storer)
-        }
-        return block
+        return BlockBuildResult(
+            block: block,
+            stateDiff: stateDiff,
+            materializedPostState: postState.node
+        )
     }
 
     // MARK: - Build Next Block (extends a chain)
@@ -74,10 +102,34 @@ public struct BlockBuilder {
         nonce: UInt64 = 0,
         fetcher: Fetcher
     ) async throws -> Block {
+        try await buildBlockWithTransition(
+            previous: previous,
+            transactions: transactions,
+            children: children,
+            parentChainBlock: parentChainBlock,
+            timestamp: timestamp,
+            target: target,
+            nextTarget: nextTarget,
+            nonce: nonce,
+            fetcher: fetcher
+        ).block
+    }
+
+    public static func buildBlockWithTransition(
+        previous: Block,
+        transactions: [Transaction] = [],
+        children: [String: Block] = [:],
+        parentChainBlock: Block? = nil,
+        timestamp: Int64,
+        target: UInt256? = nil,
+        nextTarget: UInt256? = nil,
+        nonce: UInt64 = 0,
+        fetcher: Fetcher
+    ) async throws -> BlockBuildResult {
         let prevState = previous.postState
-        let parentState: Reference<LatticeState>
+        let parentState: LatticeStateHeader
         if let parentChainBlock = parentChainBlock {
-            parentState = parentChainBlock.prevState
+            parentState = parentChainBlock.prevState.removingNode()
         } else {
             parentState = previous.parentState
         }
@@ -108,7 +160,7 @@ public struct BlockBuilder {
         let previousCID = try BlockHeader(node: previous).rawCID
 
         let transactionBodies = transactions.compactMap { $0.body.node }
-        let postState = try await computePostState(
+        let (postState, stateDiff) = try await computePostState(
             prevState: prevState,
             transactionBodies: transactionBodies,
             fetcher: fetcher
@@ -116,24 +168,24 @@ public struct BlockBuilder {
 
         let block = Block(
             version: previous.version,
-            parent: Reference<Block>(rawCID: previousCID),
+            parent: VolumeImpl<Block>(rawCID: previousCID),
             transactions: try buildTransactionsDictionary(transactions),
             target: blockTarget,
             nextTarget: blockNextTarget,
             spec: previous.spec,
             parentState: parentState,
-            prevState: Reference(prevState),
+            prevState: prevState.removingNode(),
             postState: postState,
             children: try buildChildrenDictionary(children),
             height: previous.height + 1,
             timestamp: timestamp,
             nonce: nonce
         )
-        if let storer = fetcher as? Storer {
-            try BlockHeader(node: previous).storeRecursively(storer: storer)
-            try BlockHeader(node: block).storeRecursively(storer: storer)
-        }
-        return block
+        return BlockBuildResult(
+            block: block,
+            stateDiff: stateDiff,
+            materializedPostState: postState.node
+        )
     }
 
     private static func collectAncestorTimestamps(from block: Block, count: UInt64, fetcher: Fetcher) async -> [Int64] {
@@ -142,7 +194,7 @@ public struct BlockBuilder {
         var current = block
         for _ in 1..<count {
             guard let parentRef = current.parent,
-                  let parent = try? await parentRef.resolve(fetcher: fetcher) else {
+                  let parent = try? await parentRef.resolve(fetcher: fetcher).node else {
                 break
             }
             timestamps.append(parent.timestamp)
@@ -188,9 +240,9 @@ public struct BlockBuilder {
         prevState: LatticeStateHeader,
         transactionBodies: [TransactionBody],
         fetcher: Fetcher
-    ) async throws -> LatticeStateHeader {
+    ) async throws -> (LatticeStateHeader, StateDiff) {
         if transactionBodies.isEmpty {
-            return prevState
+            return (prevState, .empty)
         }
 
         guard let prevStateNode = prevState.node else {
@@ -216,7 +268,7 @@ public struct BlockBuilder {
         state: LatticeState,
         transactionBodies: [TransactionBody],
         fetcher: Fetcher
-    ) async throws -> LatticeStateHeader {
+    ) async throws -> (LatticeStateHeader, StateDiff) {
         // P-1102: single pass instead of 6 separate flatMap calls (6× allocations).
         var allAccountActions: [AccountAction] = []
         var allActions: [Action] = []
@@ -233,7 +285,7 @@ public struct BlockBuilder {
             allWithdrawalActions.append(contentsOf: body.withdrawalActions)
         }
 
-        let (updatedState, _) = try await state.proveAndUpdateState(
+        let (updatedState, stateDiff) = try await state.proveAndUpdateState(
             allAccountActions: allAccountActions,
             allActions: allActions,
             allDepositActions: allDepositActions,
@@ -244,7 +296,7 @@ public struct BlockBuilder {
             fetcher: fetcher
         )
 
-        return try LatticeStateHeader(node: updatedState)
+        return (try LatticeStateHeader(node: updatedState), stateDiff)
     }
 
     // MARK: - Merkle Dictionary Construction

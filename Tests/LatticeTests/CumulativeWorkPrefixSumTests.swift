@@ -24,14 +24,14 @@ final class CumulativeWorkPrefixSumTests: XCTestCase {
         let base = now() - 50_000
         let diff = UInt256(1000)
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s(), timestamp: base, target: diff, fetcher: fetcher
         )
         let chain = ChainState.fromGenesis(block: genesis)
 
         var prev = genesis
         for i in 1...5 {
-            let b = try await BlockBuilder.buildBlock(
+            let b = try await buildAndStoreBlock(
                 previous: prev, timestamp: base + Int64(i) * 1000,
                 target: diff, nonce: UInt64(i), fetcher: fetcher
             )
@@ -59,13 +59,13 @@ final class CumulativeWorkPrefixSumTests: XCTestCase {
         let base = now() - 50_000
         let diff = UInt256(1000)
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s(), timestamp: base, target: diff, fetcher: fetcher
         )
         let chain1 = ChainState.fromGenesis(block: genesis)
         var prev = genesis
         for i in 1...4 {
-            let b = try await BlockBuilder.buildBlock(
+            let b = try await buildAndStoreBlock(
                 previous: prev, timestamp: base + Int64(i) * 1000,
                 target: diff, nonce: UInt64(i), fetcher: fetcher
             )
@@ -158,13 +158,13 @@ final class CumulativeWorkPrefixSumTests: XCTestCase {
         let diff = UInt256(1000)
         let work = workForTarget(diff)
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s(), timestamp: base, target: diff, fetcher: fetcher
         )
-        let a = try await BlockBuilder.buildBlock(
+        let a = try await buildAndStoreBlock(
             previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher
         )
-        let b = try await BlockBuilder.buildBlock(
+        let b = try await buildAndStoreBlock(
             previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher
         )
         let aHash = try! VolumeImpl<Block>(node: a).rawCID

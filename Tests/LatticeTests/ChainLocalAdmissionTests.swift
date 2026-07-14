@@ -18,9 +18,7 @@ private func chainLocalSpec() -> ChainSpec {
 }
 
 private func chainLocalStore(_ block: Block, to fetcher: StorableFetcher) async throws {
-    let storer = CollectingStorer()
-    try VolumeImpl<Block>(node: block).storeRecursively(storer: storer)
-    await storer.flush(to: fetcher)
+    try await storeBuiltBlock(block, in: fetcher)
 }
 
 final class ChainLocalAdmissionTests: XCTestCase {
@@ -30,7 +28,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         fetcher: StorableFetcher,
         timestamp: Int64
     ) async throws -> Block {
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: chainLocalSpec(),
             timestamp: timestamp,
             target: easy,
@@ -46,7 +44,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         timestamp: Int64,
         nonce: UInt64
     ) async throws -> Block {
-        let block = try await BlockBuilder.buildBlock(
+        let block = try await buildAndStoreBlock(
             previous: previous,
             timestamp: timestamp,
             target: easy,

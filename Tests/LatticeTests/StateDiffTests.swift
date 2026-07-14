@@ -14,7 +14,7 @@ final class StateDiffTests: XCTestCase {
         var dict = AccountState()
         dict = try dict.inserting(key: "alice", value: 100)
         let header = try! AccountStateHeader(node: dict)
-        try header.storeRecursively(storer: fetcher)
+        try await header.storeRecursively(storer: fetcher)
 
         let diff = diffCIDs(old: header, new: header)
         XCTAssertTrue(diff.isEmpty)
@@ -25,7 +25,7 @@ final class StateDiffTests: XCTestCase {
     func testSingleInsertionIntoEmptyTrie() async throws {
         let fetcher = makeFetcher()
         let empty = try! AccountStateHeader(node: AccountState())
-        try empty.storeRecursively(storer: fetcher)
+        try await empty.storeRecursively(storer: fetcher)
 
         let (result, diff) = try await empty.proveAndUpdateState(
             allAccountActions: [AccountAction(owner: "alice", delta: 100)],
@@ -49,7 +49,7 @@ final class StateDiffTests: XCTestCase {
         var dict = AccountState()
         dict = try dict.inserting(key: "alice", value: 50)
         let header = try! AccountStateHeader(node: dict)
-        try header.storeRecursively(storer: fetcher)
+        try await header.storeRecursively(storer: fetcher)
 
         let resolved = try await header.resolve(fetcher: fetcher)
         let proven = try await resolved.proof(paths: [["alice"]: .mutation], fetcher: fetcher)
@@ -76,7 +76,7 @@ final class StateDiffTests: XCTestCase {
         dict = try dict.inserting(key: "alice", value: 100)
         dict = try dict.inserting(key: "bob", value: 200)
         let header = try! AccountStateHeader(node: dict)
-        try header.storeRecursively(storer: fetcher)
+        try await header.storeRecursively(storer: fetcher)
 
         let resolved = try await header.resolve(paths: [["alice"]: .targeted], fetcher: fetcher)
         let proven = try await resolved.proof(paths: [["alice"]: .deletion], fetcher: fetcher)
@@ -95,7 +95,7 @@ final class StateDiffTests: XCTestCase {
         var dict = AccountState()
         dict = try dict.inserting(key: "alice", value: 100)
         let header = try! AccountStateHeader(node: dict)
-        try header.storeRecursively(storer: fetcher)
+        try await header.storeRecursively(storer: fetcher)
 
         let proven = try await header.proof(paths: [["bob"]: .insertion], fetcher: fetcher)
         guard let result = try proven.transform(transforms: [["bob"]: .insert("200")]) else {
@@ -112,13 +112,13 @@ final class StateDiffTests: XCTestCase {
     func testReferenceCounts() async throws {
         let fetcher = makeFetcher()
         let empty = try! AccountStateHeader(node: AccountState())
-        try empty.storeRecursively(storer: fetcher)
+        try await empty.storeRecursively(storer: fetcher)
 
         let (afterFirst, diff1) = try await empty.proveAndUpdateState(
             allAccountActions: [AccountAction(owner: "alice", delta: 100)],
             fetcher: fetcher
         )
-        try afterFirst.storeRecursively(storer: fetcher)
+        try await afterFirst.storeRecursively(storer: fetcher)
 
         let (_, diff2) = try await afterFirst.proveAndUpdateState(
             allAccountActions: [AccountAction(owner: "bob", delta: 200)],
@@ -163,7 +163,7 @@ final class StateDiffTests: XCTestCase {
     func testMultipleInsertions() async throws {
         let fetcher = makeFetcher()
         let empty = try! AccountStateHeader(node: AccountState())
-        try empty.storeRecursively(storer: fetcher)
+        try await empty.storeRecursively(storer: fetcher)
 
         let (result, diff) = try await empty.proveAndUpdateState(
             allAccountActions: [
@@ -188,7 +188,7 @@ final class StateDiffTests: XCTestCase {
         dict = try dict.inserting(key: "bob", value: 20)
         dict = try dict.inserting(key: "charlie", value: 30)
         let header = try! AccountStateHeader(node: dict)
-        try header.storeRecursively(storer: fetcher)
+        try await header.storeRecursively(storer: fetcher)
 
         let (result, diff) = try await header.proveAndUpdateState(
             allAccountActions: [
@@ -209,13 +209,13 @@ final class StateDiffTests: XCTestCase {
     func testSuccessiveTransformsProduceDisjointDiffs() async throws {
         let fetcher = makeFetcher()
         let empty = try! AccountStateHeader(node: AccountState())
-        try empty.storeRecursively(storer: fetcher)
+        try await empty.storeRecursively(storer: fetcher)
 
         let (after1, diff1) = try await empty.proveAndUpdateState(
             allAccountActions: [AccountAction(owner: "alice", delta: 100)],
             fetcher: fetcher
         )
-        try after1.storeRecursively(storer: fetcher)
+        try await after1.storeRecursively(storer: fetcher)
 
         let (after2, diff2) = try await after1.proveAndUpdateState(
             allAccountActions: [AccountAction(owner: "alice", delta: 50)],
@@ -242,7 +242,7 @@ final class StateDiffTests: XCTestCase {
             dict = try dict.inserting(key: "user_\(String(format: "%03d", i))", value: UInt64(i + 1))
         }
         let header = try! AccountStateHeader(node: dict)
-        try header.storeRecursively(storer: fetcher)
+        try await header.storeRecursively(storer: fetcher)
 
         let (_, diff) = try await header.proveAndUpdateState(
             allAccountActions: [AccountAction(owner: "user_042", delta: 1)],
@@ -259,7 +259,7 @@ final class StateDiffTests: XCTestCase {
     func testNonceTrackingProducesExtraCIDs() async throws {
         let fetcher = makeFetcher()
         let empty = try! AccountStateHeader(node: AccountState())
-        try empty.storeRecursively(storer: fetcher)
+        try await empty.storeRecursively(storer: fetcher)
 
         let kp = CryptoUtils.generateKeyPair()
         let owner = try! HeaderImpl<PublicKey>(node: PublicKey(key: kp.publicKey)).rawCID
@@ -291,7 +291,7 @@ final class StateDiffTests: XCTestCase {
         let fetcher = makeFetcher()
         let state = LatticeState.emptyState()
         let header = try! LatticeStateHeader(node: state)
-        try header.storeRecursively(storer: fetcher)
+        try await header.storeRecursively(storer: fetcher)
 
         let kp = CryptoUtils.generateKeyPair()
         let owner = try! HeaderImpl<PublicKey>(node: PublicKey(key: kp.publicKey)).rawCID
@@ -316,7 +316,7 @@ final class StateDiffTests: XCTestCase {
         let fetcher = makeFetcher()
         let state = LatticeState.emptyState()
         let header = try! LatticeStateHeader(node: state)
-        try header.storeRecursively(storer: fetcher)
+        try await header.storeRecursively(storer: fetcher)
 
         let (newState, diff) = try await state.proveAndUpdateState(
             allAccountActions: [],
@@ -338,14 +338,14 @@ final class StateDiffTests: XCTestCase {
     func testGeneralStateDiffOnInsertThenDelete() async throws {
         let fetcher = makeFetcher()
         let empty = try! GeneralStateHeader(node: GeneralState())
-        try empty.storeRecursively(storer: fetcher)
+        try await empty.storeRecursively(storer: fetcher)
 
         let (afterInsert, insertDiff) = try await empty.proveAndUpdateState(
             allActions: [Action(key: "mykey", oldValue: nil, newValue: "hello")],
             fetcher: fetcher
         )
         XCTAssertFalse(insertDiff.created.isEmpty)
-        try afterInsert.storeRecursively(storer: fetcher)
+        try await afterInsert.storeRecursively(storer: fetcher)
 
         let (afterDelete, deleteDiff) = try await afterInsert.proveAndUpdateState(
             allActions: [Action(key: "mykey", oldValue: "hello", newValue: nil)],
@@ -365,7 +365,7 @@ final class StateDiffTests: XCTestCase {
     func testDepositWithdrawalDiff() async throws {
         let fetcher = makeFetcher()
         let empty = try! DepositStateHeader(node: DepositState())
-        try empty.storeRecursively(storer: fetcher)
+        try await empty.storeRecursively(storer: fetcher)
 
         let depositAction = DepositAction(
             nonce: 1, demander: "alice", amountDemanded: 100, amountDeposited: 100
@@ -375,7 +375,7 @@ final class StateDiffTests: XCTestCase {
             fetcher: fetcher
         )
         XCTAssertFalse(depositDiff.created.isEmpty)
-        try afterDeposit.storeRecursively(storer: fetcher)
+        try await afterDeposit.storeRecursively(storer: fetcher)
 
         let withdrawalAction = WithdrawalAction(
             withdrawer: "bob", nonce: 1, demander: "alice", amountDemanded: 100, amountWithdrawn: 100
@@ -422,7 +422,7 @@ final class StateDiffTests: XCTestCase {
             dict = try dict.inserting(key: "addr_\(String(format: "%04d", i))", value: UInt64(i + 1))
         }
         let header = try! AccountStateHeader(node: dict)
-        try header.storeRecursively(storer: fetcher)
+        try await header.storeRecursively(storer: fetcher)
 
         let (_, diff) = try await header.proveAndUpdateState(
             allAccountActions: [AccountAction(owner: "addr_0500", delta: 1)],

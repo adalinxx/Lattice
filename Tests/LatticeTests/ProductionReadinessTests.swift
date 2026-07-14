@@ -127,7 +127,7 @@ final class GenesisCeremonyTests: XCTestCase {
         let onMain = await result.chainState.isOnMainChain(hash: result.blockHash)
         XCTAssertTrue(onMain)
 
-        let block1 = try await BlockBuilder.buildBlock(
+        let block1 = try await buildAndStoreBlock(
             previous: result.block, timestamp: 1_000, target: UInt256.max,
             nonce: 1, fetcher: fetcher
         )
@@ -161,7 +161,7 @@ final class BlockReceptionTests: XCTestCase {
             await storableFetcher.store(rawCid: result.blockHash, data: data)
         }
 
-        let block1 = try await BlockBuilder.buildBlock(
+        let block1 = try await buildAndStoreBlock(
             previous: result.block, timestamp: 1_000,
             target: UInt256.max, nonce: 1, fetcher: fetcher
         )
@@ -190,7 +190,7 @@ final class BlockReceptionTests: XCTestCase {
         ))
         let result = try await GenesisCeremony.create(config: config, fetcher: fetcher)
 
-        let block1 = try await BlockBuilder.buildBlock(
+        let block1 = try await buildAndStoreBlock(
             previous: result.block, timestamp: 1_000,
             target: UInt256.max, nonce: 1, fetcher: fetcher
         )
@@ -227,7 +227,7 @@ final class GenesisToBlockE2ETests: XCTestCase {
 
         var prev = genesis.block
         for i in 1...10 {
-            let template = try await BlockBuilder.buildBlock(
+            let template = try await buildAndStoreBlock(
                 previous: prev, timestamp: Int64(i) * 1000,
                 target: UInt256.max, nonce: 0, fetcher: fetcher
             )
@@ -268,7 +268,7 @@ final class GenesisToBlockE2ETests: XCTestCase {
 
         XCTAssertEqual(nodeA.blockHash, nodeB.blockHash, "Both nodes must agree on genesis")
 
-        let blockA1 = try await BlockBuilder.buildBlock(
+        let blockA1 = try await buildAndStoreBlock(
             previous: nodeA.block, timestamp: 1_000,
             target: UInt256.max, nonce: 1, fetcher: fetcher
         )
@@ -301,16 +301,16 @@ final class GenesisToBlockE2ETests: XCTestCase {
         let nodeA = try await GenesisCeremony.create(config: genesisConfig, fetcher: fetcher)
         let nodeB = try await GenesisCeremony.create(config: genesisConfig, fetcher: fetcher)
 
-        let blockA1 = try await BlockBuilder.buildBlock(
+        let blockA1 = try await buildAndStoreBlock(
             previous: nodeA.block, timestamp: 1_000,
             target: UInt256.max, nonce: 1, fetcher: fetcher
         )
-        let blockA2 = try await BlockBuilder.buildBlock(
+        let blockA2 = try await buildAndStoreBlock(
             previous: blockA1, timestamp: 2_000,
             target: UInt256.max, nonce: 2, fetcher: fetcher
         )
 
-        let blockB1 = try await BlockBuilder.buildBlock(
+        let blockB1 = try await buildAndStoreBlock(
             previous: nodeB.block, timestamp: 1_000,
             target: UInt256.max, nonce: 100, fetcher: fetcher
         )

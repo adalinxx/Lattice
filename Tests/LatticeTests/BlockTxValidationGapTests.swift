@@ -58,9 +58,7 @@ private func gapSignTx(
 private func gapNow() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
 private func storeBlock(_ block: Block, fetcher: StorableFetcher) async throws {
-    let storer = CollectingStorer()
-    try VolumeImpl<Block>(node: block).storeRecursively(storer: storer)
-    await storer.flush(to: fetcher)
+    try await VolumeImpl<Block>(node: block).storeBlock(storer: fetcher)
 }
 
 /// Fetcher that wraps a fully-populated `StorableFetcher` but can be told to
@@ -108,10 +106,10 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
         let t = gapNow()
         let easyDifficulty = UInt256.max
 
-        let g = try await BlockBuilder.buildGenesis(
+        let g = try await buildAndStoreGenesis(
             spec: gapSpec(), timestamp: t - 20_000, target: easyDifficulty, nonce: 0, fetcher: backing
         )
-        let block = try await BlockBuilder.buildBlock(
+        let block = try await buildAndStoreBlock(
             previous: g, timestamp: t - 10_000, target: easyDifficulty, nonce: 0, fetcher: backing
         )
         try await storeBlock(g, fetcher: backing)
@@ -150,10 +148,10 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
         let t = gapNow()
         let easyDifficulty = UInt256.max
 
-        let g = try await BlockBuilder.buildGenesis(
+        let g = try await buildAndStoreGenesis(
             spec: gapSpec(), timestamp: t - 20_000, target: easyDifficulty, nonce: 0, fetcher: f
         )
-        let validBlock = try await BlockBuilder.buildBlock(
+        let validBlock = try await buildAndStoreBlock(
             previous: g, timestamp: t - 10_000, target: easyDifficulty, nonce: 0, fetcher: f
         )
 
@@ -239,13 +237,13 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
             genesisActions: [], receiptActions: [], withdrawalActions: [],
             signers: [demanderAddr], fee: 0, nonce: 0, chainPath: ["Nexus", "Payments"]
         )
-        let childGenesis = try await BlockBuilder.buildGenesis(
+        let childGenesis = try await buildAndStoreGenesis(
             spec: cSpec, transactions: [gapSignTx(body: depositGenesisBody, keypair: demander)],
             timestamp: genesisTs, target: target, fetcher: fetcher
         )
 
         // --- Nexus genesis + block 1; receipt (when present) lives in n1's frontier ---
-        let nexusGenesis = try await BlockBuilder.buildGenesis(
+        let nexusGenesis = try await buildAndStoreGenesis(
             spec: nSpec, timestamp: genesisTs, target: target, fetcher: fetcher
         )
         let n1Transactions: [Transaction]
@@ -264,7 +262,7 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
         } else {
             n1Transactions = []
         }
-        let n1 = try await BlockBuilder.buildBlock(
+        let n1 = try await buildAndStoreBlock(
             previous: nexusGenesis, transactions: n1Transactions,
             timestamp: block1Ts, target: target, fetcher: fetcher
         )
@@ -273,7 +271,7 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
         // child's parentState is its anchor block's PREV state, so the child must
         // anchor to n2 (n2.prevState == n1.postState, which holds the receipt) to
         // see a receipt that n1 created. n2.timestamp == cb1.timestamp.
-        let n2 = try await BlockBuilder.buildBlock(
+        let n2 = try await buildAndStoreBlock(
             previous: n1, timestamp: block1Ts, target: target, fetcher: fetcher
         )
 
@@ -288,7 +286,7 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
             ],
             signers: [withdrawerAddr], fee: 0, nonce: 0, chainPath: ["Nexus", "Payments"]
         )
-        let childBlock1 = try await BlockBuilder.buildBlock(
+        let childBlock1 = try await buildAndStoreBlock(
             previous: childGenesis, transactions: [gapSignTx(body: withdrawalBody, keypair: withdrawer)],
             parentChainBlock: n2,
             timestamp: block1Ts, target: target, fetcher: fetcher

@@ -29,12 +29,12 @@ final class ForwardSubtreeWeightTests: XCTestCase {
         let diff = UInt256(1000)
         let w = workForTarget(diff)
         let base = now() - 50_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
         let chain = ChainState.fromGenesis(block: genesis)
         var prev = genesis
         var blocks = [genesis]
         for i in 1...3 {
-            let b = try await BlockBuilder.buildBlock(previous: prev, timestamp: base + Int64(i) * 1000, target: diff, nonce: UInt64(i), fetcher: fetcher)
+            let b = try await buildAndStoreBlock(previous: prev, timestamp: base + Int64(i) * 1000, target: diff, nonce: UInt64(i), fetcher: fetcher)
             _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: b), block: b)
             blocks.append(b); prev = b
         }
@@ -55,13 +55,13 @@ final class ForwardSubtreeWeightTests: XCTestCase {
         let diff = UInt256(1000)
         let w = workForTarget(diff)
         let base = now() - 50_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
         let chain = ChainState.fromGenesis(block: genesis)
-        let a = try await BlockBuilder.buildBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
-        let b = try await BlockBuilder.buildBlock(previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
+        let a = try await buildAndStoreBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
+        let b = try await buildAndStoreBlock(previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
         // Sibling fork off A.
-        let x = try await BlockBuilder.buildBlock(previous: a, timestamp: base + 2500, target: diff, nonce: 99, fetcher: fetcher)
-        let y = try await BlockBuilder.buildBlock(previous: x, timestamp: base + 3500, target: diff, nonce: 100, fetcher: fetcher)
+        let x = try await buildAndStoreBlock(previous: a, timestamp: base + 2500, target: diff, nonce: 99, fetcher: fetcher)
+        let y = try await buildAndStoreBlock(previous: x, timestamp: base + 3500, target: diff, nonce: 100, fetcher: fetcher)
         for blk in [a, b, x, y] {
             _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
         }
@@ -90,11 +90,11 @@ final class ForwardSubtreeWeightTests: XCTestCase {
         let diff = UInt256(1000)
         let w = workForTarget(diff)
         let base = now() - 50_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
         let chain = ChainState.fromGenesis(block: genesis)
-        let a = try await BlockBuilder.buildBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
-        let b = try await BlockBuilder.buildBlock(previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
-        let c = try await BlockBuilder.buildBlock(previous: b, timestamp: base + 3000, target: diff, nonce: 3, fetcher: fetcher)
+        let a = try await buildAndStoreBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
+        let b = try await buildAndStoreBlock(previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
+        let c = try await buildAndStoreBlock(previous: b, timestamp: base + 3000, target: diff, nonce: 3, fetcher: fetcher)
         // Deliver C, then B, then A (children before parents).
         for blk in [c, b, a] {
             _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
@@ -113,10 +113,10 @@ final class ForwardSubtreeWeightTests: XCTestCase {
         let diff = UInt256(1000)
         let w = workForTarget(diff)
         let base = now() - 50_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: s(), timestamp: base, target: diff, fetcher: fetcher)
         let chain = ChainState.fromGenesis(block: genesis)
-        let a = try await BlockBuilder.buildBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
-        let b = try await BlockBuilder.buildBlock(previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
+        let a = try await buildAndStoreBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
+        let b = try await buildAndStoreBlock(previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
         for blk in [a, b] {
             _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
         }

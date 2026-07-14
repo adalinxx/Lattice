@@ -20,9 +20,7 @@ private func spec(_ dir: String = "Nexus") -> ChainSpec {
 private func now() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
 private func storeBlock(_ block: Block, to fetcher: StorableFetcher) async throws {
-    let storer = CollectingStorer()
-    try VolumeImpl<Block>(node: block).storeRecursively(storer: storer)
-    await storer.flush(to: fetcher)
+    try await VolumeImpl<Block>(node: block).storeBlock(storer: fetcher)
 }
 
 private let noopStore: @Sendable (String, Data) async -> Void = { _, _ in }
@@ -39,11 +37,11 @@ final class SyncBlockWorkTests: XCTestCase {
     /// return (tipCID, genesisCID).
     private func buildChain(count: Int, into fetcher: StorableFetcher) async throws -> (tip: String, genesis: String) {
         let base = now() - 100_000
-        let genesis = try await BlockBuilder.buildGenesis(spec: spec(), timestamp: base, target: easy, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: spec(), timestamp: base, target: easy, fetcher: fetcher)
         try await storeBlock(genesis, to: fetcher)
         var prev = genesis
         for i in 1...count {
-            let b = try await BlockBuilder.buildBlock(
+            let b = try await buildAndStoreBlock(
                 previous: prev, timestamp: base + Int64(i) * 1000,
                 target: easy, nonce: UInt64(i), fetcher: fetcher
             )
@@ -72,7 +70,7 @@ final class SyncBlockWorkTests: XCTestCase {
         precondition(!difficulties.isEmpty)
 
         let base = now() - 100_000
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: spec(), timestamp: base, target: difficulties[0], fetcher: fetcher)
         try await storeBlock(genesis, to: fetcher)
 
@@ -86,7 +84,7 @@ final class SyncBlockWorkTests: XCTestCase {
         ]
         var prev = genesis
         for (offset, target) in difficulties.dropFirst().enumerated() {
-            let b = try await BlockBuilder.buildBlock(
+            let b = try await buildAndStoreBlock(
                 previous: prev,
                 timestamp: base + Int64(offset + 1) * 1000,
                 target: target,
@@ -170,7 +168,7 @@ final class SyncBlockWorkTests: XCTestCase {
 
         // Build a 3-block chain, capturing each block's SyncBlockHeader.
         var headers: [SyncBlockHeader] = []
-        let genesis = try await BlockBuilder.buildGenesis(spec: spec(), timestamp: base, target: easy, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: spec(), timestamp: base, target: easy, fetcher: fetcher)
         try await storeBlock(genesis, to: fetcher)
         headers.append(SyncBlockHeader(cid: try! VolumeImpl<Block>(node: genesis).rawCID, height: 0,
                                        previousBlockCID: nil, target: genesis.target,
@@ -178,7 +176,7 @@ final class SyncBlockWorkTests: XCTestCase {
                                        specCID: genesis.spec.rawCID, spec: genesis.spec.node))
         var prev = genesis
         for i in 1...2 {
-            let b = try await BlockBuilder.buildBlock(previous: prev, timestamp: base + Int64(i) * 1000,
+            let b = try await buildAndStoreBlock(previous: prev, timestamp: base + Int64(i) * 1000,
                                                       target: easy, nonce: UInt64(i), fetcher: fetcher)
             try await storeBlock(b, to: fetcher)
             headers.append(SyncBlockHeader(cid: try! VolumeImpl<Block>(node: b).rawCID, height: b.height,
@@ -289,13 +287,13 @@ final class SyncBlockWorkTests: XCTestCase {
         let fetcher = StorableFetcher()
         let base = now() - 100_000
 
-        let genesis = try await BlockBuilder.buildGenesis(spec: spec(), timestamp: base, target: easy, fetcher: fetcher)
+        let genesis = try await buildAndStoreGenesis(spec: spec(), timestamp: base, target: easy, fetcher: fetcher)
         try await storeBlock(genesis, to: fetcher)
 
         var headers: [SyncBlockHeader] = []
         var prev = genesis
         for i in 1...2 {
-            let b = try await BlockBuilder.buildBlock(
+            let b = try await buildAndStoreBlock(
                 previous: prev,
                 timestamp: base + Int64(i) * 1000,
                 target: easy,
@@ -331,8 +329,8 @@ final class SyncBlockWorkTests: XCTestCase {
         let fetcher = StorableFetcher()
         let base = now() - 100_000
 
-        let realGenesis = try await BlockBuilder.buildGenesis(spec: spec(), timestamp: base, target: easy, fetcher: fetcher)
-        let fakeGenesis = try await BlockBuilder.buildGenesis(spec: spec(), timestamp: base + 1, target: easy, fetcher: fetcher)
+        let realGenesis = try await buildAndStoreGenesis(spec: spec(), timestamp: base, target: easy, fetcher: fetcher)
+        let fakeGenesis = try await buildAndStoreGenesis(spec: spec(), timestamp: base + 1, target: easy, fetcher: fetcher)
         try await storeBlock(realGenesis, to: fetcher)
         try await storeBlock(fakeGenesis, to: fetcher)
 

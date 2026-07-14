@@ -118,7 +118,7 @@ public extension Block {
         var current = parent
         for _ in 1..<count {
             guard let parentRef = current.parent else { break }
-            guard let prev = try? await parentRef.resolve(fetcher: fetcher) else { return nil }
+            guard let prev = try? await parentRef.resolve(fetcher: fetcher).node else { return nil }
             timestamps.append(prev.timestamp)
             current = prev
         }
@@ -172,7 +172,7 @@ public extension Block {
         if version != Block.currentVersion { return (false, .empty, nil) }
         async let parentFuture = parent?.resolve(fetcher: fetcher)
         async let specFuture = spec.resolve(fetcher: fetcher)
-        guard let previousBlockNode = try await parentFuture else { return (false, .empty, nil) }
+        guard let previousBlockNode = try await parentFuture?.node else { return (false, .empty, nil) }
         if !validateSpec(parent: previousBlockNode) { return (false, .empty, nil) }
         if !validateState(parent: previousBlockNode) { return (false, .empty, nil) }
         if !validateHeight(parent: previousBlockNode) { return (false, .empty, nil) }
@@ -214,7 +214,11 @@ public extension Block {
         if !withdrawalBodies.isEmpty {
             async let prevStateFuture = prevState.resolve(fetcher: fetcher)
             async let parentStateFuture = parentState.resolve(fetcher: fetcher)
-            let (prevStateNode, parentStateNode) = try await (prevStateFuture, parentStateFuture)
+            let (resolvedPrevState, resolvedParentState) = try await (prevStateFuture, parentStateFuture)
+            guard let prevStateNode = resolvedPrevState.node,
+                  let parentStateNode = resolvedParentState.node else {
+                return (false, .empty, nil)
+            }
             let ownDirectory = expectedChainPath.last ?? DEFAULT_ROOT_DIRECTORY
             if try await withdrawalBodies.concurrentMap({ try await $0.withdrawalsAreValid(directory: ownDirectory, prevState: prevStateNode, parentState: parentStateNode, fetcher: fetcher) }).contains(false) { return (false, .empty, nil) }
         }
@@ -265,7 +269,9 @@ public extension Block {
     }
 
     func validatePostState(transactionBodies: [TransactionBody], allAccountActions: [AccountAction], allActions: [Action], allDepositActions: [DepositAction], allGenesisActions: [GenesisAction], allReceiptActions: [ReceiptAction], allWithdrawalActions: [WithdrawalAction], fetcher: Fetcher) async throws -> (Bool, StateDiff, LatticeState?) {
-        let prevStateNode = try await prevState.resolve(fetcher: fetcher)
+        guard let prevStateNode = try await prevState.resolve(fetcher: fetcher).node else {
+            return (false, .empty, nil)
+        }
         let (updatedState, diff) = try await prevStateNode.proveAndUpdateState(allAccountActions: allAccountActions, allActions: allActions, allDepositActions: allDepositActions, allGenesisActions: allGenesisActions, allReceiptActions: allReceiptActions, allWithdrawalActions: allWithdrawalActions, transactionBodies: transactionBodies, fetcher: fetcher)
         // Compare the expected postState CID (computed from prev state + TXs) against the
         // block's declared postState CID. Avoids a CAS fetch for the new postState — the
