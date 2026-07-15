@@ -24,17 +24,26 @@ terminal candidate CID. Missing, extra, or substituted path evidence is invalid.
 
 ## PROOF-003 - Every Carrier Is Continuous
 
-Every carrier above the candidate proves `prevState` continuity with its own
-same-chain predecessor, plus spec, height, target succession, and strictly
-increasing timestamp continuity. A carrier that misses its chain target is not
-exempt. Acceptance-only MTP, future-drift, execution, and proposed-next-target
-rules do not cross the process boundary into descendant validity.
+The process responsible for a carrier's path validates `prevState`, spec,
+height, target succession, and strictly increasing timestamp continuity with
+its same-chain predecessor, then issues a `ParentContinuityLink` bound to those
+blocks and states. A carrier that misses its chain target is not exempt.
+Acceptance-only MTP, future-drift, execution, and proposed-next-target rules do
+not cross the process boundary into descendant validity.
 
 ## PROOF-004 - One Hash, Per-Level Targets
 
 Every level evaluates the same root hash. Missing the current level's target
 produces a carrier-only result and does not prevent a deeper level from accepting
 against its target.
+
+## PROOF-005 - Parent Facts Have Narrow Authority
+
+The node authenticates the process that supplied a parent fact. Lattice binds
+that fact to the exact path and content-addressed successor or child genesis it
+describes. The successor CID commits the predecessor and structural fields. The
+fact proves only parent-domain continuity or anchoring; it cannot decide child
+validity, canonicity, retention, or fork choice.
 
 ## WORK-001 - One Grind Is Credited Once
 
@@ -47,6 +56,12 @@ the same identity cannot mutate consensus.
 Once verified, a work contribution remains valid across parent extension,
 reorganization, unavailability, and restart. No parent command or live weight
 provider can change child validity, work, or fork choice.
+
+## WORK-003 - Work Sums Are Exact
+
+Individual work contributions are `UInt256`; cumulative and subtree work use an
+unbounded exact sum. Overflow may not wrap or collapse distinct heavier chains
+onto the same saturated value.
 
 ## FORK-001 - Exact Ties Hold the Incumbent
 

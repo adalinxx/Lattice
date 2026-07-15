@@ -123,7 +123,7 @@ final class DoubleClaimTests: XCTestCase {
                 timestamp: base + 3000, target: UInt256(1000), nonce: 3, fetcher: fetcher
             )
             let valid = try await childBlock3.validateNexus(fetcher: fetcher).0
-            XCTAssertFalse(valid, "Second claim of same swap should fail — DepositState key already deleted")
+            XCTAssertFalse(valid, "Second claim of same swap should fail because the deposit is marked spent")
         } catch {
         }
     }
@@ -191,7 +191,7 @@ final class PhantomSettleTests: XCTestCase {
             let valid = try await badBlock.validateNexus(fetcher: fetcher).0
             XCTAssertFalse(valid, "Claim referencing phantom swap should fail validation")
         } catch {
-            // Deletion proof throws on non-existent swap — phantom swap correctly rejected
+            // No spendable deposit exists, so the phantom swap is rejected.
         }
     }
 }
@@ -270,7 +270,7 @@ final class CrossChainReplayTests: XCTestCase {
             let valid = try await replayBlock.validateNexus(fetcher: fetcher).0
             XCTAssertFalse(valid, "Claim on child B using child A swap should fail — no swap exists on B")
         } catch {
-            // Deletion proof throws on non-existent swap key in child B's depositState
+            // No spendable swap key exists in child B's depositState.
         }
     }
 }

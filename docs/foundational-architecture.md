@@ -378,9 +378,17 @@ meaning across every ingress transport.
 The architecture distinguishes:
 
 - `ChildBlockProof`: security evidence that a mined root commits to a child block and derives work contributions;
-- `ParentStateWitness`: execution evidence for authenticated parent-state facts required by the child block;
-- `ChildValidationPackage`: versioned transport and persistence package combining the two without merging their identities;
-- child genesis evidence: evidence admitting a root candidate into the existing path-defined child runtime.
+- `ParentContinuityLink`: an immutable fact issued by the process responsible
+  for a parent path after it validates one carrier's predecessor continuity;
+- `ParentGenesisLink`: an immutable fact that a validated parent state anchored
+  one child genesis CID;
+- `ChildValidationPackage`: the exact sparse proof plus the parent facts needed
+  for this candidate.
+
+The node authenticates the issuing process, transports the facts, and may cache
+them indefinitely. Lattice defines, produces, and validates their semantic
+bindings. A parent fact is authoritative only about the issuing chain; it never
+grants the parent authority over child validity or fork choice.
 
 The proof root must first clear the setup-wide minimum root-work floor. The exact
 path and carrier continuity are then verified, and every level tests that same
@@ -557,8 +565,9 @@ The legacy in-library topology and ingress paths are removed. The stable shape i
 1. `ChainRuntimeContext` identifies one absolute chain path and root-work floor.
 2. `ChainLevel.bootstrap` and `admitBlockHeaderChainLocal` are the verified
    library boundaries.
-3. `ChildBlockProof`, `ParentStateWitness`, and `ChildValidationPackage` separate
-   security proof from execution evidence.
+3. `ChildBlockProof`, `ParentContinuityLink`, `ParentGenesisLink`, and
+   `ChildValidationPackage` separate security proof from parent-issued semantic
+   facts.
 4. Root-CID-deduplicated contributions are persisted with chain consensus state.
 5. `lattice-node` supplies durability, retention, acquisition, and one process
    per followed path.

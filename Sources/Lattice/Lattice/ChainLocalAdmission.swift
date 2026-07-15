@@ -184,18 +184,35 @@ private enum ChainLocalAdmission {
         childCID: String,
         context: ChainRuntimeContext
     ) async -> Result<VerifiedChildEvidence, ChainAdmissionFailure> {
-        await package.proof.verify(
+        let proofResult = await package.proof.verify(
             child: child,
             childCID: childCID,
-            expectedPath: context.proofPath,
+            chainPath: context.path,
             minimumRootWork: context.minimumRootWork,
-            parentStateWitness: package.parentStateWitness
-        ).mapError {
-            switch $0 {
+            parentContinuityLinks: package.parentContinuityLinks
+        ).mapError { failure -> ChainAdmissionFailure in
+            switch failure {
+            case .unavailableEvidence: .unavailableEvidence
             case .malformedEvidence: .providerMalformedEvidence
             case .protocolInvalid: .protocolInvalid
             }
         }
+        guard case .success = proofResult else { return proofResult }
+
+        if child.parent == nil {
+            guard let link = package.parentGenesisLink else {
+                return .failure(.unavailableEvidence)
+            }
+            guard let directory = context.path.last,
+                  link.parentPath == Array(context.path.dropLast()),
+                  link.directory == directory,
+                  link.childGenesisCID == childCID else {
+                return .failure(.providerMalformedEvidence)
+            }
+        } else if package.parentGenesisLink != nil {
+            return .failure(.providerMalformedEvidence)
+        }
+        return proofResult
     }
 
     static func prepare(
@@ -505,7 +522,18 @@ private func classifyValidationFailure(_ error: Error) -> ChainAdmissionFailure 
             return .protocolInvalid
         }
     }
-    if error is StateErrors || error is CashewDecodingError || error is ResolutionErrors {
+    if let policyError = error as? WasmPolicyError {
+        switch policyError {
+        case .missingModule:
+            return .unavailableEvidence
+        case .contextEncodingFailed:
+            return .localVerificationFailure
+        default:
+            return .protocolInvalid
+        }
+    }
+    if error is StateErrors || error is ProofErrors
+        || error is CashewDecodingError || error is ResolutionErrors {
         return .protocolInvalid
     }
     return .localVerificationFailure
@@ -526,6 +554,84 @@ private func classifyDataError(_ error: DataErrors) -> ChainAdmissionFailure {
 }
 
 public extension ChainLevel {
+    /// Produce the semantic continuity fact a child process needs for one carrier.
+    /// The node is responsible for authenticating this process and transporting
+    /// and caching the returned immutable value.
+    func continuityLink(
+        for successorHeader: BlockHeader,
+        fetcher: any Fetcher
+    ) async -> Result<ParentContinuityLink, ChainAdmissionFailure> {
+        do {
+            let resolvedSuccessor = try await successorHeader.resolve(fetcher: fetcher)
+            guard let successor = resolvedSuccessor.node else {
+                return .failure(.unavailableEvidence)
+            }
+            guard let predecessorHeader = successor.parent else {
+                return .failure(.protocolInvalid)
+            }
+            let predecessorCID = predecessorHeader.rawCID
+            guard await chain.hasValidatedAncestry(blockHash: predecessorCID) else {
+                return .failure(.unavailableEvidence)
+            }
+            let resolvedPredecessor = try await predecessorHeader.resolve(fetcher: fetcher)
+            guard let predecessor = resolvedPredecessor.node else {
+                return .failure(.unavailableEvidence)
+            }
+            guard successor.hasCarrierContinuity(parent: predecessor) else {
+                return .failure(.protocolInvalid)
+            }
+            return .success(ParentContinuityLink(
+                parentPath: context.path,
+                successorCID: successorHeader.rawCID
+            ))
+        } catch {
+            return .failure(classifyValidationFailure(error))
+        }
+    }
+
+    /// Produce a permanent fact that this parent chain authorized one child
+    /// genesis CID at `directory`. Parent canonicity is intentionally irrelevant;
+    /// any block in the validated parent forest may authorize a competing root.
+    func genesisLink(
+        parentBlockHeader: BlockHeader,
+        directory: String,
+        childGenesisCID: String,
+        fetcher: any Fetcher
+    ) async -> Result<ParentGenesisLink, ChainAdmissionFailure> {
+        guard !directory.isEmpty, !childGenesisCID.isEmpty else {
+            return .failure(.protocolInvalid)
+        }
+        let parentBlockCID = parentBlockHeader.rawCID
+        guard await chain.hasValidatedAncestry(blockHash: parentBlockCID) else {
+            return .failure(.unavailableEvidence)
+        }
+        do {
+            let resolvedBlock = try await parentBlockHeader.resolve(fetcher: fetcher)
+            guard let block = resolvedBlock.node else {
+                return .failure(.unavailableEvidence)
+            }
+            let resolvedState = try await block.postState.resolve(
+                paths: [[GENESIS_STATE_PROPERTY, directory]: .targeted],
+                fetcher: fetcher
+            )
+            guard let state = resolvedState.node,
+                  let genesisState = state.genesisState.node else {
+                return .failure(.unavailableEvidence)
+            }
+            guard let anchoredCID: String = try? genesisState.get(key: directory),
+                  anchoredCID == childGenesisCID else {
+                return .failure(.protocolInvalid)
+            }
+            return .success(ParentGenesisLink(
+                parentPath: context.path,
+                directory: directory,
+                childGenesisCID: childGenesisCID
+            ))
+        } catch {
+            return .failure(classifyValidationFailure(error))
+        }
+    }
+
     /// Admit one candidate. `stage` is the node-owned durability boundary. It may
     /// run more than once after a stale generation and must be idempotent by fact ID.
     func admitBlockHeaderChainLocal(

@@ -182,8 +182,8 @@ BlockMeta = (
     blockHeight:        U64,
     childBlockHashes:   [string],
     workContributions:  Map<RootCID, VerifiedWorkContribution>,
-    cumulativeWork:     U256,
-    subtreeWeight:      U256,
+    cumulativeWork:     WorkSum,
+    subtreeWeight:      WorkSum,
     stateDiff:          StateDiff?
 )
 ```
@@ -305,8 +305,16 @@ affect the root candidate or a sibling.
 A child candidate `B` is admitted with a `ChildValidationPackage` containing:
 
 - a `ChildBlockProof` for the exact sparse path from the mined root to `B`; and
-- a `ParentStateWitness` containing the content-bound same-chain predecessors
-  needed to validate every carrier on that path.
+- a `ParentContinuityLink` for each non-genesis carrier on that path; and
+- for child genesis, a `ParentGenesisLink` proving that validated parent state
+  anchored this genesis CID.
+
+The Lattice process responsible for a parent path issues these immutable facts
+after validating its own chain. The node authenticates that process and
+transports or caches the facts. The child process binds each fact to the exact
+path and content-addressed successor or genesis CID. The successor CID already
+commits its predecessor, spec, and state references. The fact grants no
+authority over child validity or fork choice.
 
 Let `R` be the proof root and `h = proofOfWorkHash(R)`. Validation proceeds in
 this order:
@@ -314,11 +322,12 @@ this order:
 1. Recompute `CID(R)` and require `workForHash(h) >= minimumRootWork`.
 2. Require the proof path to equal the runtime path below the outer root and its
    terminal CID to equal `CID(B)`.
-3. For every carrier `Q` above `B`, prove continuity with `Q`'s own same-chain
-   predecessor: version, spec, `prevState`, height, target succession, and
-   a strictly increasing timestamp. MTP/future drift, state execution, and `Q`'s
-   proposed `nextTarget` are admission rules only if `Q`'s chain accepts the
-   grind; they do not become dependencies of descendant validity.
+3. For every carrier `Q` above `B`, require its parent-issued continuity link.
+   The issuing process validates version, spec, `prevState`, height, target
+   succession, and a strictly increasing timestamp against `Q`'s own same-chain
+   predecessor. MTP/future drift, state execution, and `Q`'s proposed
+   `nextTarget` are admission rules only if `Q`'s chain accepts the grind; they
+   do not become dependencies of descendant validity.
 4. At every vertical edge, require the nested child's `parentState` to equal the
    carrier's committed `prevState`.
 5. Compare the same hash `h` with each level's target. A miss makes that level a
@@ -453,13 +462,15 @@ For each `DepositAction`:
 - **Validation**: `amountDeposited > 0` and `amountDemanded > 0`
 - **Update**: `depositState[key] = amountDeposited`
 
-For each `WithdrawalAction` (deposits are deleted when withdrawn):
+For each `WithdrawalAction`:
 - **Key**: `DepositKey(demander, amountDemanded, nonce)`
-- **Proof**: Verify key EXISTS in `depositState` (deletion proof)
+- **Proof**: Verify key exists in `depositState` with a nonzero value
 - **Validation**: Stored `amountDeposited` must equal `amountWithdrawn`
-- **Update**: Delete `depositState[key]`
+- **Update**: Set `depositState[key] = 0` as a permanent spent marker
 
-Withdrawals are processed before new deposits within the same block to avoid key conflicts.
+Withdrawals are processed before new deposits within the same block. Since
+valid deposits are nonzero and insertion requires absence, the spent marker
+prevents both replayed withdrawal and recreation of the same deposit identity.
 
 ### 6.5 Receipt State Transitions
 
@@ -572,7 +583,7 @@ A user includes a `DepositAction` in a transaction on the child chain. This lock
 The parent chain verifies the deposit exists by checking the child's state root (committed in the child block embedded in the parent block). A `ReceiptAction` records the receipt in the parent's `receiptState` and derives two account actions: debiting `amountDemanded` from the `withdrawer` and crediting `amountDemanded` to the `demander`.
 
 **Phase 3 -- Withdrawal (child chain):**
-The child chain verifies a receipt exists on the parent by checking `parentState.receiptState`. A `WithdrawalAction` deletes the deposit entry from `depositState` (deletion proof, preventing double-withdrawal) and releases `amountWithdrawn` back to the `withdrawer`. The stored `amountDeposited` must exactly match `amountWithdrawn`.
+The child chain verifies a receipt exists on the parent by checking `parentState.receiptState`. A `WithdrawalAction` replaces the deposit value with a permanent zero-valued spent marker and releases `amountWithdrawn` back to the `withdrawer`. The stored nonzero `amountDeposited` must exactly match `amountWithdrawn`.
 
 ### 8.2 Balance Conservation with Cross-Chain Transfers
 
@@ -598,7 +609,9 @@ Deposits reduce the available balance (tokens locked in deposit state). Withdraw
 
 **No double-deposit**: Deposit keys are unique in deposit state (insertion proof prevents duplicate deposits with the same nonce/demander/amount).
 
-**No double-withdrawal**: Withdrawals delete the deposit entry (deletion proof). Once withdrawn, the deposit key no longer exists, so a second withdrawal fails the proof.
+**No double-withdrawal**: Withdrawal leaves a permanent zero-valued marker. A
+second withdrawal fails the nonzero amount check, and insertion cannot recreate
+the same deposit key.
 
 **No over-withdrawal**: The stored `amountDeposited` must exactly match the declared `amountWithdrawn`. If a withdrawer claims more than was deposited, the state proof rejects the transaction.
 
@@ -652,6 +665,10 @@ out of order. `cumulativeWork` is the same-chain genesis prefix sum retained for
 exact queries, out-of-order repair, and restart; it never imports live parent
 weight or overrides GHOST.
 
+`WorkSum` is an exact growable unsigned integer. Individual contributions remain
+`U256`, but their sums must not wrap or saturate because either behavior can
+erase the strict ordering between two branches.
+
 ### 9.3 Admission
 
 `ChainLevel.bootstrap` and `ChainLevel.admitBlockHeaderChainLocal` are the public
@@ -696,9 +713,10 @@ block's state transition.
 
 ### 9.5 Cross-Chain Evidence Independence
 
-The sparse proof and parent-state witness are sufficient to derive a child work
-fact. The current parent tip, parent block index, and parent canonical branch are
-not fork-choice inputs and are not stored in child `BlockMeta`.
+The sparse proof and authenticated parent-issued continuity/genesis facts are
+sufficient to derive a child work fact. The current parent tip, parent block
+index, and parent canonical branch are not fork-choice inputs and are not stored
+in child `BlockMeta`.
 
 Once verified, a contribution survives parent extension, parent reorganization,
 peer unavailability, and restart. This is validity monotonicity, not permanent
@@ -834,10 +852,11 @@ lock balance (move it into deposit state); withdrawals release it.
 
 1. Each `DepositKey` is unique in deposit state (insertion proof prevents duplicate deposits)
 2. Each `ReceiptKey` is unique in receipt state (insertion proof prevents duplicate receipts)
-3. A withdrawal requires the corresponding deposit to exist (deletion proof)
+3. A withdrawal requires the corresponding deposit to contain its original
+   nonzero amount
 4. A withdrawal requires the corresponding receipt to exist in `parentState.receiptState` (mutation proof)
 5. The stored `amountDeposited` must exactly match the declared `amountWithdrawn` (prevents over-withdrawal)
-6. Deposit entries are deleted on withdrawal (prevents double-withdrawal)
+6. Withdrawal replaces the deposit value with a permanent spent marker
 
 ### 12.5 Fork Choice Invariants
 

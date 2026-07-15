@@ -75,7 +75,7 @@ public struct LatticeState: Node {
         async let generalResult = generalState.proveAndUpdateState(allActions: allActions, fetcher: fetcher)
         async let genesisResult = genesisState.proveAndUpdateState(allGenesisActions: allGenesisActions, fetcher: fetcher)
         async let receiptResult = receiptState.proveAndUpdateState(allReceiptActions: allReceiptActions, fetcher: fetcher)
-        let (afterWithdrawals, withdrawalDiff) = try await depositState.proveAndDeleteForWithdrawals(allWithdrawalActions: allWithdrawalActions, fetcher: fetcher)
+        let (afterWithdrawals, withdrawalDiff) = try await depositState.proveAndSpendForWithdrawals(allWithdrawalActions: allWithdrawalActions, fetcher: fetcher)
         async let depositResult = afterWithdrawals.proveAndUpdateState(allDepositActions: allDepositActions, fetcher: fetcher)
 
         let (finalAccountState, accountDiff) = try await accountResult

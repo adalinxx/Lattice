@@ -237,15 +237,13 @@ final class ReorgBookkeepingTests: XCTestCase {
                        "an absent fork block is skipped, not force-unwrapped")
     }
 
-    // (6) getCumulativeWork(limit:) must saturate, not wrap, when per-block work
-    // overflows within the window.
-    func test_getCumulativeWorkLimitSaturates() async {
-        // Two blocks whose work sums overflow UInt256: max + max wraps to max-1 with &+.
+    // (6) getCumulativeWork(limit:) must retain exact ordering beyond UInt256.
+    func test_getCumulativeWorkLimitIsExact() async {
         let g = makeBlockMeta(hash: "G", height: 0, childHashes: ["T"], work: UInt256.max)
         let t = makeBlockMeta(hash: "T", previousHash: "G", height: 1, work: UInt256.max)
         let chain = makeChain(blocks: [g, t], mainChainHashes: Set(["G", "T"]))
         let total = await chain.getCumulativeWork(limit: 10)
-        XCTAssertEqual(total, UInt256.max, "overflowing windowed work saturates to .max, not a wrapped value")
+        XCTAssertEqual(total, WorkSum(UInt256.max) + UInt256.max)
     }
 
 }

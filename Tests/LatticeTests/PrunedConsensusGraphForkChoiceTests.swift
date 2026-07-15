@@ -50,7 +50,7 @@ final class PrunedConsensusGraphForkChoiceTests: XCTestCase {
         XCTAssertEqual(actual?.tipHash, expected?.tipHash)
         XCTAssertEqual(actual?.cumulativeWork, expected?.cumulativeWork)
         XCTAssertEqual(actualSubtree, expectedSubtree)
-        XCTAssertEqual(retainedWork, UInt256(6))
+        XCTAssertEqual(retainedWork, WorkSum(UInt256(6)))
     }
 
     func testPrunedConsensusGraphSurvivesPersistRestore() async throws {
@@ -68,8 +68,8 @@ final class PrunedConsensusGraphForkChoiceTests: XCTestCase {
         XCTAssertNotNil(retainedMeta)
         XCTAssertFalse(lifecycleAvailable)
         XCTAssertEqual(heaviest?.tipHash, "F5")
-        XCTAssertEqual(heaviest?.cumulativeWork, UInt256(6))
-        XCTAssertEqual(subtree, UInt256(5))
+        XCTAssertEqual(heaviest?.cumulativeWork, WorkSum(UInt256(6)))
+        XCTAssertEqual(subtree, WorkSum(UInt256(5)))
     }
 
     func testRestoreRejectsMissingOrUndecodableConsensusWeight() {
@@ -169,8 +169,8 @@ final class PrunedConsensusGraphForkChoiceTests: XCTestCase {
         _ = await chain.submitTestBlock(blockHeader: try BlockHeader(node: sibling), block: sibling)
 
         let bHash = try BlockHeader(node: b).rawCID
-        var expected = UInt256.zero
-        for _ in 0..<6 { expected = saturatingWorkSum(expected, work) }
+        var expected = WorkSum.zero
+        for _ in 0..<6 { expected = expected + work }
         let subtree = await chain.subtreeWeight(forHash: bHash)
         XCTAssertEqual(subtree, expected)
     }
@@ -203,7 +203,7 @@ final class PrunedConsensusGraphForkChoiceTests: XCTestCase {
 
         let replay = await chain.submitTestBlock(blockHeader: try BlockHeader(node: c), block: c)
 
-        let expected = saturatingWorkSum(saturatingWorkSum(work, work), work)
+        let expected = WorkSum(work) + work + work
         let subtree = await chain.subtreeWeight(forHash: cHash)
         let lifecycleAfterReplay = (await chain.getConsensusBlock(hash: cHash))?.stateDiff
         XCTAssertFalse(replay.addedBlock)

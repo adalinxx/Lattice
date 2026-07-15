@@ -36,7 +36,7 @@ final class CumulativeWorkPrefixSumTests: XCTestCase {
         let chain = ChainState.fromGenesis(block: genesis)
 
         var previous = genesis
-        var expected = perBlock
+        var expected = WorkSum(perBlock)
         for height in 1...5 {
             let block = try await buildAndStoreBlock(
                 previous: previous,
@@ -47,7 +47,7 @@ final class CumulativeWorkPrefixSumTests: XCTestCase {
             )
             _ = await chain.submitTestBlock(blockHeader: try BlockHeader(node: block), block: block)
             previous = block
-            expected = saturatingWorkSum(expected, perBlock)
+            expected = expected + perBlock
             let cumulativeWork = await chain.getTipCumulativeWork()
             XCTAssertEqual(cumulativeWork, expected)
         }
@@ -124,8 +124,8 @@ final class CumulativeWorkPrefixSumTests: XCTestCase {
 
         let exact = await chain.getTipCumulativeWork()
         let localWindow = await chain.getCumulativeWork(limit: 1)
-        XCTAssertEqual(exact, UInt256(3))
-        XCTAssertEqual(localWindow, UInt256(2))
+        XCTAssertEqual(exact, WorkSum(UInt256(3)))
+        XCTAssertEqual(localWindow, WorkSum(UInt256(2)))
     }
 
     func testOutOfOrderInsertRepairsDescendantPrefixSum() async throws {
@@ -159,19 +159,23 @@ final class CumulativeWorkPrefixSumTests: XCTestCase {
 
         _ = await chain.submitTestBlock(blockHeader: try BlockHeader(node: child), block: child)
         let provisional = await chain.getCumulativeWork(forHash: childHash)
-        XCTAssertEqual(provisional, work)
+        XCTAssertEqual(provisional, WorkSum(work))
 
         _ = await chain.submitTestBlock(blockHeader: try BlockHeader(node: parent), block: parent)
 
         let parentWork = await chain.getCumulativeWork(forHash: parentHash)
         let childWork = await chain.getCumulativeWork(forHash: childHash)
-        XCTAssertEqual(parentWork, saturatingWorkSum(work, work))
-        XCTAssertEqual(childWork, saturatingWorkSum(saturatingWorkSum(work, work), work))
+        XCTAssertEqual(parentWork, WorkSum(work) + work)
+        XCTAssertEqual(childWork, WorkSum(work) + work + work)
     }
 
-    func testSaturatingWorkSumClampsOnOverflow() {
-        XCTAssertEqual(saturatingWorkSum(UInt256(3), UInt256(4)), UInt256(7))
-        XCTAssertEqual(saturatingWorkSum(UInt256.max, UInt256(1)), UInt256.max)
-        XCTAssertEqual(saturatingWorkSum(UInt256.max - UInt256(5), UInt256(10)), UInt256.max)
+    func testWorkSumPreservesOverflowedOrdering() {
+        XCTAssertEqual(WorkSum(UInt256(3)) + UInt256(4), WorkSum(UInt256(7)))
+        let beyondMax = WorkSum(UInt256.max) + UInt256(1)
+        XCTAssertGreaterThan(beyondMax, WorkSum(UInt256.max))
+        XCTAssertEqual(
+            WorkSum(UInt256.max - UInt256(5)) + UInt256(10),
+            beyondMax + UInt256(4)
+        )
     }
 }

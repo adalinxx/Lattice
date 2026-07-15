@@ -340,11 +340,27 @@ func testAdmissionStage(_ record: ChainAdmissionRecord) async throws {}
 
 func childValidationPackage(
     proof: ChildBlockProof,
-    fetcher: any Fetcher
+    fetcher: any Fetcher,
+    parentContinuityLinks: [ParentContinuityLink] = [],
+    parentGenesisLink: ParentGenesisLink? = nil
 ) async throws -> ChildValidationPackage {
-    ChildValidationPackage(
+    _ = fetcher
+    return ChildValidationPackage(
         proof: proof,
-        parentStateWitness: try await proof.parentStateWitness(fetcher: fetcher)
+        parentContinuityLinks: parentContinuityLinks,
+        parentGenesisLink: parentGenesisLink
+    )
+}
+
+func testParentGenesisLink(
+    directory: String,
+    childGenesisCID: String,
+    parentPath: [String] = [DEFAULT_ROOT_DIRECTORY]
+) -> ParentGenesisLink {
+    ParentGenesisLink(
+        parentPath: parentPath,
+        directory: directory,
+        childGenesisCID: childGenesisCID
     )
 }
 

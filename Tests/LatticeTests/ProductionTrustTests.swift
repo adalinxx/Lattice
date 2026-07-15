@@ -332,7 +332,7 @@ final class ClaimSecurityTests: XCTestCase {
             let valid = try await badBlock.validateNexus(fetcher: fetcher).0
             XCTAssertFalse(valid, "Claim with wrong nonce should fail validation")
         } catch {
-            // Wrong nonce produces different SwapKey, deletion proof throws on non-existent key
+            // Wrong nonce produces a different SwapKey, so no spendable deposit exists.
         }
     }
 
@@ -399,7 +399,7 @@ final class ClaimSecurityTests: XCTestCase {
             let valid = try await badBlock.validateNexus(fetcher: fetcher).0
             XCTAssertFalse(valid, "Claim with wrong amount should fail validation")
         } catch {
-            // Wrong amount produces different SwapKey, deletion proof throws on non-existent key
+            // Wrong amount produces a different SwapKey, so no spendable deposit exists.
         }
     }
 }

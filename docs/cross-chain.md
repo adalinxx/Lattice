@@ -170,13 +170,13 @@ AccountAction(owner: demander, delta: +amountDemanded)
 **State transition on child chain C:**
 
 ```
-// Deposit deletion
+// Permanent deposit nullifier
 depositKey = DepositKey(demander, amountDemanded, nonce)
-C.depositState' = C.depositState.delete(depositKey)
+C.depositState'[depositKey] = 0
 ```
 
 **Proof obligations:**
-- Deposit deletion proof: key EXISTS in depositState (proves the deposit was made)
+- Deposit mutation proof: key stores the original nonzero deposited amount
 - Receipt mutation proof: corresponding ReceiptKey EXISTS in parentState.receiptState (proves the parent acknowledged the deposit)
 - Receipt withdrawer verification: the `CID(PublicKey)` stored in the receipt must match the withdrawal's `withdrawer`
 
@@ -205,7 +205,9 @@ DepositKey uniqueness is enforced by insertion proofs. A deposit with the same (
 
 ### Property 3: No double-withdrawal
 
-Withdrawals delete the deposit entry. Once withdrawn, the DepositKey no longer exists in depositState. A second withdrawal attempt fails the deletion proof.
+Withdrawals replace the deposit value with zero. Valid deposits are nonzero and
+use insertion proofs, so the same key can neither be withdrawn again nor
+recreated after it is spent.
 
 ### Property 4: No over-withdrawal
 
@@ -220,7 +222,8 @@ Receipt verification checks `parentState.receiptState`. The `parentState` is com
 Each step uses Sparse Merkle proofs:
 - Deposit: insertion proof (DepositKey must not exist) -- prevents duplicate deposits
 - Receipt: insertion proof (ReceiptKey must not exist) -- prevents duplicate receipts
-- Withdrawal: deletion proof (DepositKey must exist, then delete) -- prevents double-withdrawal
+- Withdrawal: mutation proof (DepositKey must hold its original nonzero amount,
+  then becomes zero) -- prevents double-withdrawal and key recreation
 
 Cross-chain replay is further prevented by `chainPath` -- each transaction declares the exact chain hierarchy path it targets.
 

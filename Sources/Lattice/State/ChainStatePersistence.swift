@@ -77,20 +77,18 @@ public struct PersistedBlockMeta: Codable, Sendable {
 }
 
 private extension PersistedBlockMeta {
-    var decodedWork: UInt256? {
+    var decodedWork: WorkSum? {
         guard !workContributions.isEmpty,
               Set(workContributions.map(\.id)).count == workContributions.count,
               workContributions.allSatisfy({ $0.work > .zero }) else { return nil }
-        return workContributions.reduce(.zero) {
-            saturatingWorkSum($0, $1.work)
-        }
+        return workContributions.reduce(WorkSum.zero) { $0 + $1.work }
     }
 
     var hasValidEncoding: Bool {
         guard decodedWork != nil,
-              UInt256(cumulativeWork, radix: 16) != nil else { return false }
+              WorkSum(hex: cumulativeWork) != nil else { return false }
         if let target, UInt256(target, radix: 16) == nil { return false }
-        if let subtreeWeight, UInt256(subtreeWeight, radix: 16) == nil { return false }
+        if let subtreeWeight, WorkSum(hex: subtreeWeight) == nil { return false }
         return true
     }
 }
@@ -119,43 +117,43 @@ private func hasValidConsensusGraph(_ persisted: PersistedChainState) -> Bool {
         }
     }
 
-    var cumulativeMemo: [String: UInt256] = [:]
+    var cumulativeMemo: [String: WorkSum] = [:]
     var cumulativeVisiting = Set<String>()
-    func cumulativeWork(_ hash: String) -> UInt256? {
+    func cumulativeWork(_ hash: String) -> WorkSum? {
         if let work = cumulativeMemo[hash] { return work }
         guard cumulativeVisiting.insert(hash).inserted,
               let block = blocks[hash],
               let ownWork = block.decodedWork,
-              let persistedWork = UInt256(block.cumulativeWork, radix: 16)
+              let persistedWork = WorkSum(hex: block.cumulativeWork)
         else { return nil }
-        let parentWork: UInt256
+        let parentWork: WorkSum
         if let parentHash = block.parentBlockHash, blocks[parentHash] != nil {
             guard let work = cumulativeWork(parentHash) else { return nil }
             parentWork = work
         } else {
             parentWork = .zero
         }
-        let work = saturatingWorkSum(parentWork, ownWork)
+        let work = parentWork + ownWork
         cumulativeVisiting.remove(hash)
         guard work == persistedWork else { return nil }
         cumulativeMemo[hash] = work
         return work
     }
 
-    var subtreeMemo: [String: UInt256] = [:]
+    var subtreeMemo: [String: WorkSum] = [:]
     var subtreeVisiting = Set<String>()
-    func subtreeWork(_ hash: String) -> UInt256? {
+    func subtreeWork(_ hash: String) -> WorkSum? {
         if let work = subtreeMemo[hash] { return work }
         guard subtreeVisiting.insert(hash).inserted,
               let block = blocks[hash],
               var work = block.decodedWork else { return nil }
         for childHash in block.childHashes {
             guard let childWork = subtreeWork(childHash) else { return nil }
-            work = saturatingWorkSum(work, childWork)
+            work = work + childWork
         }
         subtreeVisiting.remove(hash)
         if let persistedSubtree = block.subtreeWeight {
-            guard UInt256(persistedSubtree, radix: 16) == work else { return nil }
+            guard WorkSum(hex: persistedSubtree) == work else { return nil }
         }
         subtreeMemo[hash] = work
         return work
@@ -189,7 +187,7 @@ private func hasValidConsensusGraph(_ persisted: PersistedChainState) -> Bool {
         guard let children = blocks[hash]?.childHashes, !children.isEmpty else {
             return nil
         }
-        let weighted = children.compactMap { child -> (String, UInt256)? in
+        let weighted = children.compactMap { child -> (String, WorkSum)? in
             guard let work = subtreeMemo[child] else { return nil }
             return (child, work)
         }
@@ -294,7 +292,7 @@ public extension ChainState {
         }
         for block in persisted.blocks {
             guard block.decodedWork != nil,
-                  let cumulativeWork = UInt256(block.cumulativeWork, radix: 16) else {
+                  let cumulativeWork = WorkSum(hex: block.cumulativeWork) else {
                 throw ChainStateRestoreError.corruptConsensusGraph
             }
             let meta = BlockMeta(

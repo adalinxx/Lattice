@@ -20,7 +20,8 @@ each chain it chooses to follow.
 1. resolves only the targeted block and validation data;
 2. verifies the root CID and setup-wide minimum root-work floor;
 3. verifies the exact sparse root-to-candidate path;
-4. verifies same-chain predecessor continuity for every carrier;
+4. binds every carrier to a continuity fact issued by the responsible parent
+   process, and binds child genesis to its parent-issued genesis fact;
 5. compares the same root hash with this chain's target;
 6. executes this chain's state transition when accepted at this level;
 7. stores verified block content and materialized state before visible mutation;
@@ -46,6 +47,15 @@ reuse is rejected.
 These facts are immutable. Parent or sibling processes may provide their proof
 bytes, but their current tips and canonicality are not inputs to this chain's
 fork choice. There is no live inherited-weight provider or parent anchor map.
+
+## Cross-Process Facts
+
+`ParentContinuityLink` records that the process for one path validated a
+carrier's same-chain predecessor continuity. `ParentGenesisLink` records that a
+validated parent state anchored one child genesis CID. The node authenticates,
+transports, and caches these values; Lattice produces and consumes their
+consensus meaning. Once validated, neither fact depends on parent canonicity or
+continued parent availability.
 
 ## Storage and Lifecycle
 

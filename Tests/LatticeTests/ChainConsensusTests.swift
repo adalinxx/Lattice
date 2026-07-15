@@ -12,6 +12,24 @@ func makeBlockMeta(
     work: UInt256 = UInt256(1),
     cumulativeWork: UInt256 = .zero
 ) -> BlockMeta {
+    makeBlockMeta(
+        hash: hash,
+        previousHash: previousHash,
+        height: height,
+        childHashes: childHashes,
+        work: work,
+        cumulativeWork: WorkSum(cumulativeWork)
+    )
+}
+
+func makeBlockMeta(
+    hash: String,
+    previousHash: String? = nil,
+    height: UInt64,
+    childHashes: [String] = [],
+    work: UInt256 = UInt256(1),
+    cumulativeWork: WorkSum
+) -> BlockMeta {
     let contribution = VerifiedWorkContribution(
         id: "test:\(hash)",
         work: work
@@ -243,14 +261,14 @@ final class ChainWithMostWorkTests: XCTestCase {
         let g = makeBlockMeta(hash: "G", height: 0)
         let chain = makeChain(blocks: [g])
         let work = await chain.chainWithMostWork(startingBlock: g)
-        XCTAssertEqual(work.subtreeWork, UInt256(1))
+        XCTAssertEqual(work.subtreeWork, WorkSum(UInt256(1)))
         XCTAssertEqual(work.blocks, Set(["G"]))
     }
 
     func testLinearChainWork() async {
         let (chain, blocks) = makeLinearChain(length: 4)
         let work = await chain.chainWithMostWork(startingBlock: blocks[0])
-        XCTAssertEqual(work.subtreeWork, UInt256(4))
+        XCTAssertEqual(work.subtreeWork, WorkSum(UInt256(4)))
         XCTAssertEqual(work.blocks.count, 4)
     }
 
@@ -267,7 +285,7 @@ final class ChainWithMostWorkTests: XCTestCase {
 
         let chain = makeChain(blocks: [g, a1, a2, b1, b2, b3])
         let work = await chain.chainWithMostWork(startingBlock: g)
-        XCTAssertEqual(work.subtreeWork, UInt256(6), "subtreeWork(G) = whole subtree = 6 blocks")
+        XCTAssertEqual(work.subtreeWork, WorkSum(UInt256(6)), "subtreeWork(G) = whole subtree = 6 blocks")
         XCTAssertTrue(work.blocks.contains("B3"), "descent rides the heavier B fork to its tip")
         XCTAssertFalse(work.blocks.contains("A1"))
     }

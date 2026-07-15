@@ -108,7 +108,7 @@ public struct TransactionBody: Scalar {
         // mismatched deposit/receipt, so awaiting without throwing IS the
         // validation — the returned proof headers are intentionally discarded.
         // (The authoritative enforcement of deposit existence + amount is the
-        // post-state transition, DepositState.proveAndDeleteForWithdrawals.)
+        // post-state transition, DepositState.proveAndSpendForWithdrawals.)
         async let proofOfDeposits = prevState.depositState.proveExistenceOfCorrespondingDeposit(withdrawalActions: withdrawalActions, fetcher: fetcher)
         async let proofOfReceipts = parentState.receiptState.proveExistenceAndVerifyWithdrawers(directory: directory, withdrawalActions: withdrawalActions, fetcher: fetcher)
         let (_, _) = try await (proofOfDeposits, proofOfReceipts)
@@ -250,7 +250,7 @@ public struct TransactionBody: Scalar {
         chainPath: [String],
         fetcher: Fetcher,
         scopes: Set<WasmPolicyRef.Scope>? = nil
-    ) async -> Bool {
+    ) async throws -> Bool {
         let policies = scopes.map { allowedScopes in
             spec.wasmPolicies.filter { allowedScopes.contains($0.scope) }
         } ?? spec.wasmPolicies
@@ -261,19 +261,28 @@ public struct TransactionBody: Scalar {
             guard policy.abiVersion == WasmPolicyRef.currentABIVersion else { return false }
             if moduleBytesByCID[policy.moduleCID] == nil {
                 let moduleHeader = WasmPolicyModuleHeader(rawCID: policy.moduleCID)
-                guard let moduleNode = try? await moduleHeader.resolve(fetcher: fetcher).node else {
-                    return false
+                let moduleNode: WasmPolicyModule
+                do {
+                    guard let resolved = try await moduleHeader.resolve(fetcher: fetcher).node else {
+                        throw WasmPolicyError.missingModule(policy.moduleCID)
+                    }
+                    moduleNode = resolved
+                } catch is FetcherError {
+                    throw WasmPolicyError.missingModule(policy.moduleCID)
                 }
                 moduleBytesByCID[policy.moduleCID] = moduleNode.bytes
             }
         }
 
-        func evaluate(_ policy: WasmPolicyRef, _ context: WasmPolicyContext) -> Bool {
-            guard let moduleBytes = moduleBytesByCID[policy.moduleCID],
-                  let contextData = try? context.canonicalData() else {
-                return false
+        func evaluate(_ policy: WasmPolicyRef, _ context: WasmPolicyContext) throws -> Bool {
+            guard let moduleBytes = moduleBytesByCID[policy.moduleCID] else {
+                throw WasmPolicyError.missingModule(policy.moduleCID)
             }
-            return (try? WasmPolicyEvaluator.evaluate(policy: policy, contextData: contextData, moduleBytes: moduleBytes)) == true
+            return try WasmPolicyEvaluator.evaluate(
+                policy: policy,
+                contextData: context.canonicalData(),
+                moduleBytes: moduleBytes
+            )
         }
 
         for policy in policies {
@@ -284,7 +293,7 @@ public struct TransactionBody: Scalar {
                         scope: .transaction, chainSpec: spec, chainPath: chainPath,
                         transaction: body, action: nil, actionIndex: nil
                     )
-                    guard evaluate(policy, context) else { return false }
+                    guard try evaluate(policy, context) else { return false }
                 }
             case .action:
                 for body in bodies {
@@ -293,7 +302,7 @@ public struct TransactionBody: Scalar {
                             scope: .action, chainSpec: spec, chainPath: chainPath,
                             transaction: body, action: action, actionIndex: actionIndex
                         )
-                        guard evaluate(policy, context) else { return false }
+                        guard try evaluate(policy, context) else { return false }
                     }
                 }
             }

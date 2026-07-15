@@ -699,7 +699,7 @@ final class SwapAuthorizationTests: XCTestCase {
 
         // Variable-rate swap: amountWithdrawn may differ from amountDemanded.
         // The actual amount-vs-stored-deposit check happens at state-application
-        // time in DepositStateHeader.proveAndDeleteForWithdrawals.
+        // time in DepositStateHeader.proveAndSpendForWithdrawals.
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [], receiptActions: [],

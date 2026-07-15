@@ -14,30 +14,68 @@ public struct VerifiedWorkContribution: Codable, Sendable, Equatable {
     }
 }
 
-/// Content-bound predecessor blocks used to prove that each carrier's
-/// `prevState` follows its same-chain predecessor's `postState`.
-public struct ParentStateWitness: Sendable {
-    public let entries: [(cid: String, data: Data)]
+/// A permanent semantic fact produced by the Lattice process responsible for
+/// `parentPath`. The node authenticates that process, transports this value, and
+/// caches it; child admission only verifies that it binds the exact carrier it
+/// is about to use.
+public struct ParentContinuityLink: Codable, Hashable, Sendable {
+    public let parentPath: [String]
+    public let successorCID: String
 
-    public init(entries: [(cid: String, data: Data)]) {
-        self.entries = entries
+    package init(
+        parentPath: [String],
+        successorCID: String
+    ) {
+        self.parentPath = parentPath
+        self.successorCID = successorCID
+    }
+}
+
+/// A permanent parent-chain fact authorizing one genesis root for a path-defined
+/// child chain. Competing valid parent branches may produce different links for
+/// the same child path; the child forest chooses between those roots locally.
+public struct ParentGenesisLink: Codable, Hashable, Sendable {
+    public let parentPath: [String]
+    public let directory: String
+    public let childGenesisCID: String
+
+    package init(
+        parentPath: [String],
+        directory: String,
+        childGenesisCID: String
+    ) {
+        self.parentPath = parentPath
+        self.directory = directory
+        self.childGenesisCID = childGenesisCID
     }
 }
 
 /// The complete cross-chain evidence required to validate one child candidate.
-/// Security proof and execution-state witness remain distinct values so neither
-/// can silently stand in for the other.
+/// Sparse security proof and authenticated parent-issued facts remain distinct
+/// values so neither can silently stand in for the other.
 public struct ChildValidationPackage: Sendable {
     public let proof: ChildBlockProof
-    public let parentStateWitness: ParentStateWitness
+    public let parentContinuityLinks: [ParentContinuityLink]
+    public let parentGenesisLink: ParentGenesisLink?
 
-    public init(proof: ChildBlockProof, parentStateWitness: ParentStateWitness) {
+    public init(
+        proof: ChildBlockProof,
+        parentContinuityLinks: [ParentContinuityLink] = [],
+        parentGenesisLink: ParentGenesisLink? = nil
+    ) {
         self.proof = proof
-        self.parentStateWitness = parentStateWitness
+        self.parentContinuityLinks = parentContinuityLinks.sorted {
+            if $0.parentPath != $1.parentPath {
+                return $0.parentPath.lexicographicallyPrecedes($1.parentPath)
+            }
+            return $0.successorCID < $1.successorCID
+        }
+        self.parentGenesisLink = parentGenesisLink
     }
 }
 
 public enum ChildProofVerificationFailure: Error, Sendable, Equatable {
+    case unavailableEvidence
     case malformedEvidence
     case protocolInvalid
 }
