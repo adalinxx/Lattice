@@ -14,12 +14,15 @@ final class ConsensusSimulatorTests: XCTestCase {
         XCTAssertEqual(firstJSON, secondJSON)
     }
 
-    func testSimulatorUsesProtocolNoFinalityDefault() async throws {
-        XCTAssertEqual(RECENT_BLOCK_DISTANCE, UInt64.max)
-
+    func testSimulatorUsesCurrentProtocolScenarios() async throws {
         let traces = await LatticeConsensusSimulator.runDefaultScenarios(seed: 42)
-        let reride = try XCTUnwrap(traces.first { $0.scenario == "parent-reorg-child-reride" })
-        XCTAssertEqual(reride.events.map(\.reorged), [true, true])
+        XCTAssertEqual(Set(traces.map(\.scenario)), [
+            "equal-work-tie-incumbent-holds",
+            "seeded-withhold-release",
+            "proportional-retarget-one-hour",
+        ])
+        let tie = try XCTUnwrap(traces.first { $0.scenario == "equal-work-tie-incumbent-holds" })
+        XCTAssertEqual(tie.events.map(\.reorged), [false])
     }
 
     func testSimulatorPinsHandCheckedForkChoiceFixtures() async throws {
@@ -29,20 +32,8 @@ final class ConsensusSimulatorTests: XCTestCase {
         let tie = try XCTUnwrap(byScenario["equal-work-tie-incumbent-holds"])
         XCTAssertEqual(tie.finalTip, "M1")
         XCTAssertEqual(tie.events.first?.reorged, false)
-        XCTAssertEqual(tie.events.first?.candidateTrueCumWork, "0000000000000000000000000000000000000000000000000000000000000001")
-        XCTAssertEqual(tie.events.first?.mainTrueCumWork, "0000000000000000000000000000000000000000000000000000000000000001")
-
-        let inherited = try XCTUnwrap(byScenario["precomputed-inherited-weight-reorg"])
-        XCTAssertEqual(inherited.finalTip, "C2")
-        XCTAssertEqual(inherited.events.first?.label, "precomputed inherited=3 beats main=1")
-        XCTAssertEqual(inherited.events.first?.candidateTrueCumWork, "0000000000000000000000000000000000000000000000000000000000000004")
-        XCTAssertEqual(inherited.events.first?.mainTrueCumWork, "0000000000000000000000000000000000000000000000000000000000000001")
-        XCTAssertEqual(inherited.events.first?.reorged, true)
-
-        let reride = try XCTUnwrap(byScenario["parent-reorg-child-reride"])
-        XCTAssertEqual(reride.finalTip, "CA")
-        XCTAssertEqual(reride.events.map(\.tip), ["CB", "CA"])
-        XCTAssertEqual(reride.events.map(\.reorged), [true, true])
+        XCTAssertEqual(tie.events.first?.candidateSubtreeWork, "0000000000000000000000000000000000000000000000000000000000000001")
+        XCTAssertEqual(tie.events.first?.mainSubtreeWork, "0000000000000000000000000000000000000000000000000000000000000001")
 
         let withheld = try XCTUnwrap(byScenario["seeded-withhold-release"])
         XCTAssertEqual(withheld.events.map(\.candidateTip), ["F1", "F2", "F3"])
@@ -62,7 +53,7 @@ final class ConsensusSimulatorTests: XCTestCase {
         XCTAssertEqual(withheld.finalTip, "F3")
         XCTAssertEqual(withheld.events.count, 3)
         XCTAssertEqual(withheld.events.last?.candidateTip, "F3")
-        XCTAssertEqual(withheld.events.last?.candidateTrueCumWork, "0000000000000000000000000000000000000000000000000000000000000003")
+        XCTAssertEqual(withheld.events.last?.candidateSubtreeWork, "0000000000000000000000000000000000000000000000000000000000000003")
     }
 
     // MARK: — no-finality adversarial scenarios
@@ -223,54 +214,6 @@ final class ConsensusSimulatorTests: XCTestCase {
             "attacker cost must strictly increase from f=\(lowest.hashrateFraction) to f=\(highest.hashrateFraction)")
     }
 
-    /// merged-mining economics: `f` is DERIVED through the real per-chain PoW gate,
-    /// not asserted. The attacker's effective per-chain fraction must equal its share of THAT
-    /// chain's own subscribers, INDEPENDENT of the other chains' targets — proving there is no
-    /// nexus-anchored amplification under independent per-chain validation + opt-in subscription.
-    func testMergedMiningPerChainFractionIsDerivedWithNoNexusAmplification() throws {
-        // Target chain: attacker controls 30% of ITS subscribers. The tree also contains a much
-        // easier chain (huge target) and a harder chain (small target) with different attacker
-        // splits — none of which may move the target chain's derived fraction.
-        // Targets kept within a few bits of each other so the rare-clearance Monte-Carlo stays
-        // sample-efficient; the easiest (largest) sets the search floor.
-        let easyChain = LatticeConsensusSimulator.SubscribedChain(
-            name: "easy", targetWord: 1 << 40, honestHashrate: 10, attackerHashrate: 90)
-        let target = LatticeConsensusSimulator.SubscribedChain(
-            name: "target", targetWord: 1 << 38, honestHashrate: 70, attackerHashrate: 30)
-        let hardChain = LatticeConsensusSimulator.SubscribedChain(
-            name: "hard", targetWord: 1 << 36, honestHashrate: 99, attackerHashrate: 1)
-        let tree = [easyChain, target, hardChain]
-
-        let derived = LatticeConsensusSimulator.derivePerChainAttackerFraction(
-            chain: target, tree: tree, seed: 42, samples: 200_000)
-        // Equals the attacker's share of the TARGET chain's subscribers (30/100), within
-        // Monte-Carlo tolerance — and crucially is unaffected by the easy/hard siblings.
-        XCTAssertEqual(derived, 0.30, accuracy: 0.01,
-            "per-chain attacker fraction must equal its share of the target chain's own subscribers")
-
-        // No amplification: re-deriving with the OTHER chains' targets and splits changed must
-        // not move the target chain's fraction (independent per-chain validation).
-        let amplified = [
-            LatticeConsensusSimulator.SubscribedChain(
-                name: "easy", targetWord: 1 << 40, honestHashrate: 1, attackerHashrate: 999),
-            target,
-            LatticeConsensusSimulator.SubscribedChain(
-                name: "hard2", targetWord: 1 << 39, honestHashrate: 1, attackerHashrate: 999)
-        ]
-        let derivedAmplified = LatticeConsensusSimulator.derivePerChainAttackerFraction(
-            chain: target, tree: amplified, seed: 42, samples: 200_000)
-        XCTAssertEqual(derivedAmplified, derived, accuracy: 0.01,
-            "other chains' targets/splits must not amplify the target chain's attacker fraction")
-    }
-
-    /// The per-chain PoW gate used by the derivation is the real `validateProofOfWork`
-    /// polarity: a solution clears a chain iff its hash is at most that chain's target.
-    func testMergedMiningGateMatchesValidateProofOfWorkPolarity() {
-        XCTAssertTrue(LatticeConsensusSimulator.powClears(target: UInt256(100), hash: UInt256(50)))
-        XCTAssertTrue(LatticeConsensusSimulator.powClears(target: UInt256(100), hash: UInt256(100)))
-        XCTAssertFalse(LatticeConsensusSimulator.powClears(target: UInt256(100), hash: UInt256(101)))
-    }
-
     func testAdversarialMarkdownRendersAllThreeScenarios() async throws {
         let report = await LatticeConsensusSimulator.runAdversarialReport(seed: 42)
         let md = LatticeConsensusSimulator.renderAdversarialMarkdown(report)
@@ -299,7 +242,7 @@ final class ConsensusSimulatorTests: XCTestCase {
         XCTAssertEqual(trace.scenario, "configured-work-latency")
         XCTAssertEqual(trace.finalTip, "F1")
         XCTAssertEqual(trace.events.first?.label, "t=250ms release F1")
-        XCTAssertEqual(trace.events.first?.candidateTrueCumWork, "0000000000000000000000000000000000000000000000000000000000000003")
+        XCTAssertEqual(trace.events.first?.candidateSubtreeWork, "0000000000000000000000000000000000000000000000000000000000000003")
         XCTAssertEqual(trace.events.first?.reorged, true)
     }
 }

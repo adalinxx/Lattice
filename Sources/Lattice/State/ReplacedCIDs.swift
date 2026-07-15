@@ -1,6 +1,6 @@
 import cashew
 
-public struct StateDiff: Sendable {
+public struct StateDiff: Sendable, Equatable {
     public var replaced: [String: Int]
     public var created: [String: Int]
 

@@ -298,8 +298,7 @@ final class SelfishMiningTests: XCTestCase {
                 previous: honestPrev, timestamp: base + Int64(i) * 1000,
                 target: UInt256(1000), nonce: UInt64(i), fetcher: fetcher
             )
-            let _ = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: b), block: b
             )
             honestPrev = b
@@ -325,8 +324,7 @@ final class SelfishMiningTests: XCTestCase {
                 previous: cursor, timestamp: base + Int64(i) * 500,
                 target: UInt256(1000), nonce: UInt64(i + 200), fetcher: fetcher
             )
-            let _ = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: b), block: b
             )
             cursor = b
@@ -353,8 +351,7 @@ final class SelfishMiningTests: XCTestCase {
                 previous: honestPrev, timestamp: base + Int64(i) * 1000,
                 target: UInt256(1000), nonce: UInt64(i), fetcher: fetcher
             )
-            let _ = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: b), block: b
             )
             honestPrev = b
@@ -367,8 +364,7 @@ final class SelfishMiningTests: XCTestCase {
                 previous: selfishPrev, timestamp: base + Int64(i) * 500,
                 target: UInt256(1000), nonce: UInt64(i + 300), fetcher: fetcher
             )
-            let _ = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: b), block: b
             )
             selfishPrev = b

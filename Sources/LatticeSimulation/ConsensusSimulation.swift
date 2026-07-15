@@ -8,8 +8,8 @@ public struct ConsensusSimEvent: Codable, Equatable, Sendable {
     public let tip: String
     public let candidate: String?
     public let candidateTip: String?
-    public let candidateTrueCumWork: String?
-    public let mainTrueCumWork: String?
+    public let candidateSubtreeWork: String?
+    public let mainSubtreeWork: String?
     public let reorged: Bool?
 
     public init(
@@ -18,8 +18,8 @@ public struct ConsensusSimEvent: Codable, Equatable, Sendable {
         tip: String,
         candidate: String? = nil,
         candidateTip: String? = nil,
-        candidateTrueCumWork: String? = nil,
-        mainTrueCumWork: String? = nil,
+        candidateSubtreeWork: String? = nil,
+        mainSubtreeWork: String? = nil,
         reorged: Bool? = nil
     ) {
         self.step = step
@@ -27,8 +27,8 @@ public struct ConsensusSimEvent: Codable, Equatable, Sendable {
         self.tip = tip
         self.candidate = candidate
         self.candidateTip = candidateTip
-        self.candidateTrueCumWork = candidateTrueCumWork
-        self.mainTrueCumWork = mainTrueCumWork
+        self.candidateSubtreeWork = candidateSubtreeWork
+        self.mainSubtreeWork = mainSubtreeWork
         self.reorged = reorged
     }
 }
@@ -115,8 +115,6 @@ public enum LatticeConsensusSimulator {
     public static func runDefaultScenarios(seed: UInt64 = defaultSeed) async -> [ConsensusSimTrace] {
         [
             await equalWorkTie(seed: seed),
-            await precomputedInheritedWeightReorg(seed: seed),
-            await parentReorgChildReride(seed: seed),
             await deterministicWithholdRelease(seed: seed),
             await proportionalRetarget(seed: seed)
         ]
@@ -150,7 +148,7 @@ public enum LatticeConsensusSimulator {
             let candidateRoot = forkRoot(for: release.blockHash, visible: visibleHashes, currentMain: currentMain, blocksByHash: blocksByHash)
             let reorg: Reorganization?
             if let releasedBlock {
-                reorg = await chain.evaluateForkChoice(forReleasedBlock: releasedBlock)
+                reorg = await chain.checkForReorg(block: releasedBlock)
             } else {
                 reorg = nil
             }
@@ -199,7 +197,7 @@ public enum LatticeConsensusSimulator {
         let candidate = await chain.forkChoiceSnapshot(startingAt: "F1")
         let main = await chain.forkChoiceSnapshot(startingAt: "M1")
         let f1Block = await chain.getConsensusBlock(hash: "F1")!
-        let reorg = await chain.evaluateForkChoice(forReleasedBlock: f1Block)
+        let reorg = await chain.checkForReorg(block: f1Block)
         let tip = await chain.getMainChainTip()
 
         return ConsensusSimTrace(
@@ -211,66 +209,6 @@ public enum LatticeConsensusSimulator {
                     0, "equal work candidate evaluated", tip: "M1",
                     candidate: candidate, main: main, reorged: reorg != nil
                 )
-            ]
-        )
-    }
-
-    private static func precomputedInheritedWeightReorg(seed: UInt64) async -> ConsensusSimTrace {
-        let g = simBlock("CG", height: 0, children: ["C1", "C2"])
-        let c1 = simBlock("C1", previous: "CG", height: 1)
-        let c2 = simBlock("C2", previous: "CG", height: 1)
-        let chain = simChain(
-            blocks: [g, c1, c2],
-            main: Set(["CG", "C1"]),
-            inherited: ["C2": UInt256(3)]
-        )
-        let candidate = await chain.forkChoiceSnapshot(startingAt: "C2")
-        let main = await chain.forkChoiceSnapshot(startingAt: "C1")
-        let c2Block = await chain.getConsensusBlock(hash: "C2")!
-        let reorg = await chain.evaluateForkChoice(forReleasedBlock: c2Block)
-        let tip = await chain.getMainChainTip()
-
-        return ConsensusSimTrace(
-            scenario: "precomputed-inherited-weight-reorg",
-            seed: seed,
-            finalTip: tip,
-            events: [
-                ConsensusSimEvent(
-                    step: 0,
-                    label: "precomputed inherited=3 beats main=1",
-                    tip: tip,
-                    candidate: "C2",
-                    candidateTip: candidate?.tipHash,
-                    candidateTrueCumWork: candidate?.trueCumWork.toHexString(),
-                    mainTrueCumWork: main?.trueCumWork.toHexString(),
-                    reorged: reorg != nil
-                )
-            ]
-        )
-    }
-
-    private static func parentReorgChildReride(seed: UInt64) async -> ConsensusSimTrace {
-        let weights = MutableSimWeights(["CA": UInt256(5), "CB": UInt256(20)])
-        let g = simBlock("CG", height: 0, children: ["CA", "CB"])
-        let ca = simBlock("CA", previous: "CG", height: 1)
-        let cb = simBlock("CB", previous: "CG", height: 1)
-        let chain = simChain(blocks: [g, ca, cb], main: Set(["CG", "CA"]), provider: { weights[$0] })
-
-        let cbBlock = await chain.getConsensusBlock(hash: "CB")!
-        let firstReorg = await chain.evaluateForkChoice(forReleasedBlock: cbBlock)
-        let firstTip = await chain.getMainChainTip()
-
-        weights.replace(["CA": UInt256(30), "CB": UInt256(20)])
-        let secondReorg = await chain.reevaluateForkChoice(blockHash: "CA")
-        let finalTip = await chain.getMainChainTip()
-
-        return ConsensusSimTrace(
-            scenario: "parent-reorg-child-reride",
-            seed: seed,
-            finalTip: finalTip,
-            events: [
-                ConsensusSimEvent(step: 0, label: "CB rides heavier parent fork", tip: firstTip, candidate: "CB", reorged: firstReorg != nil),
-                ConsensusSimEvent(step: 1, label: "parent fork flips; CA rerides", tip: finalTip, candidate: "CA", reorged: secondReorg != nil)
             ]
         )
     }
@@ -339,22 +277,20 @@ public enum LatticeConsensusSimulator {
         work: UInt256 = UInt256(1)
     ) -> BlockMeta {
         BlockMeta(
-            blockInfo: .make(
-                blockHash: hash,
-                parentBlockHash: previous,
-                blockHeight: height,
+            blockHash: hash,
+            parentBlockHash: previous,
+            blockHeight: height,
+            childHashes: children,
+            workContributions: [VerifiedWorkContribution(
+                id: "sim:\(hash)",
                 work: work
-            ),
-            parentChainBlocks: [:],
-            childHashes: children
+            )]
         )
     }
 
     private static func simChain(
         blocks: [BlockMeta],
-        main: Set<String>,
-        inherited: [String: UInt256] = [:],
-        provider: (@Sendable (String) -> UInt256)? = nil
+        main: Set<String>
     ) -> ChainState {
         var index: [UInt64: Set<String>] = [:]
         var byHash: [String: BlockMeta] = [:]
@@ -371,28 +307,16 @@ public enum LatticeConsensusSimulator {
             .filter { main.contains($0.blockHash) }
             .max { $0.blockHeight < $1.blockHeight }?
             .blockHash ?? blocks[0].blockHash
-        // The only `throws` path of `ChainState.init` is an undecodable pruned-entry
-        // weight in `prunedWeightIndex`. Every sim fixture is built with an empty
-        // pruned index, so that path is unreachable — assert it before the force
-        // unwrap so a future non-empty fixture fails loudly with a clear message
-        // instead of an opaque `try!` crash.
         do {
             return try ChainState(
                 chainTip: tip,
                 mainChainHashes: main,
                 indexToBlockHash: index,
-                hashToBlock: byHash,
-                parentChainBlockHashToBlockHash: [:],
-                inheritedWeightProvider: provider ?? inheritedWeightProvider(inherited)
+                hashToBlock: byHash
             )
         } catch {
-            fatalError("simChain expects an empty prunedWeightIndex; ChainState.init threw: \(error)")
+            fatalError("invalid simulation chain: \(error)")
         }
-    }
-
-    private static func inheritedWeightProvider(_ weights: [String: UInt256]) -> (@Sendable (String) -> UInt256)? {
-        guard !weights.isEmpty else { return nil }
-        return { weights[$0] ?? .zero }
     }
 
     private static func seededOrder(seed: UInt64, values: [String]) -> [String] {
@@ -420,8 +344,8 @@ public enum LatticeConsensusSimulator {
             tip: tip,
             candidate: candidate?.startingHash,
             candidateTip: candidate?.tipHash,
-            candidateTrueCumWork: candidate?.trueCumWork.toHexString(),
-            mainTrueCumWork: main?.trueCumWork.toHexString(),
+            candidateSubtreeWork: candidate?.subtreeWork.toHexString(),
+            mainSubtreeWork: main?.subtreeWork.toHexString(),
             reorged: reorged
         )
     }
@@ -439,27 +363,6 @@ public enum LatticeConsensusSimulator {
             current = parent
         }
         return current
-    }
-}
-
-private final class MutableSimWeights: @unchecked Sendable {
-    private let lock = NSLock()
-    private var weights: [String: UInt256]
-
-    init(_ weights: [String: UInt256]) {
-        self.weights = weights
-    }
-
-    subscript(hash: String) -> UInt256 {
-        lock.lock()
-        defer { lock.unlock() }
-        return weights[hash] ?? .zero
-    }
-
-    func replace(_ newWeights: [String: UInt256]) {
-        lock.lock()
-        weights = newWeights
-        lock.unlock()
     }
 }
 

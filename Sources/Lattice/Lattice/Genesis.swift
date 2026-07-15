@@ -35,6 +35,10 @@ public struct GenesisResult: Sendable {
     }
 }
 
+public enum GenesisCeremonyError: Error, Sendable, Equatable {
+    case invalidTarget
+}
+
 public enum GenesisCeremony {
 
     /// Creates a runtime chain state for the supplied genesis. Root topology is
@@ -43,8 +47,11 @@ public enum GenesisCeremony {
     public static func create(
         config: GenesisConfig,
         fetcher: Fetcher,
-        retentionDepth: UInt64 = RECENT_BLOCK_DISTANCE
+        retentionDepth: UInt64 = .max
     ) async throws -> GenesisResult {
+        guard config.target >= ChainSpec.minimumTarget else {
+            throw GenesisCeremonyError.invalidTarget
+        }
         let block = try await BlockBuilder.buildGenesis(
             spec: config.spec,
             timestamp: config.timestamp,
@@ -60,6 +67,7 @@ public enum GenesisCeremony {
     }
 
     public static func verify(block: Block, config: GenesisConfig) -> Bool {
+        guard config.target >= ChainSpec.minimumTarget else { return false }
         guard block.height == 0 else { return false }
         guard block.parent == nil else { return false }
         guard block.timestamp == config.timestamp else { return false }

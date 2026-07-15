@@ -51,8 +51,8 @@ private func buildChain(length: Int, startTimestamp: Int64 = 1_000_000) async th
 
 private func submitChain(_ chain: ChainState, blocks: [Block]) async {
     for block in blocks.dropFirst() {
-        let _ = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil, blockHeader: header(block), block: block
+        let _ = await chain.submitTestBlock(
+            blockHeader: header(block), block: block
         )
     }
 }
@@ -67,10 +67,10 @@ final class DoubleSpendTests: XCTestCase {
         let chain = ChainState.fromGenesis(block: g)
         let b1 = try await next(g, ts: 2_000_000, nonce: 1)
 
-        let first = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(b1), block: b1)
+        let first = await chain.submitTestBlock(blockHeader: header(b1), block: b1)
         XCTAssertTrue(first.addedBlock)
 
-        let second = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(b1), block: b1)
+        let second = await chain.submitTestBlock(blockHeader: header(b1), block: b1)
         XCTAssertFalse(second.addedBlock, "Duplicate block must be rejected")
     }
 
@@ -809,11 +809,11 @@ final class ConsensusStressTests: XCTestCase {
         let chain = ChainState.fromGenesis(block: g)
 
         let b1 = try await next(g, ts: 2_000_000, nonce: 1)
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(b1), block: b1)
+        let _ = await chain.submitTestBlock(blockHeader: header(b1), block: b1)
 
         for i in 0..<20 {
             let fork = try await next(g, ts: 2_000_000, nonce: UInt64(100 + i))
-            let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(fork), block: fork)
+            let _ = await chain.submitTestBlock(blockHeader: header(fork), block: fork)
         }
 
         let tip = await chain.getMainChainTip()
@@ -832,7 +832,7 @@ final class ConsensusStressTests: XCTestCase {
             forkBlocks.append(b)
         }
         for b in forkBlocks.dropFirst() {
-            let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(b), block: b)
+            let _ = await chain.submitTestBlock(blockHeader: header(b), block: b)
         }
 
         let newTip = await chain.getMainChainTip()
@@ -853,16 +853,16 @@ final class ConsensusStressTests: XCTestCase {
         let blocks = try await buildChain(length: 5)
         let chain = ChainState.fromGenesis(block: blocks[0])
 
-        let r3 = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(blocks[3]), block: blocks[3])
-        XCTAssertTrue(r3.needsChildBlock, "Block 3 submitted before 1,2 should need parent")
+        let r3 = await chain.submitTestBlock(blockHeader: header(blocks[3]), block: blocks[3])
+        XCTAssertTrue(r3.needsParentBlock, "Block 3 submitted before 1,2 should need parent")
 
-        let r1 = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(blocks[1]), block: blocks[1])
+        let r1 = await chain.submitTestBlock(blockHeader: header(blocks[1]), block: blocks[1])
         XCTAssertTrue(r1.extendsMainChain)
 
-        let r2 = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(blocks[2]), block: blocks[2])
+        let r2 = await chain.submitTestBlock(blockHeader: header(blocks[2]), block: blocks[2])
         XCTAssertTrue(r2.extendsMainChain)
 
-        let r4 = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(blocks[4]), block: blocks[4])
+        let r4 = await chain.submitTestBlock(blockHeader: header(blocks[4]), block: blocks[4])
         XCTAssertTrue(r4.addedBlock)
 
         let tipHash = await chain.getMainChainTip()
@@ -871,20 +871,6 @@ final class ConsensusStressTests: XCTestCase {
         XCTAssertEqual(tipHash, header(blocks[4]).rawCID)
     }
 
-    func testMissingBlockTracking() async throws {
-        let blocks = try await buildChain(length: 4)
-        let chain = ChainState.fromGenesis(block: blocks[0])
-
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(blocks[3]), block: blocks[3])
-
-        let missing = await chain.getMissingBlockHashes()
-        XCTAssertTrue(missing.contains(header(blocks[2]).rawCID), "Block 2 should be missing")
-
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(blocks[2]), block: blocks[2])
-        let stillMissing = await chain.getMissingBlockHashes()
-        XCTAssertFalse(stillMissing.contains(header(blocks[2]).rawCID), "Block 2 no longer missing")
-        XCTAssertTrue(stillMissing.contains(header(blocks[1]).rawCID), "Block 1 should now be missing")
-    }
 }
 
 // MARK: - Economic Invariant Tests
@@ -1041,7 +1027,7 @@ final class BugRegressionTests: XCTestCase {
         for i in 3..<8 {
             let b = try await next(forkBlocks.last!, ts: 1_000_000 + Int64(i) * 1000, nonce: UInt64(300 + i))
             forkBlocks.append(b)
-            let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(b), block: b)
+            let _ = await chain.submitTestBlock(blockHeader: header(b), block: b)
         }
 
         let tipAfter = await chain.getMainChainTip()
@@ -1056,94 +1042,12 @@ final class BugRegressionTests: XCTestCase {
 
         let fork1 = try await next(blocks[2], ts: 4_000_000, nonce: 99)
         let fork2 = try await next(fork1, ts: 5_000_000, nonce: 99)
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(fork1), block: fork1)
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(fork2), block: fork2)
+        let _ = await chain.submitTestBlock(blockHeader: header(fork1), block: fork1)
+        let _ = await chain.submitTestBlock(blockHeader: header(fork2), block: fork2)
 
         let earliest = await chain.findEarliestOrphanConnectedToMainChain(blockHeader: header(fork2).rawCID)
         XCTAssertEqual(earliest, header(fork1).rawCID,
             "Should trace back to fork1, whose parent (blocks[2]) is on main chain")
-    }
-}
-
-// MARK: - Dynamic Chain Discovery Tests
-
-@MainActor
-final class DynamicChainDiscoveryTests: XCTestCase {
-
-    func testRegisterChildChain() async throws {
-        let g = try await genesis()
-        let nexusChain = ChainState.fromGenesis(block: g)
-        let level = ChainLevel(chain: nexusChain)
-
-        let childGenesis = try await buildAndStoreGenesis(
-            spec: ChainSpec(
-                maxNumberOfTransactionsPerBlock: 50,
-                maxStateGrowth: 50_000,
-                premine: 0,
-                targetBlockTime: 2_000,
-                initialReward: 256, halvingInterval: 10_000
-            ),
-            timestamp: 1_000_000,
-            target: UInt256(500),
-            fetcher: fetcher
-        )
-
-        let childrenBefore = await level.children
-        XCTAssertTrue(childrenBefore.isEmpty)
-
-        try await level.attachRestoredChildForTesting(to: "child1", genesisBlock: childGenesis)
-
-        let childrenAfter = await level.children
-        XCTAssertEqual(childrenAfter.count, 1)
-        XCTAssertNotNil(childrenAfter["child1"])
-
-        let childTip = await childrenAfter["child1"]!.chain.getHighestBlockHeight()
-        XCTAssertEqual(childTip, 0)
-    }
-
-    func testDuplicateBootstrapIsRejected() async throws {
-        let g = try await genesis()
-        let level = ChainLevel(chain: ChainState.fromGenesis(block: g))
-        let childG = try await buildAndStoreGenesis(
-            spec: ChainSpec(maxNumberOfTransactionsPerBlock: 10, maxStateGrowth: 10_000,
-                           premine: 0, targetBlockTime: 1_000, initialReward: 32, halvingInterval: 10_000),
-            timestamp: 1_000_000, target: UInt256(100), fetcher: fetcher
-        )
-
-        try await level.attachRestoredChildForTesting(to: "x", genesisBlock: childG)
-        let firstChildLevel = await level.childLevel(directory: "x")
-        guard let firstChildLevel else {
-            return XCTFail("child runtime was not bootstrapped")
-        }
-        let firstChain = await firstChildLevel.chain
-        let firstHash = try BlockHeader(node: childG).rawCID
-
-        let differentChildG = try await buildAndStoreGenesis(
-            spec: ChainSpec(maxNumberOfTransactionsPerBlock: 99, maxStateGrowth: 99_000,
-                           premine: 0, targetBlockTime: 999, initialReward: 512, halvingInterval: 10_000),
-            timestamp: 2_000_000, target: UInt256(200), fetcher: fetcher
-        )
-        do {
-            _ = try await level.attachRestoredChildForTesting(to: "x", genesisBlock: differentChildG)
-            XCTFail("a second root must not enter through bootstrap")
-        } catch let error as ChainLevelTopologyError {
-            XCTAssertEqual(error, .directoryAlreadyAttached)
-        }
-        let secondChildLevel = await level.childLevel(directory: "x")
-        guard let secondChildLevel else {
-            return XCTFail("child runtime disappeared")
-        }
-        let secondChain = await secondChildLevel.chain
-        let secondHash = try BlockHeader(node: differentChildG).rawCID
-        let containsFirst = await firstChain.contains(blockHash: firstHash)
-        let containsSecond = await firstChain.contains(blockHash: secondHash)
-
-        let childrenAfterSecond = await level.children
-        XCTAssertEqual(childrenAfterSecond.count, 1)
-        XCTAssertTrue(firstChildLevel === secondChildLevel)
-        XCTAssertTrue(firstChain === secondChain)
-        XCTAssertTrue(containsFirst)
-        XCTAssertFalse(containsSecond)
     }
 }
 
@@ -1234,11 +1138,12 @@ final class StateRootValidationTests: XCTestCase {
         }
         try await storeBlockToFetcher(minedTampered, fetcher: f)
 
-        let level = ChainLevel(chain: ChainState.fromGenesis(block: g))
-        let result = await level.admitBlockHeaderChainLocal(
+        let level = ChainLevel(testChain: ChainState.fromGenesis(block: g))
+        let result = try await level.admitBlockHeaderChainLocal(
             header(minedTampered),
             fetcher: f,
-            prepare: { _, _, _ in .ready }
+            storer: f,
+            stage: testAdmissionStage
         )
 
         guard case .rejected(.protocolInvalid) = result else {
@@ -1262,14 +1167,15 @@ final class StateRootValidationTests: XCTestCase {
         )
         try await storeBlockToFetcher(validBlock, fetcher: f)
 
-        let acceptingLevel = ChainLevel(chain: ChainState.fromGenesis(block: g))
-        let accepted = await acceptingLevel.admitBlockHeaderChainLocal(
+        let acceptingLevel = ChainLevel(testChain: ChainState.fromGenesis(block: g))
+        let accepted = try await acceptingLevel.admitBlockHeaderChainLocal(
             header(validBlock),
             fetcher: f,
-            prepare: { _, _, _ in .ready }
+            storer: f,
+            stage: testAdmissionStage
         )
 
-        guard case let .canonicalized(_, materializedPostState: materializedPostState?, followUps: _) = accepted else {
+        guard case let .canonicalized(_, materializedPostState: materializedPostState?, reorganization: _, evictedBlocks: _, followUps: _) = accepted else {
             return XCTFail("accepted block should canonicalize with its materialized post-state")
         }
         XCTAssertEqual(
@@ -1288,11 +1194,12 @@ final class StateRootValidationTests: XCTestCase {
         }
         try await storeBlockToFetcher(minedTampered, fetcher: f)
 
-        let rejectingLevel = ChainLevel(chain: ChainState.fromGenesis(block: g))
-        let rejected = await rejectingLevel.admitBlockHeaderChainLocal(
+        let rejectingLevel = ChainLevel(testChain: ChainState.fromGenesis(block: g))
+        let rejected = try await rejectingLevel.admitBlockHeaderChainLocal(
             header(minedTampered),
             fetcher: f,
-            prepare: { _, _, _ in .ready }
+            storer: f,
+            stage: testAdmissionStage
         )
 
         guard case .rejected(.protocolInvalid) = rejected else {
@@ -1319,11 +1226,12 @@ final class StateRootValidationTests: XCTestCase {
             storer: incompleteFetcher
         )
 
-        let level = ChainLevel(chain: ChainState.fromGenesis(block: g))
-        let unavailable = await level.admitBlockHeaderChainLocal(
+        let level = ChainLevel(testChain: ChainState.fromGenesis(block: g))
+        let unavailable = try await level.admitBlockHeaderChainLocal(
             header(block),
             fetcher: incompleteFetcher,
-            prepare: { _, _, _ in .ready }
+            storer: incompleteFetcher,
+            stage: testAdmissionStage
         )
 
         guard case .rejected(.unavailableEvidence) = unavailable else {
@@ -1334,10 +1242,11 @@ final class StateRootValidationTests: XCTestCase {
 
         try await VolumeImpl<Block>(node: g).storeBlock(fetcher: producerFetcher, storer: completeFetcher)
         try await VolumeImpl<Block>(node: block).storeBlock(fetcher: producerFetcher, storer: completeFetcher)
-        let accepted = await level.admitBlockHeaderChainLocal(
+        let accepted = try await level.admitBlockHeaderChainLocal(
             header(block),
             fetcher: completeFetcher,
-            prepare: { _, _, _ in .ready }
+            storer: completeFetcher,
+            stage: testAdmissionStage
         )
 
         guard case .canonicalized = accepted else {
@@ -1370,16 +1279,18 @@ final class StateRootValidationTests: XCTestCase {
         }
         try await storeBlockToFetcher(minedTampered, fetcher: f)
 
-        let level = ChainLevel(chain: ChainState.fromGenesis(block: g))
-        let rejected = await level.admitBlockHeaderChainLocal(
+        let level = ChainLevel(testChain: ChainState.fromGenesis(block: g))
+        let rejected = try await level.admitBlockHeaderChainLocal(
             header(minedTampered),
             fetcher: f,
-            prepare: { _, _, _ in .ready }
+            storer: f,
+            stage: testAdmissionStage
         )
-        let rejectedAgain = await level.admitBlockHeaderChainLocal(
+        let rejectedAgain = try await level.admitBlockHeaderChainLocal(
             header(minedTampered),
             fetcher: f,
-            prepare: { _, _, _ in .ready }
+            storer: f,
+            stage: testAdmissionStage
         )
 
         guard case .rejected(.protocolInvalid) = rejected else {
@@ -1434,22 +1345,34 @@ final class StateRootValidationTests: XCTestCase {
         }
         try await storeBlockToFetcher(minedTamperedChild, fetcher: f)
 
-        // Build a nexus block that embeds the tampered child.
-        let nexusBlock = try await buildAndStoreBlock(
-            previous: nexusGenesis, children: ["Child": minedTamperedChild],
+        // The child process receives the complete root-to-child proof package;
+        // it does not depend on an in-process parent-chain runtime.
+        let nexusCarrier = try await buildAndStoreGenesis(
+            spec: nexusSpec, children: ["Child": minedTamperedChild],
             timestamp: t - 10_000, target: easyDifficulty, nonce: 0, fetcher: f
         )
-        try await storeBlockToFetcher(nexusBlock, fetcher: f)
-
-        let nexusLevel = ChainLevel(chain: ChainState.fromGenesis(block: nexusGenesis))
-        try await nexusLevel.attachRestoredChildForTesting(to: "Child", genesisBlock: childGenesis)
-        _ = await nexusLevel.admitBlockHeaderChainLocal(
-            header(nexusBlock),
+        let proof = try await ChildBlockProof.generate(
+            rootHeader: header(nexusCarrier),
+            childDirectory: "Child",
             fetcher: f,
-            prepare: { _, _, _ in .ready }
+        )
+        let package = try await childValidationPackage(proof: proof, fetcher: f)
+        let childLevel = ChainLevel(
+            chain: ChainState.fromGenesis(block: childGenesis),
+            context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
+        )
+        let result = try await childLevel.admitBlockHeaderChainLocal(
+            header(minedTamperedChild),
+            fetcher: f,
+            childPackage: package,
+            storer: f,
+            stage: testAdmissionStage
         )
 
-        let childTip = await nexusLevel.children["Child"]!.chain.getHighestBlockHeight()
+        guard case .rejected(.protocolInvalid) = result else {
+            return XCTFail("tampered child block must be rejected")
+        }
+        let childTip = await childLevel.chain.getHighestBlockHeight()
         XCTAssertEqual(childTip, 0, "Tampered child block must not be submitted to child chain")
     }
 }

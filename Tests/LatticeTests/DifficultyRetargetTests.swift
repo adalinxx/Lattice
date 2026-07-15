@@ -72,10 +72,6 @@ final class DifficultyRetargetTests: XCTestCase {
         try await VolumeImpl<Block>(node: block).storeBlock(storer: fetcher)
     }
 
-    private func cid(_ block: Block) -> String {
-        try! VolumeImpl<Block>(node: block).rawCID
-    }
-
     func testLwmaRetargetWeightedAverageUsesRecentWeights() {
         let s = spec(window: 4, target: 1_000)
         let previous = UInt256(10_000)
@@ -320,7 +316,7 @@ final class DifficultyRetargetTests: XCTestCase {
         XCTAssertTrue(block.validateTimestamp(parent: parent, ancestorTimestamps: mostRecentEleven + olderHighOutliers))
     }
 
-    func testMissingAncestorRejectsInsteadOfTwoBlockFallback() async throws {
+    func testMissingAncestorIsUnavailableInsteadOfTwoBlockFallback() async throws {
         let s = spec(window: 120, target: 1_000)
         let fullFetcher = StorableFetcher()
         let genesis = try await makeGenesis(spec: s, timestamp: 1_000, target: UInt256(10_000), fetcher: fullFetcher)
@@ -351,11 +347,15 @@ final class DifficultyRetargetTests: XCTestCase {
         }
         partialFetcher.store(rawCid: block1CID, data: block1Data)
 
-        let valid = try await block2.validateNexus(fetcher: partialFetcher).0
-        XCTAssertFalse(valid, "missing ancestors must reject/defer instead of falling back to a two-block retarget")
+        do {
+            _ = try await block2.validateNexus(fetcher: partialFetcher)
+            XCTFail("missing ancestors must be unavailable instead of using a two-block retarget")
+        } catch is FetcherError {
+            // Admission maps this to retriable unavailable evidence.
+        }
     }
 
-    func testGeneratedChainPassesValidateNexusAndSyncWalks() async throws {
+    func testGeneratedChainPassesValidateNexus() async throws {
         let s = spec(window: 120, target: 1_000)
         let fetcher = StorableFetcher()
         let genesis = try await makeGenesis(spec: s, timestamp: 1_000, target: UInt256.max, fetcher: fetcher)
@@ -374,17 +374,10 @@ final class DifficultyRetargetTests: XCTestCase {
             blocks.append(block)
         }
 
-        let tipCID = cid(blocks.last!)
-        let syncer = ChainSyncer(fetcher: fetcher, store: { _, _ in }, genesisBlockHash: cid(genesis))
-        let snapshot = try await syncer.syncSnapshot(peerTipCID: tipCID, depth: 10)
-        XCTAssertEqual(snapshot.tipBlockHash, tipCID)
-
-        let full = try await ChainSyncer(fetcher: fetcher, store: { _, _ in }, genesisBlockHash: cid(genesis))
-            .syncFull(peerTipCID: tipCID)
-        XCTAssertEqual(full.tipBlockHash, tipCID)
+        XCTAssertEqual(blocks.count, 6)
     }
 
-    func testForgedNextDifficultyRejectedByValidateNexusAndSyncWalks() async throws {
+    func testForgedNextDifficultyRejectedByValidateNexus() async throws {
         let s = spec(window: 120, target: 1_000)
         let fetcher = StorableFetcher()
         let genesis = try await makeGenesis(spec: s, timestamp: 1_000, target: UInt256.max, fetcher: fetcher)
@@ -405,56 +398,7 @@ final class DifficultyRetargetTests: XCTestCase {
             fetcher: fetcher
         )
         try await storeBlock(forged, to: fetcher)
-        let forgedCID = cid(forged)
-        let genesisCID = cid(genesis)
-
         let directValid = try await forged.validateNexus(fetcher: fetcher).0
         XCTAssertFalse(directValid)
-
-        do {
-            _ = try await ChainSyncer(fetcher: fetcher, store: { _, _ in }, genesisBlockHash: genesisCID)
-                .syncSnapshot(peerTipCID: forgedCID, depth: 10)
-            XCTFail("syncSnapshot must reject forged retargets during the block walk")
-        } catch SyncError.invalidBlock(let height) {
-            XCTAssertEqual(height, forged.height)
-        }
-
-        do {
-            _ = try await ChainSyncer(fetcher: fetcher, store: { _, _ in }, genesisBlockHash: genesisCID)
-                .syncFull(peerTipCID: forgedCID)
-            XCTFail("syncFull must reject forged retargets during the block walk")
-        } catch SyncError.invalidBlock(let height) {
-            XCTAssertEqual(height, forged.height)
-        }
-
-        let headers = [
-            SyncBlockHeader(
-                cid: genesisCID,
-                height: genesis.height,
-                previousBlockCID: nil,
-                target: genesis.target,
-                nextTarget: genesis.nextTarget,
-                timestamp: genesis.timestamp,
-                specCID: genesis.spec.rawCID,
-                spec: genesis.spec.node
-            ),
-            SyncBlockHeader(
-                cid: forgedCID,
-                height: forged.height,
-                previousBlockCID: forged.parent?.rawCID,
-                target: forged.target,
-                nextTarget: forged.nextTarget,
-                timestamp: forged.timestamp,
-                specCID: forged.spec.rawCID,
-                spec: forged.spec.node
-            )
-        ]
-        do {
-            _ = try await ChainSyncer(fetcher: fetcher, store: { _, _ in }, genesisBlockHash: genesisCID)
-                .syncFromHeaders(headers, cumulativeWork: UInt256(2))
-            XCTFail("syncFromHeaders must reject forged retargets from header consensus data")
-        } catch SyncError.invalidBlock(let height) {
-            XCTAssertEqual(height, forged.height)
-        }
     }
 }

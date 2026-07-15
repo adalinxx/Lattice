@@ -1,196 +1,177 @@
+import Foundation
 import XCTest
 @testable import Lattice
 import cashew
 import UInt256
-import Foundation
 
-// F5-1: per-block cumulative-work prefix sum (`BlockMeta.cumulativeWork`).
-// Verifies the sum is maintained incrementally, survives a persistence
-// round-trip, and — crucially — stays exact after retention pruning, where the
-// windowed `getCumulativeWork(limit:)` would underestimate.
-
-private func f() -> StorableFetcher { StorableFetcher() }
-private func s(_ dir: String = "Nexus", premine: UInt64 = 0) -> ChainSpec {
-    ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
-              maxBlockSize: 1_000_000, premine: premine, targetBlockTime: 1_000,
-              initialReward: 1024, halvingInterval: 10_000, retargetWindow: 5)
+private func prefixSpec() -> ChainSpec {
+    ChainSpec(
+        maxNumberOfTransactionsPerBlock: 100,
+        maxStateGrowth: 100_000,
+        maxBlockSize: 1_000_000,
+        premine: 0,
+        targetBlockTime: 1_000,
+        initialReward: 1024,
+        halvingInterval: 10_000,
+        retargetWindow: 5
+    )
 }
-private func now() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
+
+private func prefixContribution(_ id: String, work: UInt256) -> VerifiedWorkContribution {
+    VerifiedWorkContribution(id: id, work: work)
+}
 
 final class CumulativeWorkPrefixSumTests: XCTestCase {
-
     func testIncrementalPrefixSumEqualsTotalWork() async throws {
-        let fetcher = f()
-        let base = now() - 50_000
-        let diff = UInt256(1000)
-
+        let fetcher = StorableFetcher()
+        let base = Int64(Date().timeIntervalSince1970 * 1_000) - 50_000
+        let target = UInt256(1_000)
+        let perBlock = workForTarget(target)
         let genesis = try await buildAndStoreGenesis(
-            spec: s(), timestamp: base, target: diff, fetcher: fetcher
+            spec: prefixSpec(),
+            timestamp: base,
+            target: target,
+            fetcher: fetcher
         )
         let chain = ChainState.fromGenesis(block: genesis)
 
-        var prev = genesis
-        for i in 1...5 {
-            let b = try await buildAndStoreBlock(
-                previous: prev, timestamp: base + Int64(i) * 1000,
-                target: diff, nonce: UInt64(i), fetcher: fetcher
+        var previous = genesis
+        var expected = perBlock
+        for height in 1...5 {
+            let block = try await buildAndStoreBlock(
+                previous: previous,
+                timestamp: base + Int64(height) * 1_000,
+                target: target,
+                nonce: UInt64(height),
+                fetcher: fetcher
             )
-            _ = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
-                blockHeader: try! VolumeImpl<Block>(node: b), block: b
-            )
-            prev = b
-
-            // After each extension the tip's cumulative work is the exact prefix
-            // sum: (height + 1) blocks each of work = max/diff.
-            var expected = UInt256.zero
-            for _ in 0...i { expected = expected &+ workForTarget(diff) }
-            let tipCum = await chain.getTipCumulativeWork()
-            XCTAssertEqual(tipCum, expected, "tip cumulative work at height \(i)")
+            _ = await chain.submitTestBlock(blockHeader: try BlockHeader(node: block), block: block)
+            previous = block
+            expected = saturatingWorkSum(expected, perBlock)
+            let cumulativeWork = await chain.getTipCumulativeWork()
+            XCTAssertEqual(cumulativeWork, expected)
         }
-
-        // Genesis carries its own work; every block equals parent + own work.
-        let genesisCum = await chain.getCumulativeWork(forHash: try! VolumeImpl<Block>(node: genesis).rawCID)
-        XCTAssertEqual(genesisCum, workForTarget(diff), "genesis cumulative work == its own work")
     }
 
     func testPrefixSumSurvivesPersistRestore() async throws {
-        let fetcher = f()
-        let base = now() - 50_000
-        let diff = UInt256(1000)
-
+        let fetcher = StorableFetcher()
+        let base = Int64(Date().timeIntervalSince1970 * 1_000) - 50_000
+        let target = UInt256(1_000)
         let genesis = try await buildAndStoreGenesis(
-            spec: s(), timestamp: base, target: diff, fetcher: fetcher
+            spec: prefixSpec(),
+            timestamp: base,
+            target: target,
+            fetcher: fetcher
         )
-        let chain1 = ChainState.fromGenesis(block: genesis)
-        var prev = genesis
-        for i in 1...4 {
-            let b = try await buildAndStoreBlock(
-                previous: prev, timestamp: base + Int64(i) * 1000,
-                target: diff, nonce: UInt64(i), fetcher: fetcher
+        let chain = ChainState.fromGenesis(block: genesis)
+        var previous = genesis
+        for height in 1...4 {
+            let block = try await buildAndStoreBlock(
+                previous: previous,
+                timestamp: base + Int64(height) * 1_000,
+                target: target,
+                nonce: UInt64(height),
+                fetcher: fetcher
             )
-            _ = await chain1.submitBlock(
-                parentBlockHeaderAndIndex: nil,
-                blockHeader: try! VolumeImpl<Block>(node: b), block: b
-            )
-            prev = b
+            _ = await chain.submitTestBlock(blockHeader: try BlockHeader(node: block), block: block)
+            previous = block
         }
 
-        let before = await chain1.getTipCumulativeWork()
+        let before = await chain.getTipCumulativeWork()
+        let encoded = try JSONEncoder().encode(await chain.persist())
+        let decoded = try JSONDecoder().decode(PersistedChainState.self, from: encoded)
+        let restored = try ChainState.restore(from: decoded)
 
-        // Full JSON round-trip — exercises the Codable path + cumulativeWorkByHash.
-        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        let decoded = try JSONDecoder().decode(
-            PersistedChainState.self, from: try encoder.encode(await chain1.persist())
-        )
-        let chain2 = try ChainState.restore(from: decoded)
-        let after = await chain2.getTipCumulativeWork()
-
-        XCTAssertEqual(after, before, "cumulative work preserved exactly across persist/restore")
-        XCTAssertTrue(before > UInt256.zero)
+        let after = await restored.getTipCumulativeWork()
+        XCTAssertEqual(after, before)
     }
 
-    func testPrefixSumIsPruningProof() async throws {
-        // A persisted state that retained only a 2-block window of a height-1000
-        // chain, but whose tip carries the genesis-relative prefix sum. The
-        // restored tip must report that full sum, NOT the sum of the two
-        // present blocks (which the windowed getCumulativeWork would give).
-        let tinyDiff = UInt256.max // work ≈ 1 per present block
-        let diffHex = tinyDiff.toHexString()
-        let fullTotal = UInt256(987_654_321) // stand-in for work over 1000 pruned blocks
-
+    func testPersistedPrefixRemainsExactWhenAncestorLifecycleDataIsPruned() async throws {
+        let one = UInt256(1)
+        let genesis = PersistedBlockMeta(
+            blockHash: "G",
+            parentBlockHash: nil,
+            blockHeight: 0,
+            childHashes: ["A"],
+            workContributions: [prefixContribution("grind:G", work: one)],
+            cumulativeWork: one.toHexString(),
+            subtreeWeight: UInt256(3).toHexString()
+        )
         let parent = PersistedBlockMeta(
-            blockHash: "P", parentBlockHash: nil, blockHeight: 999,
-            parentChainBlocks: [:], childHashes: ["T"], target: diffHex,
-            timestamp: 1, cumulativeWork: (fullTotal &- workForTarget(tinyDiff)).toHexString()
+            blockHash: "A",
+            parentBlockHash: "G",
+            blockHeight: 1,
+            childHashes: ["B"],
+            workContributions: [prefixContribution("grind:A", work: one)],
+            cumulativeWork: UInt256(2).toHexString(),
+            subtreeWeight: UInt256(2).toHexString()
         )
         let tip = PersistedBlockMeta(
-            blockHash: "T", parentBlockHash: "P", blockHeight: 1000,
-            parentChainBlocks: [:], childHashes: [], target: diffHex,
-            timestamp: 2, cumulativeWork: fullTotal.toHexString()
+            blockHash: "B",
+            parentBlockHash: "A",
+            blockHeight: 2,
+            childHashes: [],
+            workContributions: [prefixContribution("grind:B", work: one)],
+            cumulativeWork: UInt256(3).toHexString()
         )
         let persisted = PersistedChainState(
-            chainTip: "T", tipPostStateCID: nil, tipPrevStateCID: nil, tipSpecCID: nil,
-            tipTarget: nil, tipNextTarget: nil, tipHeight: 1000, tipTimestamp: nil,
-            mainChainHashes: ["P", "T"], blocks: [parent, tip],
-            parentChainMap: [:], missingBlockHashes: []
+            chainTip: "B",
+            mainChainHashes: ["G", "A", "B"],
+            blocks: [tip],
+            prunedBlocks: [genesis, parent]
         )
-
         let chain = try ChainState.restore(from: persisted)
-        let tipCum = await chain.getTipCumulativeWork()
-        XCTAssertEqual(tipCum, fullTotal, "tip reports persisted prefix sum, not windowed sum")
 
-        // The windowed accessor still underestimates (only the present window) —
-        // this contrast is exactly why the prefix sum exists.
-        let windowed = await chain.getCumulativeWork(limit: 1000)
-        XCTAssertTrue(windowed < fullTotal, "windowed sum underestimates after pruning")
-    }
-
-    func testLegacyPersistedStateRecomputesWindowRelative() async throws {
-        // Pre-upgrade data: no cumulativeWork on any block. Restore must not
-        // crash and must produce a sensible window-relative prefix sum.
-        let diff = UInt256(1000)
-        let work = workForTarget(diff)
-        let g = PersistedBlockMeta(blockHash: "G", parentBlockHash: nil, blockHeight: 0,
-            parentChainBlocks: [:], childHashes: ["A"], target: diff.toHexString(),
-            timestamp: 1, cumulativeWork: nil)
-        let a = PersistedBlockMeta(blockHash: "A", parentBlockHash: "G", blockHeight: 1,
-            parentChainBlocks: [:], childHashes: ["B"], target: diff.toHexString(),
-            timestamp: 2, cumulativeWork: nil)
-        let b = PersistedBlockMeta(blockHash: "B", parentBlockHash: "A", blockHeight: 2,
-            parentChainBlocks: [:], childHashes: [], target: diff.toHexString(),
-            timestamp: 3, cumulativeWork: nil)
-        let persisted = PersistedChainState(
-            chainTip: "B", tipPostStateCID: nil, tipPrevStateCID: nil, tipSpecCID: nil,
-            tipTarget: nil, tipNextTarget: nil, tipHeight: 2, tipTimestamp: nil,
-            mainChainHashes: ["G", "A", "B"], blocks: [g, a, b],
-            parentChainMap: [:], missingBlockHashes: []
-        )
-
-        let chain = try ChainState.restore(from: persisted)
-        let tipCum = await chain.getTipCumulativeWork()
-        XCTAssertEqual(tipCum, work &+ work &+ work, "legacy recompute = sum of present-window work")
+        let exact = await chain.getTipCumulativeWork()
+        let localWindow = await chain.getCumulativeWork(limit: 1)
+        XCTAssertEqual(exact, UInt256(3))
+        XCTAssertEqual(localWindow, UInt256(2))
     }
 
     func testOutOfOrderInsertRepairsDescendantPrefixSum() async throws {
-        let fetcher = f()
-        let base = now() - 50_000
-        let diff = UInt256(1000)
-        let work = workForTarget(diff)
-
+        let fetcher = StorableFetcher()
+        let base = Int64(Date().timeIntervalSince1970 * 1_000) - 50_000
+        let target = UInt256(1_000)
+        let work = workForTarget(target)
         let genesis = try await buildAndStoreGenesis(
-            spec: s(), timestamp: base, target: diff, fetcher: fetcher
+            spec: prefixSpec(),
+            timestamp: base,
+            target: target,
+            fetcher: fetcher
         )
-        let a = try await buildAndStoreBlock(
-            previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher
+        let parent = try await buildAndStoreBlock(
+            previous: genesis,
+            timestamp: base + 1_000,
+            target: target,
+            nonce: 1,
+            fetcher: fetcher
         )
-        let b = try await buildAndStoreBlock(
-            previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher
+        let child = try await buildAndStoreBlock(
+            previous: parent,
+            timestamp: base + 2_000,
+            target: target,
+            nonce: 2,
+            fetcher: fetcher
         )
-        let aHash = try! VolumeImpl<Block>(node: a).rawCID
-        let bHash = try! VolumeImpl<Block>(node: b).rawCID
-
+        let parentHash = try BlockHeader(node: parent).rawCID
+        let childHash = try BlockHeader(node: child).rawCID
         let chain = ChainState.fromGenesis(block: genesis)
 
-        // Deliver B (parent A) BEFORE A — A is missing, so B gets a provisional
-        // prefix sum (its own work only).
-        _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: b), block: b)
-        let provisional = await chain.getCumulativeWork(forHash: bHash)
-        XCTAssertEqual(provisional, work, "before parent arrives, B holds only its own work")
+        _ = await chain.submitTestBlock(blockHeader: try BlockHeader(node: child), block: child)
+        let provisional = await chain.getCumulativeWork(forHash: childHash)
+        XCTAssertEqual(provisional, work)
 
-        // Now A arrives; the repair must propagate the correct prefix down to B.
-        _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: a), block: a)
+        _ = await chain.submitTestBlock(blockHeader: try BlockHeader(node: parent), block: parent)
 
-        let aCum = await chain.getCumulativeWork(forHash: aHash)
-        let bCum = await chain.getCumulativeWork(forHash: bHash)
-        XCTAssertEqual(aCum, work &+ work, "A = genesis + A")
-        XCTAssertEqual(bCum, work &+ work &+ work, "B repaired to genesis + A + B after A arrives")
+        let parentWork = await chain.getCumulativeWork(forHash: parentHash)
+        let childWork = await chain.getCumulativeWork(forHash: childHash)
+        XCTAssertEqual(parentWork, saturatingWorkSum(work, work))
+        XCTAssertEqual(childWork, saturatingWorkSum(saturatingWorkSum(work, work), work))
     }
 
     func testSaturatingWorkSumClampsOnOverflow() {
         XCTAssertEqual(saturatingWorkSum(UInt256(3), UInt256(4)), UInt256(7))
-        XCTAssertEqual(saturatingWorkSum(UInt256.max, UInt256(1)), UInt256.max, "overflow clamps to max, never wraps")
-        XCTAssertEqual(saturatingWorkSum(UInt256.max &- UInt256(5), UInt256(10)), UInt256.max)
-        XCTAssertEqual(saturatingWorkSum(UInt256.zero, UInt256.zero), UInt256.zero)
+        XCTAssertEqual(saturatingWorkSum(UInt256.max, UInt256(1)), UInt256.max)
+        XCTAssertEqual(saturatingWorkSum(UInt256.max - UInt256(5), UInt256(10)), UInt256.max)
     }
 }

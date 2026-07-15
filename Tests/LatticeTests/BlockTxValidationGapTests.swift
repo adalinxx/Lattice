@@ -22,7 +22,7 @@ import Foundation
 
 // MARK: - Shared infrastructure
 
-private func gapSpec(_ dir: String = "Nexus") -> ChainSpec {
+private func gapSpec() -> ChainSpec {
     ChainSpec(
         maxNumberOfTransactionsPerBlock: 100,
         maxStateGrowth: 100_000,
@@ -121,12 +121,13 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
         let parentCID = gapHeader(g).rawCID
         let fetcher = TransientFailingFetcher(backing: backing, failing: [parentCID])
 
-        let level = ChainLevel(chain: ChainState.fromGenesis(block: g))
+        let level = ChainLevel(testChain: ChainState.fromGenesis(block: g))
 
-        let unavailable = await level.admitBlockHeaderChainLocal(
+        let unavailable = try await level.admitBlockHeaderChainLocal(
             gapHeader(block),
             fetcher: fetcher,
-            prepare: { _, _, _ in .ready }
+            storer: backing,
+            stage: testAdmissionStage
         )
         guard case .rejected(.unavailableEvidence) = unavailable else {
             return XCTFail("transient ancestor-resolution failure must be unavailable")
@@ -137,10 +138,11 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
         // Simulate the re-request succeeding: clear the failure and reprocess
         // the SAME header through the SAME fetcher instance.
         fetcher.setFailing([])
-        let accepted = await level.admitBlockHeaderChainLocal(
+        let accepted = try await level.admitBlockHeaderChainLocal(
             gapHeader(block),
             fetcher: fetcher,
-            prepare: { _, _, _ in .ready }
+            storer: backing,
+            stage: testAdmissionStage
         )
         guard case .canonicalized = accepted else {
             return XCTFail("an unavailable block must canonicalize once evidence arrives")
@@ -173,21 +175,23 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
         try await storeBlock(g, fetcher: f)
         try await storeBlock(minedTampered, fetcher: f)
 
-        let level = ChainLevel(chain: ChainState.fromGenesis(block: g))
+        let level = ChainLevel(testChain: ChainState.fromGenesis(block: g))
 
-        let rejected = await level.admitBlockHeaderChainLocal(
+        let rejected = try await level.admitBlockHeaderChainLocal(
             gapHeader(minedTampered),
             fetcher: f,
-            prepare: { _, _, _ in .ready }
+            storer: f,
+            stage: testAdmissionStage
         )
         guard case .rejected(.protocolInvalid) = rejected else {
             return XCTFail("a fully-resolvable invalid block must be rejected")
         }
 
-        let rejectedAgain = await level.admitBlockHeaderChainLocal(
+        let rejectedAgain = try await level.admitBlockHeaderChainLocal(
             gapHeader(minedTampered),
             fetcher: f,
-            prepare: { _, _, _ in .ready }
+            storer: f,
+            stage: testAdmissionStage
         )
         guard case .rejected(.protocolInvalid) = rejectedAgain else {
             return XCTFail("reprocessing a fully-resolvable invalid block must stay rejected")
@@ -241,7 +245,7 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
         let depositAmount: UInt64 = 200
         let swapNonce: UInt128 = 4242
         let cSpec = childSpecWithDeposit(depositAmount)
-        let nSpec = gapSpec("Nexus")
+        let nSpec = gapSpec()
         let nexusReward = nSpec.rewardAtBlock(1)
 
         let genesisTs: Int64 = t - 40_000

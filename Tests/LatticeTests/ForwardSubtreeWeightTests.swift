@@ -4,7 +4,7 @@ import cashew
 import UInt256
 import Foundation
 
-// F5-4 (Hierarchical GHOST): the forward same-chain subtree weight,
+// Forward same-chain subtree weight,
 // subtreeWeight(B) = work(B) + Σ subtreeWeight(children) — the descendant dual of
 // the backward cumulativeWork prefix sum (design consensus-fork-choice.md §3/§6).
 // These pin: a tip weighs its own work; an interior block weighs its whole
@@ -35,7 +35,7 @@ final class ForwardSubtreeWeightTests: XCTestCase {
         var blocks = [genesis]
         for i in 1...3 {
             let b = try await buildAndStoreBlock(previous: prev, timestamp: base + Int64(i) * 1000, target: diff, nonce: UInt64(i), fetcher: fetcher)
-            _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: b), block: b)
+            _ = await chain.submitTestBlock(blockHeader: try! VolumeImpl<Block>(node: b), block: b)
             blocks.append(b); prev = b
         }
         // G,A,B,C (4 blocks). subtreeWeight(G)=4w, A=3w, B=2w, C(tip)=1w.
@@ -63,7 +63,7 @@ final class ForwardSubtreeWeightTests: XCTestCase {
         let x = try await buildAndStoreBlock(previous: a, timestamp: base + 2500, target: diff, nonce: 99, fetcher: fetcher)
         let y = try await buildAndStoreBlock(previous: x, timestamp: base + 3500, target: diff, nonce: 100, fetcher: fetcher)
         for blk in [a, b, x, y] {
-            _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
+            _ = await chain.submitTestBlock(blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
         }
         // Subtree of A = {A, B, X, Y} = 4w (both branches), NOT 2w (one path).
         let swA = await chain.subtreeWeight(forHash: cid(a))
@@ -97,7 +97,7 @@ final class ForwardSubtreeWeightTests: XCTestCase {
         let c = try await buildAndStoreBlock(previous: b, timestamp: base + 3000, target: diff, nonce: 3, fetcher: fetcher)
         // Deliver C, then B, then A (children before parents).
         for blk in [c, b, a] {
-            _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
+            _ = await chain.submitTestBlock(blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
         }
         let swA = await chain.subtreeWeight(forHash: cid(a))
         var threeW = UInt256.zero; for _ in 0..<3 { threeW = threeW &+ w }
@@ -118,7 +118,7 @@ final class ForwardSubtreeWeightTests: XCTestCase {
         let a = try await buildAndStoreBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
         let b = try await buildAndStoreBlock(previous: a, timestamp: base + 2000, target: diff, nonce: 2, fetcher: fetcher)
         for blk in [a, b] {
-            _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
+            _ = await chain.submitTestBlock(blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
         }
         let persisted = await chain.persist()
         let restored = try ChainState.restore(from: persisted)

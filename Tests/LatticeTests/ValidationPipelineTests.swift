@@ -148,8 +148,7 @@ final class BlockBuilderSubmissionTests: XCTestCase {
         for i in 1...10 {
             let block = try await nextBlock(previous: prev, timestamp: ts, nonce: UInt64(i))
             let header = try! VolumeImpl<Block>(node: block)
-            let result = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let result = await chain.submitTestBlock(
                 blockHeader: header,
                 block: block
             )
@@ -170,8 +169,7 @@ final class BlockBuilderSubmissionTests: XCTestCase {
         var ts: Int64 = 2_000_000
         for i in 1...3 {
             let block = try await nextBlock(previous: mainPrev, timestamp: ts, nonce: UInt64(i))
-            let _ = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: block),
                 block: block
             )
@@ -188,8 +186,7 @@ final class BlockBuilderSubmissionTests: XCTestCase {
         var sawReorg = false
         for i in 1...5 {
             let block = try await nextBlock(previous: forkPrev, timestamp: ts, nonce: UInt64(100 + i))
-            let result = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let result = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: block),
                 block: block
             )
@@ -460,61 +457,45 @@ final class CryptoUtilsTests: XCTestCase {
     }
 }
 
-// MARK: - Missing Block Tracking Tests
+// MARK: - Out-of-Order Submission Tests
 
 @MainActor
-final class MissingBlockTrackingTests: XCTestCase {
+final class OutOfOrderSubmissionTests: XCTestCase {
 
-    func testNoMissingBlocksInitially() async {
-        let (chain, _) = makeLinearChain(length: 3)
-        let missing = await chain.getMissingBlockHashes()
-        XCTAssertTrue(missing.isEmpty)
-    }
-
-    func testMissingParentIsTracked() async throws {
+    func testMissingParentIsRequested() async throws {
         let genesis = try await genesisBlock()
         let chain = ChainState.fromGenesis(block: genesis)
 
         let block1 = try await nextBlock(previous: genesis, timestamp: 2_000_000, nonce: 1)
         let block2 = try await nextBlock(previous: block1, timestamp: 3_000_000, nonce: 2)
 
-        let result = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let result = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block2),
             block: block2
         )
-        XCTAssertTrue(result.needsChildBlock, "Block with missing parent should flag needsChildBlock")
-
-        let missing = await chain.getMissingBlockHashes()
-        let block1Hash = try! VolumeImpl<Block>(node: block1).rawCID
-        XCTAssertTrue(missing.contains(block1Hash), "Missing parent should be tracked")
+        XCTAssertTrue(result.needsParentBlock, "Block with a missing predecessor should request its parent")
     }
 
-    func testMissingBlockResolvedWhenParentArrives() async throws {
+    func testParentArrivalConnectsQueuedDescendant() async throws {
         let genesis = try await genesisBlock()
         let chain = ChainState.fromGenesis(block: genesis)
 
         let block1 = try await nextBlock(previous: genesis, timestamp: 2_000_000, nonce: 1)
         let block2 = try await nextBlock(previous: block1, timestamp: 3_000_000, nonce: 2)
 
-        let _ = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let orphanResult = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block2),
             block: block2
         )
+        XCTAssertTrue(orphanResult.needsParentBlock)
 
-        let missingBefore = await chain.getMissingBlockHashes()
-        XCTAssertFalse(missingBefore.isEmpty)
-
-        let _ = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let _ = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block1),
             block: block1
         )
 
-        let missingAfter = await chain.getMissingBlockHashes()
-        let block1Hash = try! VolumeImpl<Block>(node: block1).rawCID
-        XCTAssertFalse(missingAfter.contains(block1Hash), "Should be resolved after parent arrives")
+        let tip = await chain.getMainChainTip()
+        XCTAssertEqual(tip, try! VolumeImpl<Block>(node: block2).rawCID)
     }
 }
 

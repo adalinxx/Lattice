@@ -4,6 +4,11 @@
 
 This document specifies the protocol for trustless cross-chain value transfer between parent and child chains in the Lattice hierarchy. The protocol requires no trusted intermediaries -- all verification is performed via Sparse Merkle proofs against state roots committed in blocks.
 
+Each chain process verifies those proofs locally. A parent or sibling peer may
+supply the bytes, but its current canonical tip is not authority over the
+receiving chain and a reorganization does not revoke an already verified proof
+fact.
+
 ## Definitions
 
 - **N**: Nexus -- the first of the outermost chains (the merged-mining anchor; not a unique root -- other outermost chains may exist)

@@ -10,4 +10,7 @@ Correctness is established in layers:
 6. crash matrices at every commit boundary;
 7. seeded full-stack simulations with replayable traces.
 
-The initial tests in this PR establish the result vocabulary and chain independence. The larger redesign should extend the same invariant catalog rather than adding disconnected happy-path scenarios.
+The suite must exercise the same candidate through gossip, sync, mining, and
+recovery adapters; root-floor failure, carrier target misses, root-CID replay,
+parent reorganization, storage failure, retention, and restart must not create
+alternate consensus meanings.

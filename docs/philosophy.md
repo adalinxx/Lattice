@@ -10,7 +10,7 @@ Lattice asks: what if the relationship between chains were not lateral (independ
 
 ## The Hierarchical Insight
 
-Lattice is a **protocol**, not a chain. It is the organizing scheme — merged mining, parent anchoring, and content addressing — that binds chains into a rooted tree. The protocol is what is fractal and self-similar; the chains it secures are free to differ.
+Lattice is a **protocol**, not a chain. It is the organizing scheme — merged mining, sparse root-to-child proofs, and content addressing — that binds chains into a rooted tree. The protocol is what is fractal and self-similar; the chains it secures are free to differ.
 
 The key idea is that a **Lattice chain** is two things at once, and they are the same object:
 
@@ -31,7 +31,13 @@ A chain can spawn child chains via genesis transactions. Each child can spawn it
 
 Every chain secures its children with one shared proof-of-work (nested merged mining). This hierarchy is not just organizational. It defines three relationships that solve the problems above:
 
-**Security inheritance through nested merged mining.** When a miner searches for a nonce that satisfies the nexus `target`, that same nonce simultaneously secures every chain in the tree. A child chain's block is embedded in its parent's `children` field, which is committed to the parent's proof-of-work hash. A grandchild is embedded in its parent, which is embedded in its grandparent, all the way up to the nexus. One hash computation secures the entire hierarchy.
+**Security inheritance through nested merged mining.** One mined root commits a
+nested block tree. A child verifies an exact sparse path through the committed
+`children` fields, so every level evaluates the same root hash. The root must
+first clear a setup-wide minimum work floor. Each level then compares that hash
+with its own target: a miss makes the level a carrier, while descendants continue.
+One hash computation can therefore secure every accepting level in the hierarchy
+without pretending that all levels have the same difficulty.
 
 This is a recursive generalization of merged mining (as pioneered by Namecoin with Bitcoin, and later RSK). The key difference is that RSK's merged mining is a flat, bilateral relationship — Bitcoin secures RSK, but RSK cannot spawn its own merged-mined children. Lattice's merged mining is tree-structured, enabling unlimited depth.
 
@@ -39,9 +45,9 @@ This is a recursive generalization of merged mining (as pioneered by Namecoin wi
 
 This three-phase state model is what makes bridgeless cross-chain transfers possible. A deposit on a child chain creates an entry in the child's deposit state. The parent chain can verify that deposit by checking the child's state root (committed in the child block embedded in the parent block). A withdrawal on the child requires proving that a corresponding receipt exists in the parent's state — which the child can verify against `parentState`. No external attestation needed. The chain hierarchy itself is the bridge.
 
-**Permissionless chain creation.** Any chain can spawn children via a `GenesisAction` in a transaction. No slot auctions, no governance votes, no staking requirements. The child chain defines its own `ChainSpec` — block time, reward schedule, transaction throughput, custom validation policies — but inherits the full proof-of-work security of its parent. This means a new chain with zero independent hashrate is immediately as secure as the nexus, from its first block.
+**Permissionless chain creation.** Any chain can spawn children via a `GenesisAction` in a transaction. No slot auctions, no governance votes, no staking requirements. The child chain defines its own `ChainSpec` — block time, reward schedule, transaction throughput, custom validation policies — and inherits each verified grind accepted first at an ancestor boundary. It does not need a separate miner set, and it does not depend on the ancestor's current canonical tip.
 
-Operations are per-chain and heterogeneous: each chain defines its own `ChainSpec` and chain policies, so two sibling chains can enforce entirely different policy. Only the organizing protocol — merged mining, parent anchoring, addressing — is fractal and self-similar. The chains it secures are not required to resemble one another.
+Operations are per-chain and heterogeneous: each chain defines its own `ChainSpec` and chain policies, so two sibling chains can enforce entirely different policy. Only the organizing protocol — merged mining, proof paths, addressing — is fractal and self-similar. The chains it secures are not required to resemble one another.
 
 ## A Deliberately Light Base Chain
 
@@ -49,7 +55,7 @@ The hierarchy is not only a security construction — it is what lets the protoc
 
 Decentralization is bounded by a simple fact: a network is only as decentralized as the number of independent parties who can *afford to run and mine the root*. A heavyweight base chain — fast blocks, large blocks, unbounded state — quietly prices ordinary operators out and concentrates the network among the few who can run a multi-terabyte full node. So the nexus is deliberately kept **light**: a slow block interval, a small block size, and a bounded per-block state growth mean its data and state grow slowly enough that almost anyone can keep up. Because all data is content-addressed and refetchable, a node runs to a small, configurable storage budget — evicting and refetching from peers rather than retaining everything — and a *stateless* node holding no local chain data at all can still **both validate and produce blocks**, fetching the subtrees it needs on demand. Mining is external to the node, so participating as a miner needs no specialized hardware. The barrier to running and mining the root is kept as low as the protocol can make it, and that low barrier *is* the decentralization.
 
-The cost of throughput is then paid where it belongs. An application that needs many fast, large blocks does not impose that cost on everyone running the base chain; it spawns a **child chain** whose own `ChainSpec` selects a faster block time and larger limits. Only that child's participants store and validate its heavier data, while the child still inherits the nexus's full proof-of-work through merged mining. The result is **a decentralized base with high-throughput edges** — the opposite of a single chain that everyone must keep up with as it grows.
+The cost of throughput is then paid where it belongs. An application that needs many fast, large blocks does not impose that cost on everyone running the base chain; it spawns a **child chain** whose own `ChainSpec` selects a faster block time and larger limits. Only that child's participants store and validate its heavier data, while qualifying nexus-root grinds still become immutable inherited contributions through merged mining. The result is **a decentralized base with high-throughput edges** — the opposite of a single chain that everyone must keep up with as it grows.
 
 The economic parameters follow the same logic. The nexus's emission schedule is stretched over a very long horizon (its first halving is roughly a century out at the nexus block interval) so that the block subsidy stays meaningful for a long time, sustaining the broad, low-barrier miner base economically rather than front-loading emission and letting the network centralize as the subsidy fades and fee pressure dominates. A slow base chain is paired with slow money. See [`docs/economics/nexus-tokenomics.md`](economics/nexus-tokenomics.md) for the concrete schedule.
 
@@ -63,7 +69,12 @@ This design choice has several consequences:
 
 **Lazy resolution.** A node doesn't need to have all data locally. It can hold CID references and resolve them on demand from any peer that stores the data. The `Fetcher` protocol abstracts this: validation code works against CIDs and calls `fetcher.fetch(rawCid:)` when it needs the underlying data. A light client can validate a block by fetching only the Sparse Merkle proofs it needs, not the entire state.
 
-**Data locality through Volumes.** Block and transaction boundaries use `Volume` headers — a `Header` subtype that signals to the fetcher layer that the referenced subtree is a contiguity boundary. When a fetcher fetches a block, the Volume hint tells it that the block's children (transactions, child blocks) are stored contiguously on the peer that provided the block. This enables efficient batch fetching without the fetcher needing to understand block semantics.
+**Data locality through Volumes.** Block and transaction boundaries use
+`Volume` headers as explicit availability units. Resolve and store take matching
+targeted paths, so a caller fetches and persists only the DAG portion required by
+its operation. Nested Volumes remain independent: storing an outer block Volume
+does not own, pin, or implicitly store a referenced transaction, state, or child
+Volume.
 
 ## The Three-Phase State Model
 
@@ -109,45 +120,37 @@ Every state transition in Lattice is proved against the current state before it 
 
 ## Actor-Based Consensus
 
-The consensus layer maps directly onto Swift's actor model. Each chain in the hierarchy is a `ChainLevel` actor containing a `ChainState` actor. The `Lattice` actor owns the nexus `ChainLevel`, which owns its children, forming a tree of isolated actors.
+The protocol tree is content-addressed data, not an actor tree. One Lattice
+process owns one `ChainLevel` and one `ChainState` for one absolute path. The node
+starts and supervises additional processes for other paths.
 
-This mapping is not incidental — it reflects a genuine structural correspondence between the protocol's concurrency model and Swift's:
+Within a process, fork tracking and reorganization run in actor isolation. Across
+processes, parent and sibling peers may supply sparse proofs and content, but they
+cannot mutate consensus state or issue canonical-tip commands. Every received
+fact is verified locally before it can affect the chain. Swift 6's strict
+sendability checking enforces the in-process isolation; process supervision and
+routing remain node responsibilities.
 
-- Each chain's fork tracking and reorganization logic runs in isolation within its `ChainState` actor. No locks, no shared mutable state.
-- Reorganizations stay inside the chain that selected them. A parent may supply
-  evidence a child later verifies, but it never sends a child a reorganization
-  command or changes child fork choice directly.
-- Child block validation runs concurrently via `withTaskGroup` — sibling chains are validated in parallel since they have no data dependencies.
-- Swift 6's strict sendability checking catches data races at compile time, not at runtime.
+## Fork Choice: Chain-Local GHOST with Inherited Facts
 
-The actor tree also defines the security boundary: a child chain's `ChainState` can only be modified through its parent `ChainLevel`. There is no path from one sibling chain to another that doesn't go through their common parent.
+Proof verification turns a physical root grind into one immutable contribution.
+Walking root-to-leaf, the first level whose target accepts the root hash is the
+credited boundary. Deeper levels carry the same contribution as an inherited
+fact. The root CID identifies the grind, so replay cannot count it twice.
 
-## Fork Choice: Hierarchical GHOST with Inherited Security
+Within one chain:
 
-Lattice's fork choice is **Hierarchical GHOST**: the canonical tip is the one of
-greatest `trueCumWork`, a single weight that combines a block's own
-*descendant-subtree* work with the merged-mining security it *inherits* from its
-parent chain.
+```text
+blockWork(B) = sum(verified contributions attached to B)
+subtreeWeight(B) = blockWork(B)
+                 + sum(subtreeWeight(C) for same-chain child C)
+```
 
-1. **Subtree weight, not chain length.** A block's own-chain weight is
-   `subtreeWeight(B) = work(B) + Σ subtreeWeight(children(B))` — the work of its
-   whole descendant subtree, counting each block once (GHOST), not the length of a
-   single path (Nakamoto). The most-worked subtree wins, so a node never abandons
-   accumulated work to a marginally longer but lighter side branch.
-2. **Inherited weight carries parent security.** A block secured by a parent-chain
-   block adds that parent's weight: `inherited(B) = trueCumWork(securingParent(B))`.
-   This term is *derived fresh at fork-choice time, never cached* — it grows as the
-   parent chain extends.
-3. **One metric.** `trueCumWork(B) = subtreeWeight(B) + inherited(B)`. Heaviest
-   wins; an exact tie holds the incumbent. There is no separate anchoring priority
-   and no longest-chain tiebreaker — both collapse into this single weight.
-
-This means a 51% attacker on a child chain cannot win by producing a heavier
-*child* subtree alone — they must also out-weigh the inherited parent security,
-i.e. attack the parent chain's hashrate. Since the parent has its own
-proof-of-work, attacking the child requires attacking the parent. Security
-propagates upward through the hierarchy — now expressed as additive inherited
-weight rather than a lexicographic anchoring rule.
+GHOST follows the greatest same-chain subtree. A reorganization requires
+strictly greater work; an exact tie holds the incumbent. There is no live parent
+weight lookup, parent block map, or parent-canonicality tiebreak. Security crosses
+the hierarchy as verified proof facts, not as authority delegated to another
+runtime.
 
 ## Cross-Chain Value Transfer Without Bridges
 
@@ -190,14 +193,13 @@ Lattice restructures where the blockchain trilemma's tradeoffs land, but it does
 
 **The nexus is still a single chain.** It is bounded by the same throughput constraints as any single-chain PoW system. Horizontal scaling happens through child chains, not through making the nexus faster.
 
-**Confirmation latency grows with depth.** Lattice has no explicit finality — like
-any proof-of-work chain, settlement is probabilistic and a block can in principle
-be reorganized at any depth. A transaction on a chain at depth D hardens with D
-levels of confirmation: a nexus transaction accrues security from subsequent nexus
-blocks; a grandchild transaction hardens as its block is confirmed on the child,
-the child block on the nexus, and the nexus block by its successors. Depth means
-*more confirmations to reach a given confidence*, not a longer wait for an
-irreversible finality gadget — there isn't one.
+**Settlement remains probabilistic.** Lattice has no explicit finality. A block
+hardens as more verified root grinds contribute to its same-chain subtree, and a
+strictly heavier competing subtree can still reorganize it at any depth. Parent
+canonical confirmations are not a prerequisite and a parent reorganization does
+not revoke already verified child work. Greater hierarchy depth instead costs
+larger proof packages and more availability coordination between independently
+run chain processes.
 
 **Cross-chain MEV is structurally easier for merged miners.** A miner that mines both the nexus and a child chain sees pending transactions on both chains simultaneously. This is the same miner-extractable value problem that exists in single-chain systems, amplified across the hierarchy. Lattice does not attempt to solve MEV — it acknowledges it as an inherent property of the hierarchical mining structure.
 
@@ -207,7 +209,7 @@ irreversible finality gadget — there isn't one.
 
 Lattice is implemented in Swift 6 for several reasons that align with the protocol's design:
 
-- **Actor model.** Swift's native actor system maps directly onto the chain hierarchy. Each chain is an actor; evidence crosses actor boundaries, while each actor alone owns its fork choice. The compiler enforces isolation.
+- **Actor model.** Swift's native actor system isolates one chain's admission and fork choice inside each Lattice process. The node, not an actor tree, owns multi-chain process topology.
 
 - **Strict sendability.** Swift 6's sendability checking means data races in the consensus layer are compile-time errors, not runtime heisenbugs.
 
@@ -227,6 +229,9 @@ Several principles guided the design decisions throughout Lattice:
 
 **Fail early, fail cheaply.** Validation checks are ordered from cheapest to most expensive. Structural checks (timestamps, height continuity, difficulty) happen before signature verification, which happens before state proof generation. A malformed block is rejected in microseconds, not milliseconds.
 
-**No implicit trust.** Even blocks that don't meet a chain's `target` are validated for `prevState` continuity before their child blocks are processed. This prevents an attacker from fabricating intermediate blocks with forged state that grandchildren then reference.
+**No implicit trust.** Even carriers that miss their chain's `target` must prove
+same-chain `prevState` continuity inside a descendant's sparse package. This
+prevents an attacker from fabricating intermediate state that a deeper block
+references.
 
 **Keep the base runnable by anyone.** The nexus's parameters — block interval, block size, the per-block state-growth bound — and its emission schedule are chosen to keep the cost of running and *mining* the root low and stable over time. Decentralization is bounded by who can afford to participate, so the base layer optimizes for accessibility (down to a stateless, fetch-on-demand node) and pushes throughput onto opt-in child chains that bear their own cost. See [A Deliberately Light Base Chain](#a-deliberately-light-base-chain).

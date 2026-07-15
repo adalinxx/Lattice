@@ -5,8 +5,7 @@ import UInt256
 public enum BlockBuilderError: Error {
     case missingPrevState
     case missingSpec
-    case stateComputationFailed
-    case invalidTransactionBody
+    case heightOverflow
 }
 
 public struct BlockBuildResult: Sendable {
@@ -32,7 +31,7 @@ public struct BlockBuilder {
         timestamp: Int64,
         target: UInt256,
         nonce: UInt64 = 0,
-        version: UInt16 = 1,
+        version: UInt16 = Block.currentVersion,
         fetcher: Fetcher
     ) async throws -> Block {
         try await buildGenesisWithTransition(
@@ -54,7 +53,7 @@ public struct BlockBuilder {
         timestamp: Int64,
         target: UInt256,
         nonce: UInt64 = 0,
-        version: UInt16 = 1,
+        version: UInt16 = Block.currentVersion,
         fetcher: Fetcher
     ) async throws -> BlockBuildResult {
         let emptyState = LatticeState.emptyState()
@@ -126,6 +125,8 @@ public struct BlockBuilder {
         nonce: UInt64 = 0,
         fetcher: Fetcher
     ) async throws -> BlockBuildResult {
+        let (height, heightOverflow) = previous.height.addingReportingOverflow(1)
+        guard !heightOverflow else { throw BlockBuilderError.heightOverflow }
         let prevState = previous.postState
         let parentState: LatticeStateHeader
         if let parentChainBlock = parentChainBlock {
@@ -177,7 +178,7 @@ public struct BlockBuilder {
             prevState: prevState.removingNode(),
             postState: postState,
             children: try buildChildrenDictionary(children),
-            height: previous.height + 1,
+            height: height,
             timestamp: timestamp,
             nonce: nonce
         )
@@ -269,7 +270,7 @@ public struct BlockBuilder {
         transactionBodies: [TransactionBody],
         fetcher: Fetcher
     ) async throws -> (LatticeStateHeader, StateDiff) {
-        // P-1102: single pass instead of 6 separate flatMap calls (6× allocations).
+        // Collect each action family in one pass.
         var allAccountActions: [AccountAction] = []
         var allActions: [Action] = []
         var allDepositActions: [DepositAction] = []

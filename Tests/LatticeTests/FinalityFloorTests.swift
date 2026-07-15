@@ -3,7 +3,7 @@ import XCTest
 import UInt256
 
 // SEC-101 /: the per-node depth-based finality floor has been removed
-// ENTIRELY. Fork choice is pure heaviest-`trueCumWork`, so consensus must NOT
+// ENTIRELY. Fork choice is pure heaviest-subtree work, so consensus must NOT
 // reject a strictly-heavier valid chain for being too deep, and must still
 // reject an equal/lighter chain. These tests drive `checkForReorg` using the
 // same makeBlockMeta/makeChain helpers as the other consensus tests.

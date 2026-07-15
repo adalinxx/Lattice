@@ -216,7 +216,8 @@ final class PremineUncappedTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [AccountAction(owner: addr, delta: Int64(premine))],
             actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [addr], fee: 0, nonce: 0
+            receiptActions: [], withdrawalActions: [], signers: [addr], fee: 0,
+            nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
         let bodyHeader = try! HeaderImpl<TransactionBody>(node: body)
         let sig = try XCTUnwrap(TransactionSigning.sign(bodyHeader: bodyHeader, privateKeyHex: owner.privateKey))
@@ -235,7 +236,8 @@ final class PremineUncappedTests: XCTestCase {
         let overBody = TransactionBody(
             accountActions: [AccountAction(owner: addr, delta: Int64(premine + 1))],
             actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [addr], fee: 0, nonce: 0
+            receiptActions: [], withdrawalActions: [], signers: [addr], fee: 0,
+            nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
         let overHeader = try! HeaderImpl<TransactionBody>(node: overBody)
         let overSig = try XCTUnwrap(TransactionSigning.sign(bodyHeader: overHeader, privateKeyHex: owner.privateKey))

@@ -118,7 +118,7 @@ public struct TransactionBody: Scalar {
     /// THE consensus shape rule for genesis actions: an anchor must name a
     /// non-empty directory and a non-empty genesis block CID. The parent only
     /// RECORDS the anchor (directory → genesis CID); the genesis block's CONTENT
-    /// is validated by the child chain it belongs to (on sync), not here.
+    /// is validated by the child chain it belongs to during admission, not here.
     /// Consumed by block validation and by node-side admission — one definition
     /// so the two cannot drift.
     ///

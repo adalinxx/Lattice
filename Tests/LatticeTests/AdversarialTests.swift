@@ -284,8 +284,6 @@ final class SignatureSecurityTests: XCTestCase {
     func testEmptySignatureRejected() async throws {
         let fetcher = makeFetcher()
         let base = t() - 10_000
-        let kp = CryptoUtils.generateKeyPair()
-        let kpAddr = cid(kp.publicKey)
         let s = spec(premine: 0)
 
         let genesis = try await buildAndStoreGenesis(
@@ -648,8 +646,7 @@ final class ConsensusResilienceTests: XCTestCase {
                 previous: shortPrev, timestamp: base + Int64(i) * 1000,
                 target: UInt256(1000), nonce: UInt64(i), fetcher: fetcher
             )
-            let _ = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: b), block: b
             )
             shortPrev = b
@@ -662,8 +659,7 @@ final class ConsensusResilienceTests: XCTestCase {
                 previous: longPrev, timestamp: base + Int64(i) * 500,
                 target: UInt256(1000), nonce: UInt64(i + 100), fetcher: fetcher
             )
-            let _ = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: b), block: b
             )
             longPrev = b
@@ -693,14 +689,12 @@ final class ConsensusResilienceTests: XCTestCase {
 
         let chain = ChainState.fromGenesis(block: genesis)
 
-        let result2 = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let result2 = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block2), block: block2
         )
         XCTAssertFalse(result2.extendsMainChain, "Block 2 submitted before block 1 should not extend")
 
-        let result1 = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let result1 = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block1), block: block1
         )
         XCTAssertTrue(result1.extendsMainChain)
@@ -720,14 +714,12 @@ final class ConsensusResilienceTests: XCTestCase {
             target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
 
-        let result1 = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let result1 = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block1), block: block1
         )
         XCTAssertTrue(result1.extendsMainChain)
 
-        let result2 = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let result2 = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block1), block: block1
         )
         XCTAssertFalse(result2.extendsMainChain, "Duplicate should not extend")
@@ -736,52 +728,6 @@ final class ConsensusResilienceTests: XCTestCase {
         XCTAssertEqual(height, 1)
     }
 
-    func testParentAnchoringTiebreaker() async throws {
-        let fetcher = makeFetcher()
-        let base = t() - 100_000
-        let nexusSpec = spec("Nexus", premine: 0)
-        let childSpec = spec("Child", premine: 0)
-
-        var nexusBlocks: [Block] = []
-        let nGen = try await buildAndStoreGenesis(
-            spec: nexusSpec, timestamp: base, target: UInt256(1000), fetcher: fetcher
-        )
-        nexusBlocks.append(nGen)
-        for i in 1...5 {
-            let b = try await buildAndStoreBlock(
-                previous: nexusBlocks.last!, timestamp: base + Int64(i) * 1000,
-                target: UInt256(1000), nonce: UInt64(i), fetcher: fetcher
-            )
-            nexusBlocks.append(b)
-        }
-
-        let childGenesis = try await buildAndStoreGenesis(
-            spec: childSpec, timestamp: base, target: UInt256(1000), fetcher: fetcher
-        )
-        let childChain = ChainState.fromGenesis(block: childGenesis)
-
-        let deepAnchor = try await buildAndStoreBlock(
-            previous: childGenesis, parentChainBlock: nexusBlocks[1],
-            timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
-        )
-        let _ = await childChain.submitBlock(
-            parentBlockHeaderAndIndex: (try! VolumeImpl<Block>(node: nexusBlocks[1]).rawCID, 1),
-            blockHeader: try! VolumeImpl<Block>(node: deepAnchor), block: deepAnchor
-        )
-
-        let shallowAnchor = try await buildAndStoreBlock(
-            previous: childGenesis, parentChainBlock: nexusBlocks[5],
-            timestamp: base + 5000, target: UInt256(1000), nonce: 2, fetcher: fetcher
-        )
-        let _ = await childChain.submitBlock(
-            parentBlockHeaderAndIndex: (try! VolumeImpl<Block>(node: nexusBlocks[5]).rawCID, 5),
-            blockHeader: try! VolumeImpl<Block>(node: shallowAnchor), block: shallowAnchor
-        )
-
-        let tip = await childChain.getMainChainTip()
-        XCTAssertEqual(tip, try! VolumeImpl<Block>(node: deepAnchor).rawCID,
-                       "Deeper parent anchoring should win")
-    }
 }
 
 // MARK: - 7. Block Limits & Stress

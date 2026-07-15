@@ -27,7 +27,6 @@ final class SerializationPinningTests: XCTestCase {
             timestamp: 1_000_000_000_000,
             target: UInt256.max,
             nonce: 0,
-            version: 1,
             fetcher: fetcher
         )
         let cid = try! VolumeImpl<Block>(node: block).rawCID
@@ -193,12 +192,12 @@ final class SerializationPinningTests: XCTestCase {
 
     func testVersionFieldPreserved() async throws {
         let (block, _) = try await deterministicGenesis()
-        XCTAssertEqual(block.version, 1)
+        XCTAssertEqual(block.version, Block.currentVersion)
 
         guard let data = block.toData(), let restored = Block(data: data) else {
             return XCTFail("round-trip failed")
         }
-        XCTAssertEqual(restored.version, 1,
+        XCTAssertEqual(restored.version, Block.currentVersion,
             "version field must survive serialization round-trip")
     }
 }
