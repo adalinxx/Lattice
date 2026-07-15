@@ -2,6 +2,10 @@ import Foundation
 import cashew
 import UInt256
 
+public enum ChildProofSerializationError: Error, Sendable, Equatable {
+    case valueTooLarge
+}
+
 // MARK: - Proof
 
 /// Sparse proof that a block is embedded under a PoW root, following the
@@ -39,7 +43,7 @@ public struct ChildBlockProof: Sendable {
     public init(rootCID: String, directoryPath: [String], entries: [(cid: String, data: Data)]) {
         self.rootCID = rootCID
         self.directoryPath = directoryPath
-        self.entries = entries
+        self.entries = entries.sorted { $0.cid < $1.cid }
     }
 
     // MARK: - Generation
@@ -97,24 +101,6 @@ public struct ChildBlockProof: Sendable {
 
     // MARK: - Verification
 
-    /// A sealed in-memory source over this proof's witness entries. The proof's
-    /// entry map is attacker-supplied and content-bound at each hop;
-    /// `InMemoryContentSource` has no tier chain, so verification cannot reach the
-    /// network by construction (it physically has nowhere to fall through to).
-    private func proofSource() -> InMemoryContentSource {
-        InMemoryContentSource(Dictionary(entries.map { ($0.cid, $0.data) }, uniquingKeysWith: { first, _ in first }))
-    }
-
-    /// Recompute the root CID from proof-supplied bytes. A proof is untrusted
-    /// evidence, so an unexpected serialization failure is an invalid witness,
-    /// never a reason to trap the verifier.
-    private func isContentBoundRoot(_ rootBlock: Block) -> Bool {
-        guard let header = try? VolumeImpl<Block>(node: rootBlock) else {
-            return false
-        }
-        return header.rawCID == rootCID
-    }
-
     /// Verify the complete root-to-child package and derive its work fact.
     ///
     /// The setup floor is independent of every chain target. A carrier may miss
@@ -123,14 +109,15 @@ public struct ChildBlockProof: Sendable {
     public func verify(
         child: Block,
         childCID: String,
-        expectedPath: [String],
+        chainPath: [String],
         minimumRootWork: UInt256,
-        parentStateWitness: ParentStateWitness
+        parentContinuityLinks: [ParentContinuityLink]
     ) async -> Result<VerifiedChildEvidence, ChildProofVerificationFailure> {
         guard minimumRootWork > .zero else {
             return .failure(.protocolInvalid)
         }
-        guard directoryPath == expectedPath,
+        guard chainPath.count == directoryPath.count + 1,
+              directoryPath == Array(chainPath.dropFirst()),
               !entries.isEmpty,
               !directoryPath.isEmpty else {
             return .failure(.malformedEvidence)
@@ -153,38 +140,47 @@ public struct ChildBlockProof: Sendable {
                 return .failure(.malformedEvidence)
             }
         }
-        var predecessorEntries: [String: Data] = [:]
-        for entry in parentStateWitness.entries {
-            if predecessorEntries.updateValue(entry.data, forKey: entry.cid) != nil {
-                return .failure(.malformedEvidence)
-            }
-            if let pathData = proofEntries[entry.cid], pathData != entry.data {
+        var linksBySuccessor: [String: ParentContinuityLink] = [:]
+        for link in parentContinuityLinks {
+            if linksBySuccessor.updateValue(link, forKey: link.successorCID) != nil {
                 return .failure(.malformedEvidence)
             }
         }
         let fetcher = _TrackingProofFetcher(proofEntries)
         var directlyConsumed = Set([rootCID])
+        var consumedLinks = Set<String>()
 
-        func continuityFailure(_ carrier: Block) -> ChildProofVerificationFailure? {
-            guard let parentCID = carrier.parent?.rawCID else {
+        func continuityFailure(
+            _ carrier: Block,
+            carrierCID: String,
+            carrierPath: [String]
+        ) -> ChildProofVerificationFailure? {
+            guard carrier.parent != nil else {
                 return carrier.hasCarrierContinuity(parent: nil)
                     ? nil
                     : .protocolInvalid
             }
-            guard let parentData = predecessorEntries[parentCID],
-                  let parent = contentBoundBlock(cid: parentCID, data: parentData) else {
-                return .malformedEvidence
+            guard let link = linksBySuccessor[carrierCID] else {
+                return .unavailableEvidence
             }
-            return carrier.hasCarrierContinuity(parent: parent)
-                ? nil
-                : .protocolInvalid
+            consumedLinks.insert(carrierCID)
+            guard link.parentPath == carrierPath,
+                  link.successorCID == carrierCID else {
+                return .protocolInvalid
+            }
+            return nil
         }
 
         var carriers = [rootBlock]
         var currentBlock = rootBlock
+        var currentCID = rootCID
 
         for (index, directory) in directoryPath.enumerated() {
-            if let failure = continuityFailure(currentBlock) {
+            if let failure = continuityFailure(
+                currentBlock,
+                carrierCID: currentCID,
+                carrierPath: Array(chainPath.prefix(index + 1))
+            ) {
                 return .failure(failure)
             }
             guard let children = try? await currentBlock.children.resolve(
@@ -205,7 +201,8 @@ public struct ChildBlockProof: Sendable {
                     $0.validateProofOfWork(nexusHash: rootHash)
                 }.map { workForTarget($0.target) } ?? .zero
                 let consumed = await fetcher.consumed().union(directlyConsumed)
-                guard consumed == Set(proofEntries.keys) else {
+                guard consumed == Set(proofEntries.keys),
+                      consumedLinks == Set(linksBySuccessor.keys) else {
                     return .failure(.malformedEvidence)
                 }
                 return .success(VerifiedChildEvidence(
@@ -223,56 +220,41 @@ public struct ChildBlockProof: Sendable {
             guard next.parentState.rawCID == currentBlock.prevState.rawCID else {
                 return .failure(.protocolInvalid)
             }
+            currentCID = childHeader.rawCID
             currentBlock = next
             carriers.append(currentBlock)
         }
         return .failure(.malformedEvidence)
     }
 
-    /// Collect the same-chain predecessor headers needed by `verify` for every
-    /// carrier above the proven child.
-    public func parentStateWitness(fetcher externalFetcher: Fetcher) async throws -> ParentStateWitness {
-        let fetcher = proofSource()
-        guard let rootData = try? await fetcher.fetch(rawCid: rootCID),
-              let rootBlock = Block(data: rootData),
-              isContentBoundRoot(rootBlock) else { return ParentStateWitness(entries: []) }
-
-        var carriers = [rootBlock]
-        var current = rootBlock
-        for directory in directoryPath.dropLast() {
-            guard let children = try? await current.children.resolve(
-                paths: [[directory]: .targeted], fetcher: fetcher
-            ).node,
-            let childHeader: VolumeImpl<Block> = try? children.get(key: directory),
-            let next = try? await childHeader.resolve(fetcher: fetcher).node else { break }
-            carriers.append(next)
-            current = next
-        }
-
-        var witnessEntries: [(cid: String, data: Data)] = []
-        for carrier in carriers {
-            guard let parentCID = carrier.parent?.rawCID else { continue }
-            witnessEntries.append((parentCID, try await externalFetcher.fetch(rawCid: parentCID)))
-        }
-        return ParentStateWitness(entries: witnessEntries)
-    }
-
     // MARK: - Serialization
 
-    public func serialize() -> Data {
+    public func serialize() throws -> Data {
         var out = Data()
         let rootCIDBytes = Data(rootCID.utf8)
+        guard rootCIDBytes.count <= Int(UInt16.max),
+              directoryPath.count <= Int(UInt16.max),
+              entries.count <= Int(UInt16.max) else {
+            throw ChildProofSerializationError.valueTooLarge
+        }
         writeU16(&out, UInt16(rootCIDBytes.count))
         out.append(rootCIDBytes)
         writeU16(&out, UInt16(directoryPath.count))
         for dir in directoryPath {
             let db = Data(dir.utf8)
+            guard db.count <= Int(UInt16.max) else {
+                throw ChildProofSerializationError.valueTooLarge
+            }
             writeU16(&out, UInt16(db.count))
             out.append(db)
         }
         writeU16(&out, UInt16(entries.count))
         for (cid, data) in entries {
             let cb = Data(cid.utf8)
+            guard cb.count <= Int(UInt16.max),
+                  UInt64(data.count) <= UInt64(UInt32.max) else {
+                throw ChildProofSerializationError.valueTooLarge
+            }
             writeU16(&out, UInt16(cb.count))
             out.append(cb)
             writeU32(&out, UInt32(data.count))
@@ -302,6 +284,7 @@ public struct ChildBlockProof: Sendable {
 
         guard let count = readU16(data, &pos) else { return nil }
         var entries: [(String, Data)] = []
+        var previousCID: String?
         for _ in 0..<Int(count) {
             guard let cidLen = readU16(data, &pos),
                   data.distance(from: pos, to: data.endIndex) >= Int(cidLen),
@@ -312,7 +295,9 @@ public struct ChildBlockProof: Sendable {
             guard let dataLen = readU32(data, &pos),
                   data.distance(from: pos, to: data.endIndex) >= Int(dataLen)
             else { return nil }
+            if let previousCID, previousCID >= cid { return nil }
             entries.append((cid, Data(data[pos..<data.index(pos, offsetBy: Int(dataLen))])))
+            previousCID = cid
             pos = data.index(pos, offsetBy: Int(dataLen))
         }
         guard pos == data.endIndex else { return nil }

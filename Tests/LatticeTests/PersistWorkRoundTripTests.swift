@@ -69,14 +69,14 @@ final class PersistWorkRoundTripTests: XCTestCase {
                     height: 1,
                     childHashes: ["B"],
                     work: work,
-                    cumulativeWork: saturatingWorkSum(UInt256(1), work)
+                    cumulativeWork: WorkSum(UInt256(1)) + work
                 ),
                 makeBlockMeta(
                     hash: "B",
                     previousHash: "A",
                     height: 2,
                     work: work,
-                    cumulativeWork: saturatingWorkSum(saturatingWorkSum(UInt256(1), work), work)
+                    cumulativeWork: WorkSum(UInt256(1)) + work + work
                 ),
             ]
             let oracle = makeChain(blocks: blocks, mainChainHashes: ["G", "A", "B"])
@@ -110,7 +110,7 @@ final class PersistWorkRoundTripTests: XCTestCase {
                     previousHash: "G",
                     height: 1,
                     work: work,
-                    cumulativeWork: saturatingWorkSum(UInt256(1), work)
+                    cumulativeWork: WorkSum(UInt256(1)) + work
                 ),
             ],
             mainChainHashes: ["G", "A"]

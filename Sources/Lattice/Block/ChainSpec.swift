@@ -96,6 +96,14 @@ public struct ChainSpec: Scalar {
 // MARK: - Reward Calculations
 public extension ChainSpec {
 
+    private func elapsedMilliseconds(later: Int64, earlier: Int64) -> UInt64 {
+        guard later > earlier else { return 0 }
+        if earlier >= 0 || later < 0 {
+            return UInt64(later - earlier)
+        }
+        return UInt64(later) + UInt64(-(earlier + 1)) + 1
+    }
+
     func rewardAtBlock(_ blockHeight: UInt64) -> UInt64 {
         guard halvingInterval > 0 else { return 0 }
         // premine is uncapped, so blockHeight + premine can overflow UInt64.
@@ -231,20 +239,31 @@ public extension ChainSpec {
             : scaledQuotient + scaledRemainder
     }
 
-    func calculatePairTarget(previousTarget: UInt256, actualTime: Int64) -> UInt256 {
+    private func calculatePairTarget(previousTarget: UInt256, actualTime: UInt64) -> UInt256 {
         guard actualTime > 0 else { return ChainSpec.minimumTarget }
-        let actual = UInt256(UInt64(actualTime))
+        let actual = UInt256(actualTime)
         let target = UInt256(targetBlockTime)
         let adjusted = multiplyDividingSaturating(previousTarget, by: actual, over: target)
         return max(adjusted, ChainSpec.minimumTarget)
     }
 
+    func calculatePairTarget(previousTarget: UInt256, actualTime: Int64) -> UInt256 {
+        guard actualTime > 0 else { return ChainSpec.minimumTarget }
+        return calculatePairTarget(previousTarget: previousTarget, actualTime: UInt64(actualTime))
+    }
+
     func calculateMinimumTarget(previousTarget: UInt256, blockTimestamp: Int64, previousTimestamp: Int64) -> UInt256 {
-        return calculatePairTarget(previousTarget: previousTarget, actualTime: blockTimestamp - previousTimestamp)
+        calculatePairTarget(
+            previousTarget: previousTarget,
+            actualTime: elapsedMilliseconds(later: blockTimestamp, earlier: previousTimestamp)
+        )
     }
 
     func calculateWindowedTarget(previousTarget: UInt256, ancestorTimestamps: [Int64]) -> UInt256 {
-        let intervalCount = min(ancestorTimestamps.count - 1, Int(retargetWindow))
+        let availableIntervals = max(0, ancestorTimestamps.count - 1)
+        let intervalCount = retargetWindow < UInt64(availableIntervals)
+            ? Int(retargetWindow)
+            : availableIntervals
         guard intervalCount > 0 else {
             // No retarget interval can be computed (0 or 1 timestamp): keep the
             // previous difficulty, but still apply the minimumTarget floor so a
@@ -255,12 +274,15 @@ public extension ChainSpec {
         var weightedActual = UInt256.zero
         var weightSum = UInt256.zero
         for index in 0..<intervalCount {
-            let solveTime = max(Int64(0), ancestorTimestamps[index] - ancestorTimestamps[index + 1])
+            let solveTime = elapsedMilliseconds(
+                later: ancestorTimestamps[index],
+                earlier: ancestorTimestamps[index + 1]
+            )
             let weight = UInt256(UInt64(intervalCount - index))
-            let solve = UInt256(UInt64(solveTime))
+            let solve = UInt256(solveTime)
             let weightedSolve = solve > UInt256.max / weight ? UInt256.max : solve * weight
             weightedActual = weightedActual > UInt256.max - weightedSolve ? UInt256.max : weightedActual + weightedSolve
-            weightSum = weightSum + weight
+            weightSum = weightSum > UInt256.max - weight ? UInt256.max : weightSum + weight
         }
         // Zero total solve time = maximally-fast window = maximally harder.
         // Route it through the clamp (proposed 0 saturates to the lower bound)
@@ -268,7 +290,10 @@ public extension ChainSpec {
         // cannot harden difficulty by more than maxTargetChange× in one step.
         let adjusted: UInt256
         if weightedActual > UInt256.zero {
-            let weightedTarget = UInt256(targetBlockTime) * weightSum
+            let target = UInt256(targetBlockTime)
+            let weightedTarget = target > UInt256.max / weightSum
+                ? UInt256.max
+                : target * weightSum
             adjusted = multiplyDividingSaturating(previousTarget, by: weightedActual, over: weightedTarget)
         } else {
             adjusted = .zero

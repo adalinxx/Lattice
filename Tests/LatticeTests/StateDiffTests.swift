@@ -380,7 +380,7 @@ final class StateDiffTests: XCTestCase {
         let withdrawalAction = WithdrawalAction(
             withdrawer: "bob", nonce: 1, demander: "alice", amountDemanded: 100, amountWithdrawn: 100
         )
-        let (afterWithdrawal, withdrawalDiff) = try await afterDeposit.proveAndDeleteForWithdrawals(
+        let (afterWithdrawal, withdrawalDiff) = try await afterDeposit.proveAndSpendForWithdrawals(
             allWithdrawalActions: [withdrawalAction],
             fetcher: fetcher
         )
@@ -388,6 +388,56 @@ final class StateDiffTests: XCTestCase {
         XCTAssertFalse(withdrawalDiff.replaced.isEmpty,
             "withdrawing a deposit should replace CIDs")
         XCTAssertNotEqual(afterDeposit.rawCID, afterWithdrawal.rawCID)
+    }
+
+    func testSpentDepositCannotBeRecreatedOrWithdrawnAgain() async throws {
+        let fetcher = makeFetcher()
+        let empty = try DepositStateHeader(node: DepositState())
+        try await empty.storeRecursively(storer: fetcher)
+        let deposit = DepositAction(
+            nonce: 1,
+            demander: "alice",
+            amountDemanded: 100,
+            amountDeposited: 100
+        )
+        let withdrawal = WithdrawalAction(
+            withdrawer: "bob",
+            nonce: 1,
+            demander: "alice",
+            amountDemanded: 100,
+            amountWithdrawn: 100
+        )
+        let (funded, _) = try await empty.proveAndUpdateState(
+            allDepositActions: [deposit],
+            fetcher: fetcher
+        )
+        try await funded.storeRecursively(storer: fetcher)
+        let (spent, _) = try await funded.proveAndSpendForWithdrawals(
+            allWithdrawalActions: [withdrawal],
+            fetcher: fetcher
+        )
+        try await spent.storeRecursively(storer: fetcher)
+
+        let key = DepositKey(depositAction: deposit).description
+        XCTAssertEqual(try spent.node?.get(key: key), SPENT_DEPOSIT_MARKER)
+        do {
+            _ = try await spent.proveAndUpdateState(
+                allDepositActions: [deposit],
+                fetcher: fetcher
+            )
+            XCTFail("a spent deposit identity must not be recreated")
+        } catch {
+            guard case ProofErrors.invalidProofType = error else {
+                return XCTFail("expected an existing-key proof failure, got \(error)")
+            }
+        }
+        do {
+            _ = try await spent.proveAndSpendForWithdrawals(
+                allWithdrawalActions: [withdrawal],
+                fetcher: fetcher
+            )
+            XCTFail("a spent deposit identity must not be withdrawn twice")
+        } catch StateErrors.conflictingActions {}
     }
 
     // MARK: - Stub headers (node == nil)

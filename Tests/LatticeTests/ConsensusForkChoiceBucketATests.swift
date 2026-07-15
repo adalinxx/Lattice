@@ -51,7 +51,7 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
         XCTAssertEqual(tip, "F5")
     }
 
-    func testWindowedCumulativeWorkSaturatesInsteadOfWrapping() async throws {
+    func testWindowedCumulativeWorkIsExactBeyondUInt256() async throws {
         let fetcher = bucketFetcher()
         let base = Int64(Date().timeIntervalSince1970 * 1_000) - 50_000
         let target = UInt256(1)
@@ -74,8 +74,8 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
         _ = await chain.submitTestBlock(blockHeader: try BlockHeader(node: block), block: block)
 
         let cumulativeWork = await chain.getCumulativeWork(limit: 10)
-        XCTAssertEqual(cumulativeWork, UInt256.max)
-        XCTAssertLessThan(UInt256.max &+ UInt256.max, UInt256.max)
+        XCTAssertEqual(cumulativeWork, WorkSum(UInt256.max) + UInt256.max)
+        XCTAssertGreaterThan(cumulativeWork, WorkSum(UInt256.max))
     }
 
     func testRestoreRejectsUndecodableTarget() {

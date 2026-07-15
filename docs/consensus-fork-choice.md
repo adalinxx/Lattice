@@ -34,9 +34,11 @@ Admission verifies the package in this order:
    setup-wide traversal floor in `ChainRuntimeContext`.
 3. Require the proof's directory path and terminal CID to match this process's
    absolute path and candidate.
-4. For every carrier above `C`, use the content-bound predecessor witness to
-   prove same-chain continuity: `prevState`, spec, height, target succession, and
-   a strictly increasing timestamp must follow that carrier's own predecessor.
+4. For every carrier above `C`, require a `ParentContinuityLink` issued by the
+   process responsible for that carrier's path after validating `prevState`,
+   spec, height, target succession, and strictly increasing timestamp
+   continuity. Bind the fact to the exact path and carrier CID; that CID already
+   commits the predecessor, spec, and state references.
 5. At every vertical edge, require the nested child's `parentState` to match the
    carrier state committed by the protocol.
 6. Compare the **same** root hash `h` with each level's target.
@@ -89,6 +91,10 @@ This gives security inheritance without a live parent-weight provider:
 New proof evidence may attach a previously unseen contribution to an already
 known block. Lattice updates that block's weight and reevaluates fork choice, but
 does not replay the block's state transition or emit a second `StateDiff`.
+
+Individual contributions remain `UInt256`, while cumulative and subtree work
+use an exact growable sum. Saturating at `UInt256.max` would make different
+amounts of work compare equal and is therefore not a valid fork-choice rule.
 
 ## 4. Chain-Local GHOST
 
@@ -158,9 +164,10 @@ The node owns:
 - CAS pin counts, retention policy, archival, and garbage collection; and
 - projections such as mempool, history, notifications, and RPC state.
 
-Parent and sibling processes are availability sources, never consensus
-authorities. Verified facts cross process boundaries; commands such as "set child
-tip" or "invalidate because the parent reorged" do not.
+Parent and sibling processes are never consensus authorities for another chain.
+A parent process may issue continuity and genesis facts about its own validated
+state; the node authenticates and transports those facts. Commands such as "set
+child tip" or "invalidate because the parent reorged" do not cross the boundary.
 
 `StateDiff` follows the same boundary. It is locally derived lifecycle metadata
 attached to `BlockMeta` and admission records, not a field committed in `Block`.

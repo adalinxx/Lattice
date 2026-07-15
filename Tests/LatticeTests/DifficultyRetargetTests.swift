@@ -234,6 +234,27 @@ final class DifficultyRetargetTests: XCTestCase {
         )
     }
 
+    func testExtremeTimestampRangeDoesNotTrap() {
+        let s = spec(window: .max, target: 1_000)
+        let previous = UInt256(10_000)
+
+        XCTAssertGreaterThan(
+            s.calculateMinimumTarget(
+                previousTarget: previous,
+                blockTimestamp: .max,
+                previousTimestamp: .min
+            ),
+            previous
+        )
+        XCTAssertEqual(
+            s.calculateWindowedTarget(
+                previousTarget: previous,
+                ancestorTimestamps: [.max, .min]
+            ),
+            previous * UInt256(UInt64(ChainSpec.maxTargetChange))
+        )
+    }
+
     func testValidateNextDifficultyRejectsOldBandNearMisses() async throws {
         let s = spec(window: 120, target: 1_000)
         let fetcher = StorableFetcher()

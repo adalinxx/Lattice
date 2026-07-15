@@ -107,14 +107,15 @@ dependencies: [
 One Lattice process owns exactly one path-defined chain. Its `ChainLevel` has an
 immutable `ChainRuntimeContext` and one `ChainState`; it has no child runtimes and
 never recurses into another chain. `lattice-node` decides which chains to run and
-routes independently verifiable evidence between those processes. Parent and
-sibling peers can supply bytes, but never validity or fork-choice authority.
+routes evidence between those processes. A parent process may issue immutable
+facts about its own validated chain; it never decides child validity or fork
+choice. The node authenticates the process that supplied each fact.
 
 ### Core design
 
 **Content-addressed everything.** All data — blocks, transactions, state — is wrapped in content-addressed headers (IPLD/CID). Cashew uses matching targeted resolve and store paths, so admission materializes only the data it proves and keeps. A `Volume` is one complete storage boundary. Nested Volumes are independent content-addressed units: storing an outer Volume neither owns nor implicitly stores a referenced nested Volume.
 
-**One grind, one proof path.** A mined root commits a nested block tree. A child process receives an exact sparse proof from that root to its candidate. It first checks the setup-wide minimum root-work floor, then verifies every carrier's same-chain `prevState` continuity. Every chain level compares the same root hash with its own target. A target miss makes that level a carrier only; it does not prevent a descendant process from accepting the grind.
+**One grind, one proof path.** A mined root commits a nested block tree. A child process receives an exact sparse proof from that root to its candidate plus immutable continuity facts issued by the processes responsible for ancestor paths. It first checks the setup-wide minimum root-work floor, then binds each fact to the exact carrier. Every chain level compares the same root hash with its own target. A target miss makes that level a carrier only; it does not prevent a descendant process from accepting the grind.
 
 **Three-phase state model.** Each block carries `parentState` (parent chain's state), `prevState` (confirmed state entering the block), and `postState` (state after applying transactions). This is what makes trustless cross-chain verification possible without querying another chain at validation time.
 
@@ -168,7 +169,7 @@ Value moves between parent and child chains through a three-phase **deposit/rece
 
 2. **Receipt** (parent chain): The parent verifies the deposit exists by checking the child's state root (committed in the child block embedded in the parent block). A `ReceiptAction` records the receipt in the parent's `receiptState` and transfers the demanded amount between accounts on the parent.
 
-3. **Withdrawal** (child chain): The child verifies a receipt exists on the parent by checking `parentState.receiptState`. A `WithdrawalAction` releases the original deposited tokens to the withdrawer. The deposit entry is deleted, preventing double-withdrawal.
+3. **Withdrawal** (child chain): The child verifies a receipt exists on the parent by checking `parentState.receiptState`. A `WithdrawalAction` releases the original deposited tokens to the withdrawer and replaces the deposit value with a permanent zero-valued spent marker. Since valid deposits are nonzero, the marker prevents both a second withdrawal and recreation of the same deposit identity.
 
 At no point does any trusted third party hold custody of tokens. The verification is purely cryptographic: Sparse Merkle proofs against state roots committed in proof-of-work hashes.
 

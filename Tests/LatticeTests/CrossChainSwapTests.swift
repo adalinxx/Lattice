@@ -328,7 +328,7 @@ final class WithdrawalValidationTests: XCTestCase {
         // Try to withdraw twice with the same key
         let wa = WithdrawalAction(withdrawer: "bob", nonce: 1, demander: "alice", amountDemanded: 100, amountWithdrawn: 100)
         do {
-            let _ = try await withDeposit.proveAndDeleteForWithdrawals(
+            let _ = try await withDeposit.proveAndSpendForWithdrawals(
                 allWithdrawalActions: [wa, wa], fetcher: fetcher
             )
             XCTFail("Duplicate withdrawal keys should throw")
@@ -555,10 +555,10 @@ final class AtomicSwapCycleTests: XCTestCase {
             timestamp: t - 20_000, target: UInt256(1000), fetcher: fetcher
         )
 
-        // Deposit should be consumed
+        // Deposit identity remains as a permanent replay nullifier.
         let depositKey = DepositKey(nonce: swapNonce, demander: sellerAddr, amountDemanded: swapAmount).description
         let depositAfter: UInt64? = try? childBlock2.postState.node?.depositState.node?.get(key: depositKey)
-        XCTAssertNil(depositAfter, "Deposit should be consumed after first withdrawal")
+        XCTAssertEqual(depositAfter, SPENT_DEPOSIT_MARKER)
 
         // Block 3: second withdrawal on same key — should be invalid
         let withdrawBody2 = TransactionBody(
@@ -702,14 +702,14 @@ final class CrossChainFlowTests: XCTestCase {
             timestamp: t - 10_000, target: UInt256(1000), fetcher: fetcher
         )
 
-        // Verify withdrawal: deposit should be deleted from child state
+        // Verify withdrawal: deposit should be marked spent in child state.
         guard let childFrontier2 = childBlock2.postState.node else {
             XCTFail("Child frontier 2 should be resolved"); return
         }
 
-        // Deposit should be gone
+        // The marker permanently reserves this deposit identity.
         let depositStored2: UInt64? = try? childFrontier2.depositState.node?.get(key: depositKey)
-        XCTAssertNil(depositStored2, "Deposit should be deleted after withdrawal")
+        XCTAssertEqual(depositStored2, SPENT_DEPOSIT_MARKER)
 
         // Withdrawer should have the credited amount
         let withdrawerBalance: UInt64? = try? childFrontier2.accountState.node?.get(key: withdrawerAddr)

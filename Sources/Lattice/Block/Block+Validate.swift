@@ -119,6 +119,7 @@ public extension Block {
             try await tx.validateTransactionForGenesis(fetcher: fetcher)
         }) else { return (false, .empty, nil) }
         guard let specNode = try await spec.resolve(fetcher: fetcher).node else { return (false, .empty, nil) }
+        guard specNode.isValid else { return (false, .empty, nil) }
         // Directory is positional: it comes from the anchor context (the name the
         // genesis is registered under), not from the spec. `directory` nil ⇒ root.
         // An explicitly-empty chainPath has no root and is rejected (fail closed)
@@ -128,7 +129,7 @@ public extension Block {
         if !validateChainPaths(transactionBodies: transactionBodies, expectedPath: expectedChainPath) {
             return (false, .empty, nil)
         }
-        if !(await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, fetcher: fetcher)) { return (false, .empty, nil) }
+        if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, fetcher: fetcher)) { return (false, .empty, nil) }
         if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if !validateBlockSize(spec: specNode) { return (false, .empty, nil) }
@@ -176,11 +177,11 @@ public extension Block {
         if let chain,
            let parentHash = self.parent?.rawCID,
            let fast = await chain.getMainChainTimestamps(forParentHash: parentHash, count: walkDepth),
-           fast.count >= Int(requiredWalkDepth) {
+           requiredWalkDepth <= UInt64(fast.count) {
             ancestorTimestamps = fast
         } else {
             guard let walked = try await collectAncestorTimestamps(parent: parent, count: walkDepth, fetcher: fetcher),
-                  walked.count >= Int(requiredWalkDepth) else {
+                  requiredWalkDepth <= UInt64(walked.count) else {
                 return false
             }
             ancestorTimestamps = walked
@@ -263,7 +264,7 @@ public extension Block {
         // and is rejected (fail closed) rather than silently degrading to root.
         let expectedChainPath = chainPath ?? [DEFAULT_ROOT_DIRECTORY]
         if expectedChainPath.isEmpty { return (false, .empty, nil) }
-        if !(await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, fetcher: fetcher)) { return (false, .empty, nil) }
+        if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, fetcher: fetcher)) { return (false, .empty, nil) }
         if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if !validateBlockSize(spec: specNode) { return (false, .empty, nil) }
@@ -411,7 +412,7 @@ public extension Block {
         let (parentDepth, overflow) = parent.height.addingReportingOverflow(1)
         guard !overflow else { return false }
         let requiredRetargetDepth = min(spec.retargetWindow, parentDepth)
-        guard ancestorTimestamps.count >= Int(requiredRetargetDepth) else { return false }
+        guard requiredRetargetDepth <= UInt64(ancestorTimestamps.count) else { return false }
         let windowTimestamps = [timestamp] + Array(ancestorTimestamps.prefix(Int(requiredRetargetDepth)))
         let expected = spec.calculateWindowedTarget(previousTarget: target, ancestorTimestamps: windowTimestamps)
         return nextTarget == expected

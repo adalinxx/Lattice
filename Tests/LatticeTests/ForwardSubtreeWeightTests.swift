@@ -42,8 +42,8 @@ final class ForwardSubtreeWeightTests: XCTestCase {
         let expected = [4, 3, 2, 1]
         for (i, b) in blocks.enumerated() {
             let sw = await chain.subtreeWeight(forHash: cid(b))
-            var want = UInt256.zero
-            for _ in 0..<expected[i] { want = want &+ w }
+            var want = WorkSum.zero
+            for _ in 0..<expected[i] { want = want + w }
             XCTAssertEqual(sw, want, "subtreeWeight(block \(i)) = \(expected[i])w")
         }
     }
@@ -67,20 +67,20 @@ final class ForwardSubtreeWeightTests: XCTestCase {
         }
         // Subtree of A = {A, B, X, Y} = 4w (both branches), NOT 2w (one path).
         let swA = await chain.subtreeWeight(forHash: cid(a))
-        var fourW = UInt256.zero; for _ in 0..<4 { fourW = fourW &+ w }
+        var fourW = WorkSum.zero; for _ in 0..<4 { fourW = fourW + w }
         XCTAssertEqual(swA, fourW, "A's subtree counts BOTH forks (B and X→Y): 4w")
         // Genesis subtree = everything = 5w (G,A,B,X,Y).
         let swG = await chain.subtreeWeight(forHash: cid(genesis))
-        var fiveW = UInt256.zero; for _ in 0..<5 { fiveW = fiveW &+ w }
+        var fiveW = WorkSum.zero; for _ in 0..<5 { fiveW = fiveW + w }
         XCTAssertEqual(swG, fiveW, "genesis subtree = all 5 blocks")
         // Tips weigh their own work.
         let swB = await chain.subtreeWeight(forHash: cid(b))
-        XCTAssertEqual(swB, w, "tip B weighs its own work")
+        XCTAssertEqual(swB, WorkSum(w), "tip B weighs its own work")
         let swY = await chain.subtreeWeight(forHash: cid(y))
-        XCTAssertEqual(swY, w, "tip Y weighs its own work")
+        XCTAssertEqual(swY, WorkSum(w), "tip Y weighs its own work")
         // X's subtree = {X, Y} = 2w.
         let swX = await chain.subtreeWeight(forHash: cid(x))
-        XCTAssertEqual(swX, w &+ w, "X's subtree = X,Y = 2w")
+        XCTAssertEqual(swX, WorkSum(w) + w, "X's subtree = X,Y = 2w")
     }
 
     /// Out-of-order: deliver C (grandchild) and B before A. Once A arrives, A's
@@ -100,10 +100,10 @@ final class ForwardSubtreeWeightTests: XCTestCase {
             _ = await chain.submitTestBlock(blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
         }
         let swA = await chain.subtreeWeight(forHash: cid(a))
-        var threeW = UInt256.zero; for _ in 0..<3 { threeW = threeW &+ w }
+        var threeW = WorkSum.zero; for _ in 0..<3 { threeW = threeW + w }
         XCTAssertEqual(swA, threeW, "A folds in out-of-order descendants B,C: 3w")
         let swG = await chain.subtreeWeight(forHash: cid(genesis))
-        var fourW = UInt256.zero; for _ in 0..<4 { fourW = fourW &+ w }
+        var fourW = WorkSum.zero; for _ in 0..<4 { fourW = fourW + w }
         XCTAssertEqual(swG, fourW, "genesis subtree = G,A,B,C = 4w after out-of-order")
     }
 
@@ -123,9 +123,9 @@ final class ForwardSubtreeWeightTests: XCTestCase {
         let persisted = await chain.persist()
         let restored = try ChainState.restore(from: persisted)
         let swG = await restored.subtreeWeight(forHash: cid(genesis))
-        var threeW = UInt256.zero; for _ in 0..<3 { threeW = threeW &+ w }
+        var threeW = WorkSum.zero; for _ in 0..<3 { threeW = threeW + w }
         XCTAssertEqual(swG, threeW, "restore rebuilds genesis subtree = 3w")
         let swTip = await restored.subtreeWeight(forHash: cid(b))
-        XCTAssertEqual(swTip, w, "restore: tip weighs own work")
+        XCTAssertEqual(swTip, WorkSum(w), "restore: tip weighs own work")
     }
 }
