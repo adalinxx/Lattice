@@ -114,7 +114,9 @@ The consensus layer maps directly onto Swift's actor model. Each chain in the hi
 This mapping is not incidental — it reflects a genuine structural correspondence between the protocol's concurrency model and Swift's:
 
 - Each chain's fork tracking and reorganization logic runs in isolation within its `ChainState` actor. No locks, no shared mutable state.
-- Reorganizations propagate through the actor hierarchy: when a parent chain reorgs, the reorg event is sent to each child `ChainLevel`, which evaluates whether its own fork choice changes.
+- Reorganizations stay inside the chain that selected them. A parent may supply
+  evidence a child later verifies, but it never sends a child a reorganization
+  command or changes child fork choice directly.
 - Child block validation runs concurrently via `withTaskGroup` — sibling chains are validated in parallel since they have no data dependencies.
 - Swift 6's strict sendability checking catches data races at compile time, not at runtime.
 
@@ -205,7 +207,7 @@ irreversible finality gadget — there isn't one.
 
 Lattice is implemented in Swift 6 for several reasons that align with the protocol's design:
 
-- **Actor model.** Swift's native actor system maps directly onto the chain hierarchy. Each chain is an actor. Reorganization propagation is message passing between actors. The compiler enforces isolation.
+- **Actor model.** Swift's native actor system maps directly onto the chain hierarchy. Each chain is an actor; evidence crosses actor boundaries, while each actor alone owns its fork choice. The compiler enforces isolation.
 
 - **Strict sendability.** Swift 6's sendability checking means data races in the consensus layer are compile-time errors, not runtime heisenbugs.
 

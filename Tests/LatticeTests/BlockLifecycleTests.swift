@@ -106,6 +106,27 @@ final class BlockMintingTests: XCTestCase {
         XCTAssertFalse(beyondValid, "genesis timestamps beyond the bounded future-drift window must still be rejected")
     }
 
+    func test_validateGenesis_canReportFutureBlockAsNotYetAdmissible() async throws {
+        let fetcher = makeFetcher()
+        let futureGenesis = try await buildAndStoreGenesis(
+            spec: noPremine(),
+            timestamp: now() + 3 * 3_600_000,
+            target: UInt256(1000),
+            fetcher: fetcher
+        )
+
+        do {
+            _ = try await futureGenesis.validateGenesis(
+                fetcher: fetcher,
+                directory: "Nexus",
+                reportTemporalFailure: true
+            )
+            XCTFail("a future block must report temporary inadmissibility")
+        } catch let error as BlockValidationError {
+            XCTAssertEqual(error, .notYetAdmissible)
+        }
+    }
+
     func testMintBlockOnTopOfGenesis() async throws {
         let fetcher = makeFetcher()
         let t = now()

@@ -313,7 +313,7 @@ private final class TestVolumeFetcher: Fetcher, Storer, @unchecked Sendable {
     }
 
     func fetch(rawCid: String) async throws -> Data {
-        guard let data = state.withLock({ $0[rawCid] }) else { throw FetcherError.notFound(rawCid) }
+        guard let data = state.withLock({ $0[rawCid] }) else { throw cashew.FetcherError.notFound(rawCid) }
         return data
     }
 }

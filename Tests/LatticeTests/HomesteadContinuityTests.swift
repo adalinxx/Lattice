@@ -32,7 +32,7 @@ private func storeBlock(_ block: Block, to fetcher: StorableFetcher) async throw
 
 /// Pins the prevState (homestead) continuity invariants at the PRODUCTION
 /// validation entry points — `validateGenesis` and `validateNexus` — the rules
-/// every admitted block passes through `processBlockHeader`:
+/// every admitted block passes through chain-local admission:
 ///   - genesis: height == 0 and prevState == the empty state root
 ///   - non-genesis: prevState == parent.postState (state-chain continuity)
 /// (Formerly asserted against the deleted embedded-child helper

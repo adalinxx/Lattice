@@ -298,60 +298,6 @@ final class OrphanDetectionTests: XCTestCase {
 }
 
 @MainActor
-final class ParentReorgPropagationTests: XCTestCase {
-
-    func testPropagateParentReorgUpdatesReferences() async {
-        let g = makeBlockMeta(hash: "CG", height: 0, childHashes: ["C1"])
-        let c1 = makeBlockMeta(hash: "C1", previousHash: "CG", height: 1, parentChainBlocks: ["P_5": 5])
-
-        let chain = makeChain(
-            blocks: [g, c1],
-            mainChainHashes: Set(["CG", "C1"]),
-            parentChainMap: ["P_5": "C1"]
-        )
-
-        let reorg = Reorganization(mainChainBlocksAdded: ["P_new": 3], mainChainBlocksRemoved: Set(["P_5"]))
-        let childReorg = await chain.propagateParentReorg(reorg: reorg)
-        XCTAssertNil(childReorg)
-
-        let c1Block = await chain.getConsensusBlock(hash: "C1")!
-        XCTAssertNil(c1Block.parentChainBlocks["P_5"] as Any?)
-    }
-
-    // F5-4: a parent reorg that makes CB1's securing parent canonical raises CB1's
-    // inherited weight (the provider returns the heavier value); propagating it
-    // promotes CB1 emergently. (Here the heavier inherited weight is supplied
-    // directly; the node would recompute it from the now-canonical parent fork.)
-    func testPropagateParentReorgTriggersChildReorg() async {
-        let g = makeBlockMeta(hash: "CG", height: 0, childHashes: ["CA1", "CB1"])
-        let ca1 = makeBlockMeta(hash: "CA1", previousHash: "CG", height: 1)
-        let cb1 = makeBlockMeta(hash: "CB1", previousHash: "CG", height: 1, parentChainBlocks: [:])
-
-        let chain = makeChain(
-            blocks: [g, ca1, cb1],
-            mainChainHashes: Set(["CG", "CA1"]),
-            parentChainMap: ["P_new": "CB1"],
-            inheritedWeights: ["CB1": UInt256(10)]
-        )
-
-        let reorg = Reorganization(mainChainBlocksAdded: ["P_new": 10], mainChainBlocksRemoved: Set())
-        let childReorg = await chain.propagateParentReorg(reorg: reorg)
-        XCTAssertNotNil(childReorg)
-        let newTip = await chain.getMainChainTip()
-        XCTAssertEqual(newTip, "CB1")
-    }
-
-    func testPropagateNoAffectedBlocksReturnsNil() async {
-        let g = makeBlockMeta(hash: "G", height: 0)
-        let chain = makeChain(blocks: [g])
-
-        let reorg = Reorganization(mainChainBlocksAdded: ["unrelated": 5], mainChainBlocksRemoved: Set(["also_unrelated"]))
-        let result = await chain.propagateParentReorg(reorg: reorg)
-        XCTAssertNil(result)
-    }
-}
-
-@MainActor
 final class DuplicateBlockTests: XCTestCase {
 
     func testDuplicateWithoutParentInfoDiscarded() async {

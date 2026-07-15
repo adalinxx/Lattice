@@ -60,9 +60,12 @@ final class FullPipelineAcceptanceTests: XCTestCase {
         )
 
         let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
-        let childChain = ChainState.fromGenesis(block: childGenesis)
-        let childLevel = ChainLevel(chain: childChain, children: [:])
-        let nexusLevel = ChainLevel(chain: nexusChain, children: ["Child": childLevel])
+        let nexusLevel = ChainLevel(chain: nexusChain)
+        let childLevel = try await nexusLevel.attachRestoredChildForTesting(
+            to: "Child",
+            genesisBlock: childGenesis
+        )
+        let childChain = await childLevel.chain
 
         var nexusPrev = nexusGenesis
         for i in 1...5 {

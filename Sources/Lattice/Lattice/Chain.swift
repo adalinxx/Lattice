@@ -78,7 +78,7 @@ public struct BlockMeta: Sendable {
 
     public var parentIndex: UInt64? { cachedParentIndex }
 
-    public init(
+    package init(
         blockInfo: BlockInfoImpl,
         parentChainBlocks: [String: UInt64?],
         childHashes: [String],
@@ -298,6 +298,13 @@ public struct ForkChoiceSnapshot: Sendable, Equatable {
     }
 }
 
+/// Controls whether a chain has one fixed genesis or a competing set of
+/// parentless child-chain roots. A child-root forest remains one `ChainState`.
+public enum ChainRootPolicy: String, Codable, Sendable, Equatable {
+    case singleGenesis
+    case childRootForest
+}
+
 public actor ChainState {
     var chainTip: String
     var mainChainHashes: Set<String>
@@ -318,6 +325,10 @@ public actor ChainState {
     var mainChainBlockAtIndex: [UInt64: String]
     var blockTimestamps: [String: Int64]
     var missingBlockHashes: Set<String>
+    public nonisolated let rootPolicy: ChainRootPolicy
+    /// Advances for every visible chain insertion or replacement. Sync adoption
+    /// captures it before durable preparation and refuses a stale replacement.
+    var mutationGeneration: UInt64
 
     /// F5-4 (Hierarchical GHOST): the inherited cross-chain weight provider plus
     /// its per-decision memo, behind one narrow API (`effectiveWeight`/`clearMemo`).
@@ -328,6 +339,7 @@ public actor ChainState {
     /// it. See `RetentionFinalityPolicy`.
     var policy: RetentionFinalityPolicy
     public private(set) var tipSnapshot: TipBlockSnapshot?
+    var tipSnapshotsByHash: [String: TipBlockSnapshot]
 
     // (3): never force-unwrap the tip. A state where `chainTip ∉ hashToBlock`
     // (a detached-fallback fork tip, or a future prune-ordering change) must not trap
@@ -341,7 +353,7 @@ public actor ChainState {
 
     public func getRetentionDepth() -> UInt64 { policy.retentionDepth }
 
-    public init(
+    package init(
         chainTip: String,
         mainChainHashes: Set<String>,
         indexToBlockHash: [UInt64: Set<String>],
@@ -350,8 +362,10 @@ public actor ChainState {
         retentionDepth: UInt64 = RECENT_BLOCK_DISTANCE,
         blockTimestamps: [String: Int64] = [:],
         tipSnapshot: TipBlockSnapshot? = nil,
+        tipSnapshotsByHash: [String: TipBlockSnapshot] = [:],
         prunedWeightIndex: [PersistedBlockMeta] = [],
-        inheritedWeightProvider: (@Sendable (String) -> UInt256)? = nil
+        inheritedWeightProvider: (@Sendable (String) -> UInt256)? = nil,
+        rootPolicy: ChainRootPolicy = .singleGenesis
     ) throws {
         self.chainTip = chainTip
         self.mainChainHashes = mainChainHashes
@@ -361,8 +375,14 @@ public actor ChainState {
         self.parentChainBlockHashToBlockHash = parentChainBlockHashToBlockHash
         self.policy = RetentionFinalityPolicy(retentionDepth: retentionDepth)
         self.tipSnapshot = tipSnapshot
+        self.tipSnapshotsByHash = tipSnapshotsByHash
+        if let tipSnapshot {
+            self.tipSnapshotsByHash[chainTip] = tipSnapshot
+        }
         self.missingBlockHashes = Set()
         self.blockTimestamps = blockTimestamps
+        self.rootPolicy = rootPolicy
+        self.mutationGeneration = 0
         self.inheritedWeight = InheritedWeightProvider(provider: inheritedWeightProvider)
         var blockAtIndex: [UInt64: String] = [:]
         for hash in mainChainHashes {
@@ -394,7 +414,14 @@ public actor ChainState {
         }
     }
 
-    public func resetFrom(_ persisted: PersistedChainState, retentionDepth: UInt64? = nil) throws {
+    func resetFrom(_ persisted: PersistedChainState, retentionDepth: UInt64? = nil) throws {
+        let persistedRootPolicy = persisted.rootPolicy ?? .singleGenesis
+        guard persistedRootPolicy == rootPolicy else {
+            throw ChainStateRestoreError.rootPolicyMismatch(
+                expected: rootPolicy,
+                actual: persistedRootPolicy
+            )
+        }
         // / CFC-A3 (fail closed before mutating the live chain): reject a
         // corrupt snapshot — a present-but-undecodable target, or a pruned-entry
         // `cumulativeWork` / `subtreeWeight` that is missing/undecodable — so we
@@ -406,6 +433,7 @@ public actor ChainState {
         var newHashToBlock: [String: BlockMeta] = [:]
         var newIndexToBlockHash: [UInt64: Set<String>] = [:]
         var newTimestamps: [String: Int64] = [:]
+        var newTipSnapshots: [String: TipBlockSnapshot] = [:]
         let cumByHash = persisted.cumulativeWorkByHash()
         for block in persisted.blocks {
             let target = block.target.flatMap { UInt256($0, radix: 16) } ?? UInt256.zero
@@ -432,6 +460,9 @@ public actor ChainState {
             newIndexToBlockHash[block.blockHeight, default: Set()].insert(block.blockHash)
             if let ts = block.timestamp {
                 newTimestamps[block.blockHash] = ts
+            }
+            if let snapshot = Self.snapshot(from: block) {
+                newTipSnapshots[block.blockHash] = snapshot
             }
         }
         self.chainTip = persisted.chainTip
@@ -478,7 +509,12 @@ public actor ChainState {
             if cursor?.isEmpty == true { break }
         }
         self.mainChainBlockAtIndex = blockAtIndex
-        self.tipSnapshot = nil
+        let snapshot = Self.snapshot(from: persisted)
+        self.tipSnapshot = snapshot
+        self.tipSnapshotsByHash = newTipSnapshots
+        if let snapshot {
+            self.tipSnapshotsByHash[persisted.chainTip] = snapshot
+        }
         //: seed the retained entries of already-body-pruned blocks FIRST, so
         // the subtree-weight recompute below can fold a pruned descendant tail in via
         // the index (a present block whose child was pruned would otherwise be
@@ -491,9 +527,45 @@ public actor ChainState {
         for meta in hashToBlock.values {
             weightIndex[meta.blockHash] = BlockWeightIndexEntry(from: meta)
         }
+        mutationGeneration &+= 1
     }
 
-    public static func fromGenesis(block: Block, retentionDepth: UInt64 = RECENT_BLOCK_DISTANCE) -> ChainState {
+    func currentMutationGeneration() -> UInt64 {
+        mutationGeneration
+    }
+
+    /// Atomically install an already-verified sync projection only when the
+    /// chain has not changed since its durable preparation began.
+    func resetFromIfUnchanged(
+        _ persisted: PersistedChainState,
+        retentionDepth: UInt64,
+        expectedMutationGeneration: UInt64,
+        tipBlock: Block?
+    ) throws -> Bool {
+        guard mutationGeneration == expectedMutationGeneration else { return false }
+        try resetFrom(persisted, retentionDepth: retentionDepth)
+        if let tipBlock {
+            updateTipSnapshot(block: tipBlock)
+        }
+        return true
+    }
+
+    public static func fromGenesis(
+        block: Block,
+        retentionDepth: UInt64 = RECENT_BLOCK_DISTANCE
+    ) -> ChainState {
+        fromGenesis(
+            block: block,
+            retentionDepth: retentionDepth,
+            rootPolicy: .singleGenesis
+        )
+    }
+
+    static func fromGenesis(
+        block: Block,
+        retentionDepth: UInt64 = RECENT_BLOCK_DISTANCE,
+        rootPolicy: ChainRootPolicy
+    ) -> ChainState {
         // known-valid local node; CID computation cannot fail (no Float/Double fields)
         let blockHeader = try! BlockHeader(node: block)
         let blockHash = blockHeader.rawCID
@@ -518,15 +590,67 @@ public actor ChainState {
             parentChainBlockHashToBlockHash: [:],
             retentionDepth: retentionDepth,
             blockTimestamps: [blockHash: block.timestamp],
-            tipSnapshot: TipBlockSnapshot(
-                postStateCID: block.postState.rawCID,
-                prevStateCID: block.prevState.rawCID,
-                specCID: block.spec.rawCID,
-                target: block.target,
-                nextTarget: block.nextTarget,
-                tipHeight: block.height,
-                timestamp: block.timestamp
-            )
+            tipSnapshot: Self.snapshot(for: block),
+            rootPolicy: rootPolicy
+        )
+    }
+
+    static func snapshot(from persisted: PersistedChainState) -> TipBlockSnapshot? {
+        guard let postStateCID = persisted.tipPostStateCID,
+              let prevStateCID = persisted.tipPrevStateCID,
+              let specCID = persisted.tipSpecCID,
+              let targetHex = persisted.tipTarget,
+              let nextTargetHex = persisted.tipNextTarget,
+              let index = persisted.tipHeight,
+              let timestamp = persisted.tipTimestamp,
+              let target = UInt256(targetHex, radix: 16),
+              let nextTarget = UInt256(nextTargetHex, radix: 16)
+        else {
+            return nil
+        }
+        return TipBlockSnapshot(
+            postStateCID: postStateCID,
+            prevStateCID: prevStateCID,
+            specCID: specCID,
+            target: target,
+            nextTarget: nextTarget,
+            tipHeight: index,
+            timestamp: timestamp
+        )
+    }
+
+    static func snapshot(from block: PersistedBlockMeta) -> TipBlockSnapshot? {
+        guard let postStateCID = block.postStateCID,
+              let prevStateCID = block.prevStateCID,
+              let specCID = block.specCID,
+              let targetHex = block.target,
+              let nextTargetHex = block.nextTarget,
+              let timestamp = block.timestamp,
+              let target = UInt256(targetHex, radix: 16),
+              let nextTarget = UInt256(nextTargetHex, radix: 16)
+        else {
+            return nil
+        }
+        return TipBlockSnapshot(
+            postStateCID: postStateCID,
+            prevStateCID: prevStateCID,
+            specCID: specCID,
+            target: target,
+            nextTarget: nextTarget,
+            tipHeight: block.blockHeight,
+            timestamp: timestamp
+        )
+    }
+
+    private static func snapshot(for block: Block) -> TipBlockSnapshot {
+        TipBlockSnapshot(
+            postStateCID: block.postState.rawCID,
+            prevStateCID: block.prevState.rawCID,
+            specCID: block.spec.rawCID,
+            target: block.target,
+            nextTarget: block.nextTarget,
+            tipHeight: block.height,
+            timestamp: block.timestamp
         )
     }
 
@@ -538,6 +662,14 @@ public actor ChainState {
 
     public func getMainChainTip() -> String {
         chainTip
+    }
+
+    public func getRootPolicy() -> ChainRootPolicy {
+        rootPolicy
+    }
+
+    func getBlockSnapshot(hash: String) -> TipBlockSnapshot? {
+        tipSnapshotsByHash[hash]
     }
 
     /// Test seam: drive the actor into a state where `chainTip` is absent from the
@@ -678,61 +810,97 @@ public actor ChainState {
     /// heaviest leaf's full body-present path is already installable (no hold).
     public func heldHeavierBackfillTarget() -> (tipHash: String, missingBodies: [String])? {
         clearInheritedWeightMemo()
-        // The index-known heaviest leaf across the whole tree, and the deepest
-        // body-present prefix of its path, both via the real GHOST descent from
-        // genesis (reusing the same fork-choice machinery, not a parallel metric).
-        guard let genesisHash = mainChainBlockAtIndex[0],
-              let genesisMeta = hashToBlock[genesisHash] else { return nil }
-        let descent = ghostDescent(from: genesisMeta)
-        let heaviestTip = descent.heaviestTipHash
+        guard let canonicalRootHash = mainChainBlockAtIndex[0] else { return nil }
 
-        // Strictly heavier by the EFFECTIVE fork-choice weight (`trueCumWork`), not the
-        // genesis-relative prefix sum: find the heaviest branch's fork base (its deepest
-        // ancestor off the main chain) and run the SAME GHOST decision reorgs use —
-        // `chainWithMostWork > mainChainWork` over `indexedEffectiveWeight`.
-        // This fires for a branch made heavier by inherited parent weight even when its
-        // prefix cumulative work only ties/loses; it never fires on a tie/lighter branch.
-        guard let forkBaseHash = forkBaseOffMainChain(ofLeaf: heaviestTip),
-              let forkBase = liveOrIndexedMeta(forkBaseHash) else { return nil }
+        // A child-root forest has no common genesis. Evaluate every noncanonical
+        // root against the canonical root before looking for a fork inside it.
+        if rootPolicy == .childRootForest {
+            var rootHashes = Set<String>()
+            for (hash, entry) in weightIndex
+            where entry.parentBlockHash == nil && entry.blockHeight == 0 {
+                rootHashes.insert(hash)
+            }
+            rootHashes.insert(canonicalRootHash)
+
+            var bestRootTarget: (rootHash: String, tipHash: String, missingBodies: [String], work: UInt256)?
+            for rootHash in rootHashes.sorted() where rootHash != canonicalRootHash {
+                guard let root = liveOrIndexedMeta(rootHash) else { continue }
+                let descent = ghostDescent(from: root)
+                guard let forkBaseHash = forkBaseOffMainChain(ofLeaf: descent.heaviestTipHash),
+                      let forkBase = liveOrIndexedMeta(forkBaseHash),
+                      let candidate = heldHeavierTarget(startingAt: forkBase)
+                else {
+                    continue
+                }
+                if let bestRootTarget,
+                   candidate.work < bestRootTarget.work
+                    || (candidate.work == bestRootTarget.work
+                        && rootHash > bestRootTarget.rootHash) {
+                    continue
+                }
+                bestRootTarget = (rootHash, candidate.tipHash, candidate.missingBodies, candidate.work)
+            }
+            if let bestRootTarget {
+                return (bestRootTarget.tipHash, bestRootTarget.missingBodies)
+            }
+        }
+
+        // The fixed-root path, and forks within the currently selected forest
+        // root, continue to use the existing fork-base walk.
+        guard let canonicalRoot = liveOrIndexedMeta(canonicalRootHash) else { return nil }
+        let descent = ghostDescent(from: canonicalRoot)
+        guard let forkBaseHash = forkBaseOffMainChain(ofLeaf: descent.heaviestTipHash),
+              let forkBase = liveOrIndexedMeta(forkBaseHash),
+              let candidate = heldHeavierTarget(startingAt: forkBase)
+        else {
+            return nil
+        }
+        return (candidate.tipHash, candidate.missingBodies)
+    }
+
+    private func heldHeavierTarget(
+        startingAt forkBase: BlockMeta
+    ) -> (tipHash: String, missingBodies: [String], work: UInt256)? {
         let forkWork = chainWithMostWork(startingBlock: forkBase)
         let mainWork = mainChainWork(fromIndex: forkBase.blockHeight)
         guard forkWork.cumulativeWork > mainWork.cumulativeWork else { return nil }
 
-        // Walk the heaviest leaf's same-chain path to its deepest body-present
-        // ancestor, collecting the interior hashes whose bodies are absent. The walk
-        // rides the pruning-durable linkage (`previousHash`) so it can cross
-        // body-pruned interiors the index still knows.
+        let missingBodies = missingBodies(onPathTo: forkWork.heaviestTipHash)
+        guard !missingBodies.isEmpty else { return nil }
+        return (forkWork.heaviestTipHash, missingBodies, forkWork.cumulativeWork)
+    }
+
+    private func missingBodies(onPathTo heaviestTip: String) -> [String] {
         var missing: [String] = []
         var cursor: String? = heaviestTip
         while let hash = cursor {
             if hashToBlock[hash] == nil {
-                // A body we don't hold on the heaviest path — a refetch target.
                 missing.append(hash)
             } else if hash != heaviestTip {
-                // Reached the deepest body-present anchor; the prefix below is local.
                 break
             }
             cursor = previousHash(of: hash)
         }
-
-        // No missing bodies ⇒ the full heaviest path is already installable; this is
-        // not a hold (fork choice will adopt it directly), so there is nothing to
-        // backfill.
-        guard !missing.isEmpty else { return nil }
-        return (heaviestTip, missing)
+        return missing
     }
 
     /// The fork base of the branch ending at `leaf`: its deepest ancestor that is NOT
     /// on the current main chain (the sibling of the main-chain block at that height),
     /// found by riding the pruning-durable linkage up until the parent lands on the
     /// main chain. This is the block reorg evaluation starts `chainWithMostWork` from.
+    /// In a child-root forest, a competing parentless height-0 root is its own base.
     /// Returns `nil` when `leaf` is already on the main chain (no divergence — the
     /// incumbent already contains it) or its linkage cannot be traced to the main chain.
     private func forkBaseOffMainChain(ofLeaf leaf: String) -> String? {
         guard let leafHeight = indexedBlockHeight(leaf),
               mainChainBlockAtIndex[leafHeight] != leaf else { return nil }
         var cursor = leaf
-        while let parent = previousHash(of: cursor) {
+        while true {
+            guard let parent = previousHash(of: cursor) else {
+                return rootPolicy == .childRootForest && indexedBlockHeight(cursor) == 0
+                    ? cursor
+                    : nil
+            }
             guard let parentHeight = indexedBlockHeight(parent) else { return nil }
             if mainChainBlockAtIndex[parentHeight] == parent {
                 // `cursor`'s parent is on the main chain ⇒ `cursor` is the fork base.
@@ -747,7 +915,7 @@ public actor ChainState {
     /// wires this to resolve a block's securing parent on the parent chain and
     /// return its current `trueCumWork(P)`. Asked fresh at fork-choice time; never
     /// cached on the block (§6.1), so it can't go stale as the parent chain extends.
-    public func setInheritedWeightProvider(_ provider: (@Sendable (String) -> UInt256)?) {
+    func setInheritedWeightProvider(_ provider: (@Sendable (String) -> UInt256)?) {
         inheritedWeight.setProvider(provider)
     }
 
@@ -839,10 +1007,14 @@ public actor ChainState {
     /// fresh values, so a block whose `trueCumWork` now exceeds the main chain is
     /// promoted. Returns the resulting `Reorganization`, if any.
     @discardableResult
-    public func reevaluateForkChoice(blockHash: String) -> Reorganization? {
+    package func reevaluateForkChoice(blockHash: String) -> Reorganization? {
         guard let meta = hashToBlock[blockHash] else { return nil }
         if mainChainBlockAtIndex[meta.blockHeight] == blockHash { return nil }
-        return checkForReorg(block: meta)
+        let reorganization = checkForReorg(block: meta)
+        if reorganization != nil {
+            mutationGeneration &+= 1
+        }
+        return reorganization
     }
 
     /// Public simulator/test view of the real fork-choice descent from a fork
@@ -923,32 +1095,32 @@ public actor ChainState {
 
     // MARK: - Block Submission
 
-    public func updateTipSnapshot(block: Block) {
-        tipSnapshot = TipBlockSnapshot(
-            postStateCID: block.postState.rawCID,
-            prevStateCID: block.prevState.rawCID,
-            specCID: block.spec.rawCID,
-            target: block.target,
-            nextTarget: block.nextTarget,
-            tipHeight: block.height,
-            timestamp: block.timestamp
-        )
+    func updateTipSnapshot(block: Block) {
+        let blockHash = try! BlockHeader(node: block).rawCID
+        let snapshot = Self.snapshot(for: block)
+        tipSnapshotsByHash[blockHash] = snapshot
+        if blockHash == chainTip {
+            tipSnapshot = snapshot
+        }
     }
 
-    public func submitBlock(
+    func submitBlock(
         parentBlockHeaderAndIndex: (String, UInt64?)?,
         blockHeader: BlockHeader,
         block: Block
     ) -> SubmissionResult {
         let blockHash = blockHeader.rawCID
         let target = block.target
+        let isRoot = block.parent == nil
 
-        let (indexPlusRetention, overflow1) = block.height.addingReportingOverflow(retentionDepth)
-        if !overflow1 && indexPlusRetention < highestBlockHeight {
+        if isRoot && (rootPolicy != .childRootForest || block.height != 0) {
             return .discarded()
         }
-        if parentBlockHeaderAndIndex == nil && block.parent == nil {
-            return .discarded()
+        if !isRoot {
+            let (indexPlusRetention, overflow1) = block.height.addingReportingOverflow(retentionDepth)
+            if !overflow1 && indexPlusRetention < highestBlockHeight {
+                return .discarded()
+            }
         }
 
         if hashToBlock[blockHash] != nil {
@@ -965,6 +1137,7 @@ public actor ChainState {
             target: target
         )
         if !result.addedBlock { return result }
+        mutationGeneration &+= 1
 
         if let parentInfo = parentBlockHeaderAndIndex {
             addParentBlockReference(
@@ -1010,6 +1183,9 @@ public actor ChainState {
         block: Block,
         target: UInt256
     ) -> SubmissionResult {
+        if block.parent == nil && (rootPolicy != .childRootForest || block.height != 0) {
+            return .discarded()
+        }
         addToBlockIndex(hash: blockHash, blockHeight: block.height)
 
         // Backward `cumulativeWork` (the F5-1 nChainWork-style prefix sum, used by
@@ -1052,6 +1228,7 @@ public actor ChainState {
 
         hashToBlock[blockHash] = meta
         blockTimestamps[blockHash] = block.timestamp
+        tipSnapshotsByHash[blockHash] = Self.snapshot(for: block)
         missingBlockHashes.remove(blockHash)
 
         if let prevHash = block.parent?.rawCID,
@@ -1322,156 +1499,6 @@ public actor ChainState {
         return .discarded()
     }
 
-    // MARK: - Parent Chain Reorg
-
-    public func applyParentReorg(
-        reorg: Reorganization,
-        parentBlockHeaderAndIndex: (String, UInt64?)?,
-        blockHash: String,
-        block: Block
-    ) -> SubmissionResult {
-        var tempResult: SubmissionResult = .discarded()
-
-        // Guarded retention-window check: `block.height + retentionDepth` is an
-        // unchecked UInt64 add that traps on overflow, and `retentionDepth`
-        // defaults to `RECENT_BLOCK_DISTANCE == UInt64.max`, so a crafted parent
-        // reorg with any non-genesis height would crash the actor. An overflow
-        // means the block is astronomically far inside the retention window, so
-        // the `>= highestBlockHeight` predicate saturates to `true` (matches the
-        // `addingReportingOverflow` guard already used in `insertBlock`/`submit`).
-        let (heightPlusRetention, retentionOverflow) = block.height.addingReportingOverflow(retentionDepth)
-        let withinRetention = retentionOverflow || heightPlusRetention >= highestBlockHeight
-        let shouldInsert = withinRetention
-            && (reorg.mainChainBlocksAdded[blockHash] != nil
-                || (block.parent != nil && hashToBlock[blockHash] == nil))
-
-        if shouldInsert {
-            tempResult = insertBlock(
-                parentBlockHeaderAndIndex: parentBlockHeaderAndIndex,
-                blockHash: blockHash,
-                block: block,
-                target: block.target
-            )
-        }
-
-        updateParentsForReorg(reorg: reorg)
-
-        var affectedHashes = reorg.mainChainBlocksAdded.keys.compactMap {
-            parentChainBlockHashToBlockHash[$0]
-        }
-        affectedHashes.append(blockHash)
-
-        let orphanCandidates = affectedHashes.filter {
-            guard let block = hashToBlock[$0] else { return false }
-            return mainChainBlockAtIndex[block.blockHeight] != $0
-        }
-        let earliestOrphans = findEarliestOrphansConnectedToMainChain(blockHeaders: orphanCandidates)
-
-        if let reorgResult = findBestReorg(among: earliestOrphans) {
-            return SubmissionResult(
-                addedBlock: tempResult.addedBlock,
-                extendsMainChain: tempResult.extendsMainChain,
-                needsChildBlock: tempResult.needsChildBlock,
-                reorganization: reorgResult
-            )
-        }
-
-        return tempResult
-    }
-
-    // MARK: - Parent Chain Reorg Propagation
-
-    public func propagateParentReorg(reorg: Reorganization) -> Reorganization? {
-        updateParentsForReorg(reorg: reorg)
-
-        var affectedBlockHashes: Set<String> = Set()
-        for addedHash in reorg.mainChainBlocksAdded.keys {
-            if let blockHash = parentChainBlockHashToBlockHash[addedHash] {
-                affectedBlockHashes.insert(blockHash)
-            }
-        }
-        for removedHash in reorg.mainChainBlocksRemoved {
-            if let blockHash = parentChainBlockHashToBlockHash[removedHash] {
-                affectedBlockHashes.insert(blockHash)
-            }
-        }
-
-        let orphanCandidates = affectedBlockHashes.filter {
-            guard let block = hashToBlock[$0] else { return false }
-            return mainChainBlockAtIndex[block.blockHeight] != $0
-        }
-        guard !orphanCandidates.isEmpty else { return nil }
-
-        let earliestOrphans = findEarliestOrphansConnectedToMainChain(
-            blockHeaders: Array(orphanCandidates)
-        )
-
-        return findBestReorg(among: earliestOrphans)
-    }
-
-    // MARK: - Shared Reorg Evaluation
-
-    private func findBestReorg(among orphans: [BlockMeta]) -> Reorganization? {
-        clearInheritedWeightMemo()
-        var bestWork: UInt256? = nil
-        var bestBlocks: Set<String> = Set()
-        // P-1103: track tipHash alongside blocks — avoids rescanning bestBlocks at the end
-        var bestTipHash: String = ""
-        var bestForkIndex: UInt64 = 0
-
-        for orphan in orphans {
-            let forkWork = chainWithMostWork(startingBlock: orphan)
-            let mainWork = mainChainWork(fromIndex: orphan.blockHeight)
-
-            // CFC-A1 no-downgrade obligation (see checkForReorg): an incomplete
-            // descent that doesn't strictly beat the incumbent tip's durable
-            // cumulative work is refetch-required, not a reorg.: compare the
-            // HEAVIEST (index-computed) tip's durable cumulative work — even if its
-            // body is pruned — so the guard reflects the real heaviest branch, not
-            // just the body-present prefix we could install.
-            if !forkWork.complete,
-               let forkTipWork = indexedCumulativeWork(forkWork.heaviestTipHash),
-               forkTipWork <= incumbentTipCumulativeWork() {
-                continue
-            }
-
-            // no-downgrade obligation on the INSTALLABLE tip (see
-            // checkForReorg): when the heaviest branch's bodies are pruned/missing,
-            // refuse to install the body-present prefix unless it strictly beats the
-            // incumbent. The heavier branch stays KNOWN for backfill.
-            if forkWork.tipHash != forkWork.heaviestTipHash,
-               let installableTipWork = indexedCumulativeWork(forkWork.tipHash),
-               installableTipWork <= incumbentTipCumulativeWork() {
-                continue
-            }
-
-            if forkWork.cumulativeWork > mainWork.cumulativeWork {
-                if let current = bestWork {
-                    if forkWork.cumulativeWork > current {
-                        bestWork = forkWork.cumulativeWork
-                        bestBlocks = forkWork.blocks
-                        bestTipHash = forkWork.tipHash
-                        bestForkIndex = orphan.blockHeight
-                    }
-                } else {
-                    bestWork = forkWork.cumulativeWork
-                    bestBlocks = forkWork.blocks
-                    bestTipHash = forkWork.tipHash
-                    bestForkIndex = orphan.blockHeight
-                }
-            }
-        }
-
-        if bestWork != nil {
-            return applyReorg(
-                newForkBlocks: bestBlocks,
-                newForkTipHash: bestTipHash.isEmpty ? nil : bestTipHash,
-                mainChainBlocks: mainChainHashesFrom(index: bestForkIndex)
-            )
-        }
-        return nil
-    }
-
     // MARK: - Index Management
 
     func addToBlockIndex(hash: String, blockHeight: UInt64) {
@@ -1512,7 +1539,7 @@ public actor ChainState {
     // *derived, not cached* — asked fresh each time (`effectiveWeight`) so it can't
     // go stale as the parent chain extends.
 
-    // P-1103: return tipHash so callers (setNewTip, checkForReorg, findBestReorg)
+    // P-1103: return tipHash so callers (setNewTip and checkForReorg)
     // don't need to re-scan blocks to find the leaf node — it's already computed here.
     /// The canonical continuation from a block is the **heaviest-`trueCumWork`
     /// descent** — at each step move to the child with the greatest `trueCumWork`,
@@ -1636,7 +1663,13 @@ public actor ChainState {
         let mainWork = mainChainWork(fromIndex: earliest.blockHeight)
         let forkWork = chainWithMostWork(startingBlock: earliest)
 
-        if forkWork.cumulativeWork > mainWork.cumulativeWork {
+        let rootTieWins = rootPolicy == .childRootForest
+            && earliest.parentBlockHash == nil
+            && earliest.blockHeight == 0
+            && forkWork.cumulativeWork == mainWork.cumulativeWork
+            && (mainChainBlockAtIndex[0].map { earliest.blockHash < $0 } ?? false)
+
+        if forkWork.cumulativeWork > mainWork.cumulativeWork || rootTieWins {
             // CFC-A1 no-downgrade obligation: if GHOST descent skipped a pruned /
             // not-yet-fetched interior child, the chosen leaf may be a *lighter*
             // sibling standing in for a heavier branch hidden behind the hole.
@@ -1725,6 +1758,7 @@ public actor ChainState {
         let chain = chainWithMostWork(startingBlock: block)
         // P-1103: use tipHash returned by chainWithMostWork instead of rescanning blocks
         chainTip = chain.tipHash
+        tipSnapshot = tipSnapshotsByHash[chainTip]
         var connectSet: [String: UInt64] = [:]
         for hash in chain.blocks {
             mainChainHashes.insert(hash)
@@ -1745,6 +1779,7 @@ public actor ChainState {
     func advanceTip(to blockHash: String, newHighestIndex: UInt64) {
         let oldHighest = highestBlockHeight
         chainTip = blockHash
+        tipSnapshot = tipSnapshotsByHash[chainTip]
 
         if let prunable = policy.newlyPrunableRange(oldHighest: oldHighest, newHighest: newHighestIndex) {
             for idx in prunable {
@@ -1771,37 +1806,6 @@ public actor ChainState {
             return current.blockHeight == 0 ? currentHash : nil
         }
         return currentHash
-    }
-
-    func findEarliestOrphansConnectedToMainChain(blockHeaders: [String]) -> [BlockMeta] {
-        var toVisit = Set(blockHeaders)
-        var visited: Set<String> = Set()
-        var result: [BlockMeta] = []
-
-        while let startHash = toVisit.popFirst() {
-            visited.insert(startHash)
-            guard var current = hashToBlock[startHash] else { continue }
-            var currentHash = startHash
-
-            while let prevHash = current.parentBlockHash,
-                  !mainChainHashes.contains(prevHash),
-                  !visited.contains(prevHash)
-            {
-                guard let prev = hashToBlock[prevHash] else { break }
-                currentHash = prevHash
-                visited.insert(currentHash)
-                current = prev
-            }
-
-            if let prevHash = current.parentBlockHash {
-                if mainChainHashes.contains(prevHash) {
-                    result.append(hashToBlock[currentHash]!)
-                }
-            } else if current.blockHeight == 0 {
-                result.append(hashToBlock[currentHash]!)
-            }
-        }
-        return result
     }
 
     // MARK: - Main Chain Queries
@@ -1838,6 +1842,10 @@ public actor ChainState {
         guard let hashes = indexToBlockHash.removeValue(forKey: index) else { return }
         for hash in hashes {
             mainChainHashes.remove(hash)
+            tipSnapshotsByHash.removeValue(forKey: hash)
+            if hash == chainTip {
+                tipSnapshot = nil
+            }
             if let block = hashToBlock.removeValue(forKey: hash) {
                 // (Bitcoin Core `-prune` model): pruning evicts the block
                 // BODY from the prunable `hashToBlock` store but must NEVER hole the

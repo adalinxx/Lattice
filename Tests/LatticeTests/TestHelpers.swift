@@ -8,10 +8,6 @@ import cashew
 import UInt256
 import WAT
 
-enum FetcherError: Error {
-    case notFound(String)
-}
-
 final class StorableFetcher: Fetcher, Storer, Sendable {
     private let state = OSAllocatedUnfairLock<[String: Data]>(initialState: [:])
 
@@ -29,7 +25,7 @@ final class StorableFetcher: Fetcher, Storer, Sendable {
 
     func fetch(rawCid: String) async throws -> Data {
         guard let data = state.withLock({ $0[rawCid] }) else {
-            throw FetcherError.notFound(rawCid)
+            throw cashew.FetcherError.notFound(rawCid)
         }
         return data
     }
@@ -38,7 +34,7 @@ final class StorableFetcher: Fetcher, Storer, Sendable {
     /// callback that serves CAS bytes off a socket).
     func fetchSync(rawCid: String) throws -> Data {
         guard let data = state.withLock({ $0[rawCid] }) else {
-            throw FetcherError.notFound(rawCid)
+            throw cashew.FetcherError.notFound(rawCid)
         }
         return data
     }
@@ -46,7 +42,7 @@ final class StorableFetcher: Fetcher, Storer, Sendable {
 
 struct ThrowingFetcher: Fetcher {
     func fetch(rawCid: String) async throws -> Data {
-        throw FetcherError.notFound(rawCid)
+        throw cashew.FetcherError.notFound(rawCid)
     }
 }
 

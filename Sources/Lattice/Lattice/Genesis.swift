@@ -37,7 +37,14 @@ public struct GenesisResult: Sendable {
 
 public enum GenesisCeremony {
 
-    public static func create(config: GenesisConfig, fetcher: Fetcher, retentionDepth: UInt64 = RECENT_BLOCK_DISTANCE) async throws -> GenesisResult {
+    /// Creates a runtime chain state for the supplied genesis. Root topology is
+    /// runtime configuration, deliberately separate from the content-addressed
+    /// genesis configuration.
+    public static func create(
+        config: GenesisConfig,
+        fetcher: Fetcher,
+        retentionDepth: UInt64 = RECENT_BLOCK_DISTANCE
+    ) async throws -> GenesisResult {
         let block = try await BlockBuilder.buildGenesis(
             spec: config.spec,
             timestamp: config.timestamp,
@@ -45,7 +52,10 @@ public enum GenesisCeremony {
             fetcher: fetcher
         )
         let blockHash = try VolumeImpl<Block>(node: block).rawCID
-        let chainState = ChainState.fromGenesis(block: block, retentionDepth: retentionDepth)
+        let chainState = ChainState.fromGenesis(
+            block: block,
+            retentionDepth: retentionDepth
+        )
         return GenesisResult(block: block, blockHash: blockHash, chainState: chainState)
     }
 

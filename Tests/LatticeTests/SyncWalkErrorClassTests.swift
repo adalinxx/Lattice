@@ -6,9 +6,8 @@ import Foundation
 
 // Invalid ≠ unavailable on the sync walk. A fetch that FAILS (peer pruned the
 // body, transport timed out) or returns undecodable bytes has NOT proven the
-// block bad — `walkChain` must classify it `SyncError.bodyUnavailable`, exactly
-// as its twin `backfillSubtree` does, never `invalidBlock`. These tests pin the
-// walk path's error class so the two pipelines cannot drift again.
+// block bad — `walkChain` must classify it `SyncError.bodyUnavailable`, never
+// `invalidBlock`. These tests pin the retryable interior-body boundary.
 
 private func spec(_ dir: String = "Nexus") -> ChainSpec {
     ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
@@ -30,7 +29,7 @@ private struct DenyingFetcher: Fetcher {
     let denied: String
 
     func fetch(rawCid: String) async throws -> Data {
-        if rawCid == denied { throw FetcherError.notFound(rawCid) }
+        if rawCid == denied { throw cashew.FetcherError.notFound(rawCid) }
         return try await base.fetch(rawCid: rawCid)
     }
 }
@@ -73,7 +72,7 @@ final class SyncWalkErrorClassTests: XCTestCase {
     }
 
     /// Undecodable bytes are likewise unavailable (the requested body did not
-    /// arrive intact), matching `backfillSubtree`'s classification.
+    /// arrive intact), so they remain retryable rather than invalid.
     func testWalkUndecodableBytesAreBodyUnavailableNotInvalidBlock() async throws {
         let cas = StorableFetcher()
         let (genesisCID, tipCID) = try await buildTwoBlockChain(into: cas)

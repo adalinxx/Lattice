@@ -1,39 +1,58 @@
 # Correctness invariant catalog
 
-This catalog gives stable names to the first invariants enforced by the foundational redesign. It will grow as legacy paths migrate.
-
 ## SEMANTICS-001 — availability is not invalidity
 
-When required authenticated content cannot be obtained, chain-local admission returns `unavailable`, not `invalid`.
+Unavailable content, a CID-mismatching provider response, a protocol violation,
+and a local verifier failure have distinct admission outcomes.
 
-Established by: `ChainLocalAdmissionTests.testUnavailableContentIsNotReportedInvalid`.
+Established by: `ChainLocalAdmissionTests.testResolutionFailuresHaveTypedOutcomes`.
 
-## SEMANTICS-002 — valid side admission is not rejection
+## SEMANTICS-002 — temporal admissibility is distinct
 
-A valid equal-work sibling enters the accepted graph as `acceptedSide` without becoming canonical.
+A future-dated otherwise-valid candidate returns `notYetAdmissible`, not
+permanent invalidity or unavailable evidence.
 
-Established by: `ChainLocalAdmissionTests.testValidEqualWorkSiblingIsAcceptedAsSideBlock`.
+Established by: `ChainLocalAdmissionTests.testNotYetAdmissibleCandidateIsDeferredByTypedOutcome` and `SyncForestIntegrationTests.testSyncReportsFutureGenesisAsNotYetAdmissible`.
 
-## SEMANTICS-003 — duplicate is not invalidity
+## ADMISSION-001 — context is runtime-owned
 
-An already known block returns `duplicate`.
+Path and child-proof requirements come from the chain runtime. Child admission
+requires a proof bound to that path and candidate CID; its absolute root must
+also clear its declared PoW target.
 
-Established by: `ChainLocalAdmissionTests.testDuplicateIsNotReportedInvalid`.
+Established by: `ChainLocalAdmissionTests.testChildAdmissionRequiresVerifiedProofAndThenAcceptsIt`, `ChainLocalAdmissionTests.testChildProofRejectsAnUnminedRootCarrier`, and `ChainLocalAdmissionTests.testRestoreDerivesChildContextAndRejectsInvalidTopology`.
 
-## DURABLE-001 — storage failure precedes mutation
+## DURABLE-001 — preparation precedes visible mutation
 
-A `storageFailed` preparation result prevents the accepted graph and canonical tip from advancing.
+Every public candidate admission requires a preparation result before it can
+change the accepted graph. Independent verification may run concurrently; final
+fork choice is serialized by `ChainState` against its current state. Public
+first-root bootstrap and linear sync adoption obey the same durable gate; sync
+also rejects a projection made stale by intervening admission.
 
-Established by: `ChainLocalAdmissionTests.testStorageFailurePreventsVisibleConsensusMutation`.
+Established by: `ChainLocalAdmissionTests.testDurablePreparationFailureLeavesNoVisibleMutation`, `ChainLocalAdmissionTests.testPublicBootstrapRequiresVerifiedGenesisAndDurablePreparation`, `ChainLocalAdmissionTests.testConcurrentAdmissionReachesDurablePreparationTogether`, and `SyncForestIntegrationTests.testApplySyncRequiresDurablePreparationAndRejectsAStaleProjection`.
 
-## CHAIN-001 — parent reorganization is not child mutation
+## FOLLOWUP-001 — consensus requests bodies without fetching them
 
-A parent fork-choice change through the chain-local API causes no direct child tip change.
+An accepted orphan or held heavier branch returns its missing body requirements
+without starting transport.
 
-Established by: `ChainLocalAdmissionTests.testParentReorganizationDoesNotMutateChildChain`.
+Established by: `ChainLocalAdmissionTests.testAcceptedOrphanReturnsItsMissingParentAsFollowUp` and `ChildRootForestTests.testForestReportsHeldHeavierMissingSideRoot`.
 
-## INGRESS-001 — one result vocabulary
+## FOREST-001 — one path admits competing child roots
 
-Every downstream transport maps `ChainLocalBlockResult` without collapsing canonicalized, side-accepted, duplicate, unavailable, invalid, or storage-failed outcomes.
+A child-root forest is one runtime and one persistent chain state. It accepts
+valid additional roots, selects ties deterministically, and can reorganize
+between roots without a common child ancestor.
 
-Established downstream by the lattice-node integration PR.
+Established by: `ChainLocalAdmissionTests.testSecondChildRootPreparationReceivesMaterializedState`, `ChildRootForestTests.testChildForestSelectsEqualWeightRootsIndependentlyOfArrivalOrder`, `ChildRootForestTests.testHeavierCompetingRootReorganizesWithoutCommonAncestor`, and `ChildRootForestTests.testRestoredForestReorganizesToKnownSideDescendantWithItsSnapshot`.
+
+The public boundary version is established by
+`ChainLocalAdmissionTests.testVerifiedBootstrapAndSecondRootAdmissionShareOneForest`.
+
+## CHAIN-001 — parent commands do not mutate children
+
+No public Lattice path propagates a parent reorganization into a child chain.
+Children change only when their own verified evidence is admitted.
+
+The governing cross-runtime test remains in the [migration conflict register](migration-conflict-register.md).
