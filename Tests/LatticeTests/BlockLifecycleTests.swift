@@ -49,6 +49,18 @@ private func now() -> Int64 {
     Int64(Date().timeIntervalSince1970 * 1000)
 }
 
+private actor AdmissionRecordCollector {
+    private var records: [ChainAdmissionRecord] = []
+
+    func append(_ record: ChainAdmissionRecord) {
+        records.append(record)
+    }
+
+    func snapshot() -> [ChainAdmissionRecord] {
+        records
+    }
+}
+
 // MARK: - Block Minting Tests
 
 @MainActor
@@ -64,13 +76,14 @@ final class BlockMintingTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [AccountAction(owner: owner, delta: Int64(premineAmount))],
             actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [owner], fee: 0, nonce: 0
+            receiptActions: [], withdrawalActions: [], signers: [owner], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
         let tx = signTransaction(body: body, keypair: kp)
 
         let genesis = try await buildAndStoreGenesis(
             spec: spec, transactions: [tx], timestamp: now() - 10_000,
-            target: UInt256(1000), fetcher: fetcher
+            target: UInt256.max, fetcher: fetcher
         )
 
         XCTAssertEqual(genesis.height, 0)
@@ -81,6 +94,115 @@ final class BlockMintingTests: XCTestCase {
 
         let valid = try await genesis.validateGenesis(fetcher: fetcher, directory: "Nexus").0
         XCTAssertTrue(valid)
+    }
+
+    func testAdmissionStagesLifecycleDiffOnceAndReturnsItAtRetention() async throws {
+        let fetcher = makeFetcher()
+        let base = now() - 100_000
+        let spec = noPremine()
+        let genesis = try await buildAndStoreGenesis(
+            spec: spec,
+            timestamp: base,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+        let miner = CryptoUtils.generateKeyPair()
+        let owner = addr(miner.publicKey)
+        let reward = spec.rewardAtBlock(1)
+        let rewardBody = TransactionBody(
+            accountActions: [AccountAction(owner: owner, delta: Int64(reward))],
+            actions: [], depositActions: [], genesisActions: [],
+            receiptActions: [], withdrawalActions: [],
+            signers: [owner], fee: 0, nonce: 0, chainPath: ["Nexus"]
+        )
+        let built1 = try await BlockBuilder.buildBlockWithTransition(
+            previous: genesis,
+            transactions: [signTransaction(body: rewardBody, keypair: miner)],
+            timestamp: base + 1_000,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+        let block1 = try await storeBuiltBlock(built1, in: fetcher)
+        let block2 = try await buildAndStoreBlock(
+            previous: block1,
+            timestamp: base + 2_000,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+        let block3 = try await buildAndStoreBlock(
+            previous: block2,
+            timestamp: base + 3_000,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+        let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis, retentionDepth: 1))
+        let collector = AdmissionRecordCollector()
+        let stage: @Sendable (ChainAdmissionRecord) async throws -> Void = { record in
+            await collector.append(record)
+        }
+
+        let first = try await level.admitBlockHeaderChainLocal(
+            try BlockHeader(node: block1),
+            fetcher: fetcher,
+            storer: fetcher,
+            stage: stage
+        )
+        switch first {
+        case .canonicalized(let diff, _, _, let evicted, _):
+            XCTAssertEqual(diff, built1.stateDiff)
+            XCTAssertTrue(evicted.isEmpty)
+        default:
+            XCTFail("first block should canonicalize")
+        }
+
+        let chain = await level.chain
+        let persisted = await chain.persist()
+        let block1Hash = try BlockHeader(node: block1).rawCID
+        let live = try XCTUnwrap(persisted.blocks.first { $0.blockHash == block1Hash })
+        XCTAssertEqual(live.createdDiffs, built1.stateDiff.created)
+        XCTAssertEqual(live.removedDiffs, built1.stateDiff.replaced)
+
+        let duplicate = try await level.admitBlockHeaderChainLocal(
+            try BlockHeader(node: block1),
+            fetcher: fetcher,
+            storer: fetcher,
+            stage: stage
+        )
+        guard case .duplicate = duplicate else {
+            return XCTFail("duplicate contribution should not replay lifecycle admission")
+        }
+        let recordsAfterDuplicate = await collector.snapshot()
+        XCTAssertEqual(recordsAfterDuplicate.count, 1)
+
+        let second = try await level.admitBlockHeaderChainLocal(
+            try BlockHeader(node: block2),
+            fetcher: fetcher,
+            storer: fetcher,
+            stage: stage
+        )
+        XCTAssertEqual(second.evictedBlocks.map(\.blockHeight), [0])
+        let result = try await level.admitBlockHeaderChainLocal(
+            try BlockHeader(node: block3),
+            fetcher: fetcher,
+            storer: fetcher,
+            stage: stage
+        )
+        let evicted = try XCTUnwrap(result.evictedBlocks.first)
+
+        XCTAssertEqual(result.evictedBlocks.count, 1)
+        XCTAssertEqual(evicted.blockHash, try BlockHeader(node: block1).rawCID)
+        XCTAssertEqual(evicted.createdDiffs, built1.stateDiff.created)
+        XCTAssertEqual(evicted.removedDiffs, built1.stateDiff.replaced)
+        XCTAssertFalse(evicted.createdDiffs.isEmpty)
+        let recordsAfterRetention = await collector.snapshot()
+        XCTAssertEqual(recordsAfterRetention.count, 3)
+
+        let retainedProjection = await chain.persist()
+        let prunedBlock = try XCTUnwrap(
+            retainedProjection.prunedBlocks.first { $0.blockHash == block1Hash }
+        )
+        XCTAssertTrue(prunedBlock.createdDiffs.isEmpty)
+        XCTAssertTrue(prunedBlock.removedDiffs.isEmpty)
     }
 
     func test_validateGenesis_futureDriftTolerance() async throws {
@@ -286,8 +408,7 @@ final class BlockMintingTests: XCTestCase {
                 previous: prev, timestamp: t - 100_000 + Int64(i) * 1000,
                 target: UInt256(1000), nonce: UInt64(i), fetcher: fetcher
             )
-            let result = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let result = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: block), block: block
             )
             XCTAssertTrue(result.extendsMainChain, "Block \(i) should extend main chain")
@@ -496,10 +617,6 @@ final class CrossChainTests: XCTestCase {
         let valid = try await block2.validateNexus(fetcher: fetcher).0
         XCTAssertFalse(valid, "Nexus root must consensus-reject blocks containing deposit actions")
 
-        // The rule is structural, so the snapshot-sync path (requirePostState:
-        // false) must reject the block too.
-        let validStructural = try await block2.validateNexus(fetcher: fetcher, requirePostState: false).0
-        XCTAssertFalse(validStructural, "Snapshot-sync structural validation must also reject deposits on the Nexus root")
     }
 
     func testNexusRejectsWithdrawalActionsAtConsensus() async throws {
@@ -557,8 +674,6 @@ final class CrossChainTests: XCTestCase {
 
         let valid = try await block3.validateNexus(fetcher: fetcher).0
         XCTAssertFalse(valid, "Nexus root must consensus-reject blocks containing withdrawal actions")
-        let validStructural = try await block3.validateNexus(fetcher: fetcher, requirePostState: false).0
-        XCTAssertFalse(validStructural, "Snapshot-sync structural validation must also reject withdrawals on the Nexus root")
     }
 
     func testWithdrawalOnNexusIsIgnored() async throws {
@@ -632,56 +747,6 @@ final class CrossChainTests: XCTestCase {
         let valid = try await nexusBlock1.validateNexus(fetcher: fetcher).0
         XCTAssertTrue(valid)
         XCTAssertEqual(nexusBlock1.height, 1)
-    }
-
-    func testMultiChainParentAnchoring() async throws {
-        let fetcher = makeFetcher()
-        let t = now()
-        let nexusSpec = noPremine("Nexus")
-        let childSpec = noPremine("Child")
-
-        let nexusGenesis = try await buildAndStoreGenesis(
-            spec: nexusSpec, timestamp: t - 100_000, target: UInt256(1000), fetcher: fetcher
-        )
-        let childGenesis = try await buildAndStoreGenesis(
-            spec: childSpec, timestamp: t - 100_000, target: UInt256(1000), fetcher: fetcher
-        )
-
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
-        let childChain = ChainState.fromGenesis(block: childGenesis)
-
-        var nexusPrev = nexusGenesis
-        for i in 1...3 {
-            let block = try await buildAndStoreBlock(
-                previous: nexusPrev, timestamp: t - 100_000 + Int64(i) * 1000,
-                target: UInt256(1000), nonce: UInt64(i), fetcher: fetcher
-            )
-            let _ = await nexusChain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
-                blockHeader: try! VolumeImpl<Block>(node: block), block: block
-            )
-            nexusPrev = block
-        }
-
-        let nexusHeight = await nexusChain.getHighestBlockHeight()
-        XCTAssertEqual(nexusHeight, 3)
-
-        let childBlock1 = try await buildAndStoreBlock(
-            previous: childGenesis, parentChainBlock: nexusPrev,
-            timestamp: t - 10_000, target: UInt256(1000), nonce: 1, fetcher: fetcher
-        )
-        let nexusHeader = try! VolumeImpl<Block>(node: nexusPrev)
-        let childResult = await childChain.submitBlock(
-            parentBlockHeaderAndIndex: (nexusHeader.rawCID, nexusHeight),
-            blockHeader: try! VolumeImpl<Block>(node: childBlock1), block: childBlock1
-        )
-        XCTAssertTrue(childResult.extendsMainChain)
-
-        let childMeta = await childChain.getConsensusBlock(
-            hash: try! VolumeImpl<Block>(node: childBlock1).rawCID
-        )
-        XCTAssertNotNil(childMeta?.parentIndex)
-        XCTAssertEqual(childMeta?.parentIndex, nexusHeight)
     }
 
     func testSwapAndSettleFullFlow() async throws {
@@ -817,8 +882,7 @@ final class BlockLifecycleTests: XCTestCase {
                 previous: mainPrev, timestamp: t - 100_000 + Int64(i) * 1000,
                 target: UInt256(1000), nonce: UInt64(i), fetcher: fetcher
             )
-            let _ = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: block), block: block
             )
             mainPrev = block
@@ -833,8 +897,7 @@ final class BlockLifecycleTests: XCTestCase {
                 previous: forkPrev, timestamp: t - 100_000 + Int64(i) * 500,
                 target: UInt256(1000), nonce: UInt64(i + 100), fetcher: fetcher
             )
-            let _ = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: block), block: block
             )
             forkPrev = block
@@ -888,8 +951,7 @@ final class BlockLifecycleTests: XCTestCase {
         let mined = BlockBuilder.mine(block: block1, target: UInt256.max, maxAttempts: 10)
         XCTAssertNotNil(mined)
 
-        let result = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let result = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: mined!), block: mined!
         )
         XCTAssertTrue(result.extendsMainChain)

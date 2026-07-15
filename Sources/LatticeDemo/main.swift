@@ -4,7 +4,7 @@ import cashew
 import Foundation
 import os
 
-final class DemoStore: Fetcher, Storer, @unchecked Sendable {
+final class DemoStore: Fetcher, Storer, VolumeStorer, @unchecked Sendable {
     private let storage = OSAllocatedUnfairLock<[String: Data]>(initialState: [:])
 
     func fetch(rawCid: String) async throws -> Data {
@@ -16,6 +16,10 @@ final class DemoStore: Fetcher, Storer, @unchecked Sendable {
 
     func store(entries: [String: Data]) async throws {
         storage.withLock { $0.merge(entries) { _, new in new } }
+    }
+
+    func store(volume: SerializedVolume) async throws {
+        storage.withLock { $0.merge(volume.entries) { _, new in new } }
     }
 }
 
@@ -64,8 +68,11 @@ Task {
     print()
 
     let chain = ChainState.fromGenesis(block: genesis)
-    let level = ChainLevel(chain: chain)
-    let prepare: ChainCommitPreparer = { _, _, _ in .ready }
+    let context = try ChainRuntimeContext(
+        path: [DEFAULT_ROOT_DIRECTORY],
+        minimumRootWork: UInt256(1)
+    )
+    let level = ChainLevel(chain: chain, context: context)
 
     print("Building a 5-block chain...")
     var prev = genesis
@@ -80,11 +87,11 @@ Task {
             fetcher: fetcher
         )
         let header = try VolumeImpl<Block>(node: block)
-        try await store(block, in: fetcher)
-        let result = await level.admitBlockHeaderChainLocal(
+        let result = try await level.admitBlockHeaderChainLocal(
             header,
             fetcher: fetcher,
-            prepare: prepare
+            storer: fetcher,
+            stage: { _ in }
         )
         print("  Block \(i): CID=\(String(header.rawCID.prefix(20)))... canonical=\(canonicalized(result))")
         prev = block
@@ -110,11 +117,11 @@ Task {
             fetcher: fetcher
         )
         let header = try VolumeImpl<Block>(node: block)
-        try await store(block, in: fetcher)
-        let result = await level.admitBlockHeaderChainLocal(
+        let result = try await level.admitBlockHeaderChainLocal(
             header,
             fetcher: fetcher,
-            prepare: prepare
+            storer: fetcher,
+            stage: { _ in }
         )
         print("  Fork block \(i): canonical=\(canonicalized(result))")
         forkPrev = block

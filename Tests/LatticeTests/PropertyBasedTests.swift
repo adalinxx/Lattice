@@ -645,9 +645,4 @@ final class BlockStructurePropertyTests: XCTestCase {
         XCTAssertEqual(TRANSACTION_PROPERTIES.count, 1)
     }
 
-    // Property: RECENT_BLOCK_DISTANCE is a reasonable value
-    func testRecentBlockDistance() {
-        XCTAssertEqual(RECENT_BLOCK_DISTANCE, UInt64.max)
-        XCTAssertGreaterThan(RECENT_BLOCK_DISTANCE, 0)
-    }
 }

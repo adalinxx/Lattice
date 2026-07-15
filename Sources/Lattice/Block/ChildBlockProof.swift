@@ -13,21 +13,21 @@ import UInt256
 /// that whole path; `rootCID` is the absolute PoW-root block. A single-hop proof is
 /// just a 1-element path — the depth-1 case is not special.
 ///
-/// Multi-hop proofs are built by `compose`: a relaying node that holds only its own
+/// Multi-hop proofs are built by `composing(hop:)`: a relaying node that holds only its own
 /// `root→self` proof (not the blocks above it) appends a locally-generated
 /// `self→child` hop to extend the path one level, without ever materializing the
 /// ancestor chain.
 ///
-/// Inner proof format (wrapped by `ChildBlockProofEnvelope` on the wire):
-///   [proofLen: UInt32 LE]
+/// Serialized proof format:
+///   [rootCIDLen: UInt16 LE][rootCID: UTF-8]
 ///   [pathLen: UInt16 LE]  for each: [dirLen: UInt16 LE][dir: UTF-8]
 ///   [numEntries: UInt16 LE]
 ///   for each entry:
 ///     [cidLen: UInt16 LE][cid: UTF-8]
 ///     [dataLen: UInt32 LE][data: bytes]
 ///
-/// To verify: store entries into a MemoryBroker, fetch the root, check its PoW
-/// hash, then walk `directoryPath` via targeted resolution down to the leaf CID.
+/// Verification uses a sealed in-memory source, checks the root floor first, then
+/// walks `directoryPath` via targeted resolution down to the leaf CID.
 public struct ChildBlockProof: Sendable {
     /// CAS entries from the sparse path (union across all hops, root → leaf only).
     public let entries: [(cid: String, data: Data)]
@@ -42,46 +42,10 @@ public struct ChildBlockProof: Sendable {
         self.entries = entries
     }
 
-    /// Stable identity for this one vertical PoW path. A child block may collect
-    /// several paths; this ID dedupes the path without treating it as ancestry.
-    public var proofPathID: String {
-        var parts = ["root", String(rootCID.utf8.count), rootCID, "path", String(directoryPath.count)]
-        for dir in directoryPath {
-            parts.append(String(dir.utf8.count))
-            parts.append(dir)
-        }
-        return parts.joined(separator: ":")
-    }
-
-    /// Stable content identity for sorting/deduping proof envelopes. It includes
-    /// normalized CAS entries, so wire/collection order is never consensus input.
-    public var canonicalProofID: String {
-        var parts = [proofPathID, "entries", String(entries.count)]
-        for entry in canonicalEntries(entries) {
-            parts.append(String(entry.cid.utf8.count))
-            parts.append(entry.cid)
-            parts.append(String(entry.data.count))
-            parts.append(entry.data.base64EncodedString())
-        }
-        return parts.joined(separator: ":")
-    }
-
-    public var canonicalized: ChildBlockProof {
-        ChildBlockProof(rootCID: rootCID, directoryPath: directoryPath, entries: canonicalEntries(entries))
-    }
-
-    public var entryMap: [String: Data] {
-        var map: [String: Data] = [:]
-        for entry in entries {
-            map[entry.cid] = entry.data
-        }
-        return map
-    }
-
     // MARK: - Generation
 
     /// Generate a single-hop sparse proof for `childDirectory` from a block the
-    /// caller holds (the PoW root, or — for `compose` — an intermediate block).
+    /// caller holds (the PoW root, or — for composition — an intermediate block).
     /// `directoryPath` is `[childDirectory]`; multi-level paths are built by
     /// composing single hops.
     public static func generate(
@@ -94,7 +58,11 @@ public struct ChildBlockProof: Sendable {
         let storer = _CollectingStorer()
         try await resolvedRoot.store(paths: path, storer: storer)
 
-        return ChildBlockProof(rootCID: rootHeader.rawCID, directoryPath: [childDirectory], entries: dedupedEntries(storer.entries))
+        return ChildBlockProof(
+            rootCID: rootHeader.rawCID,
+            directoryPath: [childDirectory],
+            entries: storer.entries
+        )
     }
 
     // MARK: - Composition
@@ -108,9 +76,17 @@ public struct ChildBlockProof: Sendable {
     /// the upstream path — so the seam is content-addressed and unforgeable.
     public func composing(hop: ChildBlockProof) -> ChildBlockProof {
         var merged = entries
-        var seen = Set(entries.map { $0.cid })
-        for e in hop.entries where seen.insert(e.cid).inserted {
-            merged.append(e)
+        var known = Dictionary(
+            entries.map { ($0.cid, $0.data) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for entry in hop.entries {
+            if let data = known[entry.cid] {
+                if data != entry.data { merged.append(entry) }
+            } else {
+                known[entry.cid] = entry.data
+                merged.append(entry)
+            }
         }
         return ChildBlockProof(
             rootCID: rootCID,
@@ -139,193 +115,146 @@ public struct ChildBlockProof: Sendable {
         return header.rawCID == rootCID
     }
 
-    /// Resolve the root block's content, confirm the root block's
-    /// proofOfWorkHash() equals `rootHash`, then walk `directoryPath` hop by hop
-    /// (root.children[d0] → that block's children[d1] → …) and confirm the final
-    /// leaf header equals `childCID`. Any missing entry, broken hop, or hash
-    /// mismatch fails closed.
-    public func verify(rootHash: UInt256, childCID: String) async -> Bool {
-        guard !entries.isEmpty, !directoryPath.isEmpty else { return false }
+    /// Verify the complete root-to-child package and derive its work fact.
+    ///
+    /// The setup floor is independent of every chain target. A carrier may miss
+    /// its own target and still carry an accepted descendant, so target checks are
+    /// used only to classify where this one grind is credited.
+    public func verify(
+        child: Block,
+        childCID: String,
+        expectedPath: [String],
+        minimumRootWork: UInt256,
+        parentStateWitness: ParentStateWitness
+    ) async -> Result<VerifiedChildEvidence, ChildProofVerificationFailure> {
+        guard minimumRootWork > .zero else {
+            return .failure(.protocolInvalid)
+        }
+        guard directoryPath == expectedPath,
+              !entries.isEmpty,
+              !directoryPath.isEmpty else {
+            return .failure(.malformedEvidence)
+        }
 
-        let fetcher = proofSource()
+        let rootEntries = entries.filter { $0.cid == rootCID }
+        guard rootEntries.count == 1,
+              let rootData = rootEntries.first?.data,
+              let rootBlock = contentBoundBlock(cid: rootCID, data: rootData) else {
+            return .failure(.malformedEvidence)
+        }
+        let rootHash = rootBlock.proofOfWorkHash()
+        guard workForHash(rootHash) >= minimumRootWork else {
+            return .failure(.protocolInvalid)
+        }
 
-        guard let rootBlockData = try? await fetcher.fetch(rawCid: rootCID),
-              let rootBlock = Block(data: rootBlockData) else { return false }
-
-        // Content-bind the root bytes to rootCID. The proof's entry map is attacker-
-        // supplied, so bytes stored under the rootCID key must be verified to actually
-        // hash to it — otherwise a forger could ship arbitrary bytes as "the root" and
-        // control proofOfWorkHash().
-        guard isContentBoundRoot(rootBlock) else { return false }
-        // The root block's PoW hash must match the claimed PoW hash and clear
-        // the root target. A content-bound but unmined carrier is not authority
-        // to secure a child block.
-        guard rootBlock.proofOfWorkHash() == rootHash else { return false }
-        guard rootBlock.validateProofOfWork(nexusHash: rootHash) else { return false }
-
-        // Walk the path: resolve children[dir] at each level, descending into the
-        // resolved child block for the next hop until the final leaf.
-        var currentBlock = rootBlock
-        for (i, dir) in directoryPath.enumerated() {
-            guard let childrenNode = try? await currentBlock.children.resolve(
-                paths: [[dir]: .targeted], fetcher: fetcher
-            ).node,
-            let childHeader: VolumeImpl<Block> = try? childrenNode.get(key: dir) else { return false }
-
-            if i == directoryPath.count - 1 {
-                return childHeader.rawCID == childCID
+        var proofEntries: [String: Data] = [:]
+        for entry in entries {
+            guard proofEntries.updateValue(entry.data, forKey: entry.cid) == nil else {
+                return .failure(.malformedEvidence)
             }
-            guard let next = try? await childHeader.resolve(fetcher: fetcher).node else { return false }
-            // Each intermediate carrier is itself a child-chain block secured by
-            // the same absolute PoW root. Without this check an arbitrary nested
-            // container could manufacture a descendant path beneath a valid root.
-            guard next.validateProofOfWork(nexusHash: rootHash) else { return false }
-            currentBlock = next
         }
-        return false
-    }
+        var predecessorEntries: [String: Data] = [:]
+        for entry in parentStateWitness.entries {
+            if predecessorEntries.updateValue(entry.data, forKey: entry.cid) != nil {
+                return .failure(.malformedEvidence)
+            }
+            if let pathData = proofEntries[entry.cid], pathData != entry.data {
+                return .failure(.malformedEvidence)
+            }
+        }
+        let fetcher = _TrackingProofFetcher(proofEntries)
+        var directlyConsumed = Set([rootCID])
 
-    /// Reconstruct the PoW-root block from the proof's own entries and return its
-    /// PoW hash AND its height — the intrinsic anchor the proof commits to. The
-    /// hash is what a child block's PoW is checked against (its work lives on the
-    /// cross-chain path to the root, not its own hash); the height lets a verifier bind
-    /// the root to a canonical block at that height even after the root's body has been
-    /// pruned (durable `block_index` commitment). Content-bound: the bytes under
-    /// `rootCID` must hash to it (the proof's entry map is attacker-supplied), so a
-    /// forger can't ship arbitrary "root" bytes. `nil` if the root entry is missing.
-    public func anchorRoot() async -> (hash: UInt256, height: UInt64)? {
-        guard !entries.isEmpty else { return nil }
-        let fetcher = proofSource()
-        guard let rootData = try? await fetcher.fetch(rawCid: rootCID),
-              let rootBlock = Block(data: rootData),
-              isContentBoundRoot(rootBlock) else { return nil }
-        return (rootBlock.proofOfWorkHash(), rootBlock.height)
-    }
-
-    /// The intrinsic anchor hash (see `anchorRoot`). `nil` if the root can't be rebuilt.
-    public func anchorRootHash() async -> UInt256? {
-        await anchorRoot()?.hash
-    }
-
-    /// The parent-chain block that committed this proof's leaf.
-    ///
-    /// For a direct child this is the PoW root block. For deeper chains this is
-    /// the last intermediate block on the vertical proof path, i.e. the block
-    /// whose `children` dictionary contains the proven leaf. The returned parent
-    /// hash/height lets the child layer compare consecutive child blocks against
-    /// the parent chain's ancestry without mutating parent-chain state.
-    public func committingParentAnchor() async -> ParentAnchor? {
-        guard let committed = await committingParentBlock() else { return nil }
-        return ParentAnchor(
-            blockHash: committed.cid,
-            parentHash: committed.block.parent?.rawCID,
-            height: committed.block.height,
-            prevStateCID: committed.block.prevState.rawCID
-        )
-    }
-
-    /// Reconstruct the parent-chain block whose `children` dictionary commits
-    /// the proven child. This is the state-root anchor for child validation:
-    /// the child block's `parentState` must equal this block's `prevState`.
-    public func committingParentBlock() async -> (cid: String, block: Block)? {
-        guard !entries.isEmpty, !directoryPath.isEmpty else { return nil }
-        let fetcher = proofSource()
-
-        guard let rootData = try? await fetcher.fetch(rawCid: rootCID),
-              let rootBlock = Block(data: rootData),
-              isContentBoundRoot(rootBlock) else { return nil }
-
-        if directoryPath.count == 1 {
-            return (rootCID, rootBlock)
+        func continuityFailure(_ carrier: Block) -> ChildProofVerificationFailure? {
+            guard let parentCID = carrier.parent?.rawCID else {
+                return carrier.hasCarrierContinuity(parent: nil)
+                    ? nil
+                    : .protocolInvalid
+            }
+            guard let parentData = predecessorEntries[parentCID],
+                  let parent = contentBoundBlock(cid: parentCID, data: parentData) else {
+                return .malformedEvidence
+            }
+            return carrier.hasCarrierContinuity(parent: parent)
+                ? nil
+                : .protocolInvalid
         }
 
-        var currentHash = rootCID
+        var carriers = [rootBlock]
         var currentBlock = rootBlock
-        for dir in directoryPath.dropLast() {
-            guard let childrenNode = try? await currentBlock.children.resolve(
-                paths: [[dir]: .targeted], fetcher: fetcher
-            ).node,
-            let childHeader: VolumeImpl<Block> = try? childrenNode.get(key: dir),
-            let next = try? await childHeader.resolve(fetcher: fetcher).node else { return nil }
-            currentHash = childHeader.rawCID
+
+        for (index, directory) in directoryPath.enumerated() {
+            if let failure = continuityFailure(currentBlock) {
+                return .failure(failure)
+            }
+            guard let children = try? await currentBlock.children.resolve(
+                    paths: [[directory]: .targeted], fetcher: fetcher
+                  ).node,
+                  let childHeader: VolumeImpl<Block> = try? children.get(key: directory)
+            else { return .failure(.malformedEvidence) }
+
+            if index == directoryPath.count - 1 {
+                guard childHeader.rawCID == childCID else {
+                    return .failure(.malformedEvidence)
+                }
+                guard child.parentState.rawCID == currentBlock.prevState.rawCID else {
+                    return .failure(.protocolInvalid)
+                }
+
+                let ancestorWork = carriers.first {
+                    $0.validateProofOfWork(nexusHash: rootHash)
+                }.map { workForTarget($0.target) } ?? .zero
+                let consumed = await fetcher.consumed().union(directlyConsumed)
+                guard consumed == Set(proofEntries.keys) else {
+                    return .failure(.malformedEvidence)
+                }
+                return .success(VerifiedChildEvidence(
+                    grindID: rootCID,
+                    rootHash: rootHash,
+                    acceptedAncestorWork: ancestorWork
+                ))
+            }
+
+            guard let nextData = proofEntries[childHeader.rawCID],
+                  let next = contentBoundBlock(cid: childHeader.rawCID, data: nextData) else {
+                return .failure(.malformedEvidence)
+            }
+            directlyConsumed.insert(childHeader.rawCID)
+            guard next.parentState.rawCID == currentBlock.prevState.rawCID else {
+                return .failure(.protocolInvalid)
+            }
             currentBlock = next
+            carriers.append(currentBlock)
         }
-
-        return (currentHash, currentBlock)
+        return .failure(.malformedEvidence)
     }
 
-    /// The parent-state root proven for the child block by this proof carrier.
-    public func committingParentPrevStateCID() async -> String? {
-        await committingParentBlock()?.block.prevState.rawCID
-    }
-
-    // MARK: - Inherited work (F5-4)
-
-    /// The inherited work this proof's ROOT GRIND contributes to the proven child.
-    ///
-    /// A single grind (one PoW hash) is graded against every level's target, but it is
-    /// ONE unit of work: a hash that clears the hardest target it meets clears every
-    /// easier level for FREE. So the grind is counted ONCE, at the MAX `workForTarget`
-    /// over the levels it clears — never the per-level SUM, which counts one grind once
-    /// per level it happens to cover. That over-count is worst at EQUAL targets: an
-    /// N-deep equal-difficulty path (lockstep, adding no independent security) would be
-    /// credited N× a single grind — an inflation vector that max closes.
-    ///
-    /// The contribution is keyed by `rootCID` — the grind's identity — so the caller's
-    /// dedup-by-id counts THIS grind once while summing genuinely INDEPENDENT grinds
-    /// (distinct roots each doing real work): "count each grind once; independent grinds
-    /// sum." The leaf's own work is excluded (same-chain subtree work, not inherited).
-    /// At depth 1 (only the root above the leaf) max == the old sum, so direct children
-    /// are unchanged; the correction only bites at depth >= 2.
-    public func securingWorkContributions() async -> [(id: String, work: UInt256)] {
-        guard !entries.isEmpty, !directoryPath.isEmpty else { return [] }
-
+    /// Collect the same-chain predecessor headers needed by `verify` for every
+    /// carrier above the proven child.
+    public func parentStateWitness(fetcher externalFetcher: Fetcher) async throws -> ParentStateWitness {
         let fetcher = proofSource()
-
         guard let rootData = try? await fetcher.fetch(rawCid: rootCID),
               let rootBlock = Block(data: rootData),
-              // Content-bind: bytes under rootCID must hash to it (attacker-supplied map).
-              isContentBoundRoot(rootBlock) else { return [] }
+              isContentBoundRoot(rootBlock) else { return ParentStateWitness(entries: []) }
 
-        let powHash = rootBlock.proofOfWorkHash()
-        // Work this grind's hash actually clears at a level, or zero. `validateProofOfWork`
-        // self-guards: a level claiming a harder target than the hash achieved clears nothing.
-        func clearedWork(_ block: Block) -> UInt256 {
-            block.validateProofOfWork(nexusHash: powHash) ? workForTarget(block.target) : .zero
-        }
-
-        var maxWork = clearedWork(rootBlock)
+        var carriers = [rootBlock]
         var current = rootBlock
-        for dir in directoryPath.dropLast() {
-            guard let childrenNode = try? await current.children.resolve(
-                paths: [[dir]: .targeted], fetcher: fetcher).node,
-            let childHeader: VolumeImpl<Block> = try? childrenNode.get(key: dir),
-            let next = try? await childHeader.resolve(fetcher: fetcher).node else { return [] }
-            let levelWork = clearedWork(next)
-            if levelWork > maxWork { maxWork = levelWork }
+        for directory in directoryPath.dropLast() {
+            guard let children = try? await current.children.resolve(
+                paths: [[directory]: .targeted], fetcher: fetcher
+            ).node,
+            let childHeader: VolumeImpl<Block> = try? children.get(key: directory),
+            let next = try? await childHeader.resolve(fetcher: fetcher).node else { break }
+            carriers.append(next)
             current = next
         }
-        // ONE contribution per grind, keyed by the grind's identity (rootCID).
-        return maxWork > .zero ? [(id: rootCID, work: maxWork)] : []
-    }
 
-    /// The work this proof's ROOT GRIND contributes toward securing the proven block:
-    /// the MAX `workForTarget` (`max/target`) over the levels above the leaf that the
-    /// grind's single hash clears — counted ONCE, because one hash clearing the hardest
-    /// target also clears every easier level for free (see `securingWorkContributions`).
-    /// Distinct grinds are summed by the caller, not here. The leaf's own work is
-    /// excluded — that's own-chain subtree weight, not inherited.
-    ///
-    /// The PoW hash is intrinsic to the proof — the root block's `proofOfWorkHash()`
-    /// (the grind result; a forger can't fake a small one without doing the work) —
-    /// so no `rootHash` is passed and none can be passed wrong. The caller is expected
-    /// to have `verify`-ed the path against the *expected* PoW solution first. Per-level
-    /// crediting self-guards: a level claiming a harder target than the hash achieved
-    /// fails `validateProofOfWork` and earns nothing. `.zero` if the path can't be walked.
-    public func securingWork() async -> UInt256 {
-        await securingWorkContributions().reduce(UInt256.zero) { total, contribution in
-            saturatingWorkSum(total, contribution.work)
+        var witnessEntries: [(cid: String, data: Data)] = []
+        for carrier in carriers {
+            guard let parentCID = carrier.parent?.rawCID else { continue }
+            witnessEntries.append((parentCID, try await externalFetcher.fetch(rawCid: parentCID)))
         }
+        return ParentStateWitness(entries: witnessEntries)
     }
 
     // MARK: - Serialization
@@ -386,6 +315,7 @@ public struct ChildBlockProof: Sendable {
             entries.append((cid, Data(data[pos..<data.index(pos, offsetBy: Int(dataLen))])))
             pos = data.index(pos, offsetBy: Int(dataLen))
         }
+        guard pos == data.endIndex else { return nil }
         return ChildBlockProof(rootCID: rootCID, directoryPath: directoryPath, entries: entries)
     }
 }
@@ -406,23 +336,29 @@ public final class _CollectingStorer: Storer, @unchecked Sendable {
     }
 }
 
-/// Drop duplicate CIDs (content-addressed, so identical bytes per CID), preserving
-/// first-seen order. Used when a proof folds entries from more than one collection
-/// pass over the same root.
-func dedupedEntries(_ entries: [(cid: String, data: Data)]) -> [(cid: String, data: Data)] {
-    var seen = Set<String>()
-    var result: [(cid: String, data: Data)] = []
-    for e in entries where seen.insert(e.cid).inserted {
-        result.append(e)
+private actor _TrackingProofFetcher: Fetcher {
+    private let source: InMemoryContentSource
+    private var consumedCIDs = Set<String>()
+
+    init(_ entries: [String: Data]) {
+        source = InMemoryContentSource(entries)
     }
-    return result
+
+    func fetch(rawCid: String) async throws -> Data {
+        consumedCIDs.insert(rawCid)
+        return try await source.fetch(rawCid: rawCid)
+    }
+
+    func consumed() -> Set<String> {
+        consumedCIDs
+    }
 }
 
-private func canonicalEntries(_ entries: [(cid: String, data: Data)]) -> [(cid: String, data: Data)] {
-    entries.sorted {
-        if $0.cid != $1.cid { return $0.cid < $1.cid }
-        return $0.data.lexicographicallyPrecedes($1.data)
-    }
+private func contentBoundBlock(cid: String, data: Data) -> Block? {
+    guard let block = Block(data: data),
+          let header = try? VolumeImpl<Block>(node: block),
+          header.rawCID == cid else { return nil }
+    return block
 }
 
 

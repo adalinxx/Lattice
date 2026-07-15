@@ -13,10 +13,7 @@ public enum BlockValidationError: Error, Sendable, Equatable {
 
 public extension Block {
     private static let fieldSeparator: [UInt8] = [0x00]
-    /// R9 (wave-4): consensus timestamp constants, hoisted to internal so the
-    /// header-path validator (`ChainSyncer.validateHeaderConsensus`) references
-    /// the SAME definitions instead of re-hardcoding them. One definition,
-    /// byte-identical values.
+    /// Shared consensus timestamp limits.
     /// Bounded future drift: a block timestamp may lead wall-clock by at most 2h.
     internal static let maxFutureDriftMilliseconds: Int64 = 2 * 60 * 60 * 1000
     /// MedianTimePast window depth (Bitcoin's MTP-11).
@@ -28,7 +25,7 @@ public extension Block {
     /// so optimized miners can hash it once into a midstate and append only the
     /// nonce per attempt (see / #135, where a hand-copy drifted by
     /// omitting `version`). Any change here is consensus-breaking.
-    public static func makeProofOfWorkPreimagePrefix(block: Block) -> Data {
+    static func makeProofOfWorkPreimagePrefix(block: Block) -> Data {
         var data = Data()
         data.reserveCapacity(512)
         data.append(contentsOf: String(block.version).utf8)
@@ -67,7 +64,7 @@ public extension Block {
     /// the per-nonce work divergence-free on a GPU and lets miners reuse a single
     /// prefix midstate (a variable-length ASCII-decimal nonce broke both). External
     /// miners MUST encode the nonce with this exact function. Consensus-breaking.
-    public static func proofOfWorkNonceBytes(_ nonce: UInt64) -> [UInt8] {
+    static func proofOfWorkNonceBytes(_ nonce: UInt64) -> [UInt8] {
         withUnsafeBytes(of: nonce.bigEndian) { Array($0) }
     }
 
@@ -75,7 +72,7 @@ public extension Block {
     /// bytes hashed during mining and PoW validation; downstream nodes/miners must
     /// reuse this rather than re-deriving it (see / #135, where a hand-copy
     /// drifted by omitting `version`). Any change here is consensus-breaking.
-    public static func makeProofOfWorkPreimage(block: Block, nonce: UInt64) -> Data {
+    static func makeProofOfWorkPreimage(block: Block, nonce: UInt64) -> Data {
         var data = makeProofOfWorkPreimagePrefix(block: block)
         data.append(contentsOf: proofOfWorkNonceBytes(nonce))
         return data
@@ -128,6 +125,9 @@ public extension Block {
         // rather than silently degrading to root semantics.
         let expectedChainPath = chainPath ?? [directory ?? DEFAULT_ROOT_DIRECTORY]
         if expectedChainPath.isEmpty { return (false, .empty, nil) }
+        if !validateChainPaths(transactionBodies: transactionBodies, expectedPath: expectedChainPath) {
+            return (false, .empty, nil)
+        }
         if !(await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, fetcher: fetcher)) { return (false, .empty, nil) }
         if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
@@ -145,12 +145,16 @@ public extension Block {
         return (true, diff, materializedPostState)
     }
 
-    func collectAncestorTimestamps(parent: Block, count: UInt64, fetcher: Fetcher) async -> [Int64]? {
+    func collectAncestorTimestamps(
+        parent: Block,
+        count: UInt64,
+        fetcher: Fetcher
+    ) async throws -> [Int64]? {
         var timestamps: [Int64] = [parent.timestamp]
         var current = parent
         for _ in 1..<count {
             guard let parentRef = current.parent else { break }
-            guard let prev = try? await parentRef.resolve(fetcher: fetcher).node else { return nil }
+            guard let prev = try await parentRef.resolve(fetcher: fetcher).node else { return nil }
             timestamps.append(prev.timestamp)
             current = prev
         }
@@ -165,7 +169,9 @@ public extension Block {
         reportTemporalFailure: Bool = false
     ) async throws -> Bool {
         let walkDepth = max(spec.retargetWindow, Block.mtpDepth)
-        let requiredWalkDepth = min(walkDepth, parent.height + 1)
+        let (parentDepth, overflow) = parent.height.addingReportingOverflow(1)
+        guard !overflow else { return false }
+        let requiredWalkDepth = min(walkDepth, parentDepth)
         let ancestorTimestamps: [Int64]
         if let chain,
            let parentHash = self.parent?.rawCID,
@@ -173,7 +179,7 @@ public extension Block {
            fast.count >= Int(requiredWalkDepth) {
             ancestorTimestamps = fast
         } else {
-            guard let walked = await collectAncestorTimestamps(parent: parent, count: walkDepth, fetcher: fetcher),
+            guard let walked = try await collectAncestorTimestamps(parent: parent, count: walkDepth, fetcher: fetcher),
                   walked.count >= Int(requiredWalkDepth) else {
                 return false
             }
@@ -189,7 +195,7 @@ public extension Block {
         return true
     }
 
-    /// `source:` overload of ``validateNexus(fetcher:chain:chainPath:requirePostState:)``.
+    /// `source:` overload of ``validateNexus(fetcher:chain:chainPath:reportTemporalFailure:)``.
     /// Wraps the batched cashew ``ContentSource`` in a single
     /// ``CoalescingFetcher`` and delegates to the `fetcher:` version unchanged,
     /// so validation is byte-identical to the per-CID path. Threading one
@@ -200,14 +206,12 @@ public extension Block {
         source: any ContentSource,
         chain: ChainState? = nil,
         chainPath: [String]? = nil,
-        requirePostState: Bool = true,
         reportTemporalFailure: Bool = false
     ) async throws -> (Bool, StateDiff, LatticeState?) {
         try await validateNexus(
             fetcher: CoalescingFetcher(source),
             chain: chain,
             chainPath: chainPath,
-            requirePostState: requirePostState,
             reportTemporalFailure: reportTemporalFailure
         )
     }
@@ -216,18 +220,10 @@ public extension Block {
     /// target, transaction signatures, balance changes, and genesis
     /// transactions, and post-state root. Returns the state diff and the
     /// materialized post-state produced by the validated transition.
-    /// - Parameter requirePostState: when false, validate only the structural /
-    ///   transaction / withdrawal-correspondence rules and STOP before the
-    ///   post-state transition (which requires the prev-state trie). Snapshot
-    ///   sync, which validates the header chain without a materialized state
-    ///   trie, passes false; full block processing keeps the default so it
-    ///   receives the materialized post-state. Restores the pre-11.1.0
-    ///   structural-only behavior for the sync path.
     func validateNexus(
         fetcher: Fetcher,
         chain: ChainState? = nil,
         chainPath: [String]? = nil,
-        requirePostState: Bool = true,
         reportTemporalFailure: Bool = false
     ) async throws -> (Bool, StateDiff, LatticeState?) {
         if version != Block.currentVersion { return (false, .empty, nil) }
@@ -240,7 +236,7 @@ public extension Block {
 
         guard let specNode = try await specFuture.node else { return (false, .empty, nil) }
 
-        // P1c (pipeline validation): start transaction body resolution concurrently
+        // Start transaction body resolution concurrently
         // with the ancestor-timestamp walk. The transaction CAS fetches and the
         // ancestor CAS walk are completely independent — overlapping them eliminates
         // one sequential wait from the block validation critical path.
@@ -302,11 +298,6 @@ public extension Block {
         ) { return (false, .empty, nil) }
         if !validateGenesisTransactions(transactionBodies: transactionBodies) { return (false, .empty, nil) }
 
-        // Structural/transaction validation is complete. Snapshot sync stops here
-        // (no state trie to run the post-state transition against), matching the
-        // pre-11.1.0 `return (true, transactionBodies)` structural-only contract.
-        guard requirePostState else { return (true, .empty, nil) }
-
         let (postStateValid, diff, materializedPostState) = try await validatePostState(transactionBodies: transactionBodies, allAccountActions: allAccountActions, allActions: transactionBodies.flatMap { $0.actions }, allDepositActions: allDepositActions, allGenesisActions: transactionBodies.flatMap { $0.genesisActions }, allReceiptActions: allReceiptActions, allWithdrawalActions: allWithdrawalActions, fetcher: fetcher)
         if !postStateValid { return (false, .empty, nil) }
         return (true, diff, materializedPostState)
@@ -317,7 +308,7 @@ public extension Block {
     }
 
     func validatePostState(transactionBodies: [TransactionBody], fetcher: Fetcher) async throws -> (Bool, StateDiff, LatticeState?) {
-        // P-1102: single pass instead of 6 separate flatMap calls.
+        // Collect each action family in one pass.
         var allAccountActions: [AccountAction] = []
         var allActions: [Action] = []
         var allDepositActions: [DepositAction] = []
@@ -417,12 +408,12 @@ public extension Block {
         if ChainSpec.isMinimumTargetRecovery(target: target, parentNextTarget: parent.nextTarget) {
             return nextTarget == target
         }
-        let requiredRetargetDepth = min(spec.retargetWindow, parent.height + 1)
+        let (parentDepth, overflow) = parent.height.addingReportingOverflow(1)
+        guard !overflow else { return false }
+        let requiredRetargetDepth = min(spec.retargetWindow, parentDepth)
         guard ancestorTimestamps.count >= Int(requiredRetargetDepth) else { return false }
         let windowTimestamps = [timestamp] + Array(ancestorTimestamps.prefix(Int(requiredRetargetDepth)))
         let expected = spec.calculateWindowedTarget(previousTarget: target, ancestorTimestamps: windowTimestamps)
-        if nextTarget != expected && height == 34 {
-        }
         return nextTarget == expected
     }
 
@@ -431,7 +422,31 @@ public extension Block {
     }
 
     func validateHeight(parent: Block) -> Bool {
-        return parent.height + 1 == height
+        let (expected, overflow) = parent.height.addingReportingOverflow(1)
+        return !overflow && expected == height
+    }
+
+    /// Header-only continuity needed to carry a root grind to a descendant.
+    /// Admission-only rules (execution, MTP/future drift, and this block's proposed
+    /// next target) remain local to chains whose target accepts the grind.
+    func hasCarrierContinuity(parent: Block?) -> Bool {
+        guard version == Block.currentVersion else { return false }
+        guard let parent else {
+            return self.parent == nil
+                && height == 0
+                && prevState.rawCID == LatticeState.emptyHeader.rawCID
+        }
+        return self.parent != nil
+            && parent.version == Block.currentVersion
+            && validateSpec(parent: parent)
+            && validateState(parent: parent)
+            && validateHeight(parent: parent)
+            && (target == parent.nextTarget
+                || ChainSpec.isMinimumTargetRecovery(
+                    target: target,
+                    parentNextTarget: parent.nextTarget
+                ))
+            && timestamp > parent.timestamp
     }
 
     /// Bitcoin-style consensus rules:
@@ -467,7 +482,7 @@ public extension Block {
         return blockData.count <= spec.maxBlockSize
     }
 
-    ///: deposits and withdrawals are cross-chain constructs — a deposit
+    /// Deposits and withdrawals are cross-chain constructs: a deposit
     /// escrows value for withdrawal on the PARENT chain, and a withdrawal
     /// requires a receipt in the parent chain's state. The root chain
     /// (chainPath length 1) has no parent, so a deposit there burns value with

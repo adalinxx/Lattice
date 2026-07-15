@@ -47,6 +47,28 @@ final class GenesisCeremonyTests: XCTestCase {
         XCTAssertTrue(GenesisCeremony.verify(block: result.block, config: config))
     }
 
+    func testCreateRejectsZeroWorkGenesisWithoutTrapping() async {
+        let config = GenesisConfig(
+            spec: ChainSpec(
+                maxNumberOfTransactionsPerBlock: 100,
+                maxStateGrowth: 100_000,
+                premine: 0,
+                targetBlockTime: 1_000,
+                initialReward: 1024,
+                halvingInterval: 10_000
+            ),
+            timestamp: 0,
+            target: .zero
+        )
+
+        do {
+            _ = try await GenesisCeremony.create(config: config, fetcher: fetcher)
+            XCTFail("zero-work genesis must be rejected")
+        } catch {
+            XCTAssertEqual(error as? GenesisCeremonyError, .invalidTarget)
+        }
+    }
+
     func testVerifyRejectsWrongTimestamp() async throws {
         let config = GenesisConfig(
             spec: ChainSpec(
@@ -131,8 +153,7 @@ final class GenesisCeremonyTests: XCTestCase {
             previous: result.block, timestamp: 1_000, target: UInt256.max,
             nonce: 1, fetcher: fetcher
         )
-        let submitResult = await result.chainState.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let submitResult = await result.chainState.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block1),
             block: block1
         )
@@ -195,8 +216,7 @@ final class BlockReceptionTests: XCTestCase {
             target: UInt256.max, nonce: 1, fetcher: fetcher
         )
         let header = try! VolumeImpl<Block>(node: block1)
-        let submitResult = await result.chainState.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let submitResult = await result.chainState.submitTestBlock(
             blockHeader: header,
             block: block1
         )
@@ -234,8 +254,7 @@ final class GenesisToBlockE2ETests: XCTestCase {
             let mined = BlockBuilder.mine(block: template, target: UInt256.max, maxAttempts: 10)!
 
             let header = try! VolumeImpl<Block>(node: mined)
-            let result = await genesis.chainState.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let result = await genesis.chainState.submitTestBlock(
                 blockHeader: header,
                 block: mined
             )
@@ -274,13 +293,13 @@ final class GenesisToBlockE2ETests: XCTestCase {
         )
         let headerA1 = try! VolumeImpl<Block>(node: blockA1)
 
-        let resultOnA = await nodeA.chainState.submitBlock(
-            parentBlockHeaderAndIndex: nil, blockHeader: headerA1, block: blockA1
+        let resultOnA = await nodeA.chainState.submitTestBlock(
+            blockHeader: headerA1, block: blockA1
         )
         XCTAssertTrue(resultOnA.extendsMainChain)
 
-        let resultOnB = await nodeB.chainState.submitBlock(
-            parentBlockHeaderAndIndex: nil, blockHeader: headerA1, block: blockA1
+        let resultOnB = await nodeB.chainState.submitTestBlock(
+            blockHeader: headerA1, block: blockA1
         )
         XCTAssertTrue(resultOnB.extendsMainChain, "Node B accepts block mined by Node A")
 
@@ -315,25 +334,25 @@ final class GenesisToBlockE2ETests: XCTestCase {
             target: UInt256.max, nonce: 100, fetcher: fetcher
         )
 
-        let _ = await nodeA.chainState.submitBlock(
-            parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl(node: blockA1), block: blockA1
+        let _ = await nodeA.chainState.submitTestBlock(
+            blockHeader: try! VolumeImpl(node: blockA1), block: blockA1
         )
-        let _ = await nodeA.chainState.submitBlock(
-            parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl(node: blockA2), block: blockA2
+        let _ = await nodeA.chainState.submitTestBlock(
+            blockHeader: try! VolumeImpl(node: blockA2), block: blockA2
         )
 
-        let _ = await nodeB.chainState.submitBlock(
-            parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl(node: blockB1), block: blockB1
+        let _ = await nodeB.chainState.submitTestBlock(
+            blockHeader: try! VolumeImpl(node: blockB1), block: blockB1
         )
 
         let tipB_before = await nodeB.chainState.getMainChainTip()
         XCTAssertEqual(tipB_before, try! VolumeImpl<Block>(node: blockB1).rawCID)
 
-        let _ = await nodeB.chainState.submitBlock(
-            parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl(node: blockA1), block: blockA1
+        let _ = await nodeB.chainState.submitTestBlock(
+            blockHeader: try! VolumeImpl(node: blockA1), block: blockA1
         )
-        let resultA2onB = await nodeB.chainState.submitBlock(
-            parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl(node: blockA2), block: blockA2
+        let resultA2onB = await nodeB.chainState.submitTestBlock(
+            blockHeader: try! VolumeImpl(node: blockA2), block: blockA2
         )
 
         XCTAssertNotNil(resultA2onB.reorganization, "Node B should reorg to longer chain from A")

@@ -75,8 +75,7 @@ final class CrashRecoveryTests: XCTestCase {
                 previous: prev, timestamp: base + Int64(i) * 1000,
                 target: UInt256(1000), nonce: UInt64(i), fetcher: fetcher
             )
-            let _ = await chain1.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await chain1.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: b), block: b
             )
             prev = b
@@ -102,8 +101,7 @@ final class CrashRecoveryTests: XCTestCase {
             previous: prev, timestamp: base + 6000,
             target: UInt256(1000), nonce: 6, fetcher: fetcher
         )
-        let result = await chain2.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let result = await chain2.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block6), block: block6
         )
         XCTAssertTrue(result.extendsMainChain)
@@ -125,8 +123,7 @@ final class CrashRecoveryTests: XCTestCase {
             previous: genesis, timestamp: base + 1000,
             target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
-        let _ = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let _ = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: b1), block: b1
         )
 
@@ -140,39 +137,6 @@ final class CrashRecoveryTests: XCTestCase {
         XCTAssertEqual(d1, d2, "Persistence serialization must be deterministic")
     }
 
-    func testPersistToDiskAndReload() async throws {
-        let fetcher = f()
-        let base = now() - 20_000
-        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: tmpDir) }
-
-        let persister = ChainStatePersister(storagePath: tmpDir, directory: "Nexus")
-
-        let spec = s(premine: 0)
-        let genesis = try await buildAndStoreGenesis(
-            spec: spec, timestamp: base, target: UInt256(1000), fetcher: fetcher
-        )
-        let chain = ChainState.fromGenesis(block: genesis)
-        let b1 = try await buildAndStoreBlock(
-            previous: genesis, timestamp: base + 1000,
-            target: UInt256(1000), nonce: 1, fetcher: fetcher
-        )
-        let _ = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
-            blockHeader: try! VolumeImpl<Block>(node: b1), block: b1
-        )
-
-        let persisted = await chain.persist()
-        try await persister.save(persisted)
-
-        let loaded = try await persister.load()
-        XCTAssertNotNil(loaded)
-
-        let restored = try ChainState.restore(from: loaded!)
-        let restoredTip = await restored.getMainChainTip()
-        let originalTip = await chain.getMainChainTip()
-        XCTAssertEqual(restoredTip, originalTip)
-    }
 }
 
 // ============================================================================
@@ -197,12 +161,10 @@ final class TwoNodeConvergenceTests: XCTestCase {
         let blocks = try await buildChain(from: genesis, length: 6, base: base, fetcher: fetcher)
 
         for block in blocks.dropFirst() {
-            let _ = await nodeA.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await nodeA.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: block), block: block
             )
-            let _ = await nodeB.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await nodeB.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: block), block: block
             )
         }
@@ -230,8 +192,7 @@ final class TwoNodeConvergenceTests: XCTestCase {
 
         let forkA = try await buildChain(from: genesis, length: 6, base: base, fetcher: fetcher)
         for block in forkA.dropFirst() {
-            let _ = await nodeA.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await nodeA.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: block), block: block
             )
         }
@@ -245,8 +206,7 @@ final class TwoNodeConvergenceTests: XCTestCase {
             forkBBlocks.append(b)
         }
         for block in forkBBlocks.dropFirst() {
-            let _ = await nodeB.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await nodeB.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: block), block: block
             )
         }
@@ -257,8 +217,7 @@ final class TwoNodeConvergenceTests: XCTestCase {
 
         // Node B receives all of fork A (longer) and should converge
         for block in forkA.dropFirst() {
-            let _ = await nodeB.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await nodeB.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: block), block: block
             )
         }
@@ -327,7 +286,6 @@ final class ClaimSecurityTests: XCTestCase {
         )
 
         let childSwap = DepositAction(nonce: 1, demander: kpAddr, amountDemanded: 500, amountDeposited: 500)
-        let childSwapKey = DepositKey(depositAction: childSwap).description
 
         let swapBody = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(premine - 500 + childReward) - Int64(premine))],
@@ -395,7 +353,6 @@ final class ClaimSecurityTests: XCTestCase {
         )
 
         let childSwap = DepositAction(nonce: 1, demander: kpAddr, amountDemanded: 500, amountDeposited: 500)
-        let childSwapKey = DepositKey(depositAction: childSwap).description
 
         let swapBody = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(premine - 500 + childReward) - Int64(premine))],
@@ -601,7 +558,6 @@ final class CrossChainBalanceConservationTests: XCTestCase {
         let totalBefore = childPremine
 
         let childSwap = DepositAction(nonce: 1, demander: kpAddr, amountDemanded: swapAmount, amountDeposited: swapAmount)
-        let childSwapKey = DepositKey(depositAction: childSwap).description
 
         let swapBody = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(childPremine - swapAmount + childReward) - Int64(childPremine))],
@@ -633,80 +589,6 @@ final class CrossChainBalanceConservationTests: XCTestCase {
         let totalCirculating = childBalanceAfterSwap + nexusReward
         let expectedTotal = totalBefore - swapAmount + childReward + nexusReward
         XCTAssertEqual(totalCirculating, expectedTotal)
-    }
-}
-
-// ============================================================================
-// MARK: - Chain Depth (Grandchild Chains)
-// ============================================================================
-
-@MainActor
-final class ChainDepthTests: XCTestCase {
-
-    func testThreeLevelChainHierarchy() async throws {
-        let fetcher = f()
-        let base = now() - 50_000
-        let nexusSpec = s("Nexus", premine: 0)
-        let childSpec = s("Child", premine: 0)
-        let grandchildSpec = s("Grandchild", premine: 0)
-
-        let nexusGenesis = try await buildAndStoreGenesis(
-            spec: nexusSpec, timestamp: base, target: UInt256(1000), fetcher: fetcher
-        )
-        let childGenesis = try await buildAndStoreGenesis(
-            spec: childSpec, timestamp: base, target: UInt256(1000), fetcher: fetcher
-        )
-        let grandchildGenesis = try await buildAndStoreGenesis(
-            spec: grandchildSpec, timestamp: base, target: UInt256(1000), fetcher: fetcher
-        )
-
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
-        let nexusLevel = ChainLevel(chain: nexusChain)
-        let childLevel = try await nexusLevel.attachRestoredChildForTesting(
-            to: "Child",
-            genesisBlock: childGenesis
-        )
-        let grandchildLevel = try await childLevel.attachRestoredChildForTesting(
-            to: "Grandchild",
-            genesisBlock: grandchildGenesis
-        )
-        let childChain = await childLevel.chain
-        let grandchildChain = await grandchildLevel.chain
-
-        let nexusBlock1 = try await buildAndStoreBlock(
-            previous: nexusGenesis, timestamp: base + 1000,
-            target: UInt256(1000), nonce: 1, fetcher: fetcher
-        )
-        let _ = await nexusChain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
-            blockHeader: try! VolumeImpl<Block>(node: nexusBlock1), block: nexusBlock1
-        )
-
-        let nexusHeight = await nexusChain.getHighestBlockHeight()
-        XCTAssertEqual(nexusHeight, 1)
-
-        let childBlock1 = try await buildAndStoreBlock(
-            previous: childGenesis, parentChainBlock: nexusBlock1,
-            timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
-        )
-        let childResult = await childChain.submitBlock(
-            parentBlockHeaderAndIndex: (try! VolumeImpl<Block>(node: nexusBlock1).rawCID, 1),
-            blockHeader: try! VolumeImpl<Block>(node: childBlock1), block: childBlock1
-        )
-        XCTAssertTrue(childResult.extendsMainChain)
-
-        let gcBlock1 = try await buildAndStoreBlock(
-            previous: grandchildGenesis, parentChainBlock: childBlock1,
-            timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
-        )
-        let gcResult = await grandchildChain.submitBlock(
-            parentBlockHeaderAndIndex: (try! VolumeImpl<Block>(node: childBlock1).rawCID, 1),
-            blockHeader: try! VolumeImpl<Block>(node: gcBlock1), block: gcBlock1
-        )
-        XCTAssertTrue(gcResult.extendsMainChain)
-
-        let gcHeight = await grandchildChain.getHighestBlockHeight()
-        XCTAssertEqual(gcHeight, 1, "Grandchild chain should have block at height 1")
     }
 }
 
@@ -751,8 +633,7 @@ final class PerformanceRegressionTests: XCTestCase {
 
         let start = Date()
         for block in blocks.dropFirst() {
-            let _ = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: block), block: block
             )
         }

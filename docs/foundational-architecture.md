@@ -19,15 +19,16 @@ When code, tests, comments, historical behavior, and this document disagree, the
 
 The words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 
-### Current migration status
+### Current implementation boundary
 
-This document specifies the target architecture. The accompanying PR makes its
-Lattice admission boundary executable: legacy ingress, caller-controlled
-context, consensus-triggered transport, and parent-to-child reorg commands are
-removed. The node remains responsible for durable storage, transport scheduling,
-and trusted bootstrap; those handoff obligations are recorded in [the migration
-conflict register](migration-conflict-register.md). A claim that a node conforms
-to a law is valid only when it satisfies those obligations too.
+The Lattice library implements the single-chain consensus boundary described
+here. Legacy ingress, recursive child runtimes, caller-controlled context,
+library sync replacement, consensus-triggered transport, live parent-weight
+providers, and parent-to-child reorganization commands are removed.
+
+The companion node remains responsible for acquisition, filesystem durability,
+CAS pin counts, retention orchestration, projections, and process topology. Those
+are required integration boundaries, not alternate consensus paths.
 
 ---
 
@@ -84,6 +85,9 @@ Nexus/Payments/Settlement
 
 The path is the identity. A genesis CID is not a second chain identity.
 
+This hierarchy is protocol data, not one recursive process. A deployed node runs
+one Lattice process per followed path and supervises those processes itself.
+
 ### 2.1 Nexus is the fixed base case
 
 Nexus is the only chain with one protocol-fixed genesis CID. Compatible implementations hard-code the same CID, and every valid Nexus branch descends from that block.
@@ -115,16 +119,17 @@ A child runtime is keyed by path, never by genesis CID. A later valid genesis ca
 The parent-child relationship is:
 
 ```text
-Parent block produces verifiable evidence
+One root grind produces verifiable evidence
         ↓
-Child validates the evidence
+Each chain process validates its exact sparse path
         ↓
-Child derives its own fork-choice inputs
+The first accepting boundary defines an immutable work fact
         ↓
-Child selects its own canonical branch
+Each chain selects its own canonical branch
 ```
 
-The parent does not send child canonical-state commands.
+Parent and sibling processes may relay proof bytes. They do not send canonical
+state commands and are never authorities for another process.
 
 > **Evidence may cross chain boundaries. Authority and canonicity do not.**
 
@@ -226,6 +231,11 @@ Valid side blocks remain valid. Fork choice compares valid alternatives; it does
 
 For fixed bytes, complete evidence, and one protocol version, a candidate moves from unknown to valid or invalid. Canonicity, retention, peer availability, and provider reliability do not reverse that judgment. Temporal admissibility is a separate, time-dependent result.
 
+For hierarchical proof evidence, validation first applies the setup-wide root-work
+floor. It then proves the exact root-to-candidate path and every carrier's
+same-chain predecessor continuity. Each level compares that same root hash with
+its own target; a target miss means carrier-only, not descendant invalidity.
+
 ### Law 4 — Canonicity is chain-local
 
 Each chain owns its valid graph or forest, fork-choice inputs, canonical branch, and reorganization decisions.
@@ -248,7 +258,11 @@ A transition may update that chain’s receipts, history, mempool, retention, no
 
 ### Law 9 — Verified security evidence is append-only and deduplicated
 
-Once verified under the protocol, its semantic fact is retained append-only and deduplicated by protocol-defined contribution identity. Parent canonicity alone cannot revoke it. Raw immutable package bytes MAY be compacted only when retained material can re-establish the same verified fact and restart-equivalent fork-choice inputs; compaction cannot turn a fact back into an unverified claim.
+One physical grind is credited at the first target-accepting boundary from root
+to leaf. The immutable contribution is deduplicated by root CID and carried to
+deeper chains as an inherited fact. Parent canonicity cannot revoke or increase
+it. Raw package bytes MAY be compacted only when retained material can
+re-establish the same verified fact and restart-equivalent fork-choice inputs.
 
 ### Law 10 — Cross-chain interfaces deliver evidence, never commands
 
@@ -264,13 +278,22 @@ Storage may guarantee atomicity, content-address integrity, retention, and avail
 
 ### Law 13 — A stored Volume is complete
 
-A Volume is one atomic availability unit. A storer publishes a Volume only after a successful full traversal of that boundary. A failed traversal publishes no partial scope.
+A Volume is one atomic availability unit. Resolve and store use matching targeted
+paths, and a storer publishes a selected Volume only after successful traversal
+of that boundary. A failed traversal publishes no partial scope.
 
-Nested Volumes are independent units. An outer Volume may be complete while one referenced nested Volume is absent; that is partial object-graph availability, not a partial Volume.
+Nested Volumes are independent units. Storing an outer Volume creates no
+ownership, retention, or implicit storage relationship with a referenced nested
+Volume. An outer Volume may be complete while a nested Volume is absent; that is
+partial object-graph availability, not a partial Volume.
 
 ### Law 14 — Durable evidence precedes visible consensus mutation
 
-Immutable content and all consensus-relevant semantic evidence required for restart equivalence must be durable before a node exposes the corresponding accepted graph or canonical change. Durability need not pin every raw transport package forever, but it MUST preserve enough material to re-establish the retained facts.
+Targeted immutable content, materialized state, and all consensus-relevant
+semantic evidence required for restart equivalence must be durable before a node
+exposes the corresponding accepted graph or canonical change. Durability need
+not pin every raw transport package forever, but it MUST preserve enough material
+to re-establish the retained facts.
 
 ### Law 15 — Restart is not a different consensus path
 
@@ -278,7 +301,11 @@ With no new external evidence, restart reconstructs the same accepted graph or f
 
 ### Law 16 — Every ingress path has one consensus meaning
 
-Gossip, sync, mining, parent extraction, rescue, duplicate evidence updates, and restart may differ in acquisition. Given the same verified candidate and evidence, they MUST produce the same consensus result.
+Gossip, sync, mining, parent extraction, sibling relay, rescue, duplicate
+evidence updates, and restart may differ in acquisition. They MUST all route
+through chain-local admission and, given the same candidate and evidence, produce
+the same consensus result. There is no library `ChainSyncer` or trusted snapshot
+replacement path.
 
 ### Law 17 — Local failure is not peer failure
 
@@ -302,9 +329,11 @@ A new type or helper is justified when it makes an invalid transition unrepresen
 
 ### cashew
 
-Owns immutable Merkle DAG structures, canonical CIDs, owned child versus `Reference` semantics, Volume boundaries, generic traversal, proofs, and transforms.
+Owns immutable Merkle DAG structures, canonical CIDs, independent Volume
+boundaries, targeted resolve/store traversal, proofs, and transforms.
 
-It does not decide application workflow completeness, retention, peer selection, or consensus.
+It does not encode application-level ownership between Volumes and does not
+decide workflow completeness, retention, peer selection, or consensus.
 
 ### VolumeBroker
 
@@ -326,15 +355,21 @@ A pinned operational relationship and a public discovery overlay are distinct to
 
 ### Lattice
 
-Owns protocol validity, execution, accepted block graphs or forests, work accounting, fork choice, and chain-local transitions.
+Owns protocol validity, execution, verified work contributions, the accepted
+block graph or forest for one chain, fork choice, and chain-local transitions.
 
-Consensus returns missing-data requirements to the node. It does not invoke network transport and does not propagate parent reorg commands to children.
+One process owns one `ChainLevel` and one absolute path. Consensus returns
+missing-data requirements to the node. It does not invoke network transport,
+contain child runtimes, or propagate parent reorganization commands.
 
 ### lattice-node
 
-Owns acquisition, durable staging, serialized commit orchestration, recovery, projections, RPC, mining coordination, and process supervision.
+Owns acquisition, filesystem persistence, durable staging, serialized commit
+orchestration, recovery, CAS pin/reference counts, retention, projections, RPC,
+mining coordination, and multi-process supervision.
 
-It must preserve one Lattice meaning across every ingress transport.
+It starts one Lattice process per followed chain and preserves one admission
+meaning across every ingress transport.
 
 ---
 
@@ -347,7 +382,13 @@ The architecture distinguishes:
 - `ChildValidationPackage`: versioned transport and persistence package combining the two without merging their identities;
 - child genesis evidence: evidence admitting a root candidate into the existing path-defined child runtime.
 
-Work contributions are derived locally from verified proofs, never trusted as wire claims.
+The proof root must first clear the setup-wide minimum root-work floor. The exact
+path and carrier continuity are then verified, and every level tests that same
+root hash against its own target. A target miss is carrier-only.
+
+Work contributions are derived locally from verified proofs, never trusted as
+wire claims. The first accepted boundary supplies the work amount; descendants
+carry the immutable fact. The root CID deduplicates the physical grind.
 
 The exact canonical package stored, served, and relayed should be the same immutable value. Live gossip must not relay a weaker pre-finalization package than sync serves later.
 
@@ -356,7 +397,7 @@ The exact canonical package stored, served, and relayed should be the same immut
 ## 8. Target consensus lifecycle
 
 ```text
-Acquire → Verify → Plan → Persist → Commit → Project
+Acquire → Verify → Store → Commit → Project
 ```
 
 ### Acquire
@@ -367,17 +408,20 @@ Obtain complete Volumes and evidence from local stores, Ivy, pinned sessions, RP
 
 Perform deterministic, non-mutating protocol validation and derive work contributions locally. Classify unavailable evidence, protocol-invalid evidence, and `notYetAdmissible` evidence distinctly.
 
-### Plan
+### Store
 
-Evaluate the verified candidate against this chain’s graph and evidence snapshot. Distinguish canonicalization, valid side admission, duplicate, typed missing-body requirements, temporal inadmissibility, and invalidity.
-
-### Persist
-
-Atomically persist the minimum evidence needed to reconstruct the planned decision. Immutable CAS bytes may be staged first; orphan immutable content is harmless.
+Store the targeted verified block content and materialized state Volumes.
+Validation derives `StateDiff` as local lifecycle metadata on `BlockMeta` and the
+admission record; it is not committed in `Block`. Lattice reports admitted and
+evicted lifecycle metadata, while the node owns count application, pin lifetime,
+retention, and garbage-collection policy.
+Immutable orphan content is harmless if a concurrent commit makes the candidate
+duplicate or noncanonical.
 
 ### Commit
 
-Mutate only this chain’s in-memory consensus state after durable preparation succeeds.
+Evaluate the candidate against the chain’s current graph, then mutate only this
+chain’s in-memory consensus state after storage succeeds.
 
 ### Project
 
@@ -417,19 +461,27 @@ Generate path trees, nested Volumes, proof sets, fork graphs, and transaction ba
 
 The same verified candidate and evidence set must be fed through every ingress path. Compare decision, accepted graph, canonical tip, work, durable package, transition, and restart state.
 
-### 9.5 Parent-independence tests
+### 9.5 Cross-process independence tests
 
 The governing test is: given the same child path, accepted child graph or forest, verified evidence set, protocol version, and admissibility time, runs with different parent canonical tips MUST select the same child accepted graph or forest, contribution set, and canonical tip.
 
-A parent extension, side admission, reorganization, and restart MUST cause zero direct child consensus mutations. Separate forest tests MUST cover competing child roots with no common child ancestor, arrival-order independence, deterministic selection, and restart preservation.
+A parent extension, side admission, reorganization, and restart MUST cause zero
+direct child consensus mutations. Parent and sibling processes may change which
+bytes are available, but not another process's validity or fork choice. Separate
+forest tests MUST cover competing child roots with no common child ancestor,
+incumbent-preserving ties, and restart preservation.
 
 ### 9.6 Reference model
 
-A small model containing accepted blocks, parent links, own work, inherited contributions, available Volumes, and canonical tip serves as an independent oracle for randomized traces.
+A small model containing accepted blocks, same-chain links, root-CID contribution
+facts, available Volumes, and canonical tip serves as an independent oracle for
+randomized traces.
 
 ### 9.7 Fault injection
 
-Every external or durable boundary needs deterministic failure seams: block/state/package writes, work and anchor writes, canonical index updates, pin operations, network loss, malformed bytes, and unavailable nested Volumes.
+Every external or durable boundary needs deterministic failure seams:
+block/state/package writes, contribution writes, canonical index updates, pin
+operations, network loss, malformed bytes, and unavailable nested Volumes.
 
 ### 9.8 Crash matrix
 
@@ -447,7 +499,8 @@ Use virtual time, seeded randomness, crashable stores, simulated Ivy topologies,
 
 - successful traversal emits complete Volume scopes;
 - failed traversal publishes no incomplete scope;
-- `Reference` fields create no owned retention edges;
+- outer and nested Volumes remain independent retention units;
+- targeted store traverses the same selected paths as targeted resolve;
 - stored Volumes round-trip exactly.
 
 ### VolumeBroker ↔ Ivy
@@ -491,23 +544,24 @@ Schema and wire migration
 Rollback plan
 ```
 
-Pull requests require deterministic tests, golden vectors where relevant, targeted property/fault tests, and macOS/Linux builds. Nightly testing should run model traces, crash matrices, recursive simulations, storage pressure, wire fuzzing, and leak checks.
+Pull requests require deterministic tests, golden vectors where relevant, targeted property/fault tests, and macOS/Linux builds. Nightly testing should run model traces, crash matrices, multi-process nested-proof simulations, storage pressure, wire fuzzing, and leak checks.
 
 A release candidate must demonstrate live/restart equivalence, no cross-chain reorg propagation, cold-follower recovery, schema upgrades, and deterministic full-stack simulations.
 
 ---
 
-## 12. Redesign sequence
+## 12. Implemented shape
 
-1. Ratify this architecture and identify conflicts explicitly.
-2. Build the invariant, differential, fault, crash, and simulation harnesses.
-3. Finish `ChildBlockProof` / `ParentStateWitness` / `ChildValidationPackage` separation and durable-before-commit.
-4. Make `Lattice` a one-chain kernel with explicit fixed-Nexus and child-root-fork admission.
-5. Establish one authoritative consensus commit store and chain-local outbox.
-6. Decompose `lattice-node` around one path-keyed `ChainRuntime`.
-7. Separate pinned Ivy sessions from the public overlay and version application subprotocols.
-8. Simplify VolumeBroker and Tally boundaries.
-9. Remove legacy paths only after differential and crash equivalence is established.
+The legacy in-library topology and ingress paths are removed. The stable shape is:
+
+1. `ChainRuntimeContext` identifies one absolute chain path and root-work floor.
+2. `ChainLevel.bootstrap` and `admitBlockHeaderChainLocal` are the verified
+   library boundaries.
+3. `ChildBlockProof`, `ParentStateWitness`, and `ChildValidationPackage` separate
+   security proof from execution evidence.
+4. Root-CID-deduplicated contributions are persisted with chain consensus state.
+5. `lattice-node` supplies durability, retention, acquisition, and one process
+   per followed path.
 
 ---
 
@@ -516,6 +570,7 @@ A release candidate must demonstrate live/restart equivalence, no cross-chain re
 The foundational redesign is complete when:
 
 - one absolute path identifies one chain domain;
+- one Lattice process owns exactly one such domain;
 - Nexus admits exactly the hard-coded genesis CID;
 - multiple child genesis CIDs at one path are root forks in one runtime;
 - availability, protocol validity, temporal admissibility, canonicity, durability, authority, provider reliability, and evidence have distinct outcomes;
@@ -524,6 +579,7 @@ The foundational redesign is complete when:
 - parent canonical transitions have no child consumers;
 - semantic work evidence is deduplicated, append-only, and restart-stable while raw packages remain safely compactable;
 - every stored Volume is complete and CID-valid;
+- targeted resolve and store preserve independent nested Volume boundaries;
 - cashew remains generic;
 - pinned authority cannot be replaced by public discovery;
 - evidence is durable before visible consensus mutation;

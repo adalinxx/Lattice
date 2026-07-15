@@ -128,20 +128,6 @@ final class BlockConstructionTests: XCTestCase {
         XCTAssertNotEqual(block1a.proofOfWorkHash(), block1b.proofOfWorkHash())
     }
 
-    func testDifficultyHashIncludesChildBlocks() {
-        let genesis = makeGenesisBlock()
-        let childGenesis = makeGenesisBlock(timestamp: 500, nonce: 99)
-        let childBlockHeader = blockHeader(childGenesis)
-
-        let emptyChildren = emptyChildBlocks()
-        let block1 = makeBlock(previous: genesis, height: 1, timestamp: 2000, children: emptyChildren)
-
-        let block1WithChild = makeBlock(previous: genesis, height: 1, timestamp: 2000, nonce: 0)
-
-        let hash1 = block1.proofOfWorkHash()
-        let hash2 = block1WithChild.proofOfWorkHash()
-        XCTAssertEqual(hash1, hash2, "Same nonce and empty children should produce same hash")
-    }
 }
 
 // MARK: - End-to-End: Real Block Submission through ChainState
@@ -159,8 +145,7 @@ final class BlockSubmissionE2ETests: XCTestCase {
 
         let block1 = makeBlock(previous: genesis, height: 1, timestamp: 2000)
         let header1 = blockHeader(block1)
-        let result1 = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let result1 = await chain.submitTestBlock(
             blockHeader: header1,
             block: block1
         )
@@ -182,8 +167,7 @@ final class BlockSubmissionE2ETests: XCTestCase {
         for i in 1...5 {
             let block = makeBlock(previous: prev, height: UInt64(i), timestamp: Int64(1000 + i * 1000))
             let header = blockHeader(block)
-            let result = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let result = await chain.submitTestBlock(
                 blockHeader: header,
                 block: block
             )
@@ -206,35 +190,71 @@ final class BlockSubmissionE2ETests: XCTestCase {
         let block1 = makeBlock(previous: genesis, height: 1, timestamp: 2000)
         let header1 = blockHeader(block1)
 
-        let result1 = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let result1 = await chain.submitTestBlock(
             blockHeader: header1,
             block: block1
         )
         XCTAssertTrue(result1.addedBlock)
 
-        let result2 = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let result2 = await chain.submitTestBlock(
             blockHeader: header1,
             block: block1
         )
         XCTAssertFalse(result2.addedBlock, "Duplicate block should be discarded")
     }
 
-    func testBlockWithoutParentOrParentChainInfoIsDiscarded() async {
-        let genesis = makeGenesisBlock()
+    func testNewProofContributionReweightsOnceWithoutDowngrade() async {
+        let target = UInt256(1000)
+        let ownWork = workForTarget(target)
+        let genesis = makeGenesisBlock(target: target)
         let chain = ChainState.fromGenesis(block: genesis)
 
-        let orphan = makeGenesisBlock(timestamp: 9999, nonce: 77)
-        let header = blockHeader(orphan)
+        let a1 = makeBlock(previous: genesis, height: 1, timestamp: 2000, target: target, nonce: 1)
+        let a2 = makeBlock(previous: a1, height: 2, timestamp: 3000, target: target, nonce: 1)
+        let b1 = makeBlock(previous: genesis, height: 1, timestamp: 2000, target: target, nonce: 2)
+        let b1Header = blockHeader(b1)
 
-        let result = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
-            blockHeader: header,
-            block: orphan
+        _ = await chain.submitTestBlock(blockHeader: blockHeader(a1), block: a1)
+        _ = await chain.submitTestBlock(blockHeader: blockHeader(a2), block: a2)
+        _ = await chain.submitTestBlock(blockHeader: b1Header, block: b1)
+
+        let proof = VerifiedWorkContribution(
+            id: "accepted-root-proof",
+            work: ownWork &* UInt256(4)
         )
-        XCTAssertFalse(result.addedBlock, "Genesis-like block without parent chain info should be discarded")
+        let promoted = await chain.submitTestBlock(
+            blockHeader: b1Header,
+            block: b1,
+            contribution: proof
+        )
+
+        XCTAssertFalse(promoted.addedBlock)
+        XCTAssertTrue(promoted.addedContribution)
+        XCTAssertNotNil(promoted.reorganization)
+        let promotedTip = await chain.getMainChainTip()
+        XCTAssertEqual(promotedTip, b1Header.rawCID)
+
+        let acceptedWork = await chain.getConsensusBlock(hash: b1Header.rawCID)?.work
+        let replay = await chain.submitTestBlock(
+            blockHeader: b1Header,
+            block: b1,
+            contribution: proof
+        )
+        let conflictingReplay = await chain.submitTestBlock(
+            blockHeader: b1Header,
+            block: b1,
+            contribution: VerifiedWorkContribution(
+                id: proof.id,
+                work: UInt256(1)
+            )
+        )
+
+        XCTAssertFalse(replay.addedContribution, "a proof fact is counted once")
+        XCTAssertFalse(conflictingReplay.addedContribution, "the same proof ID cannot downgrade work")
+        let finalWork = await chain.getConsensusBlock(hash: b1Header.rawCID)?.work
+        XCTAssertEqual(finalWork, acceptedWork)
     }
+
 }
 
 // MARK: - End-to-End: Fork and Reorg with Real Blocks
@@ -249,8 +269,8 @@ final class ForkReorgE2ETests: XCTestCase {
         let a1 = makeBlock(previous: genesis, height: 1, timestamp: 2000, nonce: 1)
         let a2 = makeBlock(previous: a1, height: 2, timestamp: 3000, nonce: 1)
 
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: blockHeader(a1), block: a1)
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: blockHeader(a2), block: a2)
+        let _ = await chain.submitTestBlock(blockHeader: blockHeader(a1), block: a1)
+        let _ = await chain.submitTestBlock(blockHeader: blockHeader(a2), block: a2)
 
         let tipAfterA = await chain.getMainChainTip()
         XCTAssertEqual(tipAfterA, blockHeader(a2).rawCID)
@@ -259,9 +279,9 @@ final class ForkReorgE2ETests: XCTestCase {
         let b2 = makeBlock(previous: b1, height: 2, timestamp: 3000, nonce: 2)
         let b3 = makeBlock(previous: b2, height: 3, timestamp: 4000, nonce: 2)
 
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: blockHeader(b1), block: b1)
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: blockHeader(b2), block: b2)
-        let resultB3 = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: blockHeader(b3), block: b3)
+        let _ = await chain.submitTestBlock(blockHeader: blockHeader(b1), block: b1)
+        let _ = await chain.submitTestBlock(blockHeader: blockHeader(b2), block: b2)
+        let resultB3 = await chain.submitTestBlock(blockHeader: blockHeader(b3), block: b3)
 
         XCTAssertNotNil(resultB3.reorganization, "Longer B fork should trigger reorg")
 
@@ -285,94 +305,20 @@ final class ForkReorgE2ETests: XCTestCase {
         let a1 = makeBlock(previous: genesis, height: 1, timestamp: 2000, nonce: 1)
         let a2 = makeBlock(previous: a1, height: 2, timestamp: 3000, nonce: 1)
 
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: blockHeader(a1), block: a1)
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: blockHeader(a2), block: a2)
+        let _ = await chain.submitTestBlock(blockHeader: blockHeader(a1), block: a1)
+        let _ = await chain.submitTestBlock(blockHeader: blockHeader(a2), block: a2)
 
         let b1 = makeBlock(previous: genesis, height: 1, timestamp: 2000, nonce: 2)
         let b2 = makeBlock(previous: b1, height: 2, timestamp: 3000, nonce: 2)
 
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: blockHeader(b1), block: b1)
-        let resultB2 = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: blockHeader(b2), block: b2)
+        let _ = await chain.submitTestBlock(blockHeader: blockHeader(b1), block: b1)
+        let resultB2 = await chain.submitTestBlock(blockHeader: blockHeader(b2), block: b2)
 
         XCTAssertNil(resultB2.reorganization, "Equal length fork should not reorg")
 
         let tip = await chain.getMainChainTip()
         XCTAssertEqual(tip, blockHeader(a2).rawCID, "Incumbent chain should hold")
     }
-}
-
-// MARK: - End-to-End: Parent Chain Anchoring with Real Blocks
-
-@MainActor
-final class AnchoringE2ETests: XCTestCase {
-
-    // F5-4 (Hierarchical GHOST): a short fork that inherits heavy parent work beats
-    // a longer unanchored chain. The node installs a provider returning the securing
-    // parent's trueCumWork (10w) for B1; fork choice reads it live. 10w ≫ A's subtree.
-    func testInheritedHeavyForkReorgsLongerChain() async {
-        let w = workForTarget(UInt256(1000))
-        let genesis = makeGenesisBlock()
-        let chain = ChainState.fromGenesis(block: genesis)
-
-        let a1 = makeBlock(previous: genesis, height: 1, timestamp: 2000, nonce: 1)
-        let a2 = makeBlock(previous: a1, height: 2, timestamp: 3000, nonce: 1)
-        let a3 = makeBlock(previous: a2, height: 3, timestamp: 4000, nonce: 1)
-
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: blockHeader(a1), block: a1)
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: blockHeader(a2), block: a2)
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: blockHeader(a3), block: a3)
-
-        let tipBeforeB = await chain.getMainChainTip()
-        XCTAssertEqual(tipBeforeB, blockHeader(a3).rawCID)
-
-        let b1 = makeBlock(previous: genesis, height: 1, timestamp: 2000, nonce: 2)
-        let b1hash = blockHeader(b1).rawCID
-        let heavy = w &* UInt256(10)
-        await chain.setInheritedWeightProvider { $0 == b1hash ? heavy : .zero }
-        let resultB1 = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
-            blockHeader: blockHeader(b1),
-            block: b1
-        )
-
-        XCTAssertTrue(resultB1.addedBlock)
-        XCTAssertNotNil(resultB1.reorganization, "heavy-inherited B1 should beat the unanchored A chain")
-
-        let tipAfterB = await chain.getMainChainTip()
-        XCTAssertEqual(tipAfterB, blockHeader(b1).rawCID)
-    }
-
-    // F5-4: when the parent chain extends a fork B1 rides, B1's inherited weight rises
-    // live (the provider returns the larger value) and re-evaluation triggers a reorg
-    // — replaces the old "duplicate-block anchoring triggers reorg" path.
-    func testInheritedWeightRefreshTriggersReorg() async {
-        let w = workForTarget(UInt256(1000))
-        let genesis = makeGenesisBlock()
-        let chain = ChainState.fromGenesis(block: genesis)
-
-        let a1 = makeBlock(previous: genesis, height: 1, timestamp: 2000, nonce: 1)
-        let b1 = makeBlock(previous: genesis, height: 1, timestamp: 2000, nonce: 2)
-        let b1hash = blockHeader(b1).rawCID
-
-        let box = E2EWeightBox()
-        await chain.setInheritedWeightProvider { $0 == b1hash ? box.value : .zero }
-
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: blockHeader(a1), block: a1)
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: blockHeader(b1), block: b1)
-
-        let tipBefore = await chain.getMainChainTip()
-        XCTAssertEqual(tipBefore, blockHeader(a1).rawCID, "A1 is incumbent (equal weight, holds)")
-
-        box.value = w &* UInt256(10)   // parent chain extended B1's fork
-        let reorg = await chain.reevaluateForkChoice(blockHash: b1hash)
-        XCTAssertNotNil(reorg, "B1's risen inherited weight should trigger reorg")
-        let tipAfter = await chain.getMainChainTip()
-        XCTAssertEqual(tipAfter, blockHeader(b1).rawCID)
-    }
-}
-
-final class E2EWeightBox: @unchecked Sendable {
-    var value: UInt256 = .zero
 }
 
 // MARK: - End-to-End: ChainState.fromGenesis Validation
@@ -414,60 +360,7 @@ final class FromGenesisE2ETests: XCTestCase {
     }
 }
 
-// MARK: - End-to-End: Merged Mining Simulation
-
-@MainActor
-final class MergedMiningE2ETests: XCTestCase {
-
-    func testChildBlockEmbeddedInParentSharesCID() {
-        let childGenesis = makeGenesisBlock(timestamp: 100, nonce: 1)
-        let parentGenesis = makeGenesisBlock(timestamp: 200, nonce: 2)
-
-        let parentBlock1 = makeBlock(previous: parentGenesis, height: 1, timestamp: 1000)
-
-        XCTAssertEqual(parentBlock1.children.rawCID, emptyChildBlocks().rawCID,
-            "Block with no child blocks should have empty children CID")
-
-        let parentBlock1DiffHash = parentBlock1.proofOfWorkHash()
-        let parentBlock1Alt = makeBlock(previous: parentGenesis, height: 1, timestamp: 1000, nonce: 1)
-        let parentBlock1AltDiffHash = parentBlock1Alt.proofOfWorkHash()
-        XCTAssertNotEqual(parentBlock1DiffHash, parentBlock1AltDiffHash,
-            "Different nonces should produce different target hashes")
-    }
-
-    func testParentAndChildChainsBothAcceptSameBlock() async {
-        let parentGenesis = makeGenesisBlock(timestamp: 100, nonce: 1)
-        let childGenesis = makeGenesisBlock(timestamp: 200, nonce: 2)
-
-        let parentChain = ChainState.fromGenesis(block: parentGenesis)
-        let childChain = ChainState.fromGenesis(block: childGenesis)
-
-        let parentBlock1 = makeBlock(previous: parentGenesis, height: 1, timestamp: 1000)
-
-        let parentResult = await parentChain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
-            blockHeader: blockHeader(parentBlock1),
-            block: parentBlock1
-        )
-        XCTAssertTrue(parentResult.extendsMainChain)
-
-        let childBlock1 = makeBlock(previous: childGenesis, height: 1, timestamp: 1000)
-        let childResult = await childChain.submitBlock(
-            parentBlockHeaderAndIndex: (blockHeader(parentBlock1).rawCID, 1),
-            blockHeader: blockHeader(childBlock1),
-            block: childBlock1
-        )
-        XCTAssertTrue(childResult.addedBlock, "Child chain should accept block anchored to parent")
-        XCTAssertTrue(childResult.extendsMainChain)
-
-        let parentTip = await parentChain.getHighestBlockHeight()
-        let childTip = await childChain.getHighestBlockHeight()
-        XCTAssertEqual(parentTip, 1)
-        XCTAssertEqual(childTip, 1)
-    }
-}
-
-// MARK: - End-to-End: ChainLevel Hierarchy
+// MARK: - End-to-End: ChainLevel Context
 
 @MainActor
 final class ChainLevelE2ETests: XCTestCase {
@@ -475,29 +368,12 @@ final class ChainLevelE2ETests: XCTestCase {
     func testChainLevelCreation() async {
         let genesis = makeGenesisBlock()
         let chain = ChainState.fromGenesis(block: genesis)
-        let level = ChainLevel(chain: chain)
+        let level = ChainLevel(testChain: chain)
 
         let tip = await level.chain.getMainChainTip()
         XCTAssertEqual(tip, blockHeader(genesis).rawCID)
     }
 
-    func testNestedChainLevelHierarchy() async throws {
-        let nexusGenesis = makeGenesisBlock(timestamp: 100, nonce: 1)
-        let childGenesis = makeGenesisBlock(timestamp: 200, nonce: 2)
-
-        let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
-        let nexusLevel = ChainLevel(chain: nexusChain)
-        let childLevel = try await nexusLevel.attachRestoredChildForTesting(
-            to: "child1",
-            genesisBlock: childGenesis
-        )
-
-        let nexusTip = await nexusLevel.chain.getMainChainTip()
-        XCTAssertEqual(nexusTip, blockHeader(nexusGenesis).rawCID)
-
-        let childTip = await childLevel.chain.getMainChainTip()
-        XCTAssertEqual(childTip, blockHeader(childGenesis).rawCID)
-    }
 }
 
 // MARK: - End-to-End: State Continuity
@@ -566,8 +442,7 @@ final class FullPipelineSmokeTests: XCTestCase {
                 timestamp: Int64(1000 + i * 1000),
                 nonce: 1
             )
-            let result = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let result = await chain.submitTestBlock(
                 blockHeader: blockHeader(block),
                 block: block
             )
@@ -586,8 +461,7 @@ final class FullPipelineSmokeTests: XCTestCase {
                 timestamp: Int64(1000 + i * 1000),
                 nonce: 2
             )
-            let result = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let result = await chain.submitTestBlock(
                 blockHeader: blockHeader(block),
                 block: block
             )
@@ -622,8 +496,7 @@ final class FullPipelineSmokeTests: XCTestCase {
 
         let block1 = makeBlock(previous: genesis, height: 1, timestamp: 2000)
         let block1Hash = blockHeader(block1).rawCID
-        let _ = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let _ = await chain.submitTestBlock(
             blockHeader: blockHeader(block1),
             block: block1
         )

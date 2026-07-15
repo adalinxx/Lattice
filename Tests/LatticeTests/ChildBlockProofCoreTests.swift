@@ -27,13 +27,10 @@ final class ChildBlockProofCoreTests: XCTestCase {
         XCTAssertNil(ChildBlockProof.deserialize(bytes.prefix(bytes.count - 1)),
                      "a truncated proof must not decode")
         XCTAssertNil(ChildBlockProof.deserialize(Data()), "empty input must not decode")
-    }
-
-    func test_canonicalProofID_isOrderIndependentOverEntries() {
-        let a = proof(entries: [("c1", Data([1])), ("c2", Data([2]))])
-        let b = proof(entries: [("c2", Data([2])), ("c1", Data([1]))])
-        XCTAssertEqual(a.canonicalProofID, b.canonicalProofID,
-                       "canonical proof identity must not depend on entry order")
+        XCTAssertNil(
+            ChildBlockProof.deserialize(bytes + Data([0])),
+            "trailing bytes must not produce a second encoding of the same proof"
+        )
     }
 
     func test_composing_concatenatesDirectoryPath() {
@@ -42,5 +39,15 @@ final class ChildBlockProofCoreTests: XCTestCase {
         let composed = hop1.composing(hop: hop2)
         XCTAssertEqual(composed.directoryPath.first, "Nexus")
         XCTAssertEqual(composed.directoryPath.last, "B")
+    }
+
+    func test_composingDeduplicatesIdenticalEntries() {
+        let shared = ("shared", Data([1]))
+        let upstream = proof(entries: [shared])
+        let hop = proof(root: "shared", path: ["Child"], entries: [shared])
+
+        let composed = upstream.composing(hop: hop)
+
+        XCTAssertEqual(composed.entries.count, 1)
     }
 }

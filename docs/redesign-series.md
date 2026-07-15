@@ -1,14 +1,19 @@
-# Coordinated redesign series
+# Coordinated Repository Boundaries
 
-## Executable Lattice boundary
+Lattice is the consensus and execution library in a coordinated stack. Its
+boundary is deliberately narrow: one process validates and chooses one chain.
 
-This PR is the normative and consensus-facing foundation for companion changes
-in cashew, VolumeBroker, Tally, Ivy, and lattice-node. It removes the legacy
-Lattice ingress rather than leaving it as a migration oracle: admission consumes
-trusted runtime context, returns typed availability/validity/temporal/missing-body
-outcomes, requires durable preparation, and operates on a path-keyed child-root
-forest.
+Companion repositories implement independent responsibilities:
 
-The node-facing responsibilities that remain are intentional orchestration
-handoffs, not alternate consensus paths. They are listed in the [migration
-conflict register](migration-conflict-register.md).
+- **cashew** provides content-addressed structures and matching targeted
+  resolve/store traversal. Nested Volumes remain independent.
+- **VolumeBroker** stores complete selected Volumes and implements node-chosen
+  pins and eviction.
+- **Ivy** acquires and serves bytes.
+- **Tally** records provider behavior without turning availability into validity.
+- **lattice-node** supervises one Lattice process per followed chain and owns
+  filesystem durability, retention, projections, and ingress routing.
+
+These layers may transport or persist evidence. None supplies an alternate
+validity, work, sync, or fork-choice path around
+`ChainLevel.admitBlockHeaderChainLocal`.

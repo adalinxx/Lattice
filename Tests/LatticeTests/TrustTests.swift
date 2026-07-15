@@ -936,8 +936,7 @@ final class ReorgBalanceTests: XCTestCase {
         )
         let mainValid = try await mainBlock1.validateNexus(fetcher: fetcher).0
         XCTAssertTrue(mainValid)
-        let _ = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let _ = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: mainBlock1), block: mainBlock1
         )
 
@@ -951,8 +950,7 @@ final class ReorgBalanceTests: XCTestCase {
                 previous: forkPrev, timestamp: base + Int64(i) * 1000,
                 target: UInt256(1000), nonce: UInt64(i + 100), fetcher: fetcher
             )
-            let _ = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: b), block: b
             )
             forkPrev = b
@@ -1296,8 +1294,7 @@ final class ConcurrentBlockTests: XCTestCase {
         await withTaskGroup(of: Void.self) { group in
             for block in blocks {
                 group.addTask {
-                    let _ = await chain.submitBlock(
-                        parentBlockHeaderAndIndex: nil,
+                    let _ = await chain.submitTestBlock(
                         blockHeader: try! VolumeImpl<Block>(node: block), block: block
                     )
                 }

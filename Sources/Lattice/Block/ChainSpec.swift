@@ -24,13 +24,8 @@ public struct ChainSpec: Scalar {
     // be unmineable; we floor at 1 so the adjustment loop can recover.
     public static let minimumTarget: UInt256 = UInt256(1)
 
-    /// R9 (wave-4): the minimum-target-floor recovery predicate — a block may
-    /// present `target == minimumTarget` only when its parent's scheduled
-    /// `nextTarget` fell below the floor (recovery from the zero-target bug).
-    /// Single definition shared by `Block.validateNextTarget` and the
-    /// deliberately-separate header-path validator
-    /// (`ChainSyncer.validateHeaderConsensus`), so the duplicated clause cannot
-    /// drift; semantics byte-identical to the previous two copies.
+    /// Permit the minimum target only when recovering from an underflowed
+    /// scheduled target.
     static func isMinimumTargetRecovery(target: UInt256, parentNextTarget: UInt256) -> Bool {
         target == minimumTarget && parentNextTarget < minimumTarget
     }
@@ -285,7 +280,7 @@ public extension ChainSpec {
     /// direction so a miner cannot grind timestamps to swing difficulty by an
     /// unbounded factor in one window. The result is also floored at
     /// `minimumTarget`. Applied at the single retarget choke point so the block
-    /// builder, validator, and syncer all agree on the clamped value.
+    /// builder and admission validator agree on the clamped value.
     private func clampTargetChange(previousTarget: UInt256, proposed: UInt256) -> UInt256 {
         let factor = UInt256(UInt64(ChainSpec.maxTargetChange))
         let upperBound = previousTarget > UInt256.max / factor ? UInt256.max : previousTarget * factor

@@ -11,18 +11,10 @@ import UInt256
 // choice is never reimplemented here; we only build topologies, release blocks
 // into the real chain, and measure the resulting reorg/revenue/stall outcomes.
 //
-// Merged-mining economics: a miner targets the EASIEST subscribed-chain
-// target with opt-in, INDEPENDENT per-chain PoW validation. The attacker's effective
-// hashrate against any one chain is therefore the fraction of *that chain's*
-// subscribed hashrate it controls — there is no nexus-anchored amplification. This is
-// not asserted: `derivePerChainAttackerFraction` DERIVES it through the real per-chain
-// PoW gate (`powClears` == `Block.validateProofOfWork(nexusHash:)`), Monte-Carloing the
-// easiest-target shared-solution stream against each chain's own target and reading off
-// the attacker's share of the blocks that land on the target chain. That derivation
-// returns exactly the attacker's share of the target chain's OWN subscribers, regardless
-// of the other chains' targets (no amplification) — and that derived value is the `f` the
-// curves below are swept over. So `f` is the per-chain controlled-hashrate fraction, and
-// the curves are per-chain economic-security curves under independent validation.
+// These curves begin after admission: `f` is the attacker's share of the verified
+// root-grind contributions accepted by this chain. Exact path proofs, the setup-wide
+// root-work floor, and per-chain target classification happen before these local fork-
+// choice scenarios. Parent canonicity and sibling-chain state are never inputs.
 
 public struct DeepReorgPoint: Codable, Equatable, Sendable {
     public let hashrateFraction: Double
@@ -112,88 +104,6 @@ extension LatticeConsensusSimulator {
         )
     }
 
-    // MARK: Merged-mining economics — derive the per-chain attacker fraction
-
-    /// A subscribed chain in the merged-mining tree: its own PoW `target` (a block clears it
-    /// iff `target >= sharedHash`, mirroring `Block.validateProofOfWork(nexusHash:)`) and the
-    /// hashrate that voluntarily subscribes to it, split into honest and attacker shares.
-    public struct SubscribedChain: Sendable {
-        public let name: String
-        /// This chain's PoW target as a 64-bit word; a shared solution clears it iff
-        /// `target >= hash` (`Block.validateProofOfWork(nexusHash:)`). Modelled in the 64-bit
-        /// range so the derivation drives the real gate without 256-bit overflow.
-        public let targetWord: UInt64
-        public let honestHashrate: Double
-        public let attackerHashrate: Double
-        /// The target as a `UInt256`, the type the real PoW gate compares.
-        public var target: UInt256 { UInt256(targetWord) }
-        public init(name: String, targetWord: UInt64, honestHashrate: Double, attackerHashrate: Double) {
-            self.name = name
-            self.targetWord = targetWord
-            self.honestHashrate = honestHashrate
-            self.attackerHashrate = attackerHashrate
-        }
-    }
-
-    /// A shared PoW solution clears a chain iff that chain's own target admits its hash —
-    /// `target >= hash`, the exact polarity of `Block.validateProofOfWork(nexusHash:)`. Reused
-    /// here so the derived merged-mining fraction is grounded in the real per-chain validation
-    /// gate, not a re-statement of it.
-    static func powClears(target: UInt256, hash: UInt256) -> Bool {
-        target >= hash
-    }
-
-    /// Derives the attacker's EFFECTIVE block-production fraction against `chain` under the
-    /// corrected merged-mining model, grounded in the real per-chain PoW-acceptance
-    /// primitive rather than asserted as the unit-work abstraction. The miner searches the
-    /// EASIEST target in the subscribed `tree`, so shared solutions arrive uniformly under the
-    /// easiest target; each solution is submitted to every chain and accepted INDEPENDENTLY iff
-    /// it clears that chain's OWN target (`powClears` == `validateProofOfWork(nexusHash:)`).
-    /// Participation is opt-in, so a chain only ever sees its own subscribers' solutions. We
-    /// Monte-Carlo the shared-hash stream (seeded, deterministic), attribute each solution to
-    /// honest/attacker by their share of `chain`'s subscribed hashrate, and count the ones that
-    /// independently clear `chain` via the real gate. The returned attacker fraction is the
-    /// attacker's share of the blocks that actually land on `chain` — and it comes out equal to
-    /// its share of `chain`'s OWN subscribed hashrate, INDEPENDENT of the other chains' targets:
-    /// there is no nexus-anchored amplification. That derived fraction is the `f` the per-chain
-    /// economic-security curves below are swept over.
-    public static func derivePerChainAttackerFraction(
-        chain: SubscribedChain,
-        tree: [SubscribedChain],
-        seed: UInt64 = defaultSeed,
-        samples: Int = 100_000
-    ) -> Double {
-        precondition(tree.contains { $0.name == chain.name }, "chain must be subscribed in its own tree")
-        let subscribed = chain.honestHashrate + chain.attackerHashrate
-        guard subscribed > 0 else { return 0 }
-        let attackerShareOfSubscribers = chain.attackerHashrate / subscribed
-        // The miner searches the EASIEST (largest) target in the tree, so shared-solution
-        // hashes arrive uniformly across `[0, easiest]`. We model that hash stream as uniform
-        // 64-bit draws and set chain targets in the same range; the per-chain gate is the real
-        // `target >= hash` test. A chain with a harder (smaller) target than the search floor
-        // only accepts the subset of solutions that also fall under its own target — the rest
-        // are valid for easier chains only and confer nothing here (independent validation).
-        let easiest = tree.map { $0.targetWord }.max() ?? chain.targetWord
-        var rng = AdversarialRNG(seed: seed ^ 0x6E_E207_2190_0000 ^ fractionSalt(attackerShareOfSubscribers))
-        var attackerAccepted = 0
-        var totalAccepted = 0
-        for _ in 0..<samples {
-            // Draw a shared solution under the easiest search floor (uniform in [0, easiest])
-            // and attribute it to the attacker with probability = its share of THIS chain's
-            // subscribers (opt-in: only this chain's subscribers submit to this chain).
-            let hashWord = easiest == UInt64.max ? rng.next() : rng.next() % (easiest &+ 1)
-            let fromAttacker = rng.bernoulli(attackerShareOfSubscribers)
-            // Independent per-chain validation: accept iff it clears THIS chain's own target
-            // via the real `validateProofOfWork` polarity (`target >= hash`).
-            if powClears(target: UInt256(chain.targetWord), hash: UInt256(hashWord)) {
-                totalAccepted += 1
-                if fromAttacker { attackerAccepted += 1 }
-            }
-        }
-        guard totalAccepted > 0 else { return 0 }
-        return Double(attackerAccepted) / Double(totalAccepted)
-    }
-
     // MARK: (a) Deep reorg
 
     /// Common fork root with an honest segment and a privately-withheld attacker branch.
@@ -228,7 +138,7 @@ extension LatticeConsensusSimulator {
 
             // Build the real topology: G -> M1..M_honest (honest main) and
             //                          G -> A1..A_attacker (attacker private branch).
-            // work=1/block ⇒ cumulative work == block count, so the real no-downgrade
+            // work=1/block ⇒ cumulative work == block count, so the real strict-greater
             // fork choice fires iff the private branch is strictly longer (attacker > honest).
             var blocks: [ConsensusSimBlockSpec] = [ConsensusSimBlockSpec(hash: "G", height: 0)]
             var honestMain: [String] = ["G"]
@@ -489,16 +399,15 @@ extension LatticeConsensusSimulator {
         out += "checked-in artifact). `swift run LatticeSim --adversarial --seed \(r.seed)` renders the "
         out += "same report to stdout.\n\n"
         out += "Economic security of no-finality consensus as a function of the attacker's "
-        out += "per-chain hashrate fraction `f`. Under the corrected merged-mining model "
-        out += ": easiest-target, opt-in, INDEPENDENT per-chain PoW validation), `f` is "
-        out += "the fraction of a single chain's subscribed hashrate the attacker controls — there "
-        out += "is no nexus-anchored amplification. All scenarios drive the real `ChainState` fork "
-        out += "choice (no-finality, incumbent-holds ties).\n\n"
+        out += "share `f` of this chain's admitted root-grind contributions. Exact path proofs, "
+        out += "the setup-wide root-work floor, and per-chain target classification happen before "
+        out += "these scenarios. All scenarios drive the real chain-local `ChainState` fork choice "
+        out += "with incumbent-holds ties; parent canonicity and sibling state are not inputs.\n\n"
 
         out += "## (a) Deep reorg — achievable reorg depth vs f\n\n"
         out += "Honest segment depth: \(r.honestSegmentDepth) blocks (work=1 each), \(r.deepReorg.first?.trials ?? 0) "
         out += "seeded race trials per f. The attacker privately races the honest segment and publishes; "
-        out += "the real no-downgrade fork choice reorgs only when the private branch carries strictly more work.\n\n"
+        out += "the real fork choice reorgs only when the private branch carries strictly more work.\n\n"
         out += "| f | honest depth | mean reorg depth | max reorg depth | reorg probability |\n"
         out += "|---|---|---|---|---|\n"
         for p in r.deepReorg {
@@ -556,10 +465,9 @@ extension LatticeConsensusSimulator {
         out += "below majority — so a rational attacker has a revenue incentive to deviate at the classic "
         out += "threshold long before it can reorg or stall the chain.\n"
         out += "\nC5 must price the security budget against the **lower** of the two — the selfish-mining "
-        out += "economic threshold — not the 50% majority point. The budget is the per-chain honest "
-        out += "hashrate cost to deny an attacker that economically-profitable fraction of that chain's "
-        out += "subscribed PoW — independent per chain under, with no cross-chain (nexus) "
-        out += "amplification.\n"
+        out += "economic threshold — not the 50% majority point. The budget is the honest root-grind "
+        out += "cost required to keep an attacker below that fraction of this chain's verified work "
+        out += "stream; another chain's canonical history cannot change work already admitted here.\n"
         return out
     }
 }

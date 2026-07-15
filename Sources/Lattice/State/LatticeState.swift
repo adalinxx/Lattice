@@ -96,3 +96,49 @@ public struct LatticeState: Node {
 }
 
 public typealias LatticeStateHeader = VolumeImpl<LatticeState>
+
+private func collectMaterializedVolumePaths(
+    from volume: any Volume,
+    selecting cids: Set<String>,
+    at path: [String] = [],
+    into paths: inout [[String]: StorageStrategy],
+    found: inout Set<String>
+) {
+    guard let node = volume.node else { return }
+    for property in node.properties() {
+        guard let child = node.get(property: property) as? any Volume,
+              child.node != nil else { continue }
+        let childPath = path + [property]
+        if cids.contains(child.rawCID) {
+            paths[childPath] = .targeted
+            found.insert(child.rawCID)
+        }
+        collectMaterializedVolumePaths(
+            from: child,
+            selecting: cids,
+            at: childPath,
+            into: &paths,
+            found: &found
+        )
+    }
+}
+
+extension VolumeImpl where NodeType == LatticeState {
+    func storeMaterialized(createdBy diff: StateDiff, storer: any VolumeStorer) async throws {
+        var created = Set(diff.created.compactMap { cid, count in
+            count > diff.replaced[cid, default: 0] ? cid : nil
+        })
+        created.remove(rawCID)
+
+        var paths: [[String]: StorageStrategy] = [:]
+        var found = Set<String>()
+        collectMaterializedVolumePaths(
+            from: self,
+            selecting: created,
+            into: &paths,
+            found: &found
+        )
+        guard found == created else { throw DataErrors.nodeNotAvailable }
+        try await store(paths: paths, storer: storer)
+    }
+}
