@@ -1391,7 +1391,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let fork3 = try await makeChild(of: fork2, fetcher: fetcher, timestamp: 4_500, nonce: 5)
         let level = makeLevel(genesis: genesis)
 
-        for block in [main1, main2, fork1, fork2] {
+        for block in [main1, main2] {
             _ = try await level.admitBlockHeaderChainLocal(
                 try BlockHeader(node: block),
                 fetcher: fetcher,
@@ -1399,19 +1399,47 @@ final class ChainLocalAdmissionTests: XCTestCase {
                 stage: testAdmissionStage
             )
         }
-        let result = try await level.admitBlockHeaderChainLocal(
+        _ = try await level.admitBlockHeaderChainLocal(
+            try BlockHeader(node: fork1),
+            fetcher: fetcher,
+            storer: fetcher,
+            stage: testAdmissionStage
+        )
+        let fork2Result = try await level.admitBlockHeaderChainLocal(
+            try BlockHeader(node: fork2),
+            fetcher: fetcher,
+            storer: fetcher,
+            stage: testAdmissionStage
+        )
+        let fork3Result = try await level.admitBlockHeaderChainLocal(
             try BlockHeader(node: fork3),
             fetcher: fetcher,
             storer: fetcher,
             stage: testAdmissionStage
         )
 
-        let reorganization = try XCTUnwrap(result.reorganization)
-        let forkHashes = try Set([fork1, fork2, fork3].map { try BlockHeader(node: $0).rawCID })
+        let main1Hash = try BlockHeader(node: main1).rawCID
+        let fork1Hash = try BlockHeader(node: fork1).rawCID
+        let forkWinsTie = forkChoicePrefersSegmentBase(
+            fork1Hash,
+            candidateNextTarget: fork1.nextTarget,
+            over: main1Hash,
+            currentNextTarget: main1.nextTarget
+        )
+        let reorganization = try XCTUnwrap(
+            forkWinsTie ? fork2Result.reorganization : fork3Result.reorganization
+        )
+        let winningPrefix = forkWinsTie ? [fork1, fork2] : [fork1, fork2, fork3]
+        let forkHashes = try Set(winningPrefix.map { try BlockHeader(node: $0).rawCID })
         let mainHashes = try Set([main1, main2].map { try BlockHeader(node: $0).rawCID })
-        XCTAssertEqual(reorganization.newTipHash, try BlockHeader(node: fork3).rawCID)
+        XCTAssertEqual(
+            reorganization.newTipHash,
+            try BlockHeader(node: forkWinsTie ? fork2 : fork3).rawCID
+        )
         XCTAssertEqual(Set(reorganization.mainChainBlocksAdded.keys), forkHashes)
         XCTAssertEqual(reorganization.mainChainBlocksRemoved, mainHashes)
+        let finalTip = await level.chain.getMainChainTip()
+        XCTAssertEqual(finalTip, try BlockHeader(node: fork3).rawCID)
     }
 
     func testConcurrentAdmissionReachesStorageTogether() async throws {

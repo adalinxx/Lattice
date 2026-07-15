@@ -102,9 +102,9 @@
     {
       "hashrateFraction" : 0.3,
       "honestDepth" : 24,
-      "maxReorgDepth" : 24,
-      "meanReorgDepth" : 0.12,
-      "reorgProbability" : 0.005,
+      "maxReorgDepth" : 0,
+      "meanReorgDepth" : 0,
+      "reorgProbability" : 0,
       "trials" : 200
     },
     {
@@ -119,32 +119,32 @@
       "hashrateFraction" : 0.4,
       "honestDepth" : 24,
       "maxReorgDepth" : 24,
-      "meanReorgDepth" : 0.72,
-      "reorgProbability" : 0.03,
+      "meanReorgDepth" : 1.68,
+      "reorgProbability" : 0.07,
       "trials" : 200
     },
     {
       "hashrateFraction" : 0.45,
       "honestDepth" : 24,
       "maxReorgDepth" : 24,
-      "meanReorgDepth" : 4.32,
-      "reorgProbability" : 0.18,
+      "meanReorgDepth" : 4.44,
+      "reorgProbability" : 0.185,
       "trials" : 200
     },
     {
       "hashrateFraction" : 0.5,
       "honestDepth" : 24,
       "maxReorgDepth" : 24,
-      "meanReorgDepth" : 8.88,
-      "reorgProbability" : 0.37,
+      "meanReorgDepth" : 9.96,
+      "reorgProbability" : 0.415,
       "trials" : 200
     },
     {
       "hashrateFraction" : 0.6,
       "honestDepth" : 24,
       "maxReorgDepth" : 24,
-      "meanReorgDepth" : 21.48,
-      "reorgProbability" : 0.895,
+      "meanReorgDepth" : 21.36,
+      "reorgProbability" : 0.89,
       "trials" : 200
     }
   ],
@@ -152,45 +152,45 @@
   "seed" : 42,
   "selfishMining" : [
     {
-      "attackerRevenueShare" : 0.03564131668558457,
+      "attackerRevenueShare" : 0.07241770715096482,
       "hashrateFraction" : 0.1,
-      "relativeGain" : -0.06435868331441544,
+      "relativeGain" : -0.027582292849035184,
       "totalRounds" : 400
     },
     {
-      "attackerRevenueShare" : 0.1296703296703297,
+      "attackerRevenueShare" : 0.18241758241758246,
       "hashrateFraction" : 0.2,
-      "relativeGain" : -0.0703296703296703,
+      "relativeGain" : -0.017582417582417548,
       "totalRounds" : 400
     },
     {
-      "attackerRevenueShare" : 0.1951219512195122,
+      "attackerRevenueShare" : 0.25,
       "hashrateFraction" : 0.25,
-      "relativeGain" : -0.0548780487804878,
+      "relativeGain" : 0,
       "totalRounds" : 400
     },
     {
-      "attackerRevenueShare" : 0.27312614259597795,
+      "attackerRevenueShare" : 0.3268738574040218,
       "hashrateFraction" : 0.3,
-      "relativeGain" : -0.02687385740402204,
+      "relativeGain" : 0.026873857404021817,
       "totalRounds" : 400
     },
     {
-      "attackerRevenueShare" : 0.326965257704292,
+      "attackerRevenueShare" : 0.37855587673132746,
       "hashrateFraction" : 0.33,
-      "relativeGain" : -0.003034742295707993,
+      "relativeGain" : 0.04855587673132744,
       "totalRounds" : 400
     },
     {
-      "attackerRevenueShare" : 0.4837209302325583,
+      "attackerRevenueShare" : 0.5255813953488375,
       "hashrateFraction" : 0.4,
-      "relativeGain" : 0.08372093023255828,
+      "relativeGain" : 0.1255813953488375,
       "totalRounds" : 400
     },
     {
-      "attackerRevenueShare" : 0.6517734250926417,
+      "attackerRevenueShare" : 0.6805982001058762,
       "hashrateFraction" : 0.45,
-      "relativeGain" : 0.20177342509264168,
+      "relativeGain" : 0.23059820010587623,
       "totalRounds" : 400
     },
     {

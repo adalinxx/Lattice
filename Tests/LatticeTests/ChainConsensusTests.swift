@@ -197,7 +197,7 @@ final class ForkChoiceTests: XCTestCase {
         XCTAssertNil(reorg)
     }
 
-    func testEqualLengthForkDoesNotReorg() async {
+    func testEqualLengthForkKeepsPreferredBaseCID() async {
         let g = makeBlockMeta(hash: "G", height: 0, childHashes: ["A1", "B1"])
         let a1 = makeBlockMeta(hash: "A1", previousHash: "G", height: 1, childHashes: ["A2"])
         let a2 = makeBlockMeta(hash: "A2", previousHash: "A1", height: 2)
@@ -211,7 +211,7 @@ final class ForkChoiceTests: XCTestCase {
 
         let block = await chain.getConsensusBlock(hash: "B2")!
         let reorg = await chain.checkForReorg(block: block)
-        XCTAssertNil(reorg)
+        XCTAssertNil(reorg, "A1 is the smaller segment-base hash")
     }
 
 }
@@ -424,7 +424,7 @@ final class NakamotoConsensusTests: XCTestCase {
         XCTAssertTrue(gOnMainSelfish)
     }
 
-    func testFirstSeenTieBreaking() async {
+    func testEqualWorkUsesStableBlockHashTieBreak() async {
         let g = makeBlockMeta(hash: "G", height: 0, childHashes: ["A1", "B1"])
         let a1 = makeBlockMeta(hash: "A1", previousHash: "G", height: 1, childHashes: ["A2"])
         let a2 = makeBlockMeta(hash: "A2", previousHash: "A1", height: 2, childHashes: ["A3"])
@@ -436,7 +436,7 @@ final class NakamotoConsensusTests: XCTestCase {
         let chain = makeChain(blocks: [g, a1, a2, a3, b1, b2, b3], mainChainHashes: Set(["G", "A1", "A2", "A3"]))
         let block = await chain.getConsensusBlock(hash: "B3")!
         let reorg = await chain.checkForReorg(block: block)
-        XCTAssertNil(reorg, "Equal-length fork must not trigger reorg")
+        XCTAssertNil(reorg, "The smaller segment-base hash is already canonical")
         let tieTip = await chain.getMainChainTip()
         XCTAssertEqual(tieTip, "A3")
     }

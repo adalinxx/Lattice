@@ -298,7 +298,7 @@ final class ForkReorgE2ETests: XCTestCase {
         XCTAssertTrue(genesisOnMain, "Genesis should survive reorg")
     }
 
-    func testEqualLengthForkDoesNotReorgWithRealBlocks() async {
+    func testEqualLengthForkUsesStableSegmentBaseWithRealBlocks() async {
         let genesis = makeGenesisBlock()
         let chain = ChainState.fromGenesis(block: genesis)
 
@@ -314,10 +314,10 @@ final class ForkReorgE2ETests: XCTestCase {
         let _ = await chain.submitTestBlock(blockHeader: blockHeader(b1), block: b1)
         let resultB2 = await chain.submitTestBlock(blockHeader: blockHeader(b2), block: b2)
 
-        XCTAssertNil(resultB2.reorganization, "Equal length fork should not reorg")
-
+        let bWins = blockHeader(b1).rawCID < blockHeader(a1).rawCID
+        XCTAssertEqual(resultB2.reorganization != nil, bWins)
         let tip = await chain.getMainChainTip()
-        XCTAssertEqual(tip, blockHeader(a2).rawCID, "Incumbent chain should hold")
+        XCTAssertEqual(tip, blockHeader(bWins ? b2 : a2).rawCID)
     }
 }
 
@@ -465,8 +465,8 @@ final class FullPipelineSmokeTests: XCTestCase {
                 blockHeader: blockHeader(block),
                 block: block
             )
-            if i <= 10 {
-                XCTAssertNil(result.reorganization, "Fork block \(i) should not reorg yet (equal or shorter)")
+            if i < 10 {
+                XCTAssertNil(result.reorganization, "Shorter fork should not reorg at block \(i)")
             }
             forkBlocks.append(block)
         }

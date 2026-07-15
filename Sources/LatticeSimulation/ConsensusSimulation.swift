@@ -201,12 +201,12 @@ public enum LatticeConsensusSimulator {
         let tip = await chain.getMainChainTip()
 
         return ConsensusSimTrace(
-            scenario: "equal-work-tie-incumbent-holds",
+            scenario: "equal-work-tie-stable-base",
             seed: seed,
             finalTip: tip,
             events: [
                 event(
-                    0, "equal work candidate evaluated", tip: "M1",
+                    0, "equal work candidate evaluated", tip: tip,
                     candidate: candidate, main: main, reorged: reorg != nil
                 )
             ]

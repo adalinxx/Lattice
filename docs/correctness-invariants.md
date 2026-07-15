@@ -63,10 +63,11 @@ Individual work contributions are `UInt256`; cumulative and subtree work use an
 unbounded exact sum. Overflow may not wrap or collapse distinct heavier chains
 onto the same saturated value.
 
-## FORK-001 - Exact Ties Hold the Incumbent
+## FORK-001 - Exact Ties Have a Stable Segment Preference
 
-A reorganization requires strictly greater same-chain subtree work. Equal work
-does not invoke a hash, height, arrival, or parent-chain tiebreak.
+Fork choice first compares each segment base's same-chain `trueCumWork`. Equal
+work chooses the base with the greatest `nextTarget`, then the lexicographically
+smaller base CID. Arrival and replay order do not affect the result.
 
 ## FORK-002 - Retention Cannot Select the Tip
 

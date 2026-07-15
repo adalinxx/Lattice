@@ -348,14 +348,17 @@ final class GenesisToBlockE2ETests: XCTestCase {
         let tipB_before = await nodeB.chainState.getMainChainTip()
         XCTAssertEqual(tipB_before, try! VolumeImpl<Block>(node: blockB1).rawCID)
 
-        let _ = await nodeB.chainState.submitTestBlock(
+        let resultA1onB = await nodeB.chainState.submitTestBlock(
             blockHeader: try! VolumeImpl(node: blockA1), block: blockA1
         )
         let resultA2onB = await nodeB.chainState.submitTestBlock(
             blockHeader: try! VolumeImpl(node: blockA2), block: blockA2
         )
 
-        XCTAssertNotNil(resultA2onB.reorganization, "Node B should reorg to longer chain from A")
+        XCTAssertTrue(
+            resultA1onB.reorganization != nil || resultA2onB.reorganization != nil,
+            "Node B should reorg when A wins the stable tie or becomes strictly heavier"
+        )
 
         let tipA = await nodeA.chainState.getMainChainTip()
         let tipB = await nodeB.chainState.getMainChainTip()
