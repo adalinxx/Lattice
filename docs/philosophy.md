@@ -146,9 +146,9 @@ subtreeWeight(B) = blockWork(B)
                  + sum(subtreeWeight(C) for same-chain child C)
 ```
 
-GHOST follows the greatest same-chain subtree. A reorganization requires
-strictly greater work; an exact tie holds the incumbent. There is no live parent
-weight lookup, parent block map, or parent-canonicality tiebreak. Security crosses
+GHOST follows the greatest same-chain subtree. Equal-work segments prefer the
+base with the easiest next target, then the smaller base CID. There is no live
+parent weight lookup, parent block map, or parent-canonicality tiebreak. Security crosses
 the hierarchy as verified proof facts, not as authority delegated to another
 runtime.
 

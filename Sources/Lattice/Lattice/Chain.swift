@@ -14,6 +14,20 @@ public func workForHash(_ hash: UInt256) -> UInt256 {
     hash == .zero ? .max : .max / hash
 }
 
+/// Prefer the segment base that makes its next block easiest to mine. A block
+/// CID is the deterministic fallback when both bases advertise the same target.
+func forkChoicePrefersSegmentBase(
+    _ candidateHash: String,
+    candidateNextTarget: UInt256?,
+    over currentHash: String,
+    currentNextTarget: UInt256?
+) -> Bool {
+    let candidateTarget = candidateNextTarget ?? .zero
+    let currentTarget = currentNextTarget ?? .zero
+    if candidateTarget != currentTarget { return candidateTarget > currentTarget }
+    return candidateHash < currentHash
+}
+
 public typealias BlockHeader = VolumeImpl<Block>
 
 // MARK: - Concrete Types
@@ -905,7 +919,8 @@ public actor ChainState {
     // MARK: - Fork Choice
 
     /// GHOST descent chooses the child with greatest verified subtree work.
-    /// Equal work keeps the incumbent child when one is already canonical.
+    /// Equal work prefers the segment base with the easiest next target, then
+    /// the lexicographically smaller base CID.
     func chainWithMostWork(
         startingBlock: BlockMeta
     ) -> (subtreeWork: WorkSum, tipHash: String, blocks: Set<String>) {
@@ -924,18 +939,23 @@ public actor ChainState {
         var currentHash = start.blockHash
         var blocks: Set<String> = [currentHash]
         while let children = hashToBlock[currentHash]?.childHashes, !children.isEmpty {
-            var weighted: [(hash: String, work: WorkSum)] = []
-            for childHash in children.sorted() {
-                guard let childWeight = hashToBlock[childHash]?.subtreeWeight else { continue }
-                weighted.append((childHash, childWeight))
+            let weighted = children.compactMap { child -> (hash: String, work: WorkSum)? in
+                guard let work = hashToBlock[child]?.subtreeWeight else { return nil }
+                return (child, work)
             }
-            guard let bestWeight = weighted.map(\.work).max() else { break }
-            let tied = weighted.filter { $0.work == bestWeight }.map(\.hash)
-            let incumbent = tied.first { hash in
-                guard let height = hashToBlock[hash]?.blockHeight else { return false }
-                return mainChainBlockAtIndex[height] == hash
+            guard weighted.count == children.count,
+                  let bestWork = weighted.map(\.work).max(),
+                  var next = weighted.first(where: { $0.work == bestWork })?.hash else { break }
+            for candidate in weighted where candidate.work == bestWork {
+                if forkChoicePrefersSegmentBase(
+                    candidate.hash,
+                    candidateNextTarget: tipSnapshotsByHash[candidate.hash]?.nextTarget,
+                    over: next,
+                    currentNextTarget: tipSnapshotsByHash[next]?.nextTarget
+                ) {
+                    next = candidate.hash
+                }
             }
-            guard let next = incumbent ?? tied.first, next != currentHash else { break }
             currentHash = next
             blocks.insert(currentHash)
         }
@@ -969,7 +989,17 @@ public actor ChainState {
         let mainWork = mainChainWork(fromIndex: earliest.blockHeight)
         let forkWork = chainWithMostWork(startingBlock: earliest)
 
-        if forkWork.subtreeWork > mainWork.subtreeWork {
+        let mainBaseHash = mainChainBlockAtIndex[earliest.blockHeight]
+        if forkWork.subtreeWork > mainWork.subtreeWork ||
+            (forkWork.subtreeWork == mainWork.subtreeWork &&
+             mainBaseHash.map {
+                forkChoicePrefersSegmentBase(
+                    earliest.blockHash,
+                    candidateNextTarget: tipSnapshotsByHash[earliest.blockHash]?.nextTarget,
+                    over: $0,
+                    currentNextTarget: tipSnapshotsByHash[$0]?.nextTarget
+                )
+             } == true) {
             return applyReorg(
                 newForkBlocks: forkWork.blocks,
                 newForkTipHash: forkWork.tipHash,
@@ -1096,6 +1126,7 @@ public actor ChainState {
         var hashes: Set<String> = Set()
         var currentHash = chainTip
         guard var current = highestBlock else { return hashes.union([currentHash]) }
+        guard current.blockHeight >= blockHeight else { return hashes }
         hashes.insert(currentHash)
 
         while current.blockHeight > blockHeight {

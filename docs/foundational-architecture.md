@@ -477,7 +477,7 @@ A parent extension, side admission, reorganization, and restart MUST cause zero
 direct child consensus mutations. Parent and sibling processes may change which
 bytes are available, but not another process's validity or fork choice. Separate
 forest tests MUST cover competing child roots with no common child ancestor,
-incumbent-preserving ties, and restart preservation.
+deterministic segment-base ties, and restart preservation.
 
 ### 9.6 Reference model
 

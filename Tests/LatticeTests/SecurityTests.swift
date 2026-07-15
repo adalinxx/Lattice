@@ -811,13 +811,16 @@ final class ConsensusStressTests: XCTestCase {
         let b1 = try await next(g, ts: 2_000_000, nonce: 1)
         let _ = await chain.submitTestBlock(blockHeader: header(b1), block: b1)
 
+        var candidates = [b1]
         for i in 0..<20 {
             let fork = try await next(g, ts: 2_000_000, nonce: UInt64(100 + i))
             let _ = await chain.submitTestBlock(blockHeader: header(fork), block: fork)
+            candidates.append(fork)
         }
 
+        let expected = candidates.map { header($0).rawCID }.min()
         let tip = await chain.getMainChainTip()
-        XCTAssertEqual(tip, header(b1).rawCID, "Original chain should hold against equal-length forks")
+        XCTAssertEqual(tip, expected, "Equal-work bases should converge on the stable CID tie-break")
     }
 
     func testDeepReorgPreservesCommonAncestor() async throws {
@@ -1036,7 +1039,7 @@ final class BugRegressionTests: XCTestCase {
     }
 
     func testOrphanDetectionFindsCorrectForkPoint() async throws {
-        let blocks = try await buildChain(length: 5)
+        let blocks = try await buildChain(length: 10)
         let chain = ChainState.fromGenesis(block: blocks[0])
         await submitChain(chain, blocks: blocks)
 

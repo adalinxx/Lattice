@@ -99,6 +99,27 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
         }
     }
 
+    func testRestoreRejectsUndecodableNextTarget() {
+        let block = PersistedBlockMeta(
+            blockHash: "G",
+            parentBlockHash: nil,
+            blockHeight: 0,
+            childHashes: [],
+            workContributions: [bucketContribution("grind:G")],
+            cumulativeWork: UInt256(1).toHexString(),
+            nextTarget: "not-hex"
+        )
+        let persisted = PersistedChainState(
+            chainTip: "G",
+            mainChainHashes: ["G"],
+            blocks: [block]
+        )
+
+        XCTAssertThrowsError(try ChainState.restore(from: persisted)) { error in
+            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
+        }
+    }
+
     func testRestoreAllowsAbsentTargetWhenWorkContributionIsPresent() throws {
         let block = PersistedBlockMeta(
             blockHash: "G",

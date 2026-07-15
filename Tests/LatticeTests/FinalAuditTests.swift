@@ -282,7 +282,7 @@ final class CrossChainReplayTests: XCTestCase {
 @MainActor
 final class SelfishMiningTests: XCTestCase {
 
-    func testHonestChainNotDisadvantagedByWithholding() async throws {
+    func testWithheldEqualWorkUsesStableSegmentBase() async throws {
         let fetcher = f()
         let base = now() - 100_000
         let spec = s(premine: 0)
@@ -293,11 +293,13 @@ final class SelfishMiningTests: XCTestCase {
 
         // Honest miner publishes 3 blocks immediately
         var honestPrev = genesis
+        var honestBase: Block?
         for i in 1...3 {
             let b = try await buildAndStoreBlock(
                 previous: honestPrev, timestamp: base + Int64(i) * 1000,
                 target: UInt256(1000), nonce: UInt64(i), fetcher: fetcher
             )
+            if honestBase == nil { honestBase = b }
             let _ = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: b), block: b
             )
@@ -308,31 +310,36 @@ final class SelfishMiningTests: XCTestCase {
         XCTAssertEqual(honestTip, try! VolumeImpl<Block>(node: honestPrev).rawCID)
 
         // Selfish miner withholds 3 blocks (same length), publishes all at once
+        var selfishBlocks: [Block] = []
         var selfishPrev = genesis
         for i in 1...3 {
             let b = try await buildAndStoreBlock(
                 previous: selfishPrev, timestamp: base + Int64(i) * 500,
                 target: UInt256(1000), nonce: UInt64(i + 200), fetcher: fetcher
             )
+            selfishBlocks.append(b)
             selfishPrev = b
         }
 
         // Submit all withheld blocks
-        var cursor = genesis
-        for i in 1...3 {
-            let b = try await buildAndStoreBlock(
-                previous: cursor, timestamp: base + Int64(i) * 500,
-                target: UInt256(1000), nonce: UInt64(i + 200), fetcher: fetcher
-            )
+        for b in selfishBlocks {
             let _ = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: b), block: b
             )
-            cursor = b
         }
 
-        // Equal-length selfish chain should NOT replace honest chain (first-seen wins)
+        let honestBaseBlock = honestBase!
+        let honestBaseHash = try VolumeImpl<Block>(node: honestBaseBlock).rawCID
+        let selfishBaseHash = try VolumeImpl<Block>(node: selfishBlocks[0]).rawCID
+        let selfishTip = try VolumeImpl<Block>(node: selfishBlocks[2]).rawCID
+        let selfishWins = forkChoicePrefersSegmentBase(
+            selfishBaseHash,
+            candidateNextTarget: selfishBlocks[0].nextTarget,
+            over: honestBaseHash,
+            currentNextTarget: honestBaseBlock.nextTarget
+        )
         let finalTip = await chain.getMainChainTip()
-        XCTAssertEqual(finalTip, honestTip, "Equal-length withheld chain should not displace honest chain")
+        XCTAssertEqual(finalTip, selfishWins ? selfishTip : honestTip)
     }
 
     func testLongerSelfishChainDoesReorg() async throws {

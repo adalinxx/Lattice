@@ -5,7 +5,7 @@ import UInt256
 // SEC-101 /: the per-node depth-based finality floor has been removed
 // ENTIRELY. Fork choice is pure heaviest-subtree work, so consensus must NOT
 // reject a strictly-heavier valid chain for being too deep, and must still
-// reject an equal/lighter chain. These tests drive `checkForReorg` using the
+// reject a lighter chain. These tests drive `checkForReorg` using the
 // same makeBlockMeta/makeChain helpers as the other consensus tests.
 
 @MainActor
@@ -59,10 +59,8 @@ final class FinalityFloorTests: XCTestCase {
         }
     }
 
-    /// An equal-or-lighter fork is still rejected (fork choice only follows
-    /// strictly-greater work). Here the fork B2→B3 (2 blocks) ties the main
-    /// suffix A2/A3 in length but loses the hash tie-break / does not exceed it.
-    func testEqualOrLighterForkIsRejected() async {
+    /// A lighter fork is still rejected by the first fork-choice comparator.
+    func testLighterForkIsRejected() async {
         let g  = makeBlockMeta(hash: "G",  height: 0, childHashes: ["A1"])
         let a1 = makeBlockMeta(hash: "A1", previousHash: "G",  height: 1, childHashes: ["A2", "B2"])
         let a2 = makeBlockMeta(hash: "A2", previousHash: "A1", height: 2, childHashes: ["A3"])

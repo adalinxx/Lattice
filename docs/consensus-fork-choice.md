@@ -111,10 +111,12 @@ Each verified contribution is counted once at its block. `subtreeWeight` is then
 maintained upward through the same-chain graph. Fork choice descends through the
 child with greatest subtree weight.
 
-Only a **strictly greater** subtree can replace the canonical branch. Equal work
-holds the incumbent, including at competing genesis roots. There is no hash,
-height, arrival-order rewrite, or parent-canonicality tiebreak that can dislodge
-an incumbent on an exact tie.
+At each fork, the competing same-chain children are the segment bases. Their
+`subtreeWeight` is their `trueCumWork` and remains the first comparator. Equal
+work prefers the base with the greatest `nextTarget`, making its next block
+easiest to mine. Equal targets fall back to the lexicographically smaller base
+CID. The same rule applies to competing genesis roots and is independent of
+arrival or replay order.
 
 `cumulativeWork(B)` is also retained as the same-chain prefix sum from genesis to
 `B`. It supports exact queries, out-of-order repair, and restart. It does not
@@ -186,7 +188,7 @@ An implementation must preserve all of the following:
 5. One physical grind is credited at the first accepted boundary and deduplicated
    by root CID.
 6. Parent canonicity cannot change child validity, work facts, or fork choice.
-7. Exact work ties hold the incumbent.
+7. Exact work ties prefer the easiest segment base, then the smaller base CID.
 8. Retention and body availability cannot change consensus meaning.
 9. Live admission and restart reconstruct the same accepted graph and work.
 10. Every ingress source reaches the same admission API.

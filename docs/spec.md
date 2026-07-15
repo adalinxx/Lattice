@@ -693,12 +693,12 @@ consensus does not fetch it itself.
 
 ### 9.4 Fork Choice and Reorganization
 
-At each fork, GHOST chooses the same-chain child with greatest `subtreeWeight` and
-continues to a leaf. A competing branch replaces the canonical branch only when
-its compared subtree is **strictly greater** than the incumbent subtree.
-
-An exact tie holds the incumbent. No block hash, height, parent position, or
-arrival-order rule may force a tied reorganization.
+At each fork, GHOST compares the competing segments at their same-chain child
+bases. The segment with greatest `subtreeWeight` (its `trueCumWork`) wins. Equal
+work prefers the base with the greatest `nextTarget`, making its next block
+easiest to mine. Equal targets fall back to the lexicographically smaller base
+CID. The same rule applies to competing genesis roots, so arrival and replay
+order cannot change fork choice.
 
 When a branch wins, `ChainState` updates only this chain's canonical indexes and
 returns a `Reorganization` describing the new tip, added and removed blocks, and
@@ -865,7 +865,8 @@ lock balance (move it into deposit state); withdrawals release it.
 3. Every carrier proves same-chain predecessor continuity even when its target misses
 4. A grind is credited at its first accepted boundary and deduplicated by root CID
 5. `subtreeWeight` counts every verified contribution once at its block
-6. Fork comparison is strict; equal work holds the incumbent
+6. Equal-work segments prefer the base with greatest `nextTarget`, then the
+   lexicographically smaller base CID
 7. Parent canonicity cannot change child validity, contributions, or fork choice
 8. Retention and body availability cannot change fork-choice facts
 9. There is no finality threshold; a strictly heavier same-chain subtree may reorg at any depth

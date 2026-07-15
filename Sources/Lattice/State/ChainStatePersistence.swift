@@ -88,6 +88,7 @@ private extension PersistedBlockMeta {
         guard decodedWork != nil,
               WorkSum(hex: cumulativeWork) != nil else { return false }
         if let target, UInt256(target, radix: 16) == nil { return false }
+        if let nextTarget, UInt256(nextTarget, radix: 16) == nil { return false }
         if let subtreeWeight, WorkSum(hex: subtreeWeight) == nil { return false }
         return true
     }
@@ -177,11 +178,8 @@ private func hasValidConsensusGraph(_ persisted: PersistedChainState) -> Bool {
           let canonicalRootWork = subtreeMemo[canonicalRoot]
     else { return false }
 
-    var canonicalChild: [String: String] = [:]
-    for hash in canonicalPath {
-        if let parent = blocks[hash]?.parentBlockHash {
-            canonicalChild[parent] = hash
-        }
+    func nextTarget(of hash: String) -> UInt256? {
+        blocks[hash]?.nextTarget.flatMap { UInt256($0, radix: 16) }
     }
     func selectedChild(of hash: String) -> String? {
         guard let children = blocks[hash]?.childHashes, !children.isEmpty else {
@@ -192,14 +190,22 @@ private func hasValidConsensusGraph(_ persisted: PersistedChainState) -> Bool {
             return (child, work)
         }
         guard weighted.count == children.count,
-              let bestWork = weighted.map(\.1).max() else { return nil }
-        let tied = weighted.filter { $0.1 == bestWork }.map(\.0).sorted()
-        if let incumbent = canonicalChild[hash], tied.contains(incumbent) {
-            return incumbent
+              let bestWork = weighted.map(\.1).max(),
+              var selected = weighted.first(where: { $0.1 == bestWork })?.0 else {
+            return nil
         }
-        return tied.first
+        for candidate in weighted where candidate.1 == bestWork {
+            if forkChoicePrefersSegmentBase(
+                candidate.0,
+                candidateNextTarget: nextTarget(of: candidate.0),
+                over: selected,
+                currentNextTarget: nextTarget(of: selected)
+            ) {
+                selected = candidate.0
+            }
+        }
+        return selected
     }
-
     func selectedPath(from start: String) -> [String]? {
         var path: [String] = []
         var visited = Set<String>()
@@ -212,11 +218,23 @@ private func hasValidConsensusGraph(_ persisted: PersistedChainState) -> Bool {
         return path
     }
 
-    let rootWeights = blocks.values
-        .filter { $0.parentBlockHash == nil }
-        .compactMap { subtreeMemo[$0.blockHash] }
-    guard rootWeights.count == blocks.values.filter({ $0.parentBlockHash == nil }).count,
-          canonicalRootWork == rootWeights.max(),
+    let roots = blocks.values.filter { $0.parentBlockHash == nil }
+    guard let bestRootWork = roots.compactMap({ subtreeMemo[$0.blockHash] }).max(),
+          var preferredRoot = roots.first(where: {
+              subtreeMemo[$0.blockHash] == bestRootWork
+          }) else { return false }
+    for root in roots where subtreeMemo[root.blockHash] == bestRootWork {
+        if forkChoicePrefersSegmentBase(
+            root.blockHash,
+            candidateNextTarget: nextTarget(of: root.blockHash),
+            over: preferredRoot.blockHash,
+            currentNextTarget: nextTarget(of: preferredRoot.blockHash)
+        ) {
+            preferredRoot = root
+        }
+    }
+    guard canonicalRootWork == bestRootWork,
+          canonicalRoot == preferredRoot.blockHash,
           let selected = selectedPath(from: canonicalRoot),
           selected.last == persisted.chainTip,
           Set(selected) == canonicalPath else { return false }

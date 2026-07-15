@@ -15,7 +15,7 @@ final class GhostReorgEdgeCaseTests: XCTestCase {
     func testForkWithBranchingSubtreeOutweighsLongerSinglePath() async {
         // main: G→M1→M2→M3 (subtree at M1 = 3).
         // fork: G→F1, F1 has two children F2a, F2b (subtree at F1 = 3: F1,F2a,F2b).
-        // Tie at 3 vs 3 → incumbent (main) holds. Add F3a under F2a → fork subtree 4 > 3.
+        // Add F3a under F2a → fork subtree 4 > 3.
         let g  = makeBlockMeta(hash: "G",  height: 0, childHashes: ["M1", "F1"])
         let m1 = makeBlockMeta(hash: "M1", previousHash: "G",  height: 1, childHashes: ["M2"])
         let m2 = makeBlockMeta(hash: "M2", previousHash: "M1", height: 2, childHashes: ["M3"])
@@ -38,8 +38,8 @@ final class GhostReorgEdgeCaseTests: XCTestCase {
         XCTAssertEqual(tip, "F3a", "descent rides the heavier branch to its leaf")
     }
 
-    // Equal subtree weights ⇒ incumbent main chain holds (strict-greater reorg).
-    func testEqualSubtreeIncumbentHolds() async {
+    // Equal subtree weights fall through to stable segment-base preference.
+    func testEqualSubtreeUsesStableSegmentBase() async {
         let g  = makeBlockMeta(hash: "G",  height: 0, childHashes: ["M1", "F1"])
         let m1 = makeBlockMeta(hash: "M1", previousHash: "G",  height: 1, childHashes: ["M2"])
         let m2 = makeBlockMeta(hash: "M2", previousHash: "M1", height: 2)
@@ -49,9 +49,9 @@ final class GhostReorgEdgeCaseTests: XCTestCase {
         let chain = makeChain(blocks: [g, m1, m2, f1, f2], mainChainHashes: Set(["G", "M1", "M2"]))
         let f1block = await chain.getConsensusBlock(hash: "F1")!
         let reorg = await chain.checkForReorg(block: f1block)
-        XCTAssertNil(reorg, "equal subtree weight ⇒ incumbent holds")
+        XCTAssertNotNil(reorg, "equal work and target choose the smaller segment-base hash")
         let tip = await chain.getMainChainTip()
-        XCTAssertEqual(tip, "M2")
+        XCTAssertEqual(tip, "F2")
     }
 
     // A reorg's GHOST descent must rebuild the FULL winning subtree's main-chain
