@@ -6,7 +6,7 @@ import Foundation
 
 /// Equivalence tests for the additive `source:` overloads on Lattice's
 /// block-validation/resolution APIs (`resolveBlockContent`, `validateNexus`,
-/// `processBlockHeader`). Each test runs the same block through the existing
+/// `admitBlockHeaderChainLocal`). Each test runs the same block through the existing
 /// `fetcher:` API and the new `source:` API over the SAME backing CAS, and
 /// asserts the two paths produce identical results. The `source:` path wraps a
 /// batched cashew `ContentSource` in a single `CoalescingFetcher`; these tests
@@ -202,9 +202,9 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         XCTAssertEqual(viaFetcher, viaSource, "rejection must match across fetcher/source")
     }
 
-    // MARK: - processBlockHeader
+    // MARK: - chain-local admission
 
-    func testProcessBlockHeaderSourceMatchesFetcher() async throws {
+    func testAdmissionSourceMatchesFetcher() async throws {
         // Build ONE block + CAS, then process that SAME block header against two
         // independent Lattice instances (fresh chains from the same genesis): one
         // via `fetcher:`, one via `source:`. Same inputs ⇒ the only difference is
@@ -213,25 +213,32 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         let (genesis, blockHeader, _) = try await buildRepresentativeBlock(fetcher: fetcher)
         let genesisBlock = try XCTUnwrap(genesis.node)
 
-        let latticeA = Lattice(nexus: ChainLevel(chain: ChainState.fromGenesis(block: genesisBlock), children: [:]))
-        let resultViaFetcher = await latticeA.processBlockHeader(
-            blockHeader, fetcher: fetcher
+        let levelA = ChainLevel(chain: ChainState.fromGenesis(block: genesisBlock))
+        let resultViaFetcher = await levelA.admitBlockHeaderChainLocal(
+            blockHeader,
+            fetcher: fetcher,
+            prepare: { _, _, _ in .ready }
         )
 
-        let latticeB = Lattice(nexus: ChainLevel(chain: ChainState.fromGenesis(block: genesisBlock), children: [:]))
-        let resultViaSource = await latticeB.processBlockHeader(
-            blockHeader, source: FetcherContentSource(fetcher)
+        let levelB = ChainLevel(chain: ChainState.fromGenesis(block: genesisBlock))
+        let resultViaSource = await levelB.admitBlockHeaderChainLocal(
+            blockHeader,
+            source: FetcherContentSource(fetcher),
+            prepare: { _, _, _ in .ready }
         )
 
-        XCTAssertTrue(resultViaFetcher.isAccepted, "control: the representative block must be accepted")
-        XCTAssertEqual(resultViaFetcher.isAccepted, resultViaSource.isAccepted)
-        XCTAssertEqual(resultViaFetcher.isRejected, resultViaSource.isRejected)
-        XCTAssertEqual(resultViaFetcher.isDeferred, resultViaSource.isDeferred)
-        XCTAssertEqual(resultViaFetcher.stateDiff.replaced, resultViaSource.stateDiff.replaced)
-        XCTAssertEqual(resultViaFetcher.stateDiff.created, resultViaSource.stateDiff.created)
+        guard case let .canonicalized(fetcherDiff, materializedPostState: fetcherState, followUps: fetcherFollowUps) = resultViaFetcher else {
+            return XCTFail("control: the representative block must canonicalize")
+        }
+        guard case let .canonicalized(sourceDiff, materializedPostState: sourceState, followUps: sourceFollowUps) = resultViaSource else {
+            return XCTFail("source admission must canonicalize like fetcher admission")
+        }
+        XCTAssertEqual(fetcherDiff.replaced, sourceDiff.replaced)
+        XCTAssertEqual(fetcherDiff.created, sourceDiff.created)
+        XCTAssertEqual(fetcherFollowUps, sourceFollowUps)
         XCTAssertEqual(
-            try resultViaFetcher.materializedPostState.map { try LatticeStateHeader(node: $0).rawCID },
-            try resultViaSource.materializedPostState.map { try LatticeStateHeader(node: $0).rawCID }
+            try fetcherState.map { try LatticeStateHeader(node: $0).rawCID },
+            try sourceState.map { try LatticeStateHeader(node: $0).rawCID }
         )
     }
 }

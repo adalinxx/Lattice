@@ -129,6 +129,16 @@ public struct ChildBlockProof: Sendable {
         InMemoryContentSource(Dictionary(entries.map { ($0.cid, $0.data) }, uniquingKeysWith: { first, _ in first }))
     }
 
+    /// Recompute the root CID from proof-supplied bytes. A proof is untrusted
+    /// evidence, so an unexpected serialization failure is an invalid witness,
+    /// never a reason to trap the verifier.
+    private func isContentBoundRoot(_ rootBlock: Block) -> Bool {
+        guard let header = try? VolumeImpl<Block>(node: rootBlock) else {
+            return false
+        }
+        return header.rawCID == rootCID
+    }
+
     /// Resolve the root block's content, confirm the root block's
     /// proofOfWorkHash() equals `rootHash`, then walk `directoryPath` hop by hop
     /// (root.children[d0] → that block's children[d1] → …) and confirm the final
@@ -146,10 +156,12 @@ public struct ChildBlockProof: Sendable {
         // supplied, so bytes stored under the rootCID key must be verified to actually
         // hash to it — otherwise a forger could ship arbitrary bytes as "the root" and
         // control proofOfWorkHash().
-        // known-valid local node; CID cannot fail
-        guard try! VolumeImpl<Block>(node: rootBlock).rawCID == rootCID else { return false }
-        // The root block's PoW hash must match the claimed PoW hash.
+        guard isContentBoundRoot(rootBlock) else { return false }
+        // The root block's PoW hash must match the claimed PoW hash and clear
+        // the root target. A content-bound but unmined carrier is not authority
+        // to secure a child block.
         guard rootBlock.proofOfWorkHash() == rootHash else { return false }
+        guard rootBlock.validateProofOfWork(nexusHash: rootHash) else { return false }
 
         // Walk the path: resolve children[dir] at each level, descending into the
         // resolved child block for the next hop until the final leaf.
@@ -164,6 +176,10 @@ public struct ChildBlockProof: Sendable {
                 return childHeader.rawCID == childCID
             }
             guard let next = try? await childHeader.resolve(fetcher: fetcher).node else { return false }
+            // Each intermediate carrier is itself a child-chain block secured by
+            // the same absolute PoW root. Without this check an arbitrary nested
+            // container could manufacture a descendant path beneath a valid root.
+            guard next.validateProofOfWork(nexusHash: rootHash) else { return false }
             currentBlock = next
         }
         return false
@@ -182,7 +198,7 @@ public struct ChildBlockProof: Sendable {
         let fetcher = proofSource()
         guard let rootData = try? await fetcher.fetch(rawCid: rootCID),
               let rootBlock = Block(data: rootData),
-              try! VolumeImpl<Block>(node: rootBlock).rawCID == rootCID else { return nil }
+              isContentBoundRoot(rootBlock) else { return nil }
         return (rootBlock.proofOfWorkHash(), rootBlock.height)
     }
 
@@ -217,7 +233,7 @@ public struct ChildBlockProof: Sendable {
 
         guard let rootData = try? await fetcher.fetch(rawCid: rootCID),
               let rootBlock = Block(data: rootData),
-              try! VolumeImpl<Block>(node: rootBlock).rawCID == rootCID else { return nil }
+              isContentBoundRoot(rootBlock) else { return nil }
 
         if directoryPath.count == 1 {
             return (rootCID, rootBlock)
@@ -269,7 +285,7 @@ public struct ChildBlockProof: Sendable {
         guard let rootData = try? await fetcher.fetch(rawCid: rootCID),
               let rootBlock = Block(data: rootData),
               // Content-bind: bytes under rootCID must hash to it (attacker-supplied map).
-              try! VolumeImpl<Block>(node: rootBlock).rawCID == rootCID else { return [] }
+              isContentBoundRoot(rootBlock) else { return [] }
 
         let powHash = rootBlock.proofOfWorkHash()
         // Work this grind's hash actually clears at a level, or zero. `validateProofOfWork`

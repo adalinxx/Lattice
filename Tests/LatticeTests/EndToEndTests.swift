@@ -475,21 +475,22 @@ final class ChainLevelE2ETests: XCTestCase {
     func testChainLevelCreation() async {
         let genesis = makeGenesisBlock()
         let chain = ChainState.fromGenesis(block: genesis)
-        let level = ChainLevel(chain: chain, children: [:])
+        let level = ChainLevel(chain: chain)
 
         let tip = await level.chain.getMainChainTip()
         XCTAssertEqual(tip, blockHeader(genesis).rawCID)
     }
 
-    func testNestedChainLevelHierarchy() async {
+    func testNestedChainLevelHierarchy() async throws {
         let nexusGenesis = makeGenesisBlock(timestamp: 100, nonce: 1)
         let childGenesis = makeGenesisBlock(timestamp: 200, nonce: 2)
 
         let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
-        let childChain = ChainState.fromGenesis(block: childGenesis)
-
-        let childLevel = ChainLevel(chain: childChain, children: [:])
-        let nexusLevel = ChainLevel(chain: nexusChain, children: ["child1": childLevel])
+        let nexusLevel = ChainLevel(chain: nexusChain)
+        let childLevel = try await nexusLevel.attachRestoredChildForTesting(
+            to: "child1",
+            genesisBlock: childGenesis
+        )
 
         let nexusTip = await nexusLevel.chain.getMainChainTip()
         XCTAssertEqual(nexusTip, blockHeader(nexusGenesis).rawCID)

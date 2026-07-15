@@ -5,10 +5,8 @@ import UInt256
 // SEC-101 /: the per-node depth-based finality floor has been removed
 // ENTIRELY. Fork choice is pure heaviest-`trueCumWork`, so consensus must NOT
 // reject a strictly-heavier valid chain for being too deep, and must still
-// reject an equal/lighter chain. These tests drive the real reorg entry points
-// (`checkForReorg` for direct fork submission and `propagateParentReorg` for
-// parent-chain reorg propagation) using the same makeBlockMeta/makeChain helpers
-// as the other consensus tests (defined in ChainConsensusTests.swift).
+// reject an equal/lighter chain. These tests drive `checkForReorg` using the
+// same makeBlockMeta/makeChain helpers as the other consensus tests.
 
 @MainActor
 final class FinalityFloorTests: XCTestCase {
@@ -83,36 +81,4 @@ final class FinalityFloorTests: XCTestCase {
         XCTAssertEqual(tip, "A3", "tip stays on the heavier original chain")
     }
 
-    // MARK: - Parent-chain reorg propagation path
-
-    /// Main CG→CA1→CA2→CA3 (tip height 3); a fork CB1 branches off CG (height 1,
-    /// buried 3-1 = 2 deep) anchored to parent block "P_new". A parent-chain
-    /// reorg that promotes P_new makes the heavy anchored fork win — exercising
-    /// the `findBestReorg` path, which must also have no depth floor.
-    private func parentForkedChain() -> ChainState {
-        let g   = makeBlockMeta(hash: "CG",  height: 0, childHashes: ["CA1", "CB1"])
-        let ca1 = makeBlockMeta(hash: "CA1", previousHash: "CG",  height: 1, childHashes: ["CA2"])
-        let ca2 = makeBlockMeta(hash: "CA2", previousHash: "CA1", height: 2, childHashes: ["CA3"])
-        let ca3 = makeBlockMeta(hash: "CA3", previousHash: "CA2", height: 3)
-        let cb1 = makeBlockMeta(hash: "CB1", previousHash: "CG",  height: 1, parentChainBlocks: [:])
-        // CB1 rides a heavy parent fork (inherited weight 10) — outweighs CA's
-        // 3-block subtree, so the parent reorg promotes it (no floor refuses it).
-        return makeChain(
-            blocks: [g, ca1, ca2, ca3, cb1],
-            mainChainHashes: Set(["CG", "CA1", "CA2", "CA3"]),
-            parentChainMap: ["P_new": "CB1"],
-            inheritedWeights: ["CB1": UInt256(10)]
-        )
-    }
-
-    /// Parent-propagated reorg that is deep AND strictly heavier is accepted —
-    /// `findBestReorg` no longer enforces any finality floor.
-    func testDeepParentPropagatedReorgIsAccepted() async {
-        let chain = parentForkedChain()
-        let reorg = Reorganization(mainChainBlocksAdded: ["P_new": 10], mainChainBlocksRemoved: Set())
-        let childReorg = await chain.propagateParentReorg(reorg: reorg)
-        XCTAssertNotNil(childReorg, "deep, heavier parent-propagated reorg is accepted — no finality floor")
-        let tip = await chain.getMainChainTip()
-        XCTAssertEqual(tip, "CB1")
-    }
 }

@@ -19,6 +19,16 @@ When code, tests, comments, historical behavior, and this document disagree, the
 
 The words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
 
+### Current migration status
+
+This document specifies the target architecture. The accompanying PR makes its
+Lattice admission boundary executable: legacy ingress, caller-controlled
+context, consensus-triggered transport, and parent-to-child reorg commands are
+removed. The node remains responsible for durable storage, transport scheduling,
+and trusted bootstrap; those handoff obligations are recorded in [the migration
+conflict register](migration-conflict-register.md). A claim that a node conforms
+to a law is valid only when it satisfies those obligations too.
+
 ---
 
 ## 1. Why this redesign exists
@@ -160,13 +170,17 @@ Every review should ask:
 
 Availability asks whether this node can currently obtain the complete Volumes and evidence required for an operation.
 
-It is local, temporary, and retriable. An unavailable object is not invalid; it is not yet evaluable by this node.
+It is local, temporary, and retriable. An unavailable object is not invalid; it is not yet evaluable by this node. A timeout, absent object, or response that does not match the requested CID is an availability or provider-reliability observation, not proof that the requested candidate is protocol-invalid.
 
 ### 4.2 Validity
 
 Validity asks whether complete required bytes and evidence satisfy protocol rules, including CID integrity, proof-of-work, signatures, nonces, path binding, continuity, state transitions, cross-chain proofs, and contribution derivation.
 
 For fixed bytes, complete evidence, and one protocol version, validity is immutable.
+
+### 4.2.1 Temporal admissibility
+
+Temporal admissibility asks whether otherwise valid evidence may be admitted at a particular protocol time. A future-dated candidate is `notYetAdmissible`, not unavailable and not permanently invalid. Reaching the relevant time may change admissibility without changing the candidate bytes, verified evidence, or protocol validity.
 
 ### 4.3 Canonicity
 
@@ -192,6 +206,10 @@ Evidence is content whose protocol meaning can be independently verified. It may
 
 Evidence does not become true because it is stored, transported by an authorized peer, or carried by a canonical block.
 
+### 4.7 Provider reliability
+
+Provider reliability asks whether a provider delivered requested content correctly and promptly. It is operational evidence for Ivy and Tally, separate from protocol correctness. A provider may be attributed for a malformed or CID-mismatching response, but that response alone does not classify the requested candidate as invalid.
+
 ---
 
 ## 5. Architectural laws
@@ -204,9 +222,9 @@ Missing required data yields an unavailable/deferred result, never invalidity. N
 
 Valid side blocks remain valid. Fork choice compares valid alternatives; it does not decide validity.
 
-### Law 3 — Validity knowledge is monotonic
+### Law 3 — Protocol validity knowledge is monotonic
 
-For fixed bytes, complete evidence, and one protocol version, a candidate moves from unknown to valid or invalid. Canonicity, retention, and peer availability do not reverse that judgment.
+For fixed bytes, complete evidence, and one protocol version, a candidate moves from unknown to valid or invalid. Canonicity, retention, peer availability, and provider reliability do not reverse that judgment. Temporal admissibility is a separate, time-dependent result.
 
 ### Law 4 — Canonicity is chain-local
 
@@ -230,7 +248,7 @@ A transition may update that chain’s receipts, history, mempool, retention, no
 
 ### Law 9 — Verified security evidence is append-only and deduplicated
 
-Once verified under the protocol, evidence is retained as a historical fact and deduplicated by protocol-defined contribution identity. Parent canonicity alone cannot revoke it.
+Once verified under the protocol, its semantic fact is retained append-only and deduplicated by protocol-defined contribution identity. Parent canonicity alone cannot revoke it. Raw immutable package bytes MAY be compacted only when retained material can re-establish the same verified fact and restart-equivalent fork-choice inputs; compaction cannot turn a fact back into an unverified claim.
 
 ### Law 10 — Cross-chain interfaces deliver evidence, never commands
 
@@ -252,7 +270,7 @@ Nested Volumes are independent units. An outer Volume may be complete while one 
 
 ### Law 14 — Durable evidence precedes visible consensus mutation
 
-Immutable content and all consensus-relevant evidence required for restart equivalence must be durable before a node exposes the corresponding accepted graph or canonical change.
+Immutable content and all consensus-relevant semantic evidence required for restart equivalence must be durable before a node exposes the corresponding accepted graph or canonical change. Durability need not pin every raw transport package forever, but it MUST preserve enough material to re-establish the retained facts.
 
 ### Law 15 — Restart is not a different consensus path
 
@@ -264,7 +282,7 @@ Gossip, sync, mining, parent extraction, rescue, duplicate evidence updates, and
 
 ### Law 17 — Local failure is not peer failure
 
-Local cancellation, overload, missing cache data, and storage failure do not lower peer reputation. Only remote-attributable malformed or invalid behavior may do so.
+Local cancellation, overload, missing cache data, and storage failure do not lower peer reputation. Remote-attributable delivery failures and malformed responses may affect provider reliability, but protocol-invalidity is established only by verified candidate evidence.
 
 ### Law 18 — Chain identity is contextually validated
 
@@ -347,11 +365,11 @@ Obtain complete Volumes and evidence from local stores, Ivy, pinned sessions, RP
 
 ### Verify
 
-Perform deterministic, non-mutating protocol validation and derive work contributions locally.
+Perform deterministic, non-mutating protocol validation and derive work contributions locally. Classify unavailable evidence, protocol-invalid evidence, and `notYetAdmissible` evidence distinctly.
 
 ### Plan
 
-Evaluate the verified candidate against this chain’s graph and evidence snapshot. Distinguish canonicalization, valid side admission, duplicate, missing bodies, and invalidity.
+Evaluate the verified candidate against this chain’s graph and evidence snapshot. Distinguish canonicalization, valid side admission, duplicate, typed missing-body requirements, temporal inadmissibility, and invalidity.
 
 ### Persist
 
@@ -401,9 +419,9 @@ The same verified candidate and evidence set must be fed through every ingress p
 
 ### 9.5 Parent-independence tests
 
-Nodes with the same child graph and evidence but different parent canonical tips MUST select the same child tip.
+The governing test is: given the same child path, accepted child graph or forest, verified evidence set, protocol version, and admissibility time, runs with different parent canonical tips MUST select the same child accepted graph or forest, contribution set, and canonical tip.
 
-A parent extension, side admission, reorganization, and restart MUST cause zero direct child consensus mutations.
+A parent extension, side admission, reorganization, and restart MUST cause zero direct child consensus mutations. Separate forest tests MUST cover competing child roots with no common child ancestor, arrival-order independence, deterministic selection, and restart preservation.
 
 ### 9.6 Reference model
 
@@ -500,11 +518,11 @@ The foundational redesign is complete when:
 - one absolute path identifies one chain domain;
 - Nexus admits exactly the hard-coded genesis CID;
 - multiple child genesis CIDs at one path are root forks in one runtime;
-- availability, validity, canonicity, durability, authority, and evidence have distinct outcomes;
+- availability, protocol validity, temporal admissibility, canonicity, durability, authority, provider reliability, and evidence have distinct outcomes;
 - every chain owns only its own fork choice and reorganization;
 - parent reorgs cause zero direct child mutations;
 - parent canonical transitions have no child consumers;
-- work evidence is deduplicated, append-only, and restart-stable;
+- semantic work evidence is deduplicated, append-only, and restart-stable while raw packages remain safely compactable;
 - every stored Volume is complete and CID-valid;
 - cashew remains generic;
 - pinned authority cannot be replaced by public discovery;

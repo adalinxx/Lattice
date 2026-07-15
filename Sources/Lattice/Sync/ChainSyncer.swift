@@ -23,14 +23,24 @@ public enum SyncError: Error, Sendable {
     case bodyUnavailable(UInt64)
     case invalidPoW(UInt64)
     case invalidStateRoot(UInt64)
+    /// The candidate is otherwise valid but its timestamp is beyond the
+    /// protocol's current admissibility window. Retrying later may succeed
+    /// without any change to the bytes or evidence.
+    case notYetAdmissible(UInt64)
     case genesisMismatch
     case cancelled
     case emptyChain
     case insufficientWork
-    /// A bounded body-backfill walk exceeded its `maxBodies` depth guard. Distinct
-    /// from `insufficientWork` (a PoW/weight invariant): this is a LOCAL refusal to
-    /// refetch an over-deep advertised subtree, not a statement about its work.
-    case backfillTooDeep
+    /// The node could not durably prepare the projected sync state, so the
+    /// in-memory chain must remain unchanged.
+    case durablePreparationUnavailable
+    case durablePreparationFailed
+    /// Local admission changed the chain while the node was durably preparing a
+    /// sync projection. The projection must be replanned against current state.
+    case staleChainState
+    /// A child-root forest must be merged through verified, incremental
+    /// admission. A linear sync result cannot safely replace that graph.
+    case forestRequiresIncrementalAdmission
 }
 
 public struct SyncResult: Sendable {
@@ -47,7 +57,9 @@ public enum SyncFetchError: Error, Sendable {
 public actor ChainSyncer {
     private let fetcher: Fetcher
     private let storeFn: @Sendable (String, Data) async -> Void
+    /// The fixed root accepted by a Nexus/single-genesis chain.
     private let genesisBlockHash: String
+    private let rootPolicy: ChainRootPolicy
     // The full chainPath this chain is anchored under (e.g. ["Nexus","Child"]).
     // Directory is positional — it is NOT stored in the content-addressed spec —
     // so the chain's identity comes from here. Threaded into validateGenesis
@@ -61,10 +73,11 @@ public actor ChainSyncer {
     private let validateBlockConsensus: Bool
     private var cancelled = false
 
-    public init(
+    init(
         fetcher: Fetcher,
         store: @Sendable @escaping (String, Data) async -> Void,
         genesisBlockHash: String,
+        rootPolicy: ChainRootPolicy = .singleGenesis,
         chainPath: [String]? = nil,
         retentionDepth: UInt64 = RECENT_BLOCK_DISTANCE,
         fetchTimeout: Duration = .seconds(30),
@@ -74,6 +87,7 @@ public actor ChainSyncer {
         self.fetcher = fetcher
         self.storeFn = store
         self.genesisBlockHash = genesisBlockHash
+        self.rootPolicy = rootPolicy
         self.chainPath = chainPath
         self.retentionDepth = retentionDepth
         self.fetchTimeout = fetchTimeout
@@ -110,7 +124,7 @@ public actor ChainSyncer {
         var tipBlock: Block?
     }
 
-    /// The per-block pipeline shared by `walkChain` and `backfillSubtree`:
+    /// The per-block pipeline used by every linear sync walk:
     /// fetch → decode → content-bind → canonicalize → PoW → consensus walk.
     /// ONE implementation so the two walks cannot drift in what they accept —
     /// and, critically, in HOW they classify failures:
@@ -179,15 +193,33 @@ public actor ChainSyncer {
             let isValid: Bool
             do {
                 if block.parent == nil {
+                    guard block.height == 0 else {
+                        throw SyncError.invalidBlock(block.height)
+                    }
                     guard cid == genesisBlockHash else {
                         throw SyncError.genesisMismatch
                     }
                     // Directory is positional: validate the genesis against the path
                     // it was anchored under (chainPath.last), not a self-declared spec
                     // field. nil ⇒ root (validator falls back to DEFAULT_ROOT_DIRECTORY).
-                    isValid = try await block.validateGenesis(fetcher: fetcher, directory: chainPath?.last, chainPath: chainPath).0
+                    isValid = try await block.validateGenesis(
+                        fetcher: fetcher,
+                        directory: chainPath?.last,
+                        chainPath: chainPath,
+                        reportTemporalFailure: true
+                    ).0
                 } else {
-                    isValid = try await block.validateNexus(fetcher: fetcher, chainPath: chainPath, requirePostState: false).0
+                    isValid = try await block.validateNexus(
+                        fetcher: fetcher,
+                        chainPath: chainPath,
+                        requirePostState: false,
+                        reportTemporalFailure: true
+                    ).0
+                }
+            } catch let error as BlockValidationError {
+                switch error {
+                case .notYetAdmissible:
+                    throw SyncError.notYetAdmissible(block.height)
                 }
             } catch let error as SyncError {
                 throw error
@@ -276,95 +308,6 @@ public actor ChainSyncer {
         return WalkResult(collected: collected, cumulativeWork: cumulativeWork, tipBlock: tipBlock)
     }
 
-    // MARK: - Body Backfill
-
-    /// Refetch the missing interior block bodies of a HELD strictly-heavier subtree
-    /// so the node can VALIDATE them and CONVERGE on the heavier chain.
-    ///
-    /// CFC-A1 makes fork choice HOLD (never downgrade) when a heavier subtree is
-    /// incomplete locally; retains its weight/linkage so the node KNOWS the
-    /// branch is heavier even with bodies pruned. This is the transport that closes
-    /// the loop: given that heavier branch's tip CID (from
-    /// `ChainState.heldHeavierBackfillTarget()`), walk its same-chain path fetching
-    /// each missing body over the REAL sync path and validating it exactly as the sync
-    /// walk does — content binding (`cid == hash`) plus the per-block consensus walk
-    /// (`validateNexus` / `validateGenesis`). Stop at the first ancestor whose body the
-    /// node already holds (`haveBody` returns `true`): the prefix below is local.
-    ///
-    /// Returns the validated bodies **parent-first** so the caller can submit them in
-    /// ascending height, after which fork choice converges (the heavier branch is now
-    /// fully body-present). Persists each validated body via `store` so the chain can
-    /// resolve it. FAILS CLOSED — a forged body (`cid != hash`), an invalid block, or
-    /// an unresolvable fetch throws, so the heavier branch is NOT adopted and fork
-    /// choice keeps holding the incumbent (invalid/unavailable ≠ a downgrade).
-    ///
-    /// `maxBodies` bounds the walk so a malicious/very-deep advertised tip cannot make
-    /// the node refetch unboundedly; exceeding it throws rather than partially adopting.
-    public func backfillSubtree(
-        heaviestTipCID: String,
-        haveBody: @Sendable (String) async -> Bool,
-        maxBodies: UInt64
-    ) async throws -> [Block] {
-        // Stage validated bodies in memory and admit them to the canonical CAS only
-        // after the WHOLE batch validates. Content binding (cid == hash) gates a body
-        // into this staging buffer, but it is NOT sufficient for CAS admission:
-        // consensus validity matters too. If a later body in the walk fails the
-        // consensus/PoW gate the batch throws with nothing persisted, so the CAS never
-        // ends up holding earlier hash-bound but consensus-unvalidated bodies that were
-        // never submitted to the chain (and could never be rolled back).
-        var staged: [(cid: String, data: Data, block: Block)] = []
-        var currentCID = heaviestTipCID
-
-        while !cancelled {
-            // The walk only fetches bodies we do NOT already hold; the first
-            // body-present ancestor terminates the backfill (its prefix is local).
-            if await haveBody(currentCID) {
-                break
-            }
-
-            if UInt64(staged.count) >= maxBodies {
-                // A distinct, local bounded-refetch refusal — NOT a PoW/weight
-                // invariant failure. `insufficientWork` means the advertised
-                // cumulative work was too low; reusing it here would conflate two
-                // unrelated failure modes for callers that catch it.
-                throw SyncError.backfillTooDeep
-            }
-
-            // Per-block fetch + PoW + consensus walk — the SAME pipeline the sync
-            // walk runs (shared helper, so the two paths cannot drift).
-            let (block, canonicalData) = try await fetchDecodeBindValidate(
-                cid: currentCID,
-                walkIndex: UInt64(staged.count),
-                skipPoWValidation: false
-            )
-
-            // Stage the canonical serialization (never the raw fetched bytes) — it is
-            // promoted to the CAS below only after the full batch validates.
-            staged.append((cid: currentCID, data: canonicalData, block: block))
-
-            guard let prevCID = block.parent?.rawCID else {
-                // Reached genesis on a path whose root we do not already hold — the
-                // backfill cannot anchor to the local chain. Fail closed.
-                if currentCID == genesisBlockHash { break }
-                throw SyncError.genesisMismatch
-            }
-            currentCID = prevCID
-        }
-
-        if cancelled { throw SyncError.cancelled }
-
-        // The full subtree validated. NOW promote every staged body to the canonical
-        // CAS so it can resolve. Persisting only here (not per-body inside the walk)
-        // keeps the CAS free of consensus-unvalidated bodies on any mid-walk failure.
-        for body in staged {
-            await storeFn(body.cid, body.data)
-        }
-
-        // Parent-first so the caller submits in ascending height and fork choice
-        // converges as the heavier branch becomes contiguously body-present.
-        return staged.map(\.block).reversed()
-    }
-
     // MARK: - Full Sync
 
     public func syncFull(
@@ -372,6 +315,9 @@ public actor ChainSyncer {
         localCumulativeWork: UInt256 = UInt256.zero,
         progress: (@Sendable (UInt64, UInt64) async -> Void)? = nil
     ) async throws -> SyncResult {
+        guard rootPolicy == .singleGenesis else {
+            throw SyncError.forestRequiresIncrementalAdmission
+        }
         let walk = try await walkChain(
             from: peerTipCID, maxBlocks: nil,
             progressInterval: 500, progress: progress
@@ -391,7 +337,11 @@ public actor ChainSyncer {
         let targetHeight = collected.last?.height ?? 0
         await progress?(targetHeight + 1, targetHeight + 1)
 
-        return buildResult(from: collected, cumulativeWork: walk.cumulativeWork)
+        return buildResult(
+            from: collected,
+            cumulativeWork: walk.cumulativeWork,
+            tipBlock: walk.tipBlock
+        )
     }
 
     // MARK: - Snapshot Sync
@@ -404,6 +354,9 @@ public actor ChainSyncer {
         progressInterval: Int = 100,
         progress: (@Sendable (UInt64, UInt64) async -> Void)? = nil
     ) async throws -> SyncResult {
+        guard rootPolicy == .singleGenesis else {
+            throw SyncError.forestRequiresIncrementalAdmission
+        }
         let effectiveDepth = depth ?? retentionDepth
         let walk = try await walkChain(
             from: peerTipCID, maxBlocks: effectiveDepth,
@@ -433,7 +386,11 @@ public actor ChainSyncer {
 
         var collected = walk.collected
         collected.reverse()
-        return buildResult(from: collected, cumulativeWork: walk.cumulativeWork)
+        return buildResult(
+            from: collected,
+            cumulativeWork: walk.cumulativeWork,
+            tipBlock: walk.tipBlock
+        )
     }
 
     /// Sync by downloading only the tip block and trusting the frontier state
@@ -444,6 +401,9 @@ public actor ChainSyncer {
         peerTipCID: String,
         localCumulativeWork: UInt256 = UInt256.zero
     ) async throws -> SyncResult {
+        guard rootPolicy == .singleGenesis else {
+            throw SyncError.forestRequiresIncrementalAdmission
+        }
         // Fetch the tip block. A failed fetch (peer unreachable, transport
         // timeout) is NOT evidence the advertised tip is bad — classify it
         // `bodyUnavailable` (invalid ≠ unavailable, the same error-class
@@ -525,7 +485,8 @@ public actor ChainSyncer {
                 timestamp: tipBlock.timestamp
             )],
             parentChainMap: [:],
-            missingBlockHashes: []
+            missingBlockHashes: [],
+            rootPolicy: rootPolicy
         )
 
         return SyncResult(
@@ -597,6 +558,9 @@ public actor ChainSyncer {
         // A child chain cannot sync headers-first: headers carry no anchoring proof,
         // so anchored PoW (`anchoredPoWValidator`) can't be verified. Refuse rather
         // than adopt unverified child headers.
+        guard rootPolicy == .singleGenesis else {
+            throw SyncError.forestRequiresIncrementalAdmission
+        }
         guard anchoredPoWValidator == nil else { throw SyncError.invalidPoW(0) }
 
         if cumulativeWork < localCumulativeWork { throw SyncError.insufficientWork }
@@ -681,9 +645,11 @@ public actor ChainSyncer {
                   header.specCID == parent.specCID else {
                 throw SyncError.invalidBlock(header.height)
             }
-            guard header.timestamp > parent.timestamp,
-                  header.timestamp <= now + maxFutureDrift else {
+            guard header.timestamp > parent.timestamp else {
                 throw SyncError.invalidBlock(header.height)
+            }
+            guard header.timestamp <= now + maxFutureDrift else {
+                throw SyncError.notYetAdmissible(header.height)
             }
 
             let parentTimestamps = validationHeaders[..<i].reversed().map(\.timestamp)
@@ -740,7 +706,8 @@ public actor ChainSyncer {
 
     private func buildResult(
         from blocks: [(hash: String, height: UInt64, prevHash: String?, target: UInt256, timestamp: Int64?)],
-        cumulativeWork: UInt256 = UInt256.zero
+        cumulativeWork: UInt256 = UInt256.zero,
+        tipBlock: Block? = nil
     ) -> SyncResult {
         // `blocks.last!` is safe: this private helper is only reached after the
         // caller guards `!collected.isEmpty` / `!headers.isEmpty`
@@ -778,23 +745,24 @@ public actor ChainSyncer {
             mainChainHashes.append(entry.hash)
         }
 
-        // Populate tipHeight so callers can check chain state without fetching the block.
-        // tipTarget/tipTimestamp are unavailable from the header-only walk — callers
-        // that need them should use syncStateOnly (which fetches and parses the tip block).
+        // A full/snapshot walk has the validated tip body, so persist its frontier
+        // projection with the result. Header-only sync intentionally leaves these
+        // nil: it has no body from which to manufacture state claims.
         let tipEntry = blocks.last!
         let persisted = PersistedChainState(
             chainTip: tipEntry.hash,
-            tipPostStateCID: nil,
-            tipPrevStateCID: nil,
-            tipSpecCID: nil,
-            tipTarget: nil,
-            tipNextTarget: nil,
+            tipPostStateCID: tipBlock?.postState.rawCID,
+            tipPrevStateCID: tipBlock?.prevState.rawCID,
+            tipSpecCID: tipBlock?.spec.rawCID,
+            tipTarget: tipBlock?.target.toHexString(),
+            tipNextTarget: tipBlock?.nextTarget.toHexString(),
             tipHeight: tipEntry.height,
-            tipTimestamp: nil,
+            tipTimestamp: tipBlock?.timestamp,
             mainChainHashes: mainChainHashes,
             blocks: persistedBlocks,
             parentChainMap: [:],
-            missingBlockHashes: []
+            missingBlockHashes: [],
+            rootPolicy: rootPolicy
         )
 
         return SyncResult(

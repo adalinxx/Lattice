@@ -1073,7 +1073,7 @@ final class DynamicChainDiscoveryTests: XCTestCase {
     func testRegisterChildChain() async throws {
         let g = try await genesis()
         let nexusChain = ChainState.fromGenesis(block: g)
-        let level = ChainLevel(chain: nexusChain, children: [:])
+        let level = ChainLevel(chain: nexusChain)
 
         let childGenesis = try await buildAndStoreGenesis(
             spec: ChainSpec(
@@ -1091,7 +1091,7 @@ final class DynamicChainDiscoveryTests: XCTestCase {
         let childrenBefore = await level.children
         XCTAssertTrue(childrenBefore.isEmpty)
 
-        await level.subscribe(to: "child1", genesisBlock: childGenesis)
+        try await level.attachRestoredChildForTesting(to: "child1", genesisBlock: childGenesis)
 
         let childrenAfter = await level.children
         XCTAssertEqual(childrenAfter.count, 1)
@@ -1101,27 +1101,49 @@ final class DynamicChainDiscoveryTests: XCTestCase {
         XCTAssertEqual(childTip, 0)
     }
 
-    func testDuplicateRegistrationIgnored() async throws {
+    func testDuplicateBootstrapIsRejected() async throws {
         let g = try await genesis()
-        let level = ChainLevel(chain: ChainState.fromGenesis(block: g), children: [:])
+        let level = ChainLevel(chain: ChainState.fromGenesis(block: g))
         let childG = try await buildAndStoreGenesis(
             spec: ChainSpec(maxNumberOfTransactionsPerBlock: 10, maxStateGrowth: 10_000,
                            premine: 0, targetBlockTime: 1_000, initialReward: 32, halvingInterval: 10_000),
             timestamp: 1_000_000, target: UInt256(100), fetcher: fetcher
         )
 
-        await level.subscribe(to: "x", genesisBlock: childG)
-        let tipAfterFirst = await level.children["x"]!.chain.getMainChainTip()
+        try await level.attachRestoredChildForTesting(to: "x", genesisBlock: childG)
+        let firstChildLevel = await level.childLevel(directory: "x")
+        guard let firstChildLevel else {
+            return XCTFail("child runtime was not bootstrapped")
+        }
+        let firstChain = await firstChildLevel.chain
+        let firstHash = try BlockHeader(node: childG).rawCID
 
         let differentChildG = try await buildAndStoreGenesis(
             spec: ChainSpec(maxNumberOfTransactionsPerBlock: 99, maxStateGrowth: 99_000,
                            premine: 0, targetBlockTime: 999, initialReward: 512, halvingInterval: 10_000),
             timestamp: 2_000_000, target: UInt256(200), fetcher: fetcher
         )
-        await level.subscribe(to: "x", genesisBlock: differentChildG)
-        let tipAfterSecond = await level.children["x"]!.chain.getMainChainTip()
+        do {
+            _ = try await level.attachRestoredChildForTesting(to: "x", genesisBlock: differentChildG)
+            XCTFail("a second root must not enter through bootstrap")
+        } catch let error as ChainLevelTopologyError {
+            XCTAssertEqual(error, .directoryAlreadyAttached)
+        }
+        let secondChildLevel = await level.childLevel(directory: "x")
+        guard let secondChildLevel else {
+            return XCTFail("child runtime disappeared")
+        }
+        let secondChain = await secondChildLevel.chain
+        let secondHash = try BlockHeader(node: differentChildG).rawCID
+        let containsFirst = await firstChain.contains(blockHash: firstHash)
+        let containsSecond = await firstChain.contains(blockHash: secondHash)
 
-        XCTAssertEqual(tipAfterFirst, tipAfterSecond, "Second registration should be ignored")
+        let childrenAfterSecond = await level.children
+        XCTAssertEqual(childrenAfterSecond.count, 1)
+        XCTAssertTrue(firstChildLevel === secondChildLevel)
+        XCTAssertTrue(firstChain === secondChain)
+        XCTAssertTrue(containsFirst)
+        XCTAssertFalse(containsSecond)
     }
 }
 
@@ -1178,13 +1200,13 @@ final class StateChainInvariantTests: XCTestCase {
 /// Verifies that blocks with valid PoW + valid structure but a tampered/wrong
 /// state root are rejected before being submitted to ChainState.
 /// This is the critical invariant for the header-first gossip design:
-/// gossip relay happens before state validation, so processBlockHeader MUST
+/// gossip relay happens before state validation, so chain-local admission MUST
 /// reject invalid state roots synchronously before submitBlock is called.
 @MainActor
 final class StateRootValidationTests: XCTestCase {
 
     /// A block with valid PoW and valid structure but a tampered postState CID
-    /// must be rejected by processBlockHeader before submitBlock is called.
+    /// must be rejected by chain-local admission before submitBlock is called.
     func testNexusBlockWithTamperedPostStateIsRejected() async throws {
         let f = StorableFetcher()
         let t = Int64(Date().timeIntervalSince1970 * 1000)
@@ -1212,11 +1234,16 @@ final class StateRootValidationTests: XCTestCase {
         }
         try await storeBlockToFetcher(minedTampered, fetcher: f)
 
-        let level = ChainLevel(chain: ChainState.fromGenesis(block: g), children: [:])
-        let lattice = Lattice(nexus: level)
-        let result = await lattice.processBlockHeader(header(minedTampered), fetcher: f)
+        let level = ChainLevel(chain: ChainState.fromGenesis(block: g))
+        let result = await level.admitBlockHeaderChainLocal(
+            header(minedTampered),
+            fetcher: f,
+            prepare: { _, _, _ in .ready }
+        )
 
-        XCTAssertTrue(result.isRejected, "Block with tampered postState must be rejected")
+        guard case .rejected(.protocolInvalid) = result else {
+            return XCTFail("block with tampered postState must be rejected")
+        }
         let tip = await level.chain.getHighestBlockHeight()
         XCTAssertEqual(tip, 0, "submitBlock must not have been called for a block with bad state root")
     }
@@ -1235,14 +1262,15 @@ final class StateRootValidationTests: XCTestCase {
         )
         try await storeBlockToFetcher(validBlock, fetcher: f)
 
-        let acceptingLevel = ChainLevel(chain: ChainState.fromGenesis(block: g), children: [:])
-        let acceptingLattice = Lattice(nexus: acceptingLevel)
-        let accepted = await acceptingLattice.processBlockHeader(header(validBlock), fetcher: f)
+        let acceptingLevel = ChainLevel(chain: ChainState.fromGenesis(block: g))
+        let accepted = await acceptingLevel.admitBlockHeaderChainLocal(
+            header(validBlock),
+            fetcher: f,
+            prepare: { _, _, _ in .ready }
+        )
 
-        XCTAssertTrue(accepted.isAccepted)
-        guard let materializedPostState = accepted.materializedPostState else {
-            XCTFail("Accepted block should return the materialized post-state")
-            return
+        guard case let .canonicalized(_, materializedPostState: materializedPostState?, followUps: _) = accepted else {
+            return XCTFail("accepted block should canonicalize with its materialized post-state")
         }
         XCTAssertEqual(
             try LatticeStateHeader(node: materializedPostState).rawCID,
@@ -1260,15 +1288,19 @@ final class StateRootValidationTests: XCTestCase {
         }
         try await storeBlockToFetcher(minedTampered, fetcher: f)
 
-        let rejectingLevel = ChainLevel(chain: ChainState.fromGenesis(block: g), children: [:])
-        let rejectingLattice = Lattice(nexus: rejectingLevel)
-        let rejected = await rejectingLattice.processBlockHeader(header(minedTampered), fetcher: f)
+        let rejectingLevel = ChainLevel(chain: ChainState.fromGenesis(block: g))
+        let rejected = await rejectingLevel.admitBlockHeaderChainLocal(
+            header(minedTampered),
+            fetcher: f,
+            prepare: { _, _, _ in .ready }
+        )
 
-        XCTAssertTrue(rejected.isRejected)
-        XCTAssertNil(rejected.materializedPostState)
+        guard case .rejected(.protocolInvalid) = rejected else {
+            return XCTFail("tampered block must be rejected")
+        }
     }
 
-    func testWithheldParentDefersNotRejects() async throws {
+    func testWithheldParentReportsUnavailableThenAccepts() async throws {
         let producerFetcher = StorableFetcher()
         let incompleteFetcher = StorableFetcher()
         let completeFetcher = StorableFetcher()
@@ -1287,19 +1319,30 @@ final class StateRootValidationTests: XCTestCase {
             storer: incompleteFetcher
         )
 
-        let level = ChainLevel(chain: ChainState.fromGenesis(block: g), children: [:])
-        let lattice = Lattice(nexus: level)
-        let deferred = await lattice.processBlockHeader(header(block), fetcher: incompleteFetcher)
+        let level = ChainLevel(chain: ChainState.fromGenesis(block: g))
+        let unavailable = await level.admitBlockHeaderChainLocal(
+            header(block),
+            fetcher: incompleteFetcher,
+            prepare: { _, _, _ in .ready }
+        )
 
-        XCTAssertTrue(deferred.isDeferred, "A block whose parent data is unavailable must defer, not reject")
-        let deferredHeight = await level.chain.getHighestBlockHeight()
-        XCTAssertEqual(deferredHeight, 0, "Deferred blocks must not be submitted")
+        guard case .rejected(.unavailableEvidence) = unavailable else {
+            return XCTFail("a block whose parent data is unavailable must not be admitted")
+        }
+        let unavailableHeight = await level.chain.getHighestBlockHeight()
+        XCTAssertEqual(unavailableHeight, 0, "Unavailable blocks must not be submitted")
 
         try await VolumeImpl<Block>(node: g).storeBlock(fetcher: producerFetcher, storer: completeFetcher)
         try await VolumeImpl<Block>(node: block).storeBlock(fetcher: producerFetcher, storer: completeFetcher)
-        let accepted = await lattice.processBlockHeader(header(block), fetcher: completeFetcher)
+        let accepted = await level.admitBlockHeaderChainLocal(
+            header(block),
+            fetcher: completeFetcher,
+            prepare: { _, _, _ in .ready }
+        )
 
-        XCTAssertTrue(accepted.isAccepted, "A deferred block must remain acceptable once its parent is available")
+        guard case .canonicalized = accepted else {
+            return XCTFail("an unavailable block must canonicalize once evidence arrives")
+        }
         let acceptedHeight = await level.chain.getHighestBlockHeight()
         XCTAssertEqual(acceptedHeight, 1)
     }
@@ -1327,14 +1370,24 @@ final class StateRootValidationTests: XCTestCase {
         }
         try await storeBlockToFetcher(minedTampered, fetcher: f)
 
-        let level = ChainLevel(chain: ChainState.fromGenesis(block: g), children: [:])
-        let lattice = Lattice(nexus: level)
-        let rejected = await lattice.processBlockHeader(header(minedTampered), fetcher: f)
-        let rejectedAgain = await lattice.processBlockHeader(header(minedTampered), fetcher: f)
+        let level = ChainLevel(chain: ChainState.fromGenesis(block: g))
+        let rejected = await level.admitBlockHeaderChainLocal(
+            header(minedTampered),
+            fetcher: f,
+            prepare: { _, _, _ in .ready }
+        )
+        let rejectedAgain = await level.admitBlockHeaderChainLocal(
+            header(minedTampered),
+            fetcher: f,
+            prepare: { _, _, _ in .ready }
+        )
 
-        XCTAssertTrue(rejected.isRejected, "Fully-resolvable invalid blocks must reject")
-        XCTAssertFalse(rejected.isDeferred, "Invalid blocks must not be reported as deferred")
-        XCTAssertTrue(rejectedAgain.isRejected, "Reprocessing complete invalid data must not become accepted")
+        guard case .rejected(.protocolInvalid) = rejected else {
+            return XCTFail("fully-resolvable invalid blocks must reject")
+        }
+        guard case .rejected(.protocolInvalid) = rejectedAgain else {
+            return XCTFail("reprocessing complete invalid data must not become accepted")
+        }
         let rejectedHeight = await level.chain.getHighestBlockHeight()
         XCTAssertEqual(rejectedHeight, 0)
     }
@@ -1388,10 +1441,13 @@ final class StateRootValidationTests: XCTestCase {
         )
         try await storeBlockToFetcher(nexusBlock, fetcher: f)
 
-        let nexusLevel = ChainLevel(chain: ChainState.fromGenesis(block: nexusGenesis), children: [:])
-        await nexusLevel.subscribe(to: "Child", genesisBlock: childGenesis)
-        let lattice = Lattice(nexus: nexusLevel)
-        _ = await lattice.processBlockHeader(header(nexusBlock), fetcher: f)
+        let nexusLevel = ChainLevel(chain: ChainState.fromGenesis(block: nexusGenesis))
+        try await nexusLevel.attachRestoredChildForTesting(to: "Child", genesisBlock: childGenesis)
+        _ = await nexusLevel.admitBlockHeaderChainLocal(
+            header(nexusBlock),
+            fetcher: f,
+            prepare: { _, _, _ in .ready }
+        )
 
         let childTip = await nexusLevel.children["Child"]!.chain.getHighestBlockHeight()
         XCTAssertEqual(childTip, 0, "Tampered child block must not be submitted to child chain")

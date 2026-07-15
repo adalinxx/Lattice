@@ -6,12 +6,15 @@ import UInt256
 /// data is corrupt cannot be restored without silently understating work. The
 /// restore choke point throws this so the node fails closed (reindex-or-halt /
 /// markChainUnhealthy) rather than constructing a zeroed-weight `ChainState`.
-public enum ChainStateRestoreError: Error {
+public enum ChainStateRestoreError: Error, Sendable, Equatable {
     /// A persisted block target or a pruned-but-retained weight-index entry's
     /// non-recomputable weight field (`cumulativeWork` / `subtreeWeight`) is
     /// missing-or-undecodable. Defaulting it to zero would hole the fork-choice
     /// weight index (a heavier branch looks weightless), so restore is rejected.
     case corruptWeightIndex
+    /// A persisted topology cannot change the identity of an existing runtime,
+    /// or be reinterpreted by an explicit restore expectation.
+    case rootPolicyMismatch(expected: ChainRootPolicy, actual: ChainRootPolicy)
 }
 
 public struct PersistedChainState: Codable, Sendable {
@@ -35,8 +38,12 @@ public struct PersistedChainState: Codable, Sendable {
     public let prunedWeightIndex: [PersistedBlockMeta]
     public let parentChainMap: [String: String]
     public let missingBlockHashes: [String]
+    /// `nil` represents a snapshot written before child-root forests existed.
+    /// Callers restore those as the legacy single-genesis topology. An explicit
+    /// restore expectation must agree with that resolved policy.
+    public let rootPolicy: ChainRootPolicy?
 
-    public init(chainTip: String, tipPostStateCID: String?, tipPrevStateCID: String?, tipSpecCID: String?, tipTarget: String?, tipNextTarget: String?, tipHeight: UInt64?, tipTimestamp: Int64?, mainChainHashes: [String], blocks: [PersistedBlockMeta], prunedWeightIndex: [PersistedBlockMeta] = [], parentChainMap: [String: String], missingBlockHashes: [String]) {
+    public init(chainTip: String, tipPostStateCID: String?, tipPrevStateCID: String?, tipSpecCID: String?, tipTarget: String?, tipNextTarget: String?, tipHeight: UInt64?, tipTimestamp: Int64?, mainChainHashes: [String], blocks: [PersistedBlockMeta], prunedWeightIndex: [PersistedBlockMeta] = [], parentChainMap: [String: String], missingBlockHashes: [String], rootPolicy: ChainRootPolicy? = nil) {
         self.chainTip = chainTip
         self.tipPostStateCID = tipPostStateCID
         self.tipPrevStateCID = tipPrevStateCID
@@ -50,12 +57,13 @@ public struct PersistedChainState: Codable, Sendable {
         self.prunedWeightIndex = prunedWeightIndex
         self.parentChainMap = parentChainMap
         self.missingBlockHashes = missingBlockHashes
+        self.rootPolicy = rootPolicy
     }
 
     private enum CodingKeys: String, CodingKey {
         case chainTip, tipPostStateCID, tipPrevStateCID, tipSpecCID, tipTarget
         case tipNextTarget, tipHeight, tipTimestamp, mainChainHashes, blocks
-        case prunedWeightIndex, parentChainMap, missingBlockHashes
+        case prunedWeightIndex, parentChainMap, missingBlockHashes, rootPolicy
     }
 
     public init(from decoder: Decoder) throws {
@@ -78,6 +86,7 @@ public struct PersistedChainState: Codable, Sendable {
         prunedWeightIndex = try c.decode([PersistedBlockMeta].self, forKey: .prunedWeightIndex)
         parentChainMap = try c.decode([String: String].self, forKey: .parentChainMap)
         missingBlockHashes = try c.decode([String].self, forKey: .missingBlockHashes)
+        rootPolicy = try c.decodeIfPresent(ChainRootPolicy.self, forKey: .rootPolicy)
     }
 }
 
@@ -108,8 +117,15 @@ public struct PersistedBlockMeta: Codable, Sendable {
     /// (which reconstruct work from `target`); a pruned entry missing it fails
     /// closed at the restore choke point (wave-4).
     public let workHex: String?
+    /// Snapshot fields retained for every live body so a later fork-choice reorg
+    /// can make an already-known side block canonical without borrowing the
+    /// incoming block's state metadata.
+    public let postStateCID: String?
+    public let prevStateCID: String?
+    public let specCID: String?
+    public let nextTarget: String?
 
-    public init(blockHash: String, parentBlockHash: String?, blockHeight: UInt64, parentChainBlocks: [String: UInt64?], childHashes: [String], target: String? = nil, timestamp: Int64? = nil, cumulativeWork: String? = nil, subtreeWeight: String? = nil, workHex: String? = nil) {
+    public init(blockHash: String, parentBlockHash: String?, blockHeight: UInt64, parentChainBlocks: [String: UInt64?], childHashes: [String], target: String? = nil, timestamp: Int64? = nil, cumulativeWork: String? = nil, subtreeWeight: String? = nil, workHex: String? = nil, postStateCID: String? = nil, prevStateCID: String? = nil, specCID: String? = nil, nextTarget: String? = nil) {
         self.blockHash = blockHash
         self.parentBlockHash = parentBlockHash
         self.blockHeight = blockHeight
@@ -120,6 +136,10 @@ public struct PersistedBlockMeta: Codable, Sendable {
         self.cumulativeWork = cumulativeWork
         self.subtreeWeight = subtreeWeight
         self.workHex = workHex
+        self.postStateCID = postStateCID
+        self.prevStateCID = prevStateCID
+        self.specCID = specCID
+        self.nextTarget = nextTarget
     }
 }
 
@@ -206,10 +226,14 @@ public extension ChainState {
     func persist() async -> PersistedChainState {
         var blocks: [PersistedBlockMeta] = []
         for (_, meta) in hashToBlock {
-            // Recover target from work: if work > 0, target = MAX / work
-            let targetHex: String? = meta.work > UInt256.zero
-                ? (UInt256.max / meta.work).toHexString()
-                : nil
+            let snapshot = tipSnapshotsByHash[meta.blockHash]
+            // A live body gives us the exact header target. Recovering it from work
+            // loses floor-division information, so retain that derivation only for
+            // legacy entries without a snapshot.
+            let targetHex: String? = snapshot?.target.toHexString()
+                ?? (meta.work > UInt256.zero
+                    ? (UInt256.max / meta.work).toHexString()
+                    : nil)
             blocks.append(PersistedBlockMeta(
                 blockHash: meta.blockHash,
                 parentBlockHash: meta.parentBlockHash,
@@ -226,7 +250,11 @@ public extension ChainState {
                 // restored weight depend on restart history (a determinism split).
                 // Carry `work` verbatim; `target` is retained only as a fallback for
                 // pre-upgrade snapshots that omit `workHex`.
-                workHex: meta.work.toHexString()
+                workHex: meta.work.toHexString(),
+                postStateCID: snapshot?.postStateCID,
+                prevStateCID: snapshot?.prevStateCID,
+                specCID: snapshot?.specCID,
+                nextTarget: snapshot?.nextTarget.toHexString()
             ))
         }
         //: persist the weight/linkage of blocks whose bodies have been
@@ -268,14 +296,24 @@ public extension ChainState {
             blocks: blocks,
             prunedWeightIndex: pruned,
             parentChainMap: parentChainBlockHashToBlockHash,
-            missingBlockHashes: Array(missingBlockHashes)
+            missingBlockHashes: Array(missingBlockHashes),
+            rootPolicy: rootPolicy
         )
     }
 
     static func restore(
         from persisted: PersistedChainState,
-        retentionDepth: UInt64 = RECENT_BLOCK_DISTANCE
+        retentionDepth: UInt64 = RECENT_BLOCK_DISTANCE,
+        rootPolicy: ChainRootPolicy? = nil
     ) throws -> ChainState {
+        let persistedRootPolicy = persisted.rootPolicy ?? .singleGenesis
+        if let requestedRootPolicy = rootPolicy,
+           requestedRootPolicy != persistedRootPolicy {
+            throw ChainStateRestoreError.rootPolicyMismatch(
+                expected: requestedRootPolicy,
+                actual: persistedRootPolicy
+            )
+        }
         // / CFC-A3 (fail closed at the restore choke point): a corrupt
         // persisted target — or a pruned-but-retained weight-index entry whose
         // non-recomputable `cumulativeWork` / `subtreeWeight` is missing or
@@ -290,6 +328,7 @@ public extension ChainState {
         var hashToBlock: [String: BlockMeta] = [:]
         var indexToBlockHash: [UInt64: Set<String>] = [:]
         var blockTimestamps: [String: Int64] = [:]
+        var tipSnapshotsByHash: [String: TipBlockSnapshot] = [:]
         let cumByHash = persisted.cumulativeWorkByHash()
         for block in persisted.blocks {
             let target = block.target.flatMap { UInt256($0, radix: 16) } ?? UInt256.zero
@@ -317,27 +356,11 @@ public extension ChainState {
             if let ts = block.timestamp {
                 blockTimestamps[block.blockHash] = ts
             }
+            if let snapshot = ChainState.snapshot(from: block) {
+                tipSnapshotsByHash[block.blockHash] = snapshot
+            }
         }
-        var snapshot: TipBlockSnapshot? = nil
-        if let postStateCID = persisted.tipPostStateCID,
-           let prevStateCID = persisted.tipPrevStateCID,
-           let specCID = persisted.tipSpecCID,
-           let targetHex = persisted.tipTarget,
-           let nextTargetHex = persisted.tipNextTarget,
-           let index = persisted.tipHeight,
-           let timestamp = persisted.tipTimestamp,
-           let target = UInt256(targetHex, radix: 16),
-           let nextTarget = UInt256(nextTargetHex, radix: 16) {
-            snapshot = TipBlockSnapshot(
-                postStateCID: postStateCID,
-                prevStateCID: prevStateCID,
-                specCID: specCID,
-                target: target,
-                nextTarget: nextTarget,
-                tipHeight: index,
-                timestamp: timestamp
-            )
-        }
+        let snapshot = ChainState.snapshot(from: persisted)
         return try ChainState(
             chainTip: persisted.chainTip,
             mainChainHashes: Set(persisted.mainChainHashes),
@@ -347,10 +370,12 @@ public extension ChainState {
             retentionDepth: retentionDepth,
             blockTimestamps: blockTimestamps,
             tipSnapshot: snapshot,
+            tipSnapshotsByHash: tipSnapshotsByHash,
             //: carry the retained weight/linkage of body-pruned blocks into
             // the restored fork-choice weight index (init's choke point fails closed
             // on a corrupt required weight, complementing the early guard above).
-            prunedWeightIndex: persisted.prunedWeightIndex
+            prunedWeightIndex: persisted.prunedWeightIndex,
+            rootPolicy: persistedRootPolicy
         )
     }
 }

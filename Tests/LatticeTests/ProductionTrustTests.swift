@@ -661,12 +661,17 @@ final class ChainDepthTests: XCTestCase {
         )
 
         let nexusChain = ChainState.fromGenesis(block: nexusGenesis)
-        let childChain = ChainState.fromGenesis(block: childGenesis)
-        let grandchildChain = ChainState.fromGenesis(block: grandchildGenesis)
-
-        let grandchildLevel = ChainLevel(chain: grandchildChain, children: [:])
-        let childLevel = ChainLevel(chain: childChain, children: ["Grandchild": grandchildLevel])
-        let nexusLevel = ChainLevel(chain: nexusChain, children: ["Child": childLevel])
+        let nexusLevel = ChainLevel(chain: nexusChain)
+        let childLevel = try await nexusLevel.attachRestoredChildForTesting(
+            to: "Child",
+            genesisBlock: childGenesis
+        )
+        let grandchildLevel = try await childLevel.attachRestoredChildForTesting(
+            to: "Grandchild",
+            genesisBlock: grandchildGenesis
+        )
+        let childChain = await childLevel.chain
+        let grandchildChain = await grandchildLevel.chain
 
         let nexusBlock1 = try await buildAndStoreBlock(
             previous: nexusGenesis, timestamp: base + 1000,
