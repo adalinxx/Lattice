@@ -144,61 +144,23 @@ private func hasValidConsensusGraph(
         }
     }
 
-    var strongestWorkByGrind: [String: UInt256] = [:]
-    for contribution in blocks.values.flatMap(\.workContributions) {
-        if contribution.work > (strongestWorkByGrind[contribution.id] ?? .zero) {
-            strongestWorkByGrind[contribution.id] = contribution.work
-        }
+    var projectionBlocks = blocks.mapValues { block in
+        BlockMeta(
+            blockHash: block.blockHash,
+            parentBlockHash: block.parentBlockHash,
+            blockHeight: block.blockHeight,
+            childHashes: block.childHashes,
+            workContributions: block.workContributions
+        )
     }
-    func ownMeasure(_ block: PersistedBlockMeta) -> WorkMeasure? {
-        guard block.decodedWork != nil else { return nil }
-        return WorkMeasure(block.workContributions.compactMap { contribution in
-            strongestWorkByGrind[contribution.id].map {
-                VerifiedWorkContribution(id: contribution.id, work: $0)
-            }
-        })
-    }
-    var cumulativeMemo: [String: WorkMeasure] = [:]
-    var cumulativeVisiting = Set<String>()
-    func cumulativeWork(_ hash: String) -> WorkMeasure? {
-        if let work = cumulativeMemo[hash] { return work }
-        guard cumulativeVisiting.insert(hash).inserted,
-              let block = blocks[hash],
-              let ownWork = ownMeasure(block),
-              let persistedWork = WorkSum(hex: block.cumulativeWork)
-        else { return nil }
-        var work = ownWork
-        if let parentHash = block.parentBlockHash, blocks[parentHash] != nil {
-            guard let parentWork = cumulativeWork(parentHash) else { return nil }
-            work.formUnion(parentWork)
-        }
-        cumulativeVisiting.remove(hash)
-        guard work.total == persistedWork else { return nil }
-        cumulativeMemo[hash] = work
-        return work
-    }
-
-    var subtreeMemo: [String: WorkMeasure] = [:]
-    var subtreeVisiting = Set<String>()
-    func subtreeWork(_ hash: String) -> WorkMeasure? {
-        if let work = subtreeMemo[hash] { return work }
-        guard subtreeVisiting.insert(hash).inserted,
-              let block = blocks[hash],
-              var work = ownMeasure(block) else { return nil }
-        for childHash in block.childHashes {
-            guard let childWork = subtreeWork(childHash) else { return nil }
-            work.formUnion(childWork)
-        }
-        subtreeVisiting.remove(hash)
-        if let persistedSubtree = block.subtreeWeight {
-            guard WorkSum(hex: persistedSubtree) == work.total else { return nil }
-        }
-        subtreeMemo[hash] = work
-        return work
-    }
-
-    for hash in blocks.keys {
-        guard cumulativeWork(hash) != nil, subtreeWork(hash) != nil else { return false }
+    ChainState.normalizeWorkContributions(in: &projectionBlocks)
+    ChainState.recomputeWorkCaches(in: &projectionBlocks)
+    for (hash, block) in blocks {
+        guard let projected = projectionBlocks[hash],
+              WorkSum(hex: block.cumulativeWork) == projected.cumulativeWork,
+              block.subtreeWeight.map({
+                  WorkSum(hex: $0) == projected.subtreeWeight
+              }) ?? true else { return false }
     }
 
     var canonicalPath = Set<String>()
@@ -214,15 +176,6 @@ private func hasValidConsensusGraph(
           })
     else { return false }
 
-    let projectionBlocks = blocks.mapValues { block in
-        BlockMeta(
-            blockHash: block.blockHash,
-            parentBlockHash: block.parentBlockHash,
-            blockHeight: block.blockHeight,
-            childHashes: block.childHashes,
-            workContributions: block.workContributions
-        )
-    }
     guard let selected = ChainState.canonicalProjection(
         in: projectionBlocks,
         inherited: inherited
@@ -285,11 +238,8 @@ public extension ChainState {
         let retainedInherited: InheritedWorkSnapshot?
         if let cachedInherited {
             retainedInherited = liveInherited.map(cachedInherited.union) ?? cachedInherited
-        } else if let previousRevision = persisted.inheritedWorkRevision {
-            guard let liveInherited, liveInherited.revision >= previousRevision else {
-                throw ChainStateRestoreError.missingInheritedWorkSnapshot
-            }
-            retainedInherited = liveInherited
+        } else if persisted.inheritedWorkRevision != nil {
+            throw ChainStateRestoreError.missingInheritedWorkSnapshot
         } else {
             retainedInherited = liveInherited
         }

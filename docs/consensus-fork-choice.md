@@ -126,6 +126,8 @@ inherited snapshot, constructs effective measures, then performs GHOST descent:
 
 `nextTarget` and segment tips are not tie-break inputs. Comparing segment bases,
 not tips, makes the result independent of arrival, staging, and replay order.
+The security cost of this grindable deterministic tie-break is quantified in the
+[TRE-134 adversarial report](consensus/tre-134-adversarial-report.md).
 
 ## Persistence
 
@@ -134,8 +136,10 @@ only previously authenticated durable facts through the same graph mutation and
 fork-choice code.
 
 Persistence stores the accepted local graph, all grind coverage, and the retained
-inherited snapshot used by the decision. A node may omit that cache only if it can
-provide a complete live view at least as new during restore; absence is not zero
-work. The canonical tip remains a derived cache. Restore validates and rebuilds
-the graph, unions cached and live inherited facts, and reprojects the preferred
-branch. The node rebuilds its retained projections from that result.
+inherited snapshot used by the decision. A node may reconstruct that snapshot
+from durable parent facts, but a revision watermark or newer-looking live subset
+cannot prove complete coverage. A marker without its snapshot fails closed;
+absence is not zero work. The canonical tip remains a derived cache. Restore
+validates and rebuilds the graph, unions cached and live inherited facts, and
+reprojects the preferred branch. The node rebuilds its retained projections from
+that result.

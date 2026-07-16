@@ -123,6 +123,26 @@ final class InheritedWorkForkChoiceTests: XCTestCase {
         XCTAssertFalse(commit?.canonicalChanged ?? true)
     }
 
+    func testUnknownInheritedCoverageStillStrengthensKnownLocalGrind() async {
+        let chain = fork()
+        let shared = contribution("future-shared-grind", 1)
+        _ = await chain.addWorkContribution(shared, to: "left")
+        _ = await chain.addWorkContribution(contribution("right-extra", 10), to: "right")
+        let before = await chain.getMainChainTip()
+        XCTAssertEqual(before, "right")
+
+        let future = InheritedWorkSnapshot(
+            revision: 1,
+            workByBlock: [
+                testCID("future-block"): WorkMeasure(contribution(shared.id, 100)),
+            ]
+        )
+        _ = await chain.setInheritedWorkProvider { future }
+
+        let after = await chain.getMainChainTip()
+        XCTAssertEqual(after, "left")
+    }
+
     func testStaleInheritedRevisionCannotWeakenRetainedWork() async throws {
         let chain = fork()
         let current = InheritedWorkSnapshot(
@@ -250,5 +270,55 @@ final class InheritedWorkForkChoiceTests: XCTestCase {
         )
 
         XCTAssertNotNil(completeExport)
+    }
+
+    func testInheritedSharedGrindDoesNotProjectThroughMissingOrphanParent() async {
+        let shared = contribution("orphan-shared", 2)
+        let orphanOnly = contribution("orphan-only", 17)
+        let root = makeBlockMeta(hash: "root", height: 0)
+        let orphan = BlockMeta(
+            blockHash: "orphan",
+            parentBlockHash: "missing",
+            blockHeight: 2,
+            childHashes: [],
+            workContributions: [shared, orphanOnly]
+        )
+        let chain = makeChain(
+            blocks: [root, orphan],
+            mainChainHashes: ["root"]
+        )
+        let inherited = InheritedWorkSnapshot(
+            revision: 1,
+            workByBlock: ["root": WorkMeasure(shared)]
+        )
+
+        _ = await chain.setInheritedWorkProvider { inherited }
+
+        let tip = await chain.getMainChainTip()
+        let rootChoice = await chain.forkChoiceSnapshot(startingAt: "root")
+        XCTAssertEqual(tip, "root")
+        XCTAssertEqual(rootChoice?.subtreeWork, WorkSum(UInt256(3)))
+    }
+
+    func testPackageInitializerRejectsNonreciprocalKnownEdges() {
+        let root = makeBlockMeta(
+            hash: "root",
+            height: 0,
+            childHashes: ["child"]
+        )
+        let child = makeBlockMeta(
+            hash: "child",
+            previousHash: "other",
+            height: 1
+        )
+
+        XCTAssertThrowsError(try ChainState(
+            chainTip: "root",
+            mainChainHashes: ["root"],
+            indexToBlockHash: [:],
+            hashToBlock: ["root": root, "child": child]
+        )) { error in
+            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
+        }
     }
 }

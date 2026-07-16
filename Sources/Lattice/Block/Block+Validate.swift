@@ -408,10 +408,6 @@ public extension Block {
         return parent.spec.rawCID == spec.rawCID
     }
 
-    func validateParentState(parentBlock: Block) -> Bool {
-        return parentBlock.prevState.rawCID == parentState.rawCID
-    }
-
     func validateNextTarget(spec: ChainSpec, parent: Block, ancestorTimestamps: [Int64] = []) -> Bool {
         if target != parent.nextTarget &&
             !ChainSpec.isMinimumTargetRecovery(target: target, parentNextTarget: parent.nextTarget) {

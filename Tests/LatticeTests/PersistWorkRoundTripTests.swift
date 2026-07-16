@@ -60,6 +60,63 @@ private func persistedState(
     )
 }
 
+private func inheritedForkState(
+    revision: UInt64 = 19
+) -> (
+    state: PersistedChainState,
+    rootHash: String,
+    incumbentHash: String,
+    forkHash: String,
+    inherited: InheritedWorkSnapshot
+) {
+    let rootHash = persistedCID("restart-inherited-root")
+    let incumbentHash = persistedCID("restart-inherited-incumbent")
+    let forkHash = persistedCID("restart-inherited-fork")
+    let root = persistedMeta(
+        hash: rootHash,
+        height: 0,
+        children: [incumbentHash, forkHash],
+        contributions: [persistedContribution("restart-root-work", work: UInt256(1))],
+        cumulativeWork: UInt256(1)
+    )
+    let incumbent = persistedMeta(
+        hash: incumbentHash,
+        parent: rootHash,
+        height: 1,
+        contributions: [persistedContribution("restart-incumbent-work", work: UInt256(4))],
+        cumulativeWork: UInt256(5)
+    )
+    let fork = persistedMeta(
+        hash: forkHash,
+        parent: rootHash,
+        height: 1,
+        contributions: [persistedContribution("restart-fork-work", work: UInt256(1))],
+        cumulativeWork: UInt256(2)
+    )
+    let inherited = InheritedWorkSnapshot(
+        revision: 7,
+        workByBlock: [
+            forkHash: WorkMeasure(
+                persistedContribution("restart-parent-work", work: UInt256(7))
+            ),
+        ]
+    )
+    return (
+        PersistedChainState(
+            revision: revision,
+            inheritedWorkRevision: inherited.revision,
+            inheritedWorkSnapshot: inherited,
+            chainTip: forkHash,
+            mainChainHashes: [rootHash, forkHash].sorted(),
+            blocks: [root, incumbent, fork].sorted { $0.blockHash < $1.blockHash }
+        ),
+        rootHash,
+        incumbentHash,
+        forkHash,
+        inherited
+    )
+}
+
 final class PersistWorkRoundTripTests: XCTestCase {
     private let adversarialWorks: [UInt256] = [
         UInt256.max / UInt256(3) + UInt256(1),
@@ -791,6 +848,372 @@ final class PersistWorkRoundTripTests: XCTestCase {
             restoredSnapshot.inheritedWorkSnapshot?.work(forBlock: rootHash),
             inherited.work(forBlock: rootHash)
         )
+    }
+
+    func testJSONRoundTripRetainsInheritedForkChoiceDuringProviderOutage() async throws {
+        let fixture = inheritedForkState()
+        let source = try ChainState.restore(from: fixture.state)
+        let sourceChoiceValue = await source.forkChoiceSnapshot(startingAt: fixture.rootHash)
+        let sourceChoice = try XCTUnwrap(sourceChoiceValue)
+        let sourceSnapshot = await source.persist()
+
+        XCTAssertEqual(sourceChoice.tipHash, fixture.forkHash)
+        XCTAssertEqual(sourceChoice.mainChainPath, [fixture.rootHash, fixture.forkHash])
+        XCTAssertEqual(sourceChoice.subtreeWork, WorkSum(UInt256(13)))
+        XCTAssertEqual(sourceSnapshot.revision, fixture.state.revision)
+
+        let bytes = try JSONEncoder().encode(sourceSnapshot)
+        let decoded = try JSONDecoder().decode(PersistedChainState.self, from: bytes)
+        let restored = try ChainState.restore(from: decoded)
+        let restoredChoiceValue = await restored.forkChoiceSnapshot(
+            startingAt: fixture.rootHash
+        )
+        let restoredChoice = try XCTUnwrap(restoredChoiceValue)
+        let restoredSnapshot = await restored.persist()
+        let restoredTip = await restored.getMainChainTip()
+
+        XCTAssertEqual(decoded, sourceSnapshot)
+        XCTAssertEqual(restoredTip, fixture.forkHash)
+        XCTAssertEqual(restoredChoice.tipHash, sourceChoice.tipHash)
+        XCTAssertEqual(restoredChoice.mainChainPath, sourceChoice.mainChainPath)
+        XCTAssertEqual(restoredChoice.subtreeWork, sourceChoice.subtreeWork)
+        XCTAssertEqual(restoredSnapshot.revision, sourceSnapshot.revision)
+        XCTAssertEqual(restoredSnapshot.inheritedWorkRevision, fixture.inherited.revision)
+        XCTAssertEqual(restoredSnapshot.inheritedWorkSnapshot, fixture.inherited)
+        XCTAssertEqual(restoredSnapshot, sourceSnapshot)
+    }
+
+    func testCachelessRestoreRejectsUnverifiableProviderCompleteness() async throws {
+        let fixture = inheritedForkState()
+        let source = try ChainState.restore(from: fixture.state)
+        let sourceSnapshot = await source.persist()
+        let uncached = PersistedChainState(
+            schemaVersion: sourceSnapshot.schemaVersion,
+            revision: sourceSnapshot.revision,
+            inheritedWorkRevision: sourceSnapshot.inheritedWorkRevision,
+            inheritedWorkSnapshot: nil,
+            chainTip: sourceSnapshot.chainTip,
+            mainChainHashes: sourceSnapshot.mainChainHashes,
+            blocks: sourceSnapshot.blocks
+        )
+
+        let newer = InheritedWorkSnapshot(
+            revision: fixture.inherited.revision + 1,
+            workByBlock: [
+                fixture.forkHash: fixture.inherited.work(forBlock: fixture.forkHash),
+            ]
+        )
+        for provider in [fixture.inherited, newer] {
+            XCTAssertThrowsError(
+                try ChainState.restore(
+                    from: uncached,
+                    inheritedWorkProvider: { provider }
+                )
+            ) { error in
+                XCTAssertEqual(
+                    error as? ChainStateRestoreError,
+                    .missingInheritedWorkSnapshot
+                )
+            }
+        }
+    }
+
+    func testRestoreRejectsInvalidInheritedBoundariesAndCachedPartialCannotRetract() async throws {
+        let fixture = inheritedForkState()
+        let uncached = PersistedChainState(
+            schemaVersion: fixture.state.schemaVersion,
+            revision: fixture.state.revision,
+            inheritedWorkRevision: fixture.state.inheritedWorkRevision,
+            inheritedWorkSnapshot: nil,
+            chainTip: fixture.state.chainTip,
+            mainChainHashes: fixture.state.mainChainHashes,
+            blocks: fixture.state.blocks
+        )
+        let stale = InheritedWorkSnapshot(
+            revision: fixture.inherited.revision - 1,
+            workByBlock: [
+                fixture.forkHash: fixture.inherited.work(forBlock: fixture.forkHash),
+            ]
+        )
+        XCTAssertThrowsError(
+            try ChainState.restore(from: uncached, inheritedWorkProvider: { stale })
+        ) { error in
+            XCTAssertEqual(error as? ChainStateRestoreError, .missingInheritedWorkSnapshot)
+        }
+
+        let unmarked = PersistedChainState(
+            schemaVersion: fixture.state.schemaVersion,
+            revision: fixture.state.revision,
+            inheritedWorkRevision: nil,
+            inheritedWorkSnapshot: nil,
+            chainTip: fixture.state.chainTip,
+            mainChainHashes: fixture.state.mainChainHashes,
+            blocks: fixture.state.blocks
+        )
+
+        let malformedBlock = InheritedWorkSnapshot(
+            revision: fixture.inherited.revision,
+            workByBlock: [
+                "not-a-cid": WorkMeasure(
+                    persistedContribution("valid-malformed-boundary-work", work: UInt256(1))
+                ),
+            ]
+        )
+        XCTAssertThrowsError(
+            try ChainState.restore(from: unmarked, inheritedWorkProvider: { malformedBlock })
+        ) { error in
+            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
+        }
+
+        let malformedGrind = InheritedWorkSnapshot(
+            revision: fixture.inherited.revision,
+            workByBlock: [
+                fixture.forkHash: WorkMeasure(
+                    VerifiedWorkContribution(id: "not-a-cid", work: UInt256(1))
+                ),
+            ]
+        )
+        XCTAssertThrowsError(
+            try ChainState.restore(from: unmarked, inheritedWorkProvider: { malformedGrind })
+        ) { error in
+            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
+        }
+
+        let mismatchedMarker = PersistedChainState(
+            schemaVersion: fixture.state.schemaVersion,
+            revision: fixture.state.revision,
+            inheritedWorkRevision: fixture.inherited.revision + 1,
+            inheritedWorkSnapshot: fixture.inherited,
+            chainTip: fixture.state.chainTip,
+            mainChainHashes: fixture.state.mainChainHashes,
+            blocks: fixture.state.blocks
+        )
+        XCTAssertThrowsError(try ChainState.restore(from: mismatchedMarker)) { error in
+            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
+        }
+
+        let partialUpdate = InheritedWorkSnapshot(
+            revision: fixture.inherited.revision + 1,
+            workByBlock: [
+                fixture.incumbentHash: WorkMeasure(
+                    persistedContribution("partial-provider-addition", work: UInt256(1))
+                ),
+            ]
+        )
+        let retained = try ChainState.restore(
+            from: fixture.state,
+            inheritedWorkProvider: { partialUpdate }
+        )
+        let retainedSnapshot = await retained.persist()
+        let merged = try XCTUnwrap(retainedSnapshot.inheritedWorkSnapshot)
+        XCTAssertEqual(
+            merged.work(forBlock: fixture.forkHash),
+            fixture.inherited.work(forBlock: fixture.forkHash)
+        )
+        XCTAssertEqual(
+            merged.work(forBlock: fixture.incumbentHash),
+            partialUpdate.work(forBlock: fixture.incumbentHash)
+        )
+        let retainedTip = await retained.getMainChainTip()
+        XCTAssertEqual(retainedTip, fixture.forkHash)
+    }
+
+    func testUnknownInheritedCoverageActivatesAfterAdmissionAndSurvivesReplay() async throws {
+        let fetcher = StorableFetcher()
+        let target = UInt256(1_000)
+        let localWork = workForTarget(target)
+        let inheritedWork = UInt256.max
+        let base = Int64(Date().timeIntervalSince1970 * 1_000) - 20_000
+        let genesis = try await buildAndStoreGenesis(
+            spec: persistedWorkSpec(),
+            timestamp: base,
+            target: target,
+            fetcher: fetcher
+        )
+        let incumbent = try await buildAndStoreBlock(
+            previous: genesis,
+            timestamp: base + 1_000,
+            target: target,
+            nonce: 1,
+            fetcher: fetcher
+        )
+        let futureFork = try await buildAndStoreBlock(
+            previous: genesis,
+            timestamp: base + 1_000,
+            target: target,
+            nonce: 2,
+            fetcher: fetcher
+        )
+        let genesisHeader = try BlockHeader(node: genesis)
+        let incumbentHeader = try BlockHeader(node: incumbent)
+        let futureHeader = try BlockHeader(node: futureFork)
+        let incumbentContribution = VerifiedWorkContribution(
+            id: incumbentHeader.rawCID,
+            work: localWork
+        )
+        let futureContribution = VerifiedWorkContribution(
+            id: futureHeader.rawCID,
+            work: localWork
+        )
+        let futureBatch = try testAdmissionBatch(
+            block: futureFork,
+            contribution: futureContribution
+        )
+        let inherited = InheritedWorkSnapshot(
+            revision: 40,
+            workByBlock: [
+                futureHeader.rawCID: WorkMeasure(
+                    persistedContribution("future-inherited-work", work: inheritedWork)
+                ),
+            ]
+        )
+
+        let live = ChainState.fromGenesis(block: genesis)
+        let incumbentResult = await live.submitTestBlock(
+            blockHeader: incumbentHeader,
+            block: incumbent,
+            contribution: incumbentContribution
+        )
+        XCTAssertTrue(incumbentResult.addedBlock)
+        let inheritedCommit = await live.setInheritedWorkProvider { inherited }
+        let containsFutureBeforeAdmission = await live.contains(blockHash: futureHeader.rawCID)
+        let tipBeforeAdmission = await live.getMainChainTip()
+        XCTAssertEqual(inheritedCommit?.revision, 2)
+        XCTAssertFalse(containsFutureBeforeAdmission)
+        XCTAssertEqual(tipBeforeAdmission, incumbentHeader.rawCID)
+        let beforeChoiceValue = await live.forkChoiceSnapshot(
+            startingAt: genesisHeader.rawCID
+        )
+        let beforeChoice = try XCTUnwrap(beforeChoiceValue)
+        XCTAssertEqual(beforeChoice.subtreeWork, WorkSum(localWork) + localWork)
+        let beforeAdmission = await live.persist()
+
+        let admitted = await live.submitTestBlock(
+            blockHeader: futureHeader,
+            block: futureFork,
+            contribution: futureContribution
+        )
+        XCTAssertTrue(admitted.addedBlock)
+        XCTAssertTrue(admitted.commit?.canonicalChanged ?? false)
+        let liveTip = await live.getMainChainTip()
+        XCTAssertEqual(liveTip, futureHeader.rawCID)
+        let expectedChoiceValue = await live.forkChoiceSnapshot(
+            startingAt: genesisHeader.rawCID
+        )
+        let expectedChoice = try XCTUnwrap(expectedChoiceValue)
+        XCTAssertEqual(
+            expectedChoice.subtreeWork,
+            WorkSum(localWork) + localWork + localWork + inheritedWork
+        )
+        let expected = await live.persist()
+
+        let beforeBytes = try JSONEncoder().encode(beforeAdmission)
+        let decodedBefore = try JSONDecoder().decode(
+            PersistedChainState.self,
+            from: beforeBytes
+        )
+        let replayed = try await ChainState.restore(
+            from: decodedBefore,
+            replaying: [futureBatch]
+        )
+        let recovered = await replayed.persist()
+        let replayedTip = await replayed.getMainChainTip()
+        XCTAssertEqual(replayedTip, futureHeader.rawCID)
+        XCTAssertEqual(recovered, expected)
+
+        let recoveredBytes = try JSONEncoder().encode(recovered)
+        let decodedRecovered = try JSONDecoder().decode(
+            PersistedChainState.self,
+            from: recoveredBytes
+        )
+        let outageRestart = try ChainState.restore(from: decodedRecovered)
+        let restartedChoiceValue = await outageRestart.forkChoiceSnapshot(
+            startingAt: genesisHeader.rawCID
+        )
+        let restartedChoice = try XCTUnwrap(restartedChoiceValue)
+        let restartedTip = await outageRestart.getMainChainTip()
+        let restartedSnapshot = await outageRestart.persist()
+        XCTAssertEqual(restartedTip, futureHeader.rawCID)
+        XCTAssertEqual(restartedChoice.tipHash, expectedChoice.tipHash)
+        XCTAssertEqual(restartedChoice.subtreeWork, expectedChoice.subtreeWork)
+        XCTAssertEqual(restartedSnapshot.revision, expected.revision)
+    }
+
+    func testRestoreFailsClosedWhenRevisionWouldOverflow() {
+        let fixture = inheritedForkState(revision: .max)
+        let newer = InheritedWorkSnapshot(
+            revision: fixture.inherited.revision + 1,
+            workByBlock: [
+                fixture.forkHash: fixture.inherited.work(forBlock: fixture.forkHash),
+            ]
+        )
+        XCTAssertThrowsError(
+            try ChainState.restore(
+                from: fixture.state,
+                inheritedWorkProvider: { newer }
+            )
+        ) { error in
+            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
+        }
+
+        let staleProjection = staleForkChoiceSnapshot()
+        let exhaustedProjection = PersistedChainState(
+            schemaVersion: staleProjection.schemaVersion,
+            revision: .max,
+            inheritedWorkRevision: staleProjection.inheritedWorkRevision,
+            inheritedWorkSnapshot: staleProjection.inheritedWorkSnapshot,
+            chainTip: staleProjection.chainTip,
+            mainChainHashes: staleProjection.mainChainHashes,
+            blocks: staleProjection.blocks
+        )
+        XCTAssertThrowsError(try ChainState.restore(from: exhaustedProjection)) { error in
+            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
+        }
+    }
+
+    func testNewBlockAtMaximumRevisionIsDiscardedWithoutMutation() async throws {
+        let fetcher = StorableFetcher()
+        let target = UInt256(1_000)
+        let base = Int64(Date().timeIntervalSince1970 * 1_000) - 20_000
+        let genesis = try await buildAndStoreGenesis(
+            spec: persistedWorkSpec(),
+            timestamp: base,
+            target: target,
+            fetcher: fetcher
+        )
+        let child = try await buildAndStoreBlock(
+            previous: genesis,
+            timestamp: base + 1_000,
+            target: target,
+            nonce: 1,
+            fetcher: fetcher
+        )
+        let childHeader = try BlockHeader(node: child)
+        let genesisSnapshot = await ChainState.fromGenesis(block: genesis).persist()
+        let exhaustedSnapshot = PersistedChainState(
+            schemaVersion: genesisSnapshot.schemaVersion,
+            revision: .max,
+            inheritedWorkRevision: genesisSnapshot.inheritedWorkRevision,
+            inheritedWorkSnapshot: genesisSnapshot.inheritedWorkSnapshot,
+            chainTip: genesisSnapshot.chainTip,
+            mainChainHashes: genesisSnapshot.mainChainHashes,
+            blocks: genesisSnapshot.blocks
+        )
+        let exhausted = try ChainState.restore(from: exhaustedSnapshot)
+        let before = await exhausted.persist()
+
+        let result = await exhausted.submitTestBlock(
+            blockHeader: childHeader,
+            block: child
+        )
+
+        XCTAssertFalse(result.addedBlock)
+        XCTAssertFalse(result.addedContribution)
+        XCTAssertNil(result.commit)
+        let containsChild = await exhausted.contains(blockHash: childHeader.rawCID)
+        let after = await exhausted.persist()
+        XCTAssertFalse(containsChild)
+        XCTAssertEqual(after, before)
     }
 
     func testRestoreAllowsOneGrindToCoverMultipleBlocksWithoutDoubleCounting() async throws {

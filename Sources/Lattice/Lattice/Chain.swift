@@ -104,8 +104,11 @@ public struct BlockMeta: Sendable {
            existing.work >= contribution.work {
             return false
         }
+        if let existing = workContributions[contribution.id] {
+            work = work.subtracting(WorkSum(existing.work))!
+        }
         workContributions[contribution.id] = contribution
-        work = WorkMeasure(workContributions.values).total
+        work = work + contribution.work
         return true
     }
 
@@ -114,6 +117,11 @@ public struct BlockMeta: Sendable {
 struct WorkContributionRecord: Sendable, Equatable {
     var blockHashes: Set<String>
     var contribution: VerifiedWorkContribution
+}
+
+private struct WorkAdjustment {
+    var added: WorkSum = .zero
+    var removed: WorkSum = .zero
 }
 
 public struct SubmissionResult: Sendable {
@@ -314,6 +322,9 @@ public actor ChainState {
     var mainChainHashes: Set<String>
     var indexToBlockHash: [UInt64: Set<String>]
     var hashToBlock: [String: BlockMeta]
+    var workByGrind: [String: WorkContributionRecord]
+    var forkChoiceWorkByGrind: [String: WorkContributionRecord]
+    var forkChoiceWeights: [String: WorkSum]
 
     var inheritedWorkProvider: InheritedWorkProvider?
     var inheritedWorkSnapshot: InheritedWorkSnapshot?
@@ -345,12 +356,31 @@ public actor ChainState {
     ) throws {
         self.chainTip = chainTip
         self.mainChainHashes = mainChainHashes
-        guard hashToBlock.values.allSatisfy({
-            Set($0.childHashes).count == $0.childHashes.count
+        guard hashToBlock.values.allSatisfy({ meta in
+            guard Set(meta.childHashes).count == meta.childHashes.count,
+                  (meta.parentBlockHash == nil) == (meta.blockHeight == 0)
+            else { return false }
+
+            for childHash in meta.childHashes {
+                guard let child = hashToBlock[childHash],
+                      child.parentBlockHash == meta.blockHash else { return false }
+                let (expectedHeight, overflow) = meta.blockHeight.addingReportingOverflow(1)
+                guard !overflow, child.blockHeight == expectedHeight else { return false }
+            }
+
+            guard let parentHash = meta.parentBlockHash,
+                  let parent = hashToBlock[parentHash] else { return true }
+            let (expectedHeight, overflow) = parent.blockHeight.addingReportingOverflow(1)
+            return !overflow
+                && meta.blockHeight == expectedHeight
+                && parent.childHashes.contains(meta.blockHash)
         }) else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
         self.hashToBlock = hashToBlock
+        self.workByGrind = [:]
+        self.forkChoiceWorkByGrind = [:]
+        self.forkChoiceWeights = [:]
         var allByHeight = indexToBlockHash
         for meta in hashToBlock.values {
             allByHeight[meta.blockHeight, default: []].insert(meta.blockHash)
@@ -375,6 +405,16 @@ public actor ChainState {
         }
         Self.normalizeWorkContributions(in: &self.hashToBlock)
         Self.recomputeWorkCaches(in: &self.hashToBlock)
+        self.workByGrind = Self.workIndex(in: self.hashToBlock)
+        let inherited = self.inheritedWorkSnapshot ?? .zero
+        self.forkChoiceWorkByGrind = Self.workIndex(
+            in: self.hashToBlock,
+            inherited: inherited
+        )
+        self.forkChoiceWeights = Self.effectiveSubtreeWeights(
+            in: self.hashToBlock,
+            inherited: inherited
+        )
         for hash in mainChainHashes {
             guard let height = self.hashToBlock[hash]?.blockHeight,
                   self.mainChainBlockAtIndex[height] == nil else {
@@ -527,6 +567,17 @@ public actor ChainState {
     ) -> Bool {
         guard let left = TrustedAdmissionBatch(left),
               let right = TrustedAdmissionBatch(right) else { return false }
+        switch (left.block, right.block) {
+        case let (leftBlock?, rightBlock?)
+        where leftBlock.blockHeight != rightBlock.blockHeight:
+            return leftBlock.blockHeight < rightBlock.blockHeight
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        default:
+            break
+        }
         if left.contribution.work != right.contribution.work {
             return left.contribution.work < right.contribution.work
         }
@@ -588,9 +639,7 @@ public actor ChainState {
     public func reevaluateForkChoice() -> ChainCommit? {
         guard mutationGeneration < .max else { return nil }
         let inheritedChanged = refreshInheritedWork()
-        let canonicalChange = projectCanonicalChain(
-            inherited: retainedInheritedWork
-        )
+        let canonicalChange = projectCanonicalChain()
         guard inheritedChanged || canonicalChange != nil else { return nil }
         mutationGeneration += 1
         return (canonicalChange ?? ChainCommit(tipHash: chainTip))
@@ -603,16 +652,42 @@ public actor ChainState {
     public func inheritedWorkSnapshot(
         forChildCoverage verifiedParentBlocksByChildBlock: [String: Set<String>]
     ) -> InheritedWorkSnapshot? {
-        guard verifiedParentBlocksByChildBlock.values
-            .joined()
-            .allSatisfy(hasAcceptedAncestry) else { return nil }
-        let measures = effectiveSubtreeMeasures(inherited: retainedInheritedWork)
+        let requestedParentBlocks = Set(
+            verifiedParentBlocksByChildBlock.values.joined()
+        )
+        guard let acceptedAncestry = acceptedAncestry(
+            of: requestedParentBlocks
+        ) else { return nil }
+        let rootsByChildBlock = minimalSubtreeRoots(
+            for: verifiedParentBlocksByChildBlock,
+            within: acceptedAncestry
+        )
+        let inherited = retainedInheritedWork
+        let strongestWork = Self.strongestWorkByGrind(
+            in: hashToBlock,
+            inherited: inherited
+        )
+        let requestedRoots = Set(rootsByChildBlock.values.joined())
+        let traversalRoots = minimalSubtreeRoots(
+            for: ["export": requestedRoots],
+            within: acceptedAncestry
+        )["export"] ?? []
+        let measuresByParentBlock = Self.effectiveSubtreeMeasures(
+            startingAt: traversalRoots,
+            retaining: requestedRoots,
+            in: hashToBlock,
+            inherited: inherited,
+            strongestWork: strongestWork
+        )
         var workByChildBlock: [String: WorkMeasure] = [:]
-        for (childBlockHash, parentBlockHashes) in verifiedParentBlocksByChildBlock {
-            workByChildBlock[childBlockHash] = parentBlockHashes.reduce(
+        for childBlockHash in verifiedParentBlocksByChildBlock.keys {
+            let roots = rootsByChildBlock[childBlockHash] ?? []
+            workByChildBlock[childBlockHash] = roots.reduce(
                 into: WorkMeasure.zero
             ) { result, hash in
-                if let measure = measures[hash] { result.formUnion(measure) }
+                if let measure = measuresByParentBlock[hash] {
+                    result.formUnion(measure)
+                }
             }
         }
         return InheritedWorkSnapshot(
@@ -621,21 +696,78 @@ public actor ChainState {
         )
     }
 
-    private func hasAcceptedAncestry(_ blockHash: String) -> Bool {
-        var currentHash = blockHash
-        var visited = Set<String>()
-        while visited.insert(currentHash).inserted,
-              let current = hashToBlock[currentHash] {
-            guard let parentHash = current.parentBlockHash else {
-                return current.blockHeight == 0
+    private func acceptedAncestry(
+        of blockHashes: Set<String>
+    ) -> Set<String>? {
+        var valid = Set<String>()
+        for startHash in blockHashes {
+            var currentHash = startHash
+            var path: [String] = []
+            var visiting = Set<String>()
+            while !valid.contains(currentHash) {
+                guard visiting.insert(currentHash).inserted,
+                      let current = hashToBlock[currentHash] else { return nil }
+                path.append(currentHash)
+                guard let parentHash = current.parentBlockHash else {
+                    guard current.blockHeight == 0 else { return nil }
+                    break
+                }
+                guard let parent = hashToBlock[parentHash],
+                      parent.childHashes.contains(currentHash) else { return nil }
+                let (expectedHeight, overflow) = parent.blockHeight.addingReportingOverflow(1)
+                guard !overflow, current.blockHeight == expectedHeight else { return nil }
+                currentHash = parentHash
             }
-            guard let parent = hashToBlock[parentHash],
-                  parent.childHashes.contains(currentHash) else { return false }
-            let (expectedHeight, overflow) = parent.blockHeight.addingReportingOverflow(1)
-            guard !overflow, current.blockHeight == expectedHeight else { return false }
-            currentHash = parentHash
+            valid.formUnion(path)
         }
-        return false
+        return valid
+    }
+
+    private func minimalSubtreeRoots(
+        for coverageByChildBlock: [String: Set<String>],
+        within ancestry: Set<String>
+    ) -> [String: [String]] {
+        var childBlocksByParentBlock: [String: [String]] = [:]
+        var rootsByChildBlock = Dictionary(
+            uniqueKeysWithValues: coverageByChildBlock.keys.map { ($0, [String]()) }
+        )
+        for (childBlockHash, parentBlockHashes) in coverageByChildBlock {
+            for parentBlockHash in parentBlockHashes {
+                childBlocksByParentBlock[parentBlockHash, default: []]
+                    .append(childBlockHash)
+            }
+        }
+
+        let localRoots = ancestry.compactMap { hash -> BlockMeta? in
+            guard let meta = hashToBlock[hash],
+                  meta.parentBlockHash == nil else { return nil }
+            return meta
+        }.sorted { $0.blockHash < $1.blockHash }
+        var activeChildBlocks = Set<String>()
+        for root in localRoots {
+            var pending: [(hash: String, exiting: Bool, selected: [String])] = [
+                (root.blockHash, false, []),
+            ]
+            while let frame = pending.popLast() {
+                if frame.exiting {
+                    activeChildBlocks.subtract(frame.selected)
+                    continue
+                }
+                guard let meta = hashToBlock[frame.hash] else { continue }
+                var selected: [String] = []
+                for childBlockHash in childBlocksByParentBlock[frame.hash] ?? []
+                where activeChildBlocks.insert(childBlockHash).inserted {
+                    rootsByChildBlock[childBlockHash, default: []].append(frame.hash)
+                    selected.append(childBlockHash)
+                }
+                pending.append((frame.hash, true, selected))
+                for childHash in meta.childHashes.reversed()
+                where ancestry.contains(childHash) {
+                    pending.append((childHash, false, []))
+                }
+            }
+        }
+        return rootsByChildBlock
     }
 
     private var retainedInheritedWork: InheritedWorkSnapshot {
@@ -647,8 +779,19 @@ public actor ChainState {
         guard let candidate = inheritedWorkProvider?() else { return false }
         let current = retainedInheritedWork
         let merged = current.union(candidate)
+        guard merged != current else { return false }
+        for (blockHash, measure) in merged.entriesByBlock {
+            let previous = current.work(forBlock: blockHash)
+            for (id, work) in measure.entries
+            where work > (previous.work(forGrind: id) ?? .zero) {
+                applyForkChoiceContribution(
+                    VerifiedWorkContribution(id: id, work: work),
+                    to: blockHash
+                )
+            }
+        }
         inheritedWorkSnapshot = merged
-        return merged != current
+        return true
     }
 
     public func contains(blockHash: String) -> Bool {
@@ -814,9 +957,7 @@ public actor ChainState {
         mutationGeneration += 1
         _ = refreshInheritedWork()
 
-        let canonicalChange = projectCanonicalChain(
-            inherited: retainedInheritedWork
-        )
+        let canonicalChange = projectCanonicalChain()
         let extendsMainChain = input.parentBlockHash == oldTip
             && mainChainHashes.contains(blockHash)
         return SubmissionResult(
@@ -847,16 +988,20 @@ public actor ChainState {
         addToBlockIndex(hash: blockHash, blockHeight: input.blockHeight)
 
         let childHashes = findChildren(hash: blockHash, blockHeight: input.blockHeight)
+        let canUpdateIncrementally = childHashes.isEmpty
         let meta = BlockMeta(
             blockHash: blockHash,
             parentBlockHash: input.parentBlockHash,
             blockHeight: input.blockHeight,
             childHashes: childHashes,
-            workContributions: contributions
+            workContributions: canUpdateIncrementally ? [] : contributions,
+            cumulativeWork: input.parentBlockHash.flatMap {
+                hashToBlock[$0]?.cumulativeWork
+            } ?? .zero,
+            subtreeWeight: canUpdateIncrementally ? .zero : nil
         )
 
         hashToBlock[blockHash] = meta
-        Self.normalizeWorkContributions(in: &hashToBlock)
         blockTimestamps[blockHash] = input.timestamp
         tipSnapshotsByHash[blockHash] = input.snapshot
         if let prevHash = input.parentBlockHash,
@@ -864,7 +1009,21 @@ public actor ChainState {
             hashToBlock[prevHash]?.childHashes.append(blockHash)
         }
 
-        Self.recomputeWorkCaches(in: &hashToBlock)
+        if canUpdateIncrementally {
+            forkChoiceWeights[blockHash] = .zero
+            for contribution in contributions {
+                applyLocalContribution(contribution, to: blockHash)
+                applyForkChoiceContribution(contribution, to: blockHash)
+            }
+            for (id, work) in retainedInheritedWork.work(forBlock: blockHash).entries {
+                applyForkChoiceContribution(
+                    VerifiedWorkContribution(id: id, work: work),
+                    to: blockHash
+                )
+            }
+        } else {
+            rebuildWorkIndexesAndCaches()
+        }
 
         guard let previousBlockCID = input.parentBlockHash else {
             return SubmissionResult(
@@ -893,8 +1052,7 @@ public actor ChainState {
     }
 
     /// Rebuild exact local prefix and subtree measures after a graph or work-fact
-    /// mutation. Distinct grind IDs reduce to scalar addition; shared IDs use the
-    /// full identity-bearing union.
+    /// mutation without retaining an identity map at every block.
     nonisolated static func recomputeWorkCaches(
         in blocks: inout [String: BlockMeta]
     ) {
@@ -902,71 +1060,79 @@ public actor ChainState {
             if $0.blockHeight != $1.blockHeight { return $0.blockHeight < $1.blockHeight }
             return $0.blockHash < $1.blockHash
         }
-        var seenGrinds = Set<String>()
-        let hasSharedGrind = blocks.values.contains { meta in
-            meta.workContributions.keys.contains { !seenGrinds.insert($0).inserted }
+        let roots = ascending.filter { meta in
+            meta.parentBlockHash.flatMap { blocks[$0] } == nil
         }
-        if !hasSharedGrind {
-            for meta in ascending {
-                let cumulative = meta.work + (meta.parentBlockHash.flatMap {
-                    blocks[$0]?.cumulativeWork
-                } ?? .zero)
-                blocks[meta.blockHash]?.setCumulativeWork(cumulative)
-            }
-
-            var subtreeTotals: [String: WorkSum] = [:]
-            var visiting = Set<String>()
-            func subtreeTotal(_ hash: String) -> WorkSum {
-                if let cached = subtreeTotals[hash] { return cached }
-                guard visiting.insert(hash).inserted,
-                      let meta = blocks[hash] else { return .zero }
-                let total = meta.childHashes.reduce(meta.work) {
-                    $0 + subtreeTotal($1)
+        for root in roots {
+            var activeCounts: [String: Int] = [:]
+            var activeWork = WorkSum.zero
+            var pending: [(hash: String, exiting: Bool)] = [(root.blockHash, false)]
+            while let frame = pending.popLast() {
+                guard let meta = blocks[frame.hash] else { continue }
+                if frame.exiting {
+                    for contribution in meta.workContributions.values {
+                        guard let count = activeCounts[contribution.id] else { continue }
+                        if count == 1 {
+                            activeCounts.removeValue(forKey: contribution.id)
+                            activeWork = activeWork.subtracting(
+                                WorkSum(contribution.work)
+                            )!
+                        } else {
+                            activeCounts[contribution.id] = count - 1
+                        }
+                    }
+                    continue
                 }
-                visiting.remove(hash)
-                subtreeTotals[hash] = total
-                return total
+
+                for contribution in meta.workContributions.values {
+                    let count = activeCounts[contribution.id, default: 0]
+                    if count == 0 { activeWork = activeWork + contribution.work }
+                    activeCounts[contribution.id] = count + 1
+                }
+                blocks[meta.blockHash]?.setCumulativeWork(activeWork)
+                pending.append((meta.blockHash, true))
+                for childHash in meta.childHashes.reversed() {
+                    pending.append((childHash, false))
+                }
             }
-            let totals = Dictionary(
-                uniqueKeysWithValues: blocks.keys.map { ($0, subtreeTotal($0)) }
-            )
-            for (hash, total) in totals {
-                blocks[hash]?.setSubtreeWeight(total)
-            }
-            return
         }
 
-        let ownMeasures = blocks.mapValues { WorkMeasure($0.workContributions.values) }
-        var cumulativeMeasures: [String: WorkMeasure] = [:]
-        for meta in ascending {
-            var measure = ownMeasures[meta.blockHash] ?? .zero
-            if let parentHash = meta.parentBlockHash,
-               let parentMeasure = cumulativeMeasures[parentHash] {
-                measure.formUnion(parentMeasure)
+        typealias Accumulator = (entries: [String: UInt256], total: WorkSum)
+        var subtreeAccumulators: [String: Accumulator] = [:]
+        func insert(
+            id: String,
+            work: UInt256,
+            into accumulator: inout Accumulator
+        ) {
+            guard work > (accumulator.entries[id] ?? .zero) else { return }
+            if let oldWork = accumulator.entries[id] {
+                accumulator.total = accumulator.total.subtracting(WorkSum(oldWork))!
             }
-            cumulativeMeasures[meta.blockHash] = measure
-            blocks[meta.blockHash]?.setCumulativeWork(measure.total)
+            accumulator.entries[id] = work
+            accumulator.total = accumulator.total + work
         }
 
-        var subtreeMeasures: [String: WorkMeasure] = [:]
-        var visiting = Set<String>()
-        func subtreeMeasure(_ hash: String) -> WorkMeasure {
-            if let cached = subtreeMeasures[hash] { return cached }
-            guard visiting.insert(hash).inserted,
-                  let meta = blocks[hash] else { return .zero }
-            var measure = ownMeasures[hash] ?? .zero
-            for childHash in meta.childHashes {
-                measure.formUnion(subtreeMeasure(childHash))
+        for meta in ascending.reversed() {
+            let largestChild = meta.childHashes.max {
+                (subtreeAccumulators[$0]?.entries.count ?? 0)
+                    < (subtreeAccumulators[$1]?.entries.count ?? 0)
             }
-            visiting.remove(hash)
-            subtreeMeasures[hash] = measure
-            return measure
-        }
-        let subtreeTotals = Dictionary(
-            uniqueKeysWithValues: blocks.keys.map { ($0, subtreeMeasure($0).total) }
-        )
-        for (hash, total) in subtreeTotals {
-            blocks[hash]?.setSubtreeWeight(total)
+            var accumulator = largestChild.flatMap {
+                subtreeAccumulators.removeValue(forKey: $0)
+            } ?? Accumulator(entries: [:], total: .zero)
+            for childHash in meta.childHashes where childHash != largestChild {
+                guard let child = subtreeAccumulators.removeValue(forKey: childHash) else {
+                    continue
+                }
+                for (id, work) in child.entries {
+                    insert(id: id, work: work, into: &accumulator)
+                }
+            }
+            for (id, contribution) in meta.workContributions {
+                insert(id: id, work: contribution.work, into: &accumulator)
+            }
+            blocks[meta.blockHash]?.setSubtreeWeight(accumulator.total)
+            subtreeAccumulators[meta.blockHash] = accumulator
         }
     }
 
@@ -991,6 +1157,213 @@ public actor ChainState {
         }
     }
 
+    nonisolated static func workIndex(
+        in blocks: [String: BlockMeta],
+        inherited: InheritedWorkSnapshot = .zero
+    ) -> [String: WorkContributionRecord] {
+        var result: [String: WorkContributionRecord] = [:]
+        func observe(_ contribution: VerifiedWorkContribution, at hash: String?) {
+            var record = result[contribution.id] ?? WorkContributionRecord(
+                blockHashes: [],
+                contribution: contribution
+            )
+            if contribution.work > record.contribution.work {
+                record.contribution = contribution
+            }
+            if let hash, blocks[hash] != nil { record.blockHashes.insert(hash) }
+            result[contribution.id] = record
+        }
+
+        for (hash, meta) in blocks {
+            for contribution in meta.workContributions.values {
+                observe(contribution, at: hash)
+            }
+        }
+        for (hash, measure) in inherited.entriesByBlock {
+            for (id, work) in measure.entries {
+                observe(VerifiedWorkContribution(id: id, work: work), at: hash)
+            }
+        }
+        return result
+    }
+
+    private func rebuildWorkIndexesAndCaches() {
+        Self.normalizeWorkContributions(in: &hashToBlock)
+        Self.recomputeWorkCaches(in: &hashToBlock)
+        workByGrind = Self.workIndex(in: hashToBlock)
+        forkChoiceWorkByGrind = Self.workIndex(
+            in: hashToBlock,
+            inherited: retainedInheritedWork
+        )
+        forkChoiceWeights = Self.effectiveSubtreeWeights(
+            in: hashToBlock,
+            inherited: retainedInheritedWork
+        )
+    }
+
+    private func ancestorClosure(of coverage: Set<String>) -> Set<String> {
+        var result = Set<String>()
+        var pending = Array(coverage)
+        while let hash = pending.popLast() {
+            guard let meta = hashToBlock[hash], result.insert(hash).inserted else {
+                continue
+            }
+            if let parentHash = meta.parentBlockHash { pending.append(parentHash) }
+        }
+        return result
+    }
+
+    private func strengthenLocalCaches(
+        by delta: WorkSum,
+        coverage: Set<String>
+    ) {
+        var visited = Set<String>()
+        var pending = Array(coverage)
+        while let hash = pending.popLast() {
+            guard let meta = hashToBlock[hash], visited.insert(hash).inserted else {
+                continue
+            }
+            hashToBlock[hash]?.setCumulativeWork(meta.cumulativeWork + delta)
+            pending.append(contentsOf: meta.childHashes)
+        }
+
+        visited.removeAll(keepingCapacity: true)
+        pending = Array(coverage)
+        while let hash = pending.popLast() {
+            guard let meta = hashToBlock[hash], visited.insert(hash).inserted else {
+                continue
+            }
+            hashToBlock[hash]?.setSubtreeWeight(meta.subtreeWeight + delta)
+            if let parentHash = meta.parentBlockHash { pending.append(parentHash) }
+        }
+    }
+
+    private func addLocalCoverage(
+        _ work: UInt256,
+        at blockHash: String,
+        priorCoverage: Set<String>
+    ) {
+        var cursor: String? = blockHash
+        var prefixAlreadyCovered = false
+        while let hash = cursor, let meta = hashToBlock[hash] {
+            if priorCoverage.contains(hash) {
+                prefixAlreadyCovered = true
+                break
+            }
+            cursor = meta.parentBlockHash
+        }
+
+        if !prefixAlreadyCovered {
+            var visited = Set<String>()
+            var pending = [blockHash]
+            while let hash = pending.popLast() {
+                guard !priorCoverage.contains(hash),
+                      let meta = hashToBlock[hash],
+                      visited.insert(hash).inserted else { continue }
+                hashToBlock[hash]?.setCumulativeWork(meta.cumulativeWork + work)
+                pending.append(contentsOf: meta.childHashes)
+            }
+        }
+
+        let priorAncestors = ancestorClosure(of: priorCoverage)
+        cursor = blockHash
+        var visited = Set<String>()
+        while let hash = cursor,
+              !priorAncestors.contains(hash),
+              let meta = hashToBlock[hash],
+              visited.insert(hash).inserted {
+            hashToBlock[hash]?.setSubtreeWeight(meta.subtreeWeight + work)
+            cursor = meta.parentBlockHash
+        }
+    }
+
+    private func applyLocalContribution(
+        _ contribution: VerifiedWorkContribution,
+        to blockHash: String
+    ) {
+        let id = contribution.id
+        if workByGrind[id] == nil {
+            workByGrind[id] = WorkContributionRecord(
+                blockHashes: [],
+                contribution: contribution
+            )
+        }
+        if let existing = workByGrind[id],
+           contribution.work > existing.contribution.work {
+            let delta = WorkSum(contribution.work)
+                .subtracting(WorkSum(existing.contribution.work))!
+            for hash in existing.blockHashes {
+                _ = hashToBlock[hash]?.setWorkContribution(contribution)
+            }
+            strengthenLocalCaches(by: delta, coverage: existing.blockHashes)
+            workByGrind[id]?.contribution = contribution
+        }
+
+        guard workByGrind[id]?.blockHashes.contains(blockHash) == false,
+              let strongest = workByGrind[id]?.contribution else { return }
+        _ = hashToBlock[blockHash]?.setWorkContribution(strongest)
+        addLocalCoverage(
+            strongest.work,
+            at: blockHash,
+            priorCoverage: workByGrind[id]?.blockHashes ?? []
+        )
+        workByGrind[id]?.blockHashes.insert(blockHash)
+    }
+
+    private func strengthenForkChoiceWeights(
+        by delta: WorkSum,
+        coverage: Set<String>
+    ) {
+        var visited = Set<String>()
+        var pending = Array(coverage)
+        while let hash = pending.popLast() {
+            guard let meta = hashToBlock[hash], visited.insert(hash).inserted else {
+                continue
+            }
+            forkChoiceWeights[hash, default: .zero] =
+                forkChoiceWeights[hash, default: .zero] + delta
+            if let parentHash = meta.parentBlockHash { pending.append(parentHash) }
+        }
+    }
+
+    private func applyForkChoiceContribution(
+        _ contribution: VerifiedWorkContribution,
+        to blockHash: String
+    ) {
+        let id = contribution.id
+        if forkChoiceWorkByGrind[id] == nil {
+            forkChoiceWorkByGrind[id] = WorkContributionRecord(
+                blockHashes: [],
+                contribution: contribution
+            )
+        }
+        if let existing = forkChoiceWorkByGrind[id],
+           contribution.work > existing.contribution.work {
+            let delta = WorkSum(contribution.work)
+                .subtracting(WorkSum(existing.contribution.work))!
+            strengthenForkChoiceWeights(by: delta, coverage: existing.blockHashes)
+            forkChoiceWorkByGrind[id]?.contribution = contribution
+        }
+
+        guard hashToBlock[blockHash] != nil,
+              forkChoiceWorkByGrind[id]?.blockHashes.contains(blockHash) == false,
+              let strongest = forkChoiceWorkByGrind[id]?.contribution else { return }
+        let priorAncestors = ancestorClosure(
+            of: forkChoiceWorkByGrind[id]?.blockHashes ?? []
+        )
+        var cursor: String? = blockHash
+        var visited = Set<String>()
+        while let hash = cursor,
+              !priorAncestors.contains(hash),
+              let meta = hashToBlock[hash],
+              visited.insert(hash).inserted {
+            forkChoiceWeights[hash, default: .zero] =
+                forkChoiceWeights[hash, default: .zero] + strongest.work
+            cursor = meta.parentBlockHash
+        }
+        forkChoiceWorkByGrind[id]?.blockHashes.insert(blockHash)
+    }
+
     // MARK: - Additional proof facts
 
     func addWorkContribution(
@@ -1003,15 +1376,12 @@ public actor ChainState {
         let strengthensGrind = contribution.work > (existing?.contribution.work ?? .zero)
         guard addsCoverage || strengthensGrind else { return .discarded() }
         guard mutationGeneration < .max else { return .discarded() }
-        _ = hashToBlock[blockHash]?.setWorkContribution(contribution)
-        Self.normalizeWorkContributions(in: &hashToBlock)
-        Self.recomputeWorkCaches(in: &hashToBlock)
+        applyLocalContribution(contribution, to: blockHash)
+        applyForkChoiceContribution(contribution, to: blockHash)
         mutationGeneration += 1
         _ = refreshInheritedWork()
 
-        let canonicalChange = projectCanonicalChain(
-            inherited: retainedInheritedWork
-        )
+        let canonicalChange = projectCanonicalChain()
         if canonicalChange != nil {
             tipSnapshot = tipSnapshotsByHash[chainTip]
         }
@@ -1026,18 +1396,7 @@ public actor ChainState {
     }
 
     func workContribution(id: String) -> WorkContributionRecord? {
-        var blockHashes = Set<String>()
-        var strongest: VerifiedWorkContribution?
-        for (hash, meta) in hashToBlock {
-            guard let contribution = meta.workContributions[id] else { continue }
-            blockHashes.insert(hash)
-            if contribution.work > (strongest?.work ?? .zero) {
-                strongest = contribution
-            }
-        }
-        return strongest.map {
-            WorkContributionRecord(blockHashes: blockHashes, contribution: $0)
-        }
+        workByGrind[id]
     }
 
     func submitBlockIfUnchanged(
@@ -1127,52 +1486,129 @@ public actor ChainState {
 
     // MARK: - Fork Choice
 
-    private func effectiveSubtreeMeasures(
-        inherited: InheritedWorkSnapshot
-    ) -> [String: WorkMeasure] {
-        Self.effectiveSubtreeMeasures(in: hashToBlock, inherited: inherited)
-    }
-
-    nonisolated static func effectiveSubtreeMeasures(
+    nonisolated private static func strongestWorkByGrind(
         in blocks: [String: BlockMeta],
         inherited: InheritedWorkSnapshot
-    ) -> [String: WorkMeasure] {
+    ) -> [String: UInt256] {
         var strongestWork = inherited.strongestWorkByGrind
         for contribution in blocks.values.flatMap(\.workContributions.values)
         where contribution.work > (strongestWork[contribution.id] ?? .zero) {
             strongestWork[contribution.id] = contribution.work
         }
-        var memo: [String: WorkMeasure] = [:]
-        var visiting = Set<String>()
-
-        func measure(_ hash: String) -> WorkMeasure {
-            if let cached = memo[hash] { return cached }
-            guard visiting.insert(hash).inserted,
-                  let meta = blocks[hash] else { return .zero }
-            var result = WorkMeasure(meta.workContributions.values)
-                .normalized(using: strongestWork)
-            result.formUnion(
-                inherited.work(forBlock: hash).normalized(using: strongestWork)
-            )
-            for childHash in meta.childHashes {
-                result.formUnion(measure(childHash))
-            }
-            visiting.remove(hash)
-            memo[hash] = result
-            return result
-        }
-
-        for hash in blocks.keys { _ = measure(hash) }
-        return memo
+        return strongestWork
     }
 
-    private func effectiveSubtreeWeights(
+    nonisolated private static func effectiveSubtreeMeasures(
+        startingAt startHashes: [String],
+        retaining retainedHashes: Set<String>,
+        in blocks: [String: BlockMeta],
+        inherited: InheritedWorkSnapshot,
+        strongestWork: [String: UInt256]
+    ) -> [String: WorkMeasure] {
+        var order: [String] = []
+        var pending = startHashes
+        var visited = Set<String>()
+        while let hash = pending.popLast() {
+            guard visited.insert(hash).inserted,
+                  let meta = blocks[hash] else { continue }
+            order.append(hash)
+            pending.append(contentsOf: meta.childHashes)
+        }
+
+        var accumulators: [String: WorkMeasure] = [:]
+        var retained: [String: WorkMeasure] = [:]
+        for hash in order.reversed() {
+            guard let meta = blocks[hash] else { continue }
+            let largestChild = meta.childHashes.max {
+                (accumulators[$0]?.entries.count ?? 0)
+                    < (accumulators[$1]?.entries.count ?? 0)
+            }
+            var measure = largestChild.flatMap {
+                accumulators.removeValue(forKey: $0)
+            } ?? .zero
+            for childHash in meta.childHashes where childHash != largestChild {
+                if let child = accumulators.removeValue(forKey: childHash) {
+                    measure.formUnion(child)
+                }
+            }
+            measure.formUnion(
+                WorkMeasure(meta.workContributions.values)
+                    .normalized(using: strongestWork)
+            )
+            measure.formUnion(
+                inherited.work(forBlock: hash).normalized(using: strongestWork)
+            )
+            if retainedHashes.contains(hash) { retained[hash] = measure }
+            accumulators[hash] = measure
+        }
+        return retained
+    }
+
+    nonisolated private static func effectiveSubtreeWeights(
+        in blocks: [String: BlockMeta],
         inherited: InheritedWorkSnapshot
     ) -> [String: WorkSum] {
-        if inherited.isEmpty {
-            return hashToBlock.mapValues(\.subtreeWeight)
+        // Replace each inherited grind's local ancestor coverage with its
+        // globally strongest quantity over the unioned ancestor coverage.
+        // Grouping equal coverage keeps the walk proportional to input shape.
+        var weights = blocks.mapValues(\.subtreeWeight)
+        guard !inherited.isEmpty else { return weights }
+
+        let inheritedStrongest = inherited.strongestWorkByGrind
+        var inheritedCoverage: [String: Set<String>] = [:]
+        for (hash, measure) in inherited.entriesByBlock where blocks[hash] != nil {
+            for id in measure.entries.keys {
+                inheritedCoverage[id, default: []].insert(hash)
+            }
         }
-        return effectiveSubtreeMeasures(inherited: inherited).mapValues(\.total)
+
+        var localCoverage: [String: Set<String>] = [:]
+        var localWork: [String: UInt256] = [:]
+        for (hash, meta) in blocks {
+            for (id, contribution) in meta.workContributions
+            where inheritedStrongest[id] != nil {
+                localCoverage[id, default: []].insert(hash)
+                if contribution.work > (localWork[id] ?? .zero) {
+                    localWork[id] = contribution.work
+                }
+            }
+        }
+
+        var adjustments: [Set<String>: WorkAdjustment] = [:]
+        for (id, inheritedQuantity) in inheritedStrongest {
+            let inheritedBlocks = inheritedCoverage[id] ?? []
+            let localBlocks = localCoverage[id] ?? []
+            guard !inheritedBlocks.isEmpty || !localBlocks.isEmpty else { continue }
+            let globalWork = max(inheritedQuantity, localWork[id] ?? .zero)
+            let unionKey = inheritedBlocks.union(localBlocks)
+            var unionAdjustment = adjustments[unionKey] ?? WorkAdjustment()
+            unionAdjustment.added = unionAdjustment.added + globalWork
+            adjustments[unionKey] = unionAdjustment
+
+            if let localQuantity = localWork[id], !localBlocks.isEmpty {
+                let localKey = localBlocks
+                var localAdjustment = adjustments[localKey] ?? WorkAdjustment()
+                localAdjustment.removed = localAdjustment.removed + localQuantity
+                adjustments[localKey] = localAdjustment
+            }
+        }
+
+        for (coverage, adjustment) in adjustments {
+            var ancestors = Set<String>()
+            var pending = Array(coverage)
+            while let hash = pending.popLast() {
+                guard let meta = blocks[hash],
+                      ancestors.insert(hash).inserted else { continue }
+                if let parentHash = meta.parentBlockHash {
+                    pending.append(parentHash)
+                }
+            }
+            for hash in ancestors {
+                let withAdded = (weights[hash] ?? .zero) + adjustment.added
+                weights[hash] = withAdded.subtracting(adjustment.removed)!
+            }
+        }
+        return weights
     }
 
     nonisolated private static func preferred(
@@ -1199,24 +1635,13 @@ public actor ChainState {
     func chainWithMostWork(
         startingBlock: BlockMeta
     ) -> (subtreeWork: WorkSum, tipHash: String, blocks: Set<String>) {
-        chainWithMostWork(
-            startingBlock: startingBlock,
-            inherited: retainedInheritedWork
-        )
-    }
-
-    private func chainWithMostWork(
-        startingBlock: BlockMeta,
-        inherited: InheritedWorkSnapshot
-    ) -> (subtreeWork: WorkSum, tipHash: String, blocks: Set<String>) {
         let start = hashToBlock[startingBlock.blockHash] ?? startingBlock
-        let weights = effectiveSubtreeWeights(inherited: inherited)
         let descent = Self.ghostDescent(
             from: start.blockHash,
             in: hashToBlock,
-            weights: weights
+            weights: forkChoiceWeights
         )
-        let baseWeight = weights[start.blockHash] ?? .zero
+        let baseWeight = forkChoiceWeights[start.blockHash] ?? .zero
         return (baseWeight, descent.tipHash, descent.blocks)
     }
 
@@ -1239,10 +1664,10 @@ public actor ChainState {
         in blocksByHash: [String: BlockMeta],
         inherited: InheritedWorkSnapshot
     ) -> (chainTip: String, mainChainHashes: Set<String>)? {
-        let weights = effectiveSubtreeMeasures(
+        let weights = effectiveSubtreeWeights(
             in: blocksByHash,
             inherited: inherited
-        ).mapValues(\.total)
+        )
         return canonicalProjection(in: blocksByHash, weights: weights)
     }
 
@@ -1262,14 +1687,21 @@ public actor ChainState {
         return (descent.tipHash, descent.blocks)
     }
 
-    private func projectCanonicalChain(
-        inherited: InheritedWorkSnapshot
-    ) -> ChainCommit? {
-        let weights = effectiveSubtreeWeights(inherited: inherited)
-        guard let projection = Self.canonicalProjection(
+    private func projectCanonicalChain() -> ChainCommit? {
+        let roots = Array(indexToBlockHash[0] ?? []).filter {
+            hashToBlock[$0]?.parentBlockHash == nil
+        }
+        guard let root = Self.preferred(among: roots, weights: forkChoiceWeights)
+        else { return nil }
+        let descent = Self.ghostDescent(
+            from: root,
             in: hashToBlock,
-            weights: weights
-        ) else { return nil }
+            weights: forkChoiceWeights
+        )
+        let projection = (
+            chainTip: descent.tipHash,
+            mainChainHashes: descent.blocks
+        )
         let newHashes = projection.mainChainHashes
         let newTip = projection.chainTip
         guard newTip != chainTip || newHashes != mainChainHashes else { return nil }

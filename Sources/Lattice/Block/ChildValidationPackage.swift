@@ -2,8 +2,9 @@ import Foundation
 import UInt256
 
 /// A consensus work fact derived by admission from authenticated proof bytes.
-/// Codable conformance is for trusted local snapshots; consensus mutation APIs
-/// accept these values only from package-internal verification paths.
+/// Live mutation accepts these only from package-internal verification. Public
+/// recovery replay accepts the same fact only after node-owned authentication
+/// and durability.
 public struct VerifiedWorkContribution: Codable, Sendable, Equatable {
     public let id: String
     public let work: UInt256

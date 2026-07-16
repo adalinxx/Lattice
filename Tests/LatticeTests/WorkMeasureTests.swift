@@ -50,4 +50,21 @@ final class WorkMeasureTests: XCTestCase {
             XCTAssertEqual(metadata.work, WorkSum(UInt256(11)))
         }
     }
+
+    func testBlockMetadataReplacesOnlyTheStrengthenedQuantity() {
+        var metadata = BlockMeta(
+            blockHash: "block",
+            parentBlockHash: nil,
+            blockHeight: 0,
+            childHashes: [],
+            workContributions: [
+                contribution("shared", 7),
+                contribution("independent", 11),
+            ]
+        )
+
+        XCTAssertTrue(metadata.setWorkContribution(contribution("shared", 13)))
+        XCTAssertEqual(metadata.workContributions["shared"]?.work, UInt256(13))
+        XCTAssertEqual(metadata.work, WorkSum(UInt256(24)))
+    }
 }

@@ -267,6 +267,117 @@ final class ChainLocalAdmissionTests: XCTestCase {
         )
     }
 
+    private func verifiedMultiHopContribution(
+        outerTarget: UInt256,
+        middleTarget: UInt256,
+        leafTarget: UInt256,
+        miningTarget: UInt256
+    ) async throws -> (
+        fetcher: StorableFetcher,
+        leafGenesis: Block,
+        candidate: Block,
+        package: ChildValidationPackage,
+        downstreamCID: String,
+        contribution: VerifiedWorkContribution,
+        rootHash: UInt256,
+        rootCID: String
+    ) {
+        let fetcher = StorableFetcher()
+        let parentTemplate = try await makeGenesis(fetcher: fetcher, timestamp: 500)
+        let leafGenesis = try await buildAndStoreGenesis(
+            spec: chainLocalSpec(),
+            timestamp: 1_000,
+            target: leafTarget,
+            nonce: 1,
+            fetcher: fetcher
+        )
+        let downstream = try await buildAndStoreGenesis(
+            spec: chainLocalSpec(),
+            timestamp: 1_500,
+            target: leafTarget,
+            nonce: 5,
+            fetcher: fetcher
+        )
+        let leaf = try await buildAndStoreBlock(
+            previous: leafGenesis,
+            children: ["Downstream": downstream],
+            parentChainBlock: parentTemplate,
+            timestamp: 2_000,
+            target: leafTarget,
+            nextTarget: leafTarget,
+            nonce: 2,
+            fetcher: fetcher
+        )
+        let middle = try await buildAndStoreGenesis(
+            spec: chainLocalSpec(),
+            children: ["Leaf": leaf],
+            timestamp: 3_000,
+            target: middleTarget,
+            nonce: 3,
+            fetcher: fetcher
+        )
+        let rootTemplate = try await buildAndStoreGenesis(
+            spec: chainLocalSpec(),
+            children: ["Middle": middle],
+            timestamp: 4_000,
+            target: outerTarget,
+            nonce: 4,
+            fetcher: fetcher
+        )
+        let root = try XCTUnwrap(
+            BlockBuilder.mine(
+                block: rootTemplate,
+                target: miningTarget,
+                maxAttempts: 1_000_000
+            ),
+            "the fixture must find a root grind under its hardest accepted target"
+        )
+        try await storeBuiltBlock(root, in: fetcher)
+
+        let rootHop = try await ChildBlockProof.generate(
+            rootHeader: try BlockHeader(node: root),
+            childDirectory: "Middle",
+            fetcher: fetcher
+        )
+        let leafHop = try await ChildBlockProof.generate(
+            rootHeader: try BlockHeader(node: middle),
+            childDirectory: "Leaf",
+            fetcher: fetcher
+        )
+        let proof = rootHop.composing(hop: leafHop)
+        let parentGenesisLinks = [testParentGenesisLink(
+            directory: "Middle",
+            childGenesisCID: try BlockHeader(node: middle).rawCID
+        )]
+        let package = try await childValidationPackage(
+            proof: proof,
+            fetcher: fetcher,
+            parentGenesisLinks: parentGenesisLinks
+        )
+        let childCID = try BlockHeader(node: leaf).rawCID
+        let verification = await proof.verify(
+            child: leaf,
+            childCID: childCID,
+            chainPath: [DEFAULT_ROOT_DIRECTORY, "Middle", "Leaf"],
+            minimumRootWork: UInt256(1),
+            parentContinuityLinks: package.parentContinuityLinks,
+            parentGenesisLinks: package.parentGenesisLinks
+        )
+        guard case .success(let evidence) = verification else {
+            throw ChainLocalTestError.unexpectedFailure
+        }
+        return (
+            fetcher: fetcher,
+            leafGenesis: leafGenesis,
+            candidate: leaf,
+            package: package,
+            downstreamCID: try BlockHeader(node: downstream).rawCID,
+            contribution: try XCTUnwrap(evidence.contribution(for: leaf)),
+            rootHash: root.proofOfWorkHash(),
+            rootCID: proof.rootCID
+        )
+    }
+
     func testResolutionFailuresHaveTypedOutcomes() async throws {
         let storage = StorableFetcher()
         let genesis = try await makeGenesis(fetcher: storage, timestamp: 1_000)
@@ -1346,6 +1457,130 @@ final class ChainLocalAdmissionTests: XCTestCase {
         }
         let containsCandidate = await exactPath.chain.contains(blockHash: candidateHeader.rawCID)
         XCTAssertTrue(containsCandidate)
+    }
+
+    func testMultiHopProofCreditsOuterTargetWhenItIsStrongest() async throws {
+        let outerTarget = UInt256.max / UInt256(16)
+        let middleTarget = UInt256.max / UInt256(8)
+        let leafTarget = UInt256.max / UInt256(4)
+
+        let verified = try await verifiedMultiHopContribution(
+            outerTarget: outerTarget,
+            middleTarget: middleTarget,
+            leafTarget: leafTarget,
+            miningTarget: outerTarget
+        )
+
+        XCTAssertLessThanOrEqual(verified.rootHash, outerTarget)
+        XCTAssertEqual(verified.contribution.id, verified.rootCID)
+        XCTAssertEqual(verified.contribution.work, UInt256(16))
+    }
+
+    func testMultiHopStrongestWorkSurvivesAdmissionReplayAndExport() async throws {
+        let fixture = try await verifiedMultiHopContribution(
+            outerTarget: UInt256.max / UInt256(16),
+            middleTarget: UInt256.max / UInt256(8),
+            leafTarget: UInt256.max / UInt256(4),
+            miningTarget: UInt256.max / UInt256(16)
+        )
+        let expectedWork = UInt256(16)
+        let level = ChainLevel(
+            chain: ChainState.fromGenesis(block: fixture.leafGenesis),
+            context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Middle", "Leaf"])
+        )
+        let persistedGenesis = await level.chain.persist()
+        let recorder = AdmissionStageRecorder()
+        let candidateHeader = try BlockHeader(node: fixture.candidate)
+
+        let admitted = try await level.admitBlockHeaderChainLocal(
+            candidateHeader,
+            fetcher: fixture.fetcher,
+            childPackage: fixture.package,
+            storer: fixture.fetcher,
+            stage: { batch in await recorder.stage(batch) }
+        )
+        guard case .accepted = admitted else {
+            return XCTFail("the real multi-hop proof should admit")
+        }
+        XCTAssertEqual(fixture.contribution.work, expectedWork)
+        let liveRecord = await level.chain.workContribution(id: fixture.rootCID)
+        XCTAssertEqual(try XCTUnwrap(liveRecord).contribution, fixture.contribution)
+
+        let batches = await recorder.recordedBatches()
+        XCTAssertEqual(batches.count, 1)
+        XCTAssertEqual(
+            batches.flatMap(\.facts).compactMap { fact -> VerifiedWorkContribution? in
+                guard case .work(let work) = fact else { return nil }
+                return work.contribution
+            },
+            [fixture.contribution]
+        )
+        let snapshotData = try JSONEncoder().encode(persistedGenesis)
+        let batchData = try JSONEncoder().encode(batches)
+        let restored = try await ChainState.restore(
+            from: try JSONDecoder().decode(PersistedChainState.self, from: snapshotData),
+            replaying: try JSONDecoder().decode([ChainAdmissionBatch].self, from: batchData)
+        )
+        let restoredRecord = await restored.workContribution(id: fixture.rootCID)
+        XCTAssertEqual(try XCTUnwrap(restoredRecord).contribution, fixture.contribution)
+
+        let exportedSnapshot = await restored.inheritedWorkSnapshot(
+            forChildCoverage: [fixture.downstreamCID: [candidateHeader.rawCID]]
+        )
+        let exported = try XCTUnwrap(exportedSnapshot).work(forBlock: fixture.downstreamCID)
+        XCTAssertEqual(exported.work(forGrind: fixture.rootCID), expectedWork)
+        XCTAssertEqual(exported.total, WorkSum(expectedWork))
+    }
+
+    func testMultiHopProofCreditsMiddleTargetWhenItIsStrongest() async throws {
+        let outerTarget = UInt256.max / UInt256(4)
+        let middleTarget = UInt256.max / UInt256(16)
+        let leafTarget = UInt256.max / UInt256(8)
+
+        let verified = try await verifiedMultiHopContribution(
+            outerTarget: outerTarget,
+            middleTarget: middleTarget,
+            leafTarget: leafTarget,
+            miningTarget: middleTarget
+        )
+
+        XCTAssertLessThanOrEqual(verified.rootHash, middleTarget)
+        XCTAssertEqual(verified.contribution.id, verified.rootCID)
+        XCTAssertEqual(verified.contribution.work, UInt256(16))
+    }
+
+    func testMultiHopProofCreditsLeafTargetWhenItIsStrongest() async throws {
+        let outerTarget = UInt256.max / UInt256(4)
+        let middleTarget = UInt256.max / UInt256(8)
+        let leafTarget = UInt256.max / UInt256(16)
+
+        let verified = try await verifiedMultiHopContribution(
+            outerTarget: outerTarget,
+            middleTarget: middleTarget,
+            leafTarget: leafTarget,
+            miningTarget: leafTarget
+        )
+
+        XCTAssertLessThanOrEqual(verified.rootHash, leafTarget)
+        XCTAssertEqual(verified.contribution.id, verified.rootCID)
+        XCTAssertEqual(verified.contribution.work, UInt256(16))
+    }
+
+    func testMultiHopCarrierTargetMissDoesNotEraseStrongerAcceptedWork() async throws {
+        let outerTarget = UInt256.max / UInt256(16)
+        let leafTarget = UInt256.max / UInt256(4)
+
+        let verified = try await verifiedMultiHopContribution(
+            outerTarget: outerTarget,
+            middleTarget: .zero,
+            leafTarget: leafTarget,
+            miningTarget: outerTarget
+        )
+
+        XCTAssertLessThanOrEqual(verified.rootHash, outerTarget)
+        XCTAssertGreaterThan(verified.rootHash, .zero)
+        XCTAssertEqual(verified.contribution.id, verified.rootCID)
+        XCTAssertEqual(verified.contribution.work, UInt256(16))
     }
 
     func testChildProofRejectsBrokenVerticalStateContinuity() async throws {
