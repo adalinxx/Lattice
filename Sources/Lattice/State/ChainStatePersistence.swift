@@ -4,22 +4,36 @@ import CID
 public enum ChainStateRestoreError: Error, Sendable, Equatable {
     case corruptConsensusGraph
     case missingBlockFact
+    case missingInheritedWorkSnapshot
 }
 
-/// Node-persistable projection of one chain's consensus state.
+/// Node-persistable projection of one chain's local consensus state and the
+/// inherited revision under which its canonical cache was derived.
 public struct PersistedChainState: Codable, Sendable, Equatable {
+    public static let currentSchemaVersion: UInt16 = 1
+
+    public let schemaVersion: UInt16
     public let revision: UInt64
+    public let inheritedWorkRevision: UInt64?
+    public let inheritedWorkSnapshot: InheritedWorkSnapshot?
     public let chainTip: String
     public let mainChainHashes: [String]
     public let blocks: [PersistedBlockMeta]
 
     public init(
+        schemaVersion: UInt16 = PersistedChainState.currentSchemaVersion,
         revision: UInt64 = 0,
+        inheritedWorkRevision: UInt64? = nil,
+        inheritedWorkSnapshot: InheritedWorkSnapshot? = nil,
         chainTip: String,
         mainChainHashes: [String],
         blocks: [PersistedBlockMeta]
     ) {
+        self.schemaVersion = schemaVersion
         self.revision = revision
+        self.inheritedWorkRevision = inheritedWorkRevision
+            ?? inheritedWorkSnapshot?.revision
+        self.inheritedWorkSnapshot = inheritedWorkSnapshot
         self.chainTip = chainTip
         self.mainChainHashes = mainChainHashes
         self.blocks = blocks
@@ -76,8 +90,10 @@ private extension PersistedBlockMeta {
     var decodedWork: WorkSum? {
         guard !workContributions.isEmpty,
               Set(workContributions.map(\.id)).count == workContributions.count,
-              workContributions.allSatisfy({ $0.work > .zero }) else { return nil }
-        return workContributions.reduce(WorkSum.zero) { $0 + $1.work }
+              workContributions.allSatisfy({
+                  $0.work > .zero && (try? CID($0.id)) != nil
+              }) else { return nil }
+        return WorkMeasure(workContributions).total
     }
 
     var hasValidEncoding: Bool {
@@ -96,7 +112,16 @@ private extension PersistedBlockMeta {
     }
 }
 
-private func hasValidConsensusGraph(_ persisted: PersistedChainState) -> Bool {
+private struct ConsensusProjection {
+    let chainTip: String
+    let mainChainHashes: Set<String>
+}
+
+private func hasValidConsensusGraph(
+    _ persisted: PersistedChainState,
+    inherited: InheritedWorkSnapshot,
+    projection: inout ConsensusProjection?
+) -> Bool {
     let blocks = Dictionary(
         uniqueKeysWithValues: persisted.blocks.map { ($0.blockHash, $0) }
     )
@@ -119,43 +144,54 @@ private func hasValidConsensusGraph(_ persisted: PersistedChainState) -> Bool {
         }
     }
 
-    var cumulativeMemo: [String: WorkSum] = [:]
+    var strongestWorkByGrind: [String: UInt256] = [:]
+    for contribution in blocks.values.flatMap(\.workContributions) {
+        if contribution.work > (strongestWorkByGrind[contribution.id] ?? .zero) {
+            strongestWorkByGrind[contribution.id] = contribution.work
+        }
+    }
+    func ownMeasure(_ block: PersistedBlockMeta) -> WorkMeasure? {
+        guard block.decodedWork != nil else { return nil }
+        return WorkMeasure(block.workContributions.compactMap { contribution in
+            strongestWorkByGrind[contribution.id].map {
+                VerifiedWorkContribution(id: contribution.id, work: $0)
+            }
+        })
+    }
+    var cumulativeMemo: [String: WorkMeasure] = [:]
     var cumulativeVisiting = Set<String>()
-    func cumulativeWork(_ hash: String) -> WorkSum? {
+    func cumulativeWork(_ hash: String) -> WorkMeasure? {
         if let work = cumulativeMemo[hash] { return work }
         guard cumulativeVisiting.insert(hash).inserted,
               let block = blocks[hash],
-              let ownWork = block.decodedWork,
+              let ownWork = ownMeasure(block),
               let persistedWork = WorkSum(hex: block.cumulativeWork)
         else { return nil }
-        let parentWork: WorkSum
+        var work = ownWork
         if let parentHash = block.parentBlockHash, blocks[parentHash] != nil {
-            guard let work = cumulativeWork(parentHash) else { return nil }
-            parentWork = work
-        } else {
-            parentWork = .zero
+            guard let parentWork = cumulativeWork(parentHash) else { return nil }
+            work.formUnion(parentWork)
         }
-        let work = parentWork + ownWork
         cumulativeVisiting.remove(hash)
-        guard work == persistedWork else { return nil }
+        guard work.total == persistedWork else { return nil }
         cumulativeMemo[hash] = work
         return work
     }
 
-    var subtreeMemo: [String: WorkSum] = [:]
+    var subtreeMemo: [String: WorkMeasure] = [:]
     var subtreeVisiting = Set<String>()
-    func subtreeWork(_ hash: String) -> WorkSum? {
+    func subtreeWork(_ hash: String) -> WorkMeasure? {
         if let work = subtreeMemo[hash] { return work }
         guard subtreeVisiting.insert(hash).inserted,
               let block = blocks[hash],
-              var work = block.decodedWork else { return nil }
+              var work = ownMeasure(block) else { return nil }
         for childHash in block.childHashes {
             guard let childWork = subtreeWork(childHash) else { return nil }
-            work = work + childWork
+            work.formUnion(childWork)
         }
         subtreeVisiting.remove(hash)
         if let persistedSubtree = block.subtreeWeight {
-            guard WorkSum(hex: persistedSubtree) == work else { return nil }
+            guard WorkSum(hex: persistedSubtree) == work.total else { return nil }
         }
         subtreeMemo[hash] = work
         return work
@@ -173,65 +209,28 @@ private func hasValidConsensusGraph(_ persisted: PersistedChainState) -> Bool {
         cursor = block.parentBlockHash
     }
     guard canonicalPath == Set(persisted.mainChainHashes),
-          let canonicalRoot = canonicalPath.first(where: {
+          canonicalPath.contains(where: {
               blocks[$0]?.parentBlockHash == nil
-          }),
-          let canonicalRootWork = subtreeMemo[canonicalRoot]
+          })
     else { return false }
 
-    func selectedChild(of hash: String) -> String? {
-        guard let children = blocks[hash]?.childHashes, !children.isEmpty else {
-            return nil
-        }
-        let weighted = children.compactMap { child -> (String, WorkSum)? in
-            guard let work = subtreeMemo[child] else { return nil }
-            return (child, work)
-        }
-        guard weighted.count == children.count,
-              let bestWork = weighted.map(\.1).max(),
-              var selected = weighted.first(where: { $0.1 == bestWork })?.0 else {
-            return nil
-        }
-        for candidate in weighted where candidate.1 == bestWork {
-            if forkChoicePrefersSegmentBase(
-                candidate.0,
-                over: selected
-            ) {
-                selected = candidate.0
-            }
-        }
-        return selected
+    let projectionBlocks = blocks.mapValues { block in
+        BlockMeta(
+            blockHash: block.blockHash,
+            parentBlockHash: block.parentBlockHash,
+            blockHeight: block.blockHeight,
+            childHashes: block.childHashes,
+            workContributions: block.workContributions
+        )
     }
-    func selectedPath(from start: String) -> [String]? {
-        var path: [String] = []
-        var visited = Set<String>()
-        var current: String? = start
-        while let hash = current {
-            guard visited.insert(hash).inserted, blocks[hash] != nil else { return nil }
-            path.append(hash)
-            current = selectedChild(of: hash)
-        }
-        return path
-    }
-
-    let roots = blocks.values.filter { $0.parentBlockHash == nil }
-    guard let bestRootWork = roots.compactMap({ subtreeMemo[$0.blockHash] }).max(),
-          var preferredRoot = roots.first(where: {
-              subtreeMemo[$0.blockHash] == bestRootWork
-          }) else { return false }
-    for root in roots where subtreeMemo[root.blockHash] == bestRootWork {
-        if forkChoicePrefersSegmentBase(
-            root.blockHash,
-            over: preferredRoot.blockHash
-        ) {
-            preferredRoot = root
-        }
-    }
-    guard canonicalRootWork == bestRootWork,
-          canonicalRoot == preferredRoot.blockHash,
-          let selected = selectedPath(from: canonicalRoot),
-          selected.last == persisted.chainTip,
-          Set(selected) == canonicalPath else { return false }
+    guard let selected = ChainState.canonicalProjection(
+        in: projectionBlocks,
+        inherited: inherited
+    ) else { return false }
+    projection = ConsensusProjection(
+        chainTip: selected.chainTip,
+        mainChainHashes: selected.mainChainHashes
+    )
     return true
 }
 
@@ -257,6 +256,8 @@ public extension ChainState {
         }
         return PersistedChainState(
             revision: mutationGeneration,
+            inheritedWorkRevision: inheritedWorkSnapshot?.revision,
+            inheritedWorkSnapshot: inheritedWorkSnapshot,
             chainTip: chainTip,
             mainChainHashes: Array(mainChainHashes).sorted(),
             blocks: hashToBlock.values.map(persistedMeta)
@@ -264,18 +265,65 @@ public extension ChainState {
         )
     }
 
-    static func restore(from persisted: PersistedChainState) throws -> ChainState {
+    static func restore(
+        from persisted: PersistedChainState,
+        inheritedWorkProvider: InheritedWorkProvider? = nil
+    ) throws -> ChainState {
         let persistedBlocks = persisted.blocks
         let blockHashes = persistedBlocks.map(\.blockHash)
-        let contributionIDs = persistedBlocks.flatMap {
-            $0.workContributions.map(\.id)
+        let cachedInherited = persisted.inheritedWorkSnapshot
+        let cachedRevisionMatches = cachedInherited.map {
+            Optional($0.revision) == persisted.inheritedWorkRevision
+        } ?? true
+        guard persisted.schemaVersion == PersistedChainState.currentSchemaVersion,
+              cachedRevisionMatches
+        else {
+            throw ChainStateRestoreError.corruptConsensusGraph
         }
+
+        let liveInherited = inheritedWorkProvider?()
+        let retainedInherited: InheritedWorkSnapshot?
+        if let cachedInherited {
+            retainedInherited = liveInherited.map(cachedInherited.union) ?? cachedInherited
+        } else if let previousRevision = persisted.inheritedWorkRevision {
+            guard let liveInherited, liveInherited.revision >= previousRevision else {
+                throw ChainStateRestoreError.missingInheritedWorkSnapshot
+            }
+            retainedInherited = liveInherited
+        } else {
+            retainedInherited = liveInherited
+        }
+        let inherited = retainedInherited ?? .zero
+        let validInherited = inherited.entriesByBlock.allSatisfy { blockHash, measure in
+            (try? CID(blockHash)) != nil && measure.entries.allSatisfy { grindID, work in
+                (try? CID(grindID)) != nil && work > .zero
+            }
+        }
+        var projection: ConsensusProjection?
         guard Set(blockHashes).count == blockHashes.count,
               Set(persisted.mainChainHashes).count == persisted.mainChainHashes.count,
-              Set(contributionIDs).count == contributionIDs.count,
+              validInherited,
               persisted.blocks.allSatisfy(\.hasValidEncoding),
-              hasValidConsensusGraph(persisted) else {
+              hasValidConsensusGraph(
+                  persisted,
+                  inherited: inherited,
+                  projection: &projection
+              ),
+              let projection else {
             throw ChainStateRestoreError.corruptConsensusGraph
+        }
+        let projectionChanged = projection.chainTip != persisted.chainTip
+            || projection.mainChainHashes != Set(persisted.mainChainHashes)
+        let inheritedAdvanced = retainedInherited != cachedInherited
+        let revision: UInt64
+        if projectionChanged || inheritedAdvanced {
+            let (next, overflow) = persisted.revision.addingReportingOverflow(1)
+            guard !overflow else {
+                throw ChainStateRestoreError.corruptConsensusGraph
+            }
+            revision = next
+        } else {
+            revision = persisted.revision
         }
 
         var blocks: [String: BlockMeta] = [:]
@@ -303,14 +351,16 @@ public extension ChainState {
             byHeight[block.blockHeight, default: []].insert(block.blockHash)
         }
         return try ChainState(
-            chainTip: persisted.chainTip,
-            mainChainHashes: Set(persisted.mainChainHashes),
+            chainTip: projection.chainTip,
+            mainChainHashes: projection.mainChainHashes,
             indexToBlockHash: byHeight,
             hashToBlock: blocks,
             blockTimestamps: timestamps,
-            tipSnapshot: snapshots[persisted.chainTip],
+            tipSnapshot: snapshots[projection.chainTip],
             tipSnapshotsByHash: snapshots,
-            mutationGeneration: persisted.revision
+            mutationGeneration: revision,
+            inheritedWorkProvider: inheritedWorkProvider,
+            inheritedWorkSnapshot: retainedInherited
         )
     }
 }

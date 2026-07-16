@@ -8,7 +8,7 @@ private func persistedContribution(
     _ id: String,
     work: UInt256
 ) -> VerifiedWorkContribution {
-    VerifiedWorkContribution(id: id, work: work)
+    VerifiedWorkContribution(id: persistedCID(id), work: work)
 }
 
 private func persistedCID(_ seed: String) -> String {
@@ -131,8 +131,14 @@ final class PersistWorkRoundTripTests: XCTestCase {
             fetcher: fetcher
         )
         let header = try BlockHeader(node: block)
-        let firstGrind = VerifiedWorkContribution(id: "grind:first", work: workForTarget(target))
-        let secondGrind = VerifiedWorkContribution(id: "grind:second", work: UInt256(7))
+        let firstGrind = VerifiedWorkContribution(
+            id: persistedCID("grind:first"),
+            work: workForTarget(target)
+        )
+        let secondGrind = VerifiedWorkContribution(
+            id: persistedCID("grind:second"),
+            work: UInt256(7)
+        )
         let chain = ChainState.fromGenesis(block: genesis)
 
         let inserted = await chain.submitBlock(
@@ -217,12 +223,29 @@ final class PersistWorkRoundTripTests: XCTestCase {
             id: persistedCID("recovery-second-grind"),
             work: UInt256(17)
         )
+        let weakerSharedWork = VerifiedWorkContribution(
+            id: persistedCID("recovery-upgraded-grind"),
+            work: UInt256(5)
+        )
+        let strongerSharedWork = VerifiedWorkContribution(
+            id: weakerSharedWork.id,
+            work: UInt256(23)
+        )
         let block1Batch = try testAdmissionBatch(block: block1, contribution: work1)
         let block2Batch = try testAdmissionBatch(block: block2, contribution: work2)
         let secondWorkBatch = testWorkBatch(
             blockHash: block2Header.rawCID,
             contribution: secondWork2
         )
+        let weakerSharedWorkBatch = testWorkBatch(
+            blockHash: block2Header.rawCID,
+            contribution: weakerSharedWork
+        )
+        let strongerSharedWorkBatch = testWorkBatch(
+            blockHash: block2Header.rawCID,
+            contribution: strongerSharedWork
+        )
+        XCTAssertNotEqual(weakerSharedWorkBatch.facts[0].id, strongerSharedWorkBatch.facts[0].id)
 
         let live = ChainState.fromGenesis(block: genesis)
         let inserted1 = await live.submitBlock(
@@ -245,6 +268,18 @@ final class PersistWorkRoundTripTests: XCTestCase {
             contribution: secondWork2
         )
         XCTAssertTrue(addedSecondWork.addedContribution)
+        let addedWeakerSharedWork = await live.submitBlock(
+            blockHeader: block2Header,
+            block: block2,
+            contribution: weakerSharedWork
+        )
+        XCTAssertTrue(addedWeakerSharedWork.addedContribution)
+        let upgradedSharedWork = await live.submitBlock(
+            blockHeader: block2Header,
+            block: block2,
+            contribution: strongerSharedWork
+        )
+        XCTAssertTrue(upgradedSharedWork.addedContribution)
         let expected = await live.persist()
 
         let restored = try await ChainState.restore(
@@ -253,12 +288,14 @@ final class PersistWorkRoundTripTests: XCTestCase {
                 block1Batch,
                 block2Batch,
                 secondWorkBatch,
+                strongerSharedWorkBatch,
+                weakerSharedWorkBatch,
                 block2Batch,
                 secondWorkBatch,
+                strongerSharedWorkBatch,
             ]
         )
         let recovered = await restored.persist()
-        XCTAssertEqual(recovered.revision, expected.revision)
         XCTAssertEqual(recovered.chainTip, expected.chainTip)
         XCTAssertEqual(recovered.mainChainHashes, expected.mainChainHashes)
         XCTAssertEqual(recovered.blocks.count, expected.blocks.count)
@@ -323,6 +360,13 @@ final class PersistWorkRoundTripTests: XCTestCase {
         for (actual, expected) in zip(recovered.blocks, expected.blocks) {
             XCTAssertEqual(actual, expected)
         }
+
+        let floored = try await ChainState.restore(
+            replaying: [childBatch, genesisBatch],
+            revisionFloor: 40
+        )
+        let flooredSnapshot = await floored.persist()
+        XCTAssertEqual(flooredSnapshot.revision, 41)
     }
 
     func testRestartRetainsDetachedDescendantGrindsUntilItsParentCanReorg() async throws {
@@ -456,7 +500,7 @@ final class PersistWorkRoundTripTests: XCTestCase {
         XCTAssertEqual(block.workContributions.first?.work, work)
     }
 
-    func testRestoreRejectsMissingOrZeroContribution() {
+    func testRestoreRejectsMissingZeroOrMalformedContribution() {
         let hash = persistedCID("invalid-work")
         let missing = persistedMeta(
             hash: hash,
@@ -470,8 +514,16 @@ final class PersistWorkRoundTripTests: XCTestCase {
             contributions: [persistedContribution("grind:zero", work: .zero)],
             cumulativeWork: UInt256(1)
         )
+        let malformed = persistedMeta(
+            hash: hash,
+            height: 0,
+            contributions: [
+                VerifiedWorkContribution(id: "not-a-cid", work: UInt256(1)),
+            ],
+            cumulativeWork: UInt256(1)
+        )
 
-        for block in [missing, zero] {
+        for block in [missing, zero, malformed] {
             XCTAssertThrowsError(
                 try ChainState.restore(from: persistedState(tip: hash, main: [hash], blocks: [block]))
             ) { error in
@@ -524,13 +576,18 @@ final class PersistWorkRoundTripTests: XCTestCase {
         }
     }
 
-    func testRestoreRejectsStaleForkChoice() {
-        XCTAssertThrowsError(try ChainState.restore(from: staleForkChoiceSnapshot())) { error in
-            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
-        }
+    func testRestoreReprojectsStaleForkChoice() async throws {
+        let snapshot = staleForkChoiceSnapshot()
+        let restored = try ChainState.restore(from: snapshot)
+        let tip = await restored.getMainChainTip()
+
+        XCTAssertEqual(
+            tip,
+            persistedCID("stale-winning-tip")
+        )
     }
 
-    func testRestoreRejectsHeavierCompetingRoot() {
+    func testRestoreReprojectsToHeavierCompetingRoot() async throws {
         let canonicalHash = persistedCID("canonical-root")
         let competingHash = persistedCID("competing-root")
         let canonical = persistedMeta(
@@ -546,20 +603,197 @@ final class PersistWorkRoundTripTests: XCTestCase {
             cumulativeWork: UInt256(2)
         )
 
-        XCTAssertThrowsError(
-            try ChainState.restore(
-                from: persistedState(
-                    tip: canonicalHash,
-                    main: [canonicalHash],
-                    blocks: [canonical, competing]
-                )
+        let restored = try ChainState.restore(
+            from: persistedState(
+                tip: canonicalHash,
+                main: [canonicalHash],
+                blocks: [canonical, competing]
             )
-        ) { error in
-            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
-        }
+        )
+        let tip = await restored.getMainChainTip()
+
+        XCTAssertEqual(tip, competingHash)
     }
 
-    func testRestoreRejectsContributionReplayedAcrossBlocks() {
+    func testRestoreReprojectsUsingCurrentInheritedWork() async throws {
+        let rootHash = persistedCID("inherited-root")
+        let incumbentHash = persistedCID("inherited-incumbent")
+        let forkHash = persistedCID("inherited-fork")
+        let root = persistedMeta(
+            hash: rootHash,
+            height: 0,
+            children: [incumbentHash, forkHash],
+            contributions: [persistedContribution("grind:inherited-root", work: UInt256(1))],
+            cumulativeWork: UInt256(1)
+        )
+        let incumbent = persistedMeta(
+            hash: incumbentHash,
+            parent: rootHash,
+            height: 1,
+            contributions: [persistedContribution("grind:inherited-incumbent", work: UInt256(3))],
+            cumulativeWork: UInt256(4)
+        )
+        let fork = persistedMeta(
+            hash: forkHash,
+            parent: rootHash,
+            height: 1,
+            contributions: [persistedContribution("grind:inherited-fork", work: UInt256(1))],
+            cumulativeWork: UInt256(2)
+        )
+        let inherited = InheritedWorkSnapshot(
+            revision: 7,
+            workByBlock: [
+                forkHash: WorkMeasure(
+                    VerifiedWorkContribution(
+                        id: persistedCID("inherited-parent-grind"),
+                        work: UInt256(5)
+                    )
+                ),
+            ]
+        )
+
+        let restored = try ChainState.restore(
+            from: persistedState(
+                tip: incumbentHash,
+                main: [rootHash, incumbentHash],
+                blocks: [root, incumbent, fork]
+            ),
+            inheritedWorkProvider: { inherited }
+        )
+        let tip = await restored.getMainChainTip()
+
+        XCTAssertEqual(tip, forkHash)
+    }
+
+    func testRestoreNormalizesOneGrindAcrossLocalAndInheritedCoverage() async throws {
+        let rootHash = persistedCID("cross-source-root")
+        let firstHash = persistedCID("cross-source-first")
+        let secondHash = persistedCID("cross-source-second")
+        let preferredHash = forkChoicePrefersSegmentBase(firstHash, over: secondHash)
+            ? firstHash : secondHash
+        let otherHash = preferredHash == firstHash ? secondHash : firstHash
+        let shared = persistedContribution("cross-source-shared", work: UInt256(1))
+        let root = persistedMeta(
+            hash: rootHash,
+            height: 0,
+            children: [firstHash, secondHash],
+            contributions: [persistedContribution("cross-source-root-work", work: UInt256(1))],
+            cumulativeWork: UInt256(1)
+        )
+        let preferred = persistedMeta(
+            hash: preferredHash,
+            parent: rootHash,
+            height: 1,
+            contributions: [
+                persistedContribution("cross-source-preferred", work: UInt256(1)),
+                shared,
+            ],
+            cumulativeWork: UInt256(3)
+        )
+        let other = persistedMeta(
+            hash: otherHash,
+            parent: rootHash,
+            height: 1,
+            contributions: [persistedContribution("cross-source-other", work: UInt256(1))],
+            cumulativeWork: UInt256(2)
+        )
+        let inherited = InheritedWorkSnapshot(
+            revision: 1,
+            workByBlock: [
+                otherHash: WorkMeasure(
+                    VerifiedWorkContribution(id: shared.id, work: UInt256(100))
+                ),
+            ]
+        )
+
+        let restored = try ChainState.restore(
+            from: persistedState(
+                tip: preferredHash,
+                main: [rootHash, preferredHash],
+                blocks: [root, preferred, other]
+            ),
+            inheritedWorkProvider: { inherited }
+        )
+        let tip = await restored.getMainChainTip()
+
+        XCTAssertEqual(tip, preferredHash)
+    }
+
+    func testRestoreRetainsInheritedSnapshotAndRequiresProviderWhenCacheIsOmitted() async throws {
+        let rootHash = persistedCID("retained-inherited-root")
+        let local = VerifiedWorkContribution(
+            id: persistedCID("retained-inherited-local"),
+            work: UInt256(1)
+        )
+        let root = BlockMeta(
+            blockHash: rootHash,
+            parentBlockHash: nil,
+            blockHeight: 0,
+            childHashes: [],
+            workContributions: [local]
+        )
+        let chain = makeChain(blocks: [root])
+        let inherited = InheritedWorkSnapshot(
+            revision: 3,
+            workByBlock: [
+                rootHash: WorkMeasure(
+                    VerifiedWorkContribution(
+                        id: persistedCID("retained-inherited-parent"),
+                        work: UInt256(5)
+                    )
+                ),
+            ]
+        )
+        _ = await chain.setInheritedWorkProvider { inherited }
+        let snapshot = await chain.persist()
+        XCTAssertEqual(snapshot.inheritedWorkRevision, 3)
+        XCTAssertEqual(snapshot.inheritedWorkSnapshot, inherited)
+
+        let cachedRestore = try ChainState.restore(from: snapshot)
+        let cachedRoundTrip = await cachedRestore.persist()
+        XCTAssertEqual(cachedRoundTrip.inheritedWorkSnapshot, inherited)
+
+        let uncached = PersistedChainState(
+            schemaVersion: snapshot.schemaVersion,
+            revision: snapshot.revision,
+            inheritedWorkRevision: snapshot.inheritedWorkRevision,
+            inheritedWorkSnapshot: nil,
+            chainTip: snapshot.chainTip,
+            mainChainHashes: snapshot.mainChainHashes,
+            blocks: snapshot.blocks
+        )
+        XCTAssertThrowsError(try ChainState.restore(from: uncached)) { error in
+            XCTAssertEqual(error as? ChainStateRestoreError, .missingInheritedWorkSnapshot)
+        }
+        XCTAssertThrowsError(
+            try ChainState.restore(
+                from: uncached,
+                inheritedWorkProvider: {
+                    InheritedWorkSnapshot(revision: 2, workByBlock: [:])
+                }
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ChainStateRestoreError,
+                .missingInheritedWorkSnapshot
+            )
+        }
+
+        let restored = try ChainState.restore(
+            from: snapshot,
+            inheritedWorkProvider: {
+                InheritedWorkSnapshot(revision: 4, workByBlock: [:])
+            }
+        )
+        let restoredSnapshot = await restored.persist()
+        XCTAssertEqual(restoredSnapshot.inheritedWorkRevision, 4)
+        XCTAssertEqual(
+            restoredSnapshot.inheritedWorkSnapshot?.work(forBlock: rootHash),
+            inherited.work(forBlock: rootHash)
+        )
+    }
+
+    func testRestoreAllowsOneGrindToCoverMultipleBlocksWithoutDoubleCounting() async throws {
         let rootHash = persistedCID("replay-root")
         let childHash = persistedCID("replay-child")
         let repeated = persistedContribution("same-grind", work: UInt256(1))
@@ -575,16 +809,14 @@ final class PersistWorkRoundTripTests: XCTestCase {
             parent: rootHash,
             height: 1,
             contributions: [repeated],
-            cumulativeWork: UInt256(2)
+            cumulativeWork: UInt256(1)
         )
 
-        XCTAssertThrowsError(
-            try ChainState.restore(
-                from: persistedState(tip: childHash, main: [rootHash, childHash], blocks: [root, child])
-            )
-        ) { error in
-            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
-        }
+        let restored = try ChainState.restore(
+            from: persistedState(tip: childHash, main: [rootHash, childHash], blocks: [root, child])
+        )
+        let cumulative = await restored.getCumulativeWork(forHash: childHash)
+        XCTAssertEqual(cumulative, WorkSum(UInt256(1)))
     }
 
     private func staleForkChoiceSnapshot() -> PersistedChainState {

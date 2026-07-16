@@ -18,11 +18,11 @@ ownership is not. One Lattice process owns one absolute route, such as
 | Run deterministic fork-choice scenarios | [consensus-simulator.md](consensus-simulator.md) |
 | Understand trustless cross-chain transfers | [cross-chain.md](cross-chain.md) |
 
-## Documents
+## Core documents
 
 - **[philosophy.md](philosophy.md)** — the design philosophy and ideas: the hierarchical insight, content-addressing, the three-phase state model, partitioned state, fork choice, and cross-chain transfers without bridges.
 - **[spec.md](spec.md)** — the formal protocol specification: data structures, consensus, transaction validation, the state model, the cross-chain protocol, and constants.
-- **[foundational-architecture.md](foundational-architecture.md)** — one-chain runtime laws and the Lattice/node/Cashew responsibility boundaries.
-- **[consensus-fork-choice.md](consensus-fork-choice.md)** — root-work admission, immutable contribution facts, and chain-local GHOST.
+- **[foundational-architecture.md](foundational-architecture.md)** — the one-chain runtime model and component ownership boundaries.
+- **[consensus-fork-choice.md](consensus-fork-choice.md)** — identity-bearing work, live inheritance, and chain-local GHOST.
 - **[consensus-simulator.md](consensus-simulator.md)** — the deterministic `LatticeSim` harness for Hierarchical-GHOST fork-choice fixtures.
 - **[cross-chain.md](cross-chain.md)** — the deposit → receipt → withdrawal protocol for trustless value transfer between a parent and a child chain.

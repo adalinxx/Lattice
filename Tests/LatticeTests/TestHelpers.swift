@@ -44,6 +44,10 @@ final class StorableFetcher: Fetcher, Storer, VolumeStorer, Sendable {
     }
 }
 
+func testCID(_ seed: String) -> String {
+    try! HeaderImpl<PublicKey>(node: PublicKey(key: seed)).rawCID
+}
+
 struct ThrowingFetcher: Fetcher {
     func fetch(rawCid: String) async throws -> Data {
         throw cashew.FetcherError.notFound(rawCid)

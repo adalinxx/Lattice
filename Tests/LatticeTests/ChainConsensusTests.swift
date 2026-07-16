@@ -31,7 +31,7 @@ func makeBlockMeta(
     cumulativeWork: WorkSum
 ) -> BlockMeta {
     let contribution = VerifiedWorkContribution(
-        id: "test:\(hash)",
+        id: testCID("work:\(hash)"),
         work: work
     )
     return BlockMeta(
@@ -169,9 +169,8 @@ final class ForkChoiceTests: XCTestCase {
             mainChainHashes: Set(["G", "A1", "A2", "A3"])
         )
 
-        let block = await chain.getConsensusBlock(hash: "B4")!
         let revisionBefore = await chain.persist().revision
-        let reorg = await chain.checkForReorg(block: block)
+        let reorg = await chain.reevaluateForkChoice()
         XCTAssertNotNil(reorg)
         XCTAssertTrue(reorg!.mainChainBlocksAdded.keys.contains("B4"))
         XCTAssertTrue(reorg!.mainChainBlocksRemoved.contains("A3"))
@@ -196,8 +195,7 @@ final class ForkChoiceTests: XCTestCase {
             mainChainHashes: Set(["G", "A1", "A2", "A3"])
         )
 
-        let block = await chain.getConsensusBlock(hash: "B2")!
-        let reorg = await chain.checkForReorg(block: block)
+        let reorg = await chain.reevaluateForkChoice()
         XCTAssertNil(reorg)
     }
 
@@ -213,8 +211,7 @@ final class ForkChoiceTests: XCTestCase {
             mainChainHashes: Set(["G", "A1", "A2"])
         )
 
-        let block = await chain.getConsensusBlock(hash: "B2")!
-        let reorg = await chain.checkForReorg(block: block)
+        let reorg = await chain.reevaluateForkChoice()
         XCTAssertNil(reorg, "A1 is the smaller segment-base hash")
     }
 
@@ -336,8 +333,7 @@ final class ChainInvariantTests: XCTestCase {
         let b3 = makeBlockMeta(hash: "B3", previousHash: "B2", height: 3)
 
         let chain = makeChain(blocks: [g, a1, b1, b2, b3], mainChainHashes: Set(["G", "A1"]))
-        let block = await chain.getConsensusBlock(hash: "B3")!
-        let _ = await chain.checkForReorg(block: block)
+        let _ = await chain.reevaluateForkChoice()
 
         let tip = await chain.getMainChainTip()
         let tipBlock = await chain.getConsensusBlock(hash: tip)!
@@ -354,8 +350,7 @@ final class ChainInvariantTests: XCTestCase {
         let b3 = makeBlockMeta(hash: "B3", previousHash: "B2", height: 3)
 
         let chain = makeChain(blocks: [g, a1, a2, b1, b2, b3], mainChainHashes: Set(["G", "A1", "A2"]))
-        let block = await chain.getConsensusBlock(hash: "B3")!
-        let _ = await chain.checkForReorg(block: block)
+        let _ = await chain.reevaluateForkChoice()
 
         let a1OnMain = await chain.isOnMainChain(hash: "A1")
         XCTAssertFalse(a1OnMain)
@@ -372,8 +367,7 @@ final class ChainInvariantTests: XCTestCase {
         let b2 = makeBlockMeta(hash: "B2", previousHash: "B1", height: 2)
 
         let chain = makeChain(blocks: [g, a1, b1, b2], mainChainHashes: Set(["G", "A1"]))
-        let block = await chain.getConsensusBlock(hash: "B2")!
-        let reorg = await chain.checkForReorg(block: block)
+        let reorg = await chain.reevaluateForkChoice()
 
         XCTAssertNotNil(reorg)
         XCTAssertTrue(reorg!.mainChainBlocksAdded.keys.contains("B1"))
@@ -410,8 +404,7 @@ final class NakamotoConsensusTests: XCTestCase {
         let h4 = makeBlockMeta(hash: "H4", previousHash: "H3", height: 4)
 
         let chain = makeChain(blocks: [g, p1, p2, p3, h1, h2, h3, h4], mainChainHashes: Set(["G", "P1", "P2", "P3"]))
-        let block = await chain.getConsensusBlock(hash: "H4")!
-        let reorg = await chain.checkForReorg(block: block)
+        let reorg = await chain.reevaluateForkChoice()
         XCTAssertNotNil(reorg)
         let selfishTip = await chain.getMainChainTip()
         XCTAssertEqual(selfishTip, "H4")
@@ -438,8 +431,7 @@ final class NakamotoConsensusTests: XCTestCase {
         let b3 = makeBlockMeta(hash: "B3", previousHash: "B2", height: 3)
 
         let chain = makeChain(blocks: [g, a1, a2, a3, b1, b2, b3], mainChainHashes: Set(["G", "A1", "A2", "A3"]))
-        let block = await chain.getConsensusBlock(hash: "B3")!
-        let reorg = await chain.checkForReorg(block: block)
+        let reorg = await chain.reevaluateForkChoice()
         XCTAssertNil(reorg, "The smaller segment-base hash is already canonical")
         let tieTip = await chain.getMainChainTip()
         XCTAssertEqual(tieTip, "A3")
@@ -456,8 +448,7 @@ final class NakamotoConsensusTests: XCTestCase {
         let f5 = makeBlockMeta(hash: "F5", previousHash: "F4", height: 5)
 
         let chain = makeChain(blocks: [g, m1, m2, f1, f2, f3, f4, f5], mainChainHashes: Set(["G", "M1", "M2"]))
-        let block = await chain.getConsensusBlock(hash: "F5")!
-        let reorg = await chain.checkForReorg(block: block)
+        let reorg = await chain.reevaluateForkChoice()
         XCTAssertNotNil(reorg)
         let deepTip = await chain.getMainChainTip()
         XCTAssertEqual(deepTip, "F5")
@@ -475,8 +466,7 @@ final class NakamotoConsensusTests: XCTestCase {
         let c1 = makeBlockMeta(hash: "C1", previousHash: "G", height: 1)
 
         let chain = makeChain(blocks: [g, a1, a2, b1, b2, b3, c1], mainChainHashes: Set(["G", "A1", "A2"]))
-        let block = await chain.getConsensusBlock(hash: "B3")!
-        let reorg = await chain.checkForReorg(block: block)
+        let reorg = await chain.reevaluateForkChoice()
         XCTAssertNotNil(reorg)
         let concurrentTip = await chain.getMainChainTip()
         XCTAssertEqual(concurrentTip, "B3")
@@ -492,8 +482,7 @@ final class NakamotoConsensusTests: XCTestCase {
         let f3 = makeBlockMeta(hash: "F3", previousHash: "F2", height: 5)
 
         let chain = makeChain(blocks: [g, m1, m2, m3, f1, f2, f3], mainChainHashes: Set(["G", "M1", "M2", "M3"]))
-        let block = await chain.getConsensusBlock(hash: "F3")!
-        let reorg = await chain.checkForReorg(block: block)
+        let reorg = await chain.reevaluateForkChoice()
         XCTAssertNotNil(reorg)
         let midTip = await chain.getMainChainTip()
         XCTAssertEqual(midTip, "F3")
@@ -546,8 +535,7 @@ final class EdgeCaseTests: XCTestCase {
         allBlocks.insert(g, at: 0)
 
         let chain = makeChain(blocks: allBlocks, mainChainHashes: Set(["G", "F0_1"]))
-        let block = await chain.getConsensusBlock(hash: "F5_3")!
-        let reorg = await chain.checkForReorg(block: block)
+        let reorg = await chain.reevaluateForkChoice()
         XCTAssertNotNil(reorg)
         let manyForksTip = await chain.getMainChainTip()
         XCTAssertEqual(manyForksTip, "F5_3")
@@ -564,5 +552,34 @@ final class EdgeCaseTests: XCTestCase {
         XCTAssertTrue(containsFirst)
         let containsLast = await chain.contains(blockHash: "block_\(length - 1)")
         XCTAssertTrue(containsLast)
+    }
+
+    func testRevisionExhaustionFailsClosedBeforeMutation() async throws {
+        let genesis = makeBlockMeta(hash: "G", height: 0)
+        let chain = try ChainState(
+            chainTip: "G",
+            mainChainHashes: ["G"],
+            indexToBlockHash: [0: ["G"]],
+            hashToBlock: ["G": genesis],
+            mutationGeneration: .max
+        )
+        let extra = VerifiedWorkContribution(
+            id: testCID("revision-exhaustion"),
+            work: UInt256(2)
+        )
+
+        let result = await chain.addWorkContribution(extra, to: "G")
+        let providerCommit = await chain.setInheritedWorkProvider {
+            InheritedWorkSnapshot(
+                revision: 1,
+                workByBlock: ["G": WorkMeasure(extra)]
+            )
+        }
+        let persisted = await chain.persist()
+
+        XCTAssertFalse(result.addedContribution)
+        XCTAssertNil(providerCommit)
+        XCTAssertEqual(persisted.revision, .max)
+        XCTAssertNil(persisted.inheritedWorkSnapshot)
     }
 }

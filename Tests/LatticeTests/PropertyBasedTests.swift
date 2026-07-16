@@ -177,8 +177,7 @@ final class ForkChoicePropertyTests: XCTestCase {
                 }
 
                 let chain = makeChain(blocks: blocks, mainChainHashes: Set(["G"] + (1...mainLen).map { "M\($0)" }))
-                let forkTip = await chain.getConsensusBlock(hash: "F\(forkLen)")!
-                let _ = await chain.checkForReorg(block: forkTip)
+                let _ = await chain.reevaluateForkChoice()
 
                 let tip = await chain.getMainChainTip()
                 let onMain = await chain.isOnMainChain(hash: tip)
@@ -195,8 +194,7 @@ final class ForkChoicePropertyTests: XCTestCase {
         let b2 = makeBlockMeta(hash: "B2", previousHash: "B1", height: 2)
 
         let chain = makeChain(blocks: [g, a1, b1, b2], mainChainHashes: Set(["G", "A1"]))
-        let block = await chain.getConsensusBlock(hash: "B2")!
-        let _ = await chain.checkForReorg(block: block)
+        let _ = await chain.reevaluateForkChoice()
 
         let gOnMain = await chain.isOnMainChain(hash: "G")
         XCTAssertTrue(gOnMain, "Genesis must always remain on main chain")
@@ -212,8 +210,7 @@ final class ForkChoicePropertyTests: XCTestCase {
         let b3 = makeBlockMeta(hash: "B3", previousHash: "B2", height: 3)
 
         let chain = makeChain(blocks: [g, a1, a2, b1, b2, b3], mainChainHashes: Set(["G", "A1", "A2"]))
-        let block = await chain.getConsensusBlock(hash: "B3")!
-        let reorg = await chain.checkForReorg(block: block)
+        let reorg = await chain.reevaluateForkChoice()
 
         XCTAssertNotNil(reorg)
         if let reorg = reorg {

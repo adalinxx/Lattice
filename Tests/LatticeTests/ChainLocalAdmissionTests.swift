@@ -563,10 +563,24 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(blockFact.blockHash, header.rawCID)
         XCTAssertEqual(initialWork.blockHash, header.rawCID)
         XCTAssertEqual(initialWork.contribution.id, fixture.package.proof.rootCID)
-        XCTAssertEqual(batches[0].facts[1].id, .work(fixture.package.proof.rootCID))
+        XCTAssertEqual(
+            batches[0].facts[1].id,
+            .work(
+                blockHash: header.rawCID,
+                grindID: fixture.package.proof.rootCID,
+                work: initialWork.contribution.work.toHexString()
+            )
+        )
         XCTAssertEqual(laterWork.blockHash, header.rawCID)
         XCTAssertEqual(laterWork.contribution.id, alternateProof.rootCID)
-        XCTAssertEqual(batches[1].facts[0].id, .work(alternateProof.rootCID))
+        XCTAssertEqual(
+            batches[1].facts[0].id,
+            .work(
+                blockHash: header.rawCID,
+                grindID: alternateProof.rootCID,
+                work: laterWork.contribution.work.toHexString()
+            )
+        )
     }
 
     func testChildProofRequiresItsRootInTheProof() async throws {

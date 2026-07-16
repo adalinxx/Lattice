@@ -303,10 +303,9 @@ final class ForkChoiceFuzzTests: XCTestCase {
 
             let mainHashes = Set(["G"] + (1...mainLen).map { "M\($0)" })
             let chain = makeChain(blocks: blocks, mainChainHashes: mainHashes)
-
             let forkTipHash = "F\(forkLen)"
-            let forkTip = await chain.getConsensusBlock(hash: forkTipHash)!
-            let reorg = await chain.checkForReorg(block: forkTip)
+
+            let reorg = await chain.reevaluateForkChoice()
 
             XCTAssertNotNil(reorg, "Longer fork should trigger reorg")
 
