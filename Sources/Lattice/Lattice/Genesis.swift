@@ -46,8 +46,7 @@ public enum GenesisCeremony {
     /// genesis configuration.
     public static func create(
         config: GenesisConfig,
-        fetcher: Fetcher,
-        retentionDepth: UInt64 = .max
+        fetcher: Fetcher
     ) async throws -> GenesisResult {
         guard config.target >= ChainSpec.minimumTarget else {
             throw GenesisCeremonyError.invalidTarget
@@ -59,10 +58,7 @@ public enum GenesisCeremony {
             fetcher: fetcher
         )
         let blockHash = try VolumeImpl<Block>(node: block).rawCID
-        let chainState = ChainState.fromGenesis(
-            block: block,
-            retentionDepth: retentionDepth
-        )
+        let chainState = ChainState.fromGenesis(block: block)
         return GenesisResult(block: block, blockHash: blockHash, chainState: chainState)
     }
 

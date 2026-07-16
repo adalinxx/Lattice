@@ -356,7 +356,7 @@ final class GenesisToBlockE2ETests: XCTestCase {
         )
 
         XCTAssertTrue(
-            resultA1onB.reorganization != nil || resultA2onB.reorganization != nil,
+            resultA1onB.commit?.canonicalChanged == true || resultA2onB.commit?.canonicalChanged == true,
             "Node B should reorg when A wins the stable tie or becomes strictly heavier"
         )
 

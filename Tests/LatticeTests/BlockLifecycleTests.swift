@@ -49,15 +49,15 @@ private func now() -> Int64 {
     Int64(Date().timeIntervalSince1970 * 1000)
 }
 
-private actor AdmissionRecordCollector {
-    private var records: [ChainAdmissionRecord] = []
+private actor AdmissionBatchCollector {
+    private var batches: [ChainAdmissionBatch] = []
 
-    func append(_ record: ChainAdmissionRecord) {
-        records.append(record)
+    func append(_ batch: ChainAdmissionBatch) {
+        batches.append(batch)
     }
 
-    func snapshot() -> [ChainAdmissionRecord] {
-        records
+    func snapshot() -> [ChainAdmissionBatch] {
+        batches
     }
 }
 
@@ -96,7 +96,7 @@ final class BlockMintingTests: XCTestCase {
         XCTAssertTrue(valid)
     }
 
-    func testAdmissionStagesLifecycleDiffOnceAndReturnsItAtRetention() async throws {
+    func testAdmissionStagesBlockAndWorkFactsOnceAndReturnsCommit() async throws {
         let fetcher = makeFetcher()
         let base = now() - 100_000
         let spec = noPremine()
@@ -123,22 +123,10 @@ final class BlockMintingTests: XCTestCase {
             fetcher: fetcher
         )
         let block1 = try await storeBuiltBlock(built1, in: fetcher)
-        let block2 = try await buildAndStoreBlock(
-            previous: block1,
-            timestamp: base + 2_000,
-            target: UInt256.max,
-            fetcher: fetcher
-        )
-        let block3 = try await buildAndStoreBlock(
-            previous: block2,
-            timestamp: base + 3_000,
-            target: UInt256.max,
-            fetcher: fetcher
-        )
-        let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis, retentionDepth: 1))
-        let collector = AdmissionRecordCollector()
-        let stage: @Sendable (ChainAdmissionRecord) async throws -> Void = { record in
-            await collector.append(record)
+        let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
+        let collector = AdmissionBatchCollector()
+        let stage: @Sendable (ChainAdmissionBatch) async throws -> Void = { batch in
+            await collector.append(batch)
         }
 
         let first = try await level.admitBlockHeaderChainLocal(
@@ -147,20 +135,30 @@ final class BlockMintingTests: XCTestCase {
             storer: fetcher,
             stage: stage
         )
-        switch first {
-        case .canonicalized(let diff, _, _, let evicted, _):
-            XCTAssertEqual(diff, built1.stateDiff)
-            XCTAssertTrue(evicted.isEmpty)
-        default:
-            XCTFail("first block should canonicalize")
+        guard case .accepted(let acceptance) = first else {
+            return XCTFail("first block should be accepted")
         }
+        XCTAssertEqual(acceptance.stateDiff, built1.stateDiff)
+        XCTAssertTrue(acceptance.commit.canonicalChanged)
 
         let chain = await level.chain
         let persisted = await chain.persist()
         let block1Hash = try BlockHeader(node: block1).rawCID
         let live = try XCTUnwrap(persisted.blocks.first { $0.blockHash == block1Hash })
-        XCTAssertEqual(live.createdDiffs, built1.stateDiff.created)
-        XCTAssertEqual(live.removedDiffs, built1.stateDiff.replaced)
+        XCTAssertEqual(live.workContributions.count, 1)
+        XCTAssertEqual(persisted.revision, acceptance.commit.revision)
+
+        let staged = await collector.snapshot()
+        XCTAssertEqual(staged.count, 1)
+        XCTAssertEqual(staged[0].facts.count, 2)
+        XCTAssertEqual(Set(staged[0].facts.map(\.id)).count, 2)
+        guard case .block(let blockFact) = staged[0].facts[0],
+              case .work(let workFact) = staged[0].facts[1] else {
+            return XCTFail("new block admission should atomically stage block then work facts")
+        }
+        XCTAssertEqual(blockFact.blockHash, block1Hash)
+        XCTAssertEqual(blockFact.stateDiff, built1.stateDiff)
+        XCTAssertEqual(workFact.blockHash, block1Hash)
 
         let duplicate = try await level.admitBlockHeaderChainLocal(
             try BlockHeader(node: block1),
@@ -169,40 +167,12 @@ final class BlockMintingTests: XCTestCase {
             stage: stage
         )
         guard case .duplicate = duplicate else {
-            return XCTFail("duplicate contribution should not replay lifecycle admission")
+            return XCTFail("duplicate contribution should not replay admission facts")
         }
-        let recordsAfterDuplicate = await collector.snapshot()
-        XCTAssertEqual(recordsAfterDuplicate.count, 1)
-
-        let second = try await level.admitBlockHeaderChainLocal(
-            try BlockHeader(node: block2),
-            fetcher: fetcher,
-            storer: fetcher,
-            stage: stage
-        )
-        XCTAssertEqual(second.evictedBlocks.map(\.blockHeight), [0])
-        let result = try await level.admitBlockHeaderChainLocal(
-            try BlockHeader(node: block3),
-            fetcher: fetcher,
-            storer: fetcher,
-            stage: stage
-        )
-        let evicted = try XCTUnwrap(result.evictedBlocks.first)
-
-        XCTAssertEqual(result.evictedBlocks.count, 1)
-        XCTAssertEqual(evicted.blockHash, try BlockHeader(node: block1).rawCID)
-        XCTAssertEqual(evicted.createdDiffs, built1.stateDiff.created)
-        XCTAssertEqual(evicted.removedDiffs, built1.stateDiff.replaced)
-        XCTAssertFalse(evicted.createdDiffs.isEmpty)
-        let recordsAfterRetention = await collector.snapshot()
-        XCTAssertEqual(recordsAfterRetention.count, 3)
-
-        let retainedProjection = await chain.persist()
-        let prunedBlock = try XCTUnwrap(
-            retainedProjection.prunedBlocks.first { $0.blockHash == block1Hash }
-        )
-        XCTAssertTrue(prunedBlock.createdDiffs.isEmpty)
-        XCTAssertTrue(prunedBlock.removedDiffs.isEmpty)
+        let batchesAfterDuplicate = await collector.snapshot()
+        let snapshotAfterDuplicate = await chain.persist()
+        XCTAssertEqual(batchesAfterDuplicate.count, 1)
+        XCTAssertEqual(snapshotAfterDuplicate.revision, acceptance.commit.revision)
     }
 
     func test_validateGenesis_futureDriftTolerance() async throws {
@@ -215,7 +185,12 @@ final class BlockMintingTests: XCTestCase {
             target: UInt256(1000),
             fetcher: fetcher
         )
-        let withinValid = try await withinDrift.validateGenesis(fetcher: fetcher, directory: "Nexus").0
+        let context = ValidationContext(nowMilliseconds: base)
+        let withinValid = try await withinDrift.validateGenesis(
+            fetcher: fetcher,
+            directory: "Nexus",
+            validationContext: context
+        ).0
         XCTAssertTrue(withinValid, "genesis should use the same bounded future-drift tolerance as non-genesis blocks")
 
         let beyondDrift = try await buildAndStoreGenesis(
@@ -224,15 +199,20 @@ final class BlockMintingTests: XCTestCase {
             target: UInt256(1000),
             fetcher: fetcher
         )
-        let beyondValid = try await beyondDrift.validateGenesis(fetcher: fetcher, directory: "Nexus").0
+        let beyondValid = try await beyondDrift.validateGenesis(
+            fetcher: fetcher,
+            directory: "Nexus",
+            validationContext: context
+        ).0
         XCTAssertFalse(beyondValid, "genesis timestamps beyond the bounded future-drift window must still be rejected")
     }
 
     func test_validateGenesis_canReportFutureBlockAsNotYetAdmissible() async throws {
         let fetcher = makeFetcher()
+        let context = ValidationContext(nowMilliseconds: now())
         let futureGenesis = try await buildAndStoreGenesis(
             spec: noPremine(),
-            timestamp: now() + 3 * 3_600_000,
+            timestamp: context.nowMilliseconds + 3 * 3_600_000,
             target: UInt256(1000),
             fetcher: fetcher
         )
@@ -241,7 +221,8 @@ final class BlockMintingTests: XCTestCase {
             _ = try await futureGenesis.validateGenesis(
                 fetcher: fetcher,
                 directory: "Nexus",
-                reportTemporalFailure: true
+                reportTemporalFailure: true,
+                validationContext: context
             )
             XCTFail("a future block must report temporary inadmissibility")
         } catch let error as BlockValidationError {

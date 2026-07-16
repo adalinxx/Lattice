@@ -14,7 +14,18 @@ public struct WorkSum: Codable, Hashable, Sendable, Comparable, CustomStringConv
     }
 
     public init(_ value: UInt256) {
-        self = WorkSum(hex: value.toHexString())!
+        let words = value.words
+        let wordsPerLimb = UInt64.bitWidth / UInt.bitWidth
+        var parsed: [UInt64] = []
+        parsed.reserveCapacity((words.count + wordsPerLimb - 1) / wordsPerLimb)
+        for index in stride(from: 0, to: words.count, by: wordsPerLimb) {
+            var limb = UInt64(words[index])
+            for offset in 1..<min(wordsPerLimb, words.count - index) {
+                limb |= UInt64(words[index + offset]) << (offset * UInt.bitWidth)
+            }
+            parsed.append(limb)
+        }
+        self.init(limbs: parsed)
     }
 
     public init?(hex: String) {
@@ -66,6 +77,25 @@ public struct WorkSum: Codable, Hashable, Sendable, Comparable, CustomStringConv
 
     public static func + (lhs: WorkSum, rhs: UInt256) -> WorkSum {
         lhs + WorkSum(rhs)
+    }
+
+    public func subtracting(_ other: WorkSum) -> WorkSum? {
+        guard self >= other else { return nil }
+        var result: [UInt64] = []
+        result.reserveCapacity(limbs.count)
+        var borrow = false
+        for index in limbs.indices {
+            let right = index < other.limbs.count ? other.limbs[index] : 0
+            let (partial, firstBorrow) = limbs[index].subtractingReportingOverflow(right)
+            let (difference, secondBorrow) = partial.subtractingReportingOverflow(borrow ? 1 : 0)
+            result.append(difference)
+            borrow = firstBorrow || secondBorrow
+        }
+        return borrow ? nil : WorkSum(limbs: result)
+    }
+
+    public var uint64Value: UInt64? {
+        limbs.count <= 1 ? (limbs.first ?? 0) : nil
     }
 
     public func toHexString() -> String {

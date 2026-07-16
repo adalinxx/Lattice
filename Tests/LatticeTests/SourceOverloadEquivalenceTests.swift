@@ -218,18 +218,20 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
             stage: testAdmissionStage
         )
 
-        guard case let .canonicalized(fetcherDiff, materializedPostState: fetcherState, reorganization: _, evictedBlocks: _, followUps: fetcherFollowUps) = resultViaFetcher else {
+        guard case let .accepted(fetcherAcceptance) = resultViaFetcher,
+              let fetcherDiff = fetcherAcceptance.stateDiff else {
             return XCTFail("control: the representative block must canonicalize")
         }
-        guard case let .canonicalized(sourceDiff, materializedPostState: sourceState, reorganization: _, evictedBlocks: _, followUps: sourceFollowUps) = resultViaSource else {
+        guard case let .accepted(sourceAcceptance) = resultViaSource,
+              let sourceDiff = sourceAcceptance.stateDiff else {
             return XCTFail("source admission must canonicalize like fetcher admission")
         }
         XCTAssertEqual(fetcherDiff.replaced, sourceDiff.replaced)
         XCTAssertEqual(fetcherDiff.created, sourceDiff.created)
-        XCTAssertEqual(fetcherFollowUps, sourceFollowUps)
+        XCTAssertEqual(fetcherAcceptance.followUps, sourceAcceptance.followUps)
         XCTAssertEqual(
-            try fetcherState.map { try LatticeStateHeader(node: $0).rawCID },
-            try sourceState.map { try LatticeStateHeader(node: $0).rawCID }
+            try fetcherAcceptance.materializedPostState.map { try LatticeStateHeader(node: $0).rawCID },
+            try sourceAcceptance.materializedPostState.map { try LatticeStateHeader(node: $0).rawCID }
         )
     }
 }

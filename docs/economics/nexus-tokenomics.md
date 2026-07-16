@@ -173,7 +173,7 @@ signer debit credited to the miner via the coinbase (`reward + Σfees`), so it n
 zero in the conservation identity:
 
 ```
-totalCredits + totalDeposited == totalDebits + reward + totalWithdrawn
+totalCredits + totalDeposited <= totalDebits + reward + totalWithdrawn
 ```
 
 Full treatment — including why a declared fee with no backing signer debit cannot mint

@@ -218,7 +218,7 @@ final class BlockBuilderSubmissionTests: XCTestCase {
                 blockHeader: try! VolumeImpl<Block>(node: block),
                 block: block
             )
-            if result.reorganization != nil { sawReorg = true }
+            if result.commit?.canonicalChanged == true { sawReorg = true }
             forkPrev = block
             ts += 1_000
         }

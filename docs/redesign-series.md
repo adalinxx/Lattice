@@ -12,7 +12,8 @@ Companion repositories implement independent responsibilities:
 - **Ivy** acquires and serves bytes.
 - **Tally** records provider behavior without turning availability into validity.
 - **lattice-node** supervises one Lattice process per followed chain and owns
-  filesystem durability, retention, projections, and ingress routing.
+  atomic typed-fact durability, state retention and pinning, revision-ordered
+  projections, and ingress routing.
 
 These layers may transport or persist evidence. None supplies an alternate
 validity, work, sync, or fork-choice path around

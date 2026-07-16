@@ -328,15 +328,12 @@ final class SelfishMiningTests: XCTestCase {
             )
         }
 
-        let honestBaseBlock = honestBase!
-        let honestBaseHash = try VolumeImpl<Block>(node: honestBaseBlock).rawCID
+        let honestBaseHash = try VolumeImpl<Block>(node: honestBase!).rawCID
         let selfishBaseHash = try VolumeImpl<Block>(node: selfishBlocks[0]).rawCID
         let selfishTip = try VolumeImpl<Block>(node: selfishBlocks[2]).rawCID
         let selfishWins = forkChoicePrefersSegmentBase(
             selfishBaseHash,
-            candidateNextTarget: selfishBlocks[0].nextTarget,
-            over: honestBaseHash,
-            currentNextTarget: honestBaseBlock.nextTarget
+            over: honestBaseHash
         )
         let finalTip = await chain.getMainChainTip()
         XCTAssertEqual(finalTip, selfishWins ? selfishTip : honestTip)

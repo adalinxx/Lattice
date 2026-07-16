@@ -232,13 +232,19 @@ Valid side blocks remain valid. Fork choice compares valid alternatives; it does
 For fixed bytes, complete evidence, and one protocol version, a candidate moves from unknown to valid or invalid. Canonicity, retention, peer availability, and provider reliability do not reverse that judgment. Temporal admissibility is a separate, time-dependent result.
 
 For hierarchical proof evidence, validation first applies the setup-wide root-work
-floor. It then proves the exact root-to-candidate path and every carrier's
-same-chain predecessor continuity. Each level compares that same root hash with
-its own target; a target miss means carrier-only, not descendant invalidity.
+floor before resolving child content. It then proves the exact
+root-to-candidate path and every carrier's same-chain predecessor continuity.
+Each level compares that same root hash with its own target; a target miss means
+carrier-only, not descendant invalidity. One explicit validation-time context
+governs the whole admission, including retries.
 
 ### Law 4 — Canonicity is chain-local
 
 Each chain owns its valid graph or forest, fork-choice inputs, canonical branch, and reorganization decisions.
+
+Fork choice compares competing segment bases by `trueCumWork`, then by canonical
+CID bytes only. The lexicographically smaller CID wins an exact work tie;
+`nextTarget` and segment tips are not comparators.
 
 ### Law 5 — Parent canonicity never changes child validity
 
@@ -261,8 +267,12 @@ A transition may update that chain’s receipts, history, mempool, retention, no
 One physical grind is credited at the first target-accepting boundary from root
 to leaf. The immutable contribution is deduplicated by root CID and carried to
 deeper chains as an inherited fact. Parent canonicity cannot revoke or increase
-it. Raw package bytes MAY be compacted only when retained material can
-re-establish the same verified fact and restart-equivalent fork-choice inputs.
+it. Every distinct grind is persisted, including multiple grinds for one block.
+Raw transport bytes may be discarded only when the durable typed facts still
+reconstruct the same complete consensus graph and fork-choice inputs.
+
+Lattice does not prune accepted blocks or verified work facts. Node-owned state,
+body, and pin retention cannot remove consensus inputs.
 
 ### Law 10 — Cross-chain interfaces deliver evidence, never commands
 
@@ -290,14 +300,16 @@ partial object-graph availability, not a partial Volume.
 ### Law 14 — Durable evidence precedes visible consensus mutation
 
 Targeted immutable content, materialized state, and all consensus-relevant
-semantic evidence required for restart equivalence must be durable before a node
-exposes the corresponding accepted graph or canonical change. Durability need
-not pin every raw transport package forever, but it MUST preserve enough material
-to re-establish the retained facts.
+semantic evidence required for restart equivalence must be staged as one atomic
+batch of immutable typed block/work facts before a node exposes the corresponding
+accepted graph or canonical change. Durability need not pin every raw transport
+package forever, but it MUST preserve restart-equivalent block consensus data
+and every distinct grind fact. State-diff retention remains node policy.
 
 ### Law 15 — Restart is not a different consensus path
 
-With no new external evidence, restart reconstructs the same accepted graph or forest, work contributions, and canonical tip used live.
+With no new external evidence, restart reconstructs the complete accepted graph
+or forest, every work contribution, canonical tip, and commit revision used live.
 
 ### Law 16 — Every ingress path has one consensus meaning
 
@@ -355,8 +367,10 @@ A pinned operational relationship and a public discovery overlay are distinct to
 
 ### Lattice
 
-Owns protocol validity, execution, verified work contributions, the accepted
-block graph or forest for one chain, fork choice, and chain-local transitions.
+Owns protocol validity (including execution and work derivation), the complete
+accepted block graph or forest for one chain, fork choice, and chain-local
+reorganization decisions. Every successful mutation returns a monotonically
+revisioned `ChainCommit`.
 
 One process owns one `ChainLevel` and one absolute path. Consensus returns
 missing-data requirements to the node. It does not invoke network transport,
@@ -364,9 +378,10 @@ contain child runtimes, or propagate parent reorganization commands.
 
 ### lattice-node
 
-Owns acquisition, filesystem persistence, durable staging, serialized commit
-orchestration, recovery, CAS pin/reference counts, retention, projections, RPC,
-mining coordination, and multi-process supervision.
+Owns acquisition, filesystem persistence, atomic staging of immutable typed
+block/work facts, revision-ordered commit handling, recovery, CAS pin/reference
+counts, state and body retention, projections, RPC, mining coordination, and
+multi-process supervision.
 
 It starts one Lattice process per followed chain and preserves one admission
 meaning across every ingress transport.
@@ -390,13 +405,15 @@ them indefinitely. Lattice defines, produces, and validates their semantic
 bindings. A parent fact is authoritative only about the issuing chain; it never
 grants the parent authority over child validity or fork choice.
 
-The proof root must first clear the setup-wide minimum root-work floor. The exact
-path and carrier continuity are then verified, and every level tests that same
-root hash against its own target. A target miss is carrier-only.
+The proof root must first clear the setup-wide minimum root-work floor before
+child content is resolved. The exact path and carrier continuity are then
+verified, and every level tests that same root hash against its own target. A
+target miss is carrier-only.
 
 Work contributions are derived locally from verified proofs, never trusted as
 wire claims. The first accepted boundary supplies the work amount; descendants
-carry the immutable fact. The root CID deduplicates the physical grind.
+carry the immutable fact. The root CID deduplicates the physical grind, and
+every distinct grind is durably represented even when several secure one block.
 
 The exact canonical package stored, served, and relayed should be the same immutable value. Live gossip must not relay a weaker pre-finalization package than sync serves later.
 
@@ -405,7 +422,7 @@ The exact canonical package stored, served, and relayed should be the same immut
 ## 8. Target consensus lifecycle
 
 ```text
-Acquire → Verify → Store → Commit → Project
+Acquire → Verify → Store → Stage Facts → Commit → Project
 ```
 
 ### Acquire
@@ -414,28 +431,35 @@ Obtain complete Volumes and evidence from local stores, Ivy, pinned sessions, RP
 
 ### Verify
 
-Perform deterministic, non-mutating protocol validation and derive work contributions locally. Classify unavailable evidence, protocol-invalid evidence, and `notYetAdmissible` evidence distinctly.
+Capture one explicit validation-time context. Check the root-work floor before
+resolving child content, then perform deterministic, non-mutating protocol
+validation and derive work contributions locally. Classify unavailable evidence,
+protocol-invalid evidence, and `notYetAdmissible` evidence distinctly.
 
 ### Store
 
 Store the targeted verified block content and materialized state Volumes.
-Validation derives `StateDiff` as local lifecycle metadata on `BlockMeta` and the
-admission record; it is not committed in `Block`. Lattice reports admitted and
-evicted lifecycle metadata, while the node owns count application, pin lifetime,
-retention, and garbage-collection policy.
 Immutable orphan content is harmless if a concurrent commit makes the candidate
 duplicate or noncanonical.
 
+### Stage Facts
+
+The node atomically stages a `ChainAdmissionBatch` of immutable `ChainBlockFact`
+and `ChainWorkFact` values before visible mutation. The block fact carries the
+derived `StateDiff` once; Lattice does not retain it in `BlockMeta`. Every later
+distinct grind receives its own durable work fact.
+
 ### Commit
 
-Evaluate the candidate against the chain’s current graph, then mutate only this
-chain’s in-memory consensus state after storage succeeds.
+Evaluate the candidate against the chain's current graph, then mutate only this
+chain's in-memory consensus state after staging succeeds. Return a revisioned
+`ChainCommit`; its canonical delta represents any chain-local reorganization.
 
 ### Project
 
 Apply chain-local derived effects from a durable canonical-transition event. Projectors are idempotent and cannot affect fork choice.
 
-Consensus MUST return missing-body requests rather than invoking Ivy or another transport internally.
+Lattice never prunes its consensus graph or invokes Ivy or another transport.
 
 ---
 
@@ -467,7 +491,9 @@ Generate path trees, nested Volumes, proof sets, fork graphs, and transaction ba
 
 ### 9.4 Differential tests
 
-The same verified candidate and evidence set must be fed through every ingress path. Compare decision, accepted graph, canonical tip, work, durable package, transition, and restart state.
+The same verified candidate and evidence set must be fed through every ingress
+path. Compare decision, accepted graph, canonical tip, every work fact, commit
+revision, durable batch, transition, and restart state.
 
 ### 9.5 Cross-process independence tests
 
@@ -477,7 +503,7 @@ A parent extension, side admission, reorganization, and restart MUST cause zero
 direct child consensus mutations. Parent and sibling processes may change which
 bytes are available, but not another process's validity or fork choice. Separate
 forest tests MUST cover competing child roots with no common child ancestor,
-deterministic segment-base ties, and restart preservation.
+canonical-CID segment-base ties, and restart preservation.
 
 ### 9.6 Reference model
 
@@ -488,12 +514,14 @@ randomized traces.
 ### 9.7 Fault injection
 
 Every external or durable boundary needs deterministic failure seams:
-block/state/package writes, contribution writes, canonical index updates, pin
+block/state/package writes, atomic fact-batch writes, revision handling, pin
 operations, network loss, malformed bytes, and unavailable nested Volumes.
 
 ### 9.8 Crash matrix
 
-Force termination before staging, after staging, during and after metadata commit, before and after in-memory mutation, before relay, and during projection. Restart may recover only the old state or the fully committed new state.
+Force termination before staging, after staging, before and after the revisioned
+commit, before relay, and during projection. Restart may recover only the old
+state or the fully committed new state.
 
 ### 9.9 Full-stack simulation
 
@@ -527,9 +555,14 @@ Use virtual time, seeded randomness, crashable stores, simulated Ivy topologies,
 ### Lattice ↔ lattice-node
 
 - every consensus outcome has one explicit node mapping;
+- each accepted block and distinct grind crosses admission as one immutable typed fact;
+- block and initial work facts stage atomically;
+- `ChainCommit` revisions order concurrent results and survive restart;
 - valid side blocks remain valid;
 - unavailable differs from invalid;
 - durability precedes visible mutation;
+- state-diff retention, pinning, and projections remain node-owned;
+- Lattice's accepted consensus graph is never pruned;
 - parent transitions never invoke child consensus.
 
 ---
@@ -568,8 +601,9 @@ The legacy in-library topology and ingress paths are removed. The stable shape i
 3. `ChildBlockProof`, `ParentContinuityLink`, `ParentGenesisLink`, and
    `ChildValidationPackage` separate security proof from parent-issued semantic
    facts.
-4. Root-CID-deduplicated contributions are persisted with chain consensus state.
-5. `lattice-node` supplies durability, retention, acquisition, and one process
+4. Immutable typed block/work facts preserve every distinct grind, and Lattice
+   returns revisioned `ChainCommit` values.
+5. `lattice-node` supplies durability, state retention, acquisition, and one process
    per followed path.
 
 ---
@@ -586,13 +620,17 @@ The foundational redesign is complete when:
 - every chain owns only its own fork choice and reorganization;
 - parent reorgs cause zero direct child mutations;
 - parent canonical transitions have no child consumers;
-- semantic work evidence is deduplicated, append-only, and restart-stable while raw packages remain safely compactable;
+- every distinct grind is deduplicated, append-only, and restart-stable;
+- equal-work forks compare canonical segment-base CID bytes only;
+- the root-work floor is checked before child resolution;
+- one explicit validation-time context governs admission and retries;
+- Lattice never prunes its accepted consensus graph;
 - every stored Volume is complete and CID-valid;
 - targeted resolve and store preserve independent nested Volume boundaries;
 - cashew remains generic;
 - pinned authority cannot be replaced by public discovery;
-- evidence is durable before visible consensus mutation;
-- restart reconstructs the live decision;
+- typed block/work facts are atomically durable before visible consensus mutation;
+- restart reconstructs every consensus fact, the live decision, and the commit revision;
 - projections can be deleted and rebuilt without changing consensus;
 - all ingress paths have one meaning;
 - every law has falsifiable automated tests;
@@ -604,4 +642,4 @@ The governing rule is:
 
 The implementation rule is:
 
-> **Acquire bytes, verify meaning, persist evidence, then change one chain’s state.**
+> **Check the root, acquire the target, verify meaning, stage facts, then commit one chain.**

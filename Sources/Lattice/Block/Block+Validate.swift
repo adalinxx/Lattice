@@ -11,6 +11,25 @@ public enum BlockValidationError: Error, Sendable, Equatable {
     case notYetAdmissible
 }
 
+public struct ValidationContext: Sendable, Equatable {
+    public let nowMilliseconds: Int64
+
+    public init(nowMilliseconds: Int64) {
+        self.nowMilliseconds = nowMilliseconds
+    }
+
+    public static var current: ValidationContext {
+        ValidationContext(nowMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000))
+    }
+
+    func admits(timestamp: Int64) -> Bool {
+        let (latest, overflow) = nowMilliseconds.addingReportingOverflow(
+            Block.maxFutureDriftMilliseconds
+        )
+        return overflow || timestamp <= latest
+    }
+}
+
 public extension Block {
     private static let fieldSeparator: [UInt8] = [0x00]
     /// Shared consensus timestamp limits.
@@ -87,13 +106,15 @@ public extension Block {
         fetcher: Fetcher,
         directory: String?,
         chainPath: [String]? = nil,
-        reportTemporalFailure: Bool = false
+        reportTemporalFailure: Bool = false,
+        validationContext: ValidationContext = .current
     ) async throws -> (Bool, StateDiff) {
         let transition = try await validateGenesisTransition(
             fetcher: fetcher,
             directory: directory,
             chainPath: chainPath,
-            reportTemporalFailure: reportTemporalFailure
+            reportTemporalFailure: reportTemporalFailure,
+            validationContext: validationContext
         )
         return (transition.0, transition.1)
     }
@@ -104,12 +125,12 @@ public extension Block {
         fetcher: Fetcher,
         directory: String?,
         chainPath: [String]? = nil,
-        reportTemporalFailure: Bool = false
+        reportTemporalFailure: Bool = false,
+        validationContext: ValidationContext
     ) async throws -> (Bool, StateDiff, LatticeState?) {
         if version != Block.currentVersion { return (false, .empty, nil) }
         if parent != nil { return (false, .empty, nil) }
-        let now = Int64(Date().timeIntervalSince1970 * 1000)
-        if timestamp > now + Block.maxFutureDriftMilliseconds {
+        if !validationContext.admits(timestamp: timestamp) {
             if reportTemporalFailure { throw BlockValidationError.notYetAdmissible }
             return (false, .empty, nil)
         }
@@ -167,7 +188,8 @@ public extension Block {
         parent: Block,
         fetcher: Fetcher,
         chain: ChainState? = nil,
-        reportTemporalFailure: Bool = false
+        reportTemporalFailure: Bool = false,
+        validationContext: ValidationContext
     ) async throws -> Bool {
         let walkDepth = max(spec.retargetWindow, Block.mtpDepth)
         let (parentDepth, overflow) = parent.height.addingReportingOverflow(1)
@@ -186,12 +208,15 @@ public extension Block {
             }
             ancestorTimestamps = walked
         }
-        let now = Int64(Date().timeIntervalSince1970 * 1000)
-        if timestamp > now + Block.maxFutureDriftMilliseconds {
+        if !validationContext.admits(timestamp: timestamp) {
             if reportTemporalFailure { throw BlockValidationError.notYetAdmissible }
             return false
         }
-        if !validateTimestamp(parent: parent, ancestorTimestamps: ancestorTimestamps) { return false }
+        if !validateTimestamp(
+            parent: parent,
+            ancestorTimestamps: ancestorTimestamps,
+            validationContext: validationContext
+        ) { return false }
         if !validateNextTarget(spec: spec, parent: parent, ancestorTimestamps: ancestorTimestamps) { return false }
         return true
     }
@@ -207,13 +232,15 @@ public extension Block {
         source: any ContentSource,
         chain: ChainState? = nil,
         chainPath: [String]? = nil,
-        reportTemporalFailure: Bool = false
+        reportTemporalFailure: Bool = false,
+        validationContext: ValidationContext = .current
     ) async throws -> (Bool, StateDiff, LatticeState?) {
         try await validateNexus(
             fetcher: CoalescingFetcher(source),
             chain: chain,
             chainPath: chainPath,
-            reportTemporalFailure: reportTemporalFailure
+            reportTemporalFailure: reportTemporalFailure,
+            validationContext: validationContext
         )
     }
 
@@ -225,7 +252,8 @@ public extension Block {
         fetcher: Fetcher,
         chain: ChainState? = nil,
         chainPath: [String]? = nil,
-        reportTemporalFailure: Bool = false
+        reportTemporalFailure: Bool = false,
+        validationContext: ValidationContext = .current
     ) async throws -> (Bool, StateDiff, LatticeState?) {
         if version != Block.currentVersion { return (false, .empty, nil) }
         async let parentFuture = parent?.resolve(fetcher: fetcher)
@@ -254,7 +282,8 @@ public extension Block {
             parent: previousBlockNode,
             fetcher: fetcher,
             chain: chain,
-            reportTemporalFailure: reportTemporalFailure
+            reportTemporalFailure: reportTemporalFailure,
+            validationContext: validationContext
         )) { return (false, .empty, nil) }
 
         guard let transactionBodies = try await txBodiesFuture else { return (false, .empty, nil) }
@@ -342,53 +371,37 @@ public extension Block {
 
     func validateBalanceChanges(spec: ChainSpec, allDepositActions: [DepositAction], allWithdrawalActions: [WithdrawalAction], allAccountActions: [AccountAction]) throws -> Bool {
         let reward = spec.rewardAtBlock(height)
-        let (totalDeposited, depOverflow) = Block.getTotalDeposited(allDepositActions)
-        if depOverflow { return false }
-        let (totalWithdrawn, wdOverflow) = Block.getTotalWithdrawn(allWithdrawalActions)
-        if wdOverflow { return false }
+        let totalDeposited = allDepositActions.reduce(WorkSum.zero) {
+            $0 + UInt256($1.amountDeposited)
+        }
+        let totalWithdrawn = allWithdrawalActions.reduce(WorkSum.zero) {
+            $0 + UInt256($1.amountWithdrawn)
+        }
         // Fees are not independent income: transaction validation requires
         // sender debits to include the fee, so block validation only gives
         // miners credit for fees when those debits are present in the same
         // action set.
         // totalCredits <= totalDebits + totalWithdrawn + reward - totalDeposited
-        var totalCredits: UInt64 = 0
-        var totalDebits: UInt64 = 0
+        var totalCredits = WorkSum.zero
+        var totalDebits = WorkSum.zero
         for action in allAccountActions {
-            if action.delta == Int64.min { return false }
-            if action.delta > 0 {
-                let (newCredits, overflow) = totalCredits.addingReportingOverflow(UInt64(action.delta))
-                if overflow { return false }
-                totalCredits = newCredits
-            } else if action.delta < 0 {
-                let (newDebits, overflow) = totalDebits.addingReportingOverflow(UInt64(-action.delta))
-                if overflow { return false }
-                totalDebits = newDebits
-            }
+            guard action.verify() else { return false }
+            if action.isCredit { totalCredits = totalCredits + UInt256(action.absoluteAmount) }
+            if action.isDebit { totalDebits = totalDebits + UInt256(action.absoluteAmount) }
         }
-        let (withReward, r1) = totalDebits.addingReportingOverflow(reward)
-        let (withWithdrawn, r2) = withReward.addingReportingOverflow(totalWithdrawn)
-        if r1 || r2 { return false }
-        guard withWithdrawn >= totalDeposited else { return false }
-        let available = withWithdrawn - totalDeposited
+        let grossAvailable = totalDebits + UInt256(reward) + totalWithdrawn
+        guard let available = grossAvailable.subtracting(totalDeposited) else { return false }
         return totalCredits <= available
     }
 
     func validateBalanceChangesForGenesis(spec: ChainSpec, allAccountActions: [AccountAction]) throws -> Bool {
         let premineAmount = spec.premineAmount()
-        var totalCredits: UInt64 = 0
+        var totalCredits = WorkSum.zero
         for action in allAccountActions {
-            // SEC-601: guard Int64.min — UInt64(-Int64.min) traps at runtime because
-            // -Int64.min overflows. validateBalanceChanges has the same guard (line 225);
-            // this function was missing it, allowing a malicious genesis block to crash
-            // any validator node calling validateGenesis.
-            if action.delta == Int64.min { return false }
-            if action.delta > 0 {
-                let (newCredits, overflow) = totalCredits.addingReportingOverflow(UInt64(action.delta))
-                if overflow { return false }
-                totalCredits = newCredits
-            }
+            guard action.verify() else { return false }
+            if action.isCredit { totalCredits = totalCredits + UInt256(action.absoluteAmount) }
         }
-        return totalCredits <= premineAmount
+        return totalCredits <= WorkSum(UInt256(premineAmount))
     }
 
     func validateSpec(parent: Block) -> Bool {
@@ -457,10 +470,13 @@ public extension Block {
     ///   (3) timestamp > MedianTimePast(11) (prevents grinding by predating)
     /// No lower-bound against wall-clock: old blocks must still validate for
     /// cold sync, so we only gate the future side against clock drift.
-    func validateTimestamp(parent: Block, ancestorTimestamps: [Int64] = []) -> Bool {
+    func validateTimestamp(
+        parent: Block,
+        ancestorTimestamps: [Int64] = [],
+        validationContext: ValidationContext = .current
+    ) -> Bool {
         if parent.timestamp >= timestamp { return false }
-        let now = Int64(Date().timeIntervalSince1970 * 1000)
-        if timestamp > now + Block.maxFutureDriftMilliseconds { return false }
+        if !validationContext.admits(timestamp: timestamp) { return false }
         if !ancestorTimestamps.isEmpty {
             let sorted = ancestorTimestamps.prefix(Int(Block.mtpDepth)).sorted()
             let medianIndex = (sorted.count - 1) / 2

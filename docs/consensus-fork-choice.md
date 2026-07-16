@@ -29,19 +29,20 @@ R -> children[d0] -> children[d1] -> ... -> C
 
 Admission verifies the package in this order:
 
-1. Recompute the root CID and hash from the supplied bytes.
+1. Recompute the root CID and hash from the supplied root bytes.
 2. Require `workForHash(h) >= minimumRootWork`, where `minimumRootWork` is the
    setup-wide traversal floor in `ChainRuntimeContext`.
-3. Require the proof's directory path and terminal CID to match this process's
+3. Only after the floor passes, resolve the targeted child content.
+4. Require the proof's directory path and terminal CID to match this process's
    absolute path and candidate.
-4. For every carrier above `C`, require a `ParentContinuityLink` issued by the
+5. For every carrier above `C`, require a `ParentContinuityLink` issued by the
    process responsible for that carrier's path after validating `prevState`,
    spec, height, target succession, and strictly increasing timestamp
    continuity. Bind the fact to the exact path and carrier CID; that CID already
    commits the predecessor, spec, and state references.
-5. At every vertical edge, require the nested child's `parentState` to match the
+6. At every vertical edge, require the nested child's `parentState` to match the
    carrier state committed by the protocol.
-6. Compare the **same** root hash `h` with each level's target.
+7. Compare the **same** root hash `h` with each level's target.
 
 The setup floor is checked first and is independent of every chain target. If it
 fails, the entire nested tree rooted at `R` is rejected. It cannot be rescued by
@@ -89,8 +90,9 @@ This gives security inheritance without a live parent-weight provider:
 - restart restores the same contribution facts used before shutdown.
 
 New proof evidence may attach a previously unseen contribution to an already
-known block. Lattice updates that block's weight and reevaluates fork choice, but
-does not replay the block's state transition or emit a second `StateDiff`.
+known block. Every distinct grind is staged and persisted as an immutable
+`ChainWorkFact`. Lattice updates that block's weight and reevaluates fork choice,
+but does not replay the block's state transition or emit a second `StateDiff`.
 
 Individual contributions remain `UInt256`, while cumulative and subtree work
 use an exact growable sum. Saturating at `UInt256.max` would make different
@@ -113,26 +115,24 @@ child with greatest subtree weight.
 
 At each fork, the competing same-chain children are the segment bases. Their
 `subtreeWeight` is their `trueCumWork` and remains the first comparator. Equal
-work prefers the base with the greatest `nextTarget`, making its next block
-easiest to mine. Equal targets fall back to the lexicographically smaller base
-CID. The same rule applies to competing genesis roots and is independent of
-arrival or replay order.
+work compares the segment bases' canonical CID bytes; the lexicographically
+smaller CID wins. Neither `nextTarget` nor either segment's tip participates.
+The same rule applies to competing genesis roots and is independent of arrival
+or replay order.
 
 `cumulativeWork(B)` is also retained as the same-chain prefix sum from genesis to
 `B`. It supports exact queries, out-of-order repair, and restart. It does not
 import live work from another chain or override the GHOST result.
 
-Lifecycle retention is not a fork-choice input. If the winning path includes
-blocks whose transition metadata was pruned, Lattice still selects that path and
-returns those block hashes in the `Reorganization`; Node decides whether to use
-local CAS data, fetch from a peer, or retain only the consensus projection.
+Lattice retains the complete accepted consensus graph and verified contribution
+set. Node state retention and body availability are not fork-choice inputs.
 
 ## 5. One Admission Path
 
 Gossip, sync, mining output, parent extraction, sibling relays, and recovery may
 obtain bytes differently. They all submit candidates through
 `ChainLevel.admitBlockHeaderChainLocal` and receive the same decision for the same
-candidate, evidence, runtime context, and protocol time. The library has no
+candidate, evidence, runtime context, and captured `ValidationContext`. The library has no
 separate `ChainSyncer`, trusted snapshot replacement, or transport-triggered
 consensus path.
 
@@ -142,8 +142,8 @@ Admission follows one durability boundary:
 targeted resolve
   -> deterministic verification and execution
   -> targeted store of verified content and materialized state
-  -> node-owned durable staging
-  -> chain-local consensus commit
+  -> node-owned atomic staging of typed block/work facts
+  -> revisioned chain-local ChainCommit
 ```
 
 `ChainLevel.bootstrap` uses this same boundary for a standalone chain runtime.
@@ -156,7 +156,8 @@ Lattice owns:
 - proof and continuity validation;
 - state-transition execution;
 - derivation and deduplication of work contributions;
-- the accepted same-chain graph, GHOST fork choice, and reorganization result.
+- the complete accepted same-chain graph, GHOST fork choice, and chain-local
+  reorganization decision.
 
 The node owns:
 
@@ -171,10 +172,16 @@ A parent process may issue continuity and genesis facts about its own validated
 state; the node authenticates and transports those facts. Commands such as "set
 child tip" or "invalidate because the parent reorged" do not cross the boundary.
 
-`StateDiff` follows the same boundary. It is locally derived lifecycle metadata
-attached to `BlockMeta` and admission records, not a field committed in `Block`.
-The node consumes admitted and evicted diffs to update CID reference counts and
-choose which materialized state Volumes to pin.
+`StateDiff` follows the same boundary. It is carried once by the immutable
+`ChainBlockFact`, not committed in `Block` or retained in `BlockMeta`. The node
+uses it to update CID reference counts and choose which materialized state
+Volumes to pin. A `ChainAdmissionBatch` atomically stages the block fact and its
+initial work fact; later distinct grinds stage separate work facts.
+
+Every successful consensus mutation returns a monotonically revisioned
+`ChainCommit`. Its canonical delta describes a chain-local reorganization when
+the selected branch changes; the node uses the revision to serialize durable
+state and projections even when admissions finish concurrently.
 
 ## 7. Required Properties
 
@@ -188,7 +195,9 @@ An implementation must preserve all of the following:
 5. One physical grind is credited at the first accepted boundary and deduplicated
    by root CID.
 6. Parent canonicity cannot change child validity, work facts, or fork choice.
-7. Exact work ties prefer the easiest segment base, then the smaller base CID.
-8. Retention and body availability cannot change consensus meaning.
-9. Live admission and restart reconstruct the same accepted graph and work.
-10. Every ingress source reaches the same admission API.
+7. Exact work ties prefer the smaller canonical segment-base CID; targets and
+   tips are not tie-break inputs.
+8. Lattice does not prune its accepted consensus graph.
+9. Every distinct grind is durable and restart restores all of them.
+10. One captured validation-time context governs an admission and its retries.
+11. Every ingress source reaches the same admission API.

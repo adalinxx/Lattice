@@ -101,28 +101,18 @@ public struct ChildBlockProof: Sendable {
 
     // MARK: - Verification
 
-    /// Verify the complete root-to-child package and derive its work fact.
-    ///
-    /// The setup floor is independent of every chain target. A carrier may miss
-    /// its own target and still carry an accepted descendant, so target checks are
-    /// used only to classify where this one grind is credited.
-    public func verify(
-        child: Block,
-        childCID: String,
-        chainPath: [String],
-        minimumRootWork: UInt256,
-        parentContinuityLinks: [ParentContinuityLink]
-    ) async -> Result<VerifiedChildEvidence, ChildProofVerificationFailure> {
+    package func verifyRootFloor(
+        minimumRootWork: UInt256
+    ) -> Result<Void, ChildProofVerificationFailure> {
+        verifiedRoot(minimumRootWork: minimumRootWork).map { _ in () }
+    }
+
+    private func verifiedRoot(
+        minimumRootWork: UInt256
+    ) -> Result<(block: Block, hash: UInt256), ChildProofVerificationFailure> {
         guard minimumRootWork > .zero else {
             return .failure(.protocolInvalid)
         }
-        guard chainPath.count == directoryPath.count + 1,
-              directoryPath == Array(chainPath.dropFirst()),
-              !entries.isEmpty,
-              !directoryPath.isEmpty else {
-            return .failure(.malformedEvidence)
-        }
-
         let rootEntries = entries.filter { $0.cid == rootCID }
         guard rootEntries.count == 1,
               let rootData = rootEntries.first?.data,
@@ -133,6 +123,36 @@ public struct ChildBlockProof: Sendable {
         guard workForHash(rootHash) >= minimumRootWork else {
             return .failure(.protocolInvalid)
         }
+        return .success((rootBlock, rootHash))
+    }
+
+    /// Verify the complete root-to-child package and derive its work fact.
+    ///
+    /// The setup floor is independent of every chain target. A carrier may miss
+    /// its own target and still carry an accepted descendant, so target checks are
+    /// used only to classify where this one grind is credited.
+    public func verify(
+        child: Block,
+        childCID: String,
+        chainPath: [String],
+        minimumRootWork: UInt256,
+        parentContinuityLinks: [ParentContinuityLink],
+        parentGenesisLinks: [ParentGenesisLink]
+    ) async -> Result<VerifiedChildEvidence, ChildProofVerificationFailure> {
+        let root: (block: Block, hash: UInt256)
+        switch verifiedRoot(minimumRootWork: minimumRootWork) {
+        case .success(let verified): root = verified
+        case .failure(let failure): return .failure(failure)
+        }
+        guard chainPath.count == directoryPath.count + 1,
+              directoryPath == Array(chainPath.dropFirst()),
+              !entries.isEmpty,
+              !directoryPath.isEmpty else {
+            return .failure(.malformedEvidence)
+        }
+
+        let rootBlock = root.block
+        let rootHash = root.hash
 
         var proofEntries: [String: Data] = [:]
         for entry in entries {
@@ -146,9 +166,33 @@ public struct ChildBlockProof: Sendable {
                 return .failure(.malformedEvidence)
             }
         }
+        var genesisLinksByChild: [String: ParentGenesisLink] = [:]
+        for link in parentGenesisLinks {
+            if genesisLinksByChild.updateValue(link, forKey: link.childGenesisCID) != nil {
+                return .failure(.malformedEvidence)
+            }
+        }
         let fetcher = _TrackingProofFetcher(proofEntries)
         var directlyConsumed = Set([rootCID])
         var consumedLinks = Set<String>()
+        var consumedGenesisLinks = Set<String>()
+
+        func genesisFailure(
+            childCID: String,
+            childPath: [String]
+        ) -> ChildProofVerificationFailure? {
+            guard let link = genesisLinksByChild[childCID] else {
+                return .unavailableEvidence
+            }
+            consumedGenesisLinks.insert(childCID)
+            guard let directory = childPath.last,
+                  link.parentPath == Array(childPath.dropLast()),
+                  link.directory == directory,
+                  link.childGenesisCID == childCID else {
+                return .malformedEvidence
+            }
+            return nil
+        }
 
         func continuityFailure(
             _ carrier: Block,
@@ -156,9 +200,12 @@ public struct ChildBlockProof: Sendable {
             carrierPath: [String]
         ) -> ChildProofVerificationFailure? {
             guard carrier.parent != nil else {
-                return carrier.hasCarrierContinuity(parent: nil)
+                guard carrier.hasCarrierContinuity(parent: nil) else {
+                    return .protocolInvalid
+                }
+                return carrierPath.count == 1
                     ? nil
-                    : .protocolInvalid
+                    : genesisFailure(childCID: carrierCID, childPath: carrierPath)
             }
             guard let link = linksBySuccessor[carrierCID] else {
                 return .unavailableEvidence
@@ -196,13 +243,21 @@ public struct ChildBlockProof: Sendable {
                 guard child.parentState.rawCID == currentBlock.prevState.rawCID else {
                     return .failure(.protocolInvalid)
                 }
+                if child.parent == nil,
+                   let failure = genesisFailure(
+                    childCID: childCID,
+                    childPath: chainPath
+                   ) {
+                    return .failure(failure)
+                }
 
                 let ancestorWork = carriers.first {
                     $0.validateProofOfWork(nexusHash: rootHash)
                 }.map { workForTarget($0.target) } ?? .zero
                 let consumed = await fetcher.consumed().union(directlyConsumed)
                 guard consumed == Set(proofEntries.keys),
-                      consumedLinks == Set(linksBySuccessor.keys) else {
+                      consumedLinks == Set(linksBySuccessor.keys),
+                      consumedGenesisLinks == Set(genesisLinksByChild.keys) else {
                     return .failure(.malformedEvidence)
                 }
                 return .success(VerifiedChildEvidence(

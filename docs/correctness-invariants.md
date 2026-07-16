@@ -13,9 +13,9 @@ contain, mutate, or recursively dispatch to another chain runtime.
 
 ## PROOF-001 - The Setup Floor Is Global and First
 
-The proof root must clear `ChainRuntimeContext.minimumRootWork` before any chain
-target or state transition is considered. Failure rejects every descendant under
-that root.
+The proof root must clear `ChainRuntimeContext.minimumRootWork` before child
+content is resolved or any chain target or state transition is considered.
+Failure rejects every descendant under that root.
 
 ## PROOF-002 - The Sparse Path Is Exact
 
@@ -63,23 +63,29 @@ Individual work contributions are `UInt256`; cumulative and subtree work use an
 unbounded exact sum. Overflow may not wrap or collapse distinct heavier chains
 onto the same saturated value.
 
+## WORK-004 - Every Distinct Grind Is Durable
+
+Each accepted root CID produces one immutable `ChainWorkFact`. Multiple distinct
+grinds may contribute to one block, and restart restores all of them. Replay is
+idempotent; no grind may be collapsed into a block-level aggregate fact.
+
 ## FORK-001 - Exact Ties Have a Stable Segment Preference
 
 Fork choice first compares each segment base's same-chain `trueCumWork`. Equal
-work chooses the base with the greatest `nextTarget`, then the lexicographically
-smaller base CID. Arrival and replay order do not affect the result.
+work chooses the lexicographically smaller canonical base CID. `nextTarget` and
+segment tips are not comparators. Arrival and replay order do not affect the result.
 
-## FORK-002 - Retention Cannot Select the Tip
+## FORK-002 - The Consensus Graph Is Not Pruned
 
-Nodes with the same accepted graph and verified work select the same canonical
-tip regardless of retained transition metadata. Missing transition bodies are a
-typed reorganization output, not a fork-choice veto.
+Lattice retains its complete accepted graph and verified work facts. Node-owned
+body, state, and pin retention cannot remove consensus inputs or select the tip.
 
 ## STORAGE-001 - Durability Precedes Visibility
 
-Targeted verified content, materialized state, and the node's admission record
-must be stored before the corresponding chain mutation becomes visible. A
-storage or staging failure leaves consensus state unchanged.
+Targeted verified content, materialized state, and one atomic
+`ChainAdmissionBatch` of immutable typed facts must be stored before the
+corresponding chain mutation becomes visible. A storage or staging failure
+leaves consensus state unchanged.
 
 ## STORAGE-002 - Nested Volumes Are Independent
 
@@ -89,18 +95,30 @@ also explicitly targeted.
 
 ## LIFECYCLE-001 - StateDiff Is Local Metadata
 
-`StateDiff` is derived during execution and attached to local `BlockMeta` and
-admission records. It is not committed in `Block`. Adding proof evidence to an
-existing block emits no second state diff.
+`StateDiff` is derived during execution and carried once in the immutable
+`ChainBlockFact`. It is not committed in `Block` or retained in `BlockMeta`.
+Adding proof evidence to an existing block emits no second state diff.
+
+## COMMIT-001 - Consensus Commits Are Revisioned
+
+Every successful consensus mutation returns a `ChainCommit` with a monotonically
+increasing revision. Its canonical delta is chain-local and revisions let the
+node serialize durability and projections independently of completion order.
+
+## TIME-001 - Admission Uses One Explicit Time Context
+
+Admission captures one `ValidationContext`; every temporal check and stale retry
+uses that same value. Internal wall-clock reads cannot change one attempt's result.
 
 ## INGRESS-001 - Every Source Has One Meaning
 
 Gossip, sync, mining, parent extraction, sibling relay, and recovery route each
 candidate through the same chain-local admission API. Equal candidate bytes,
-evidence, context, and protocol time produce equal consensus outcomes.
+evidence, runtime context, and `ValidationContext` produce equal outcomes.
 
 ## RESTART-001 - Restart Preserves Consensus
 
-Without new external evidence, restoration reconstructs the same accepted graph,
-contribution set, cumulative and subtree work, and canonical tip. Node retention
-may remove bodies or pins but cannot rewrite those facts.
+Without new external evidence, restoration reconstructs the complete accepted
+graph, every distinct contribution, cumulative and subtree work, commit revision,
+and canonical tip. Node retention may remove bodies or pins but cannot rewrite
+those facts.

@@ -147,8 +147,9 @@ subtreeWeight(B) = blockWork(B)
 ```
 
 GHOST follows the greatest same-chain subtree. Equal-work segments prefer the
-base with the easiest next target, then the smaller base CID. There is no live
-parent weight lookup, parent block map, or parent-canonicality tiebreak. Security crosses
+lexicographically smaller canonical CID of their segment bases. Targets and
+segment tips do not break ties. There is no live parent weight lookup, parent
+block map, or parent-canonicality tiebreak. Security crosses
 the hierarchy as verified proof facts, not as authority delegated to another
 runtime.
 

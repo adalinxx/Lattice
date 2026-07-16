@@ -56,12 +56,12 @@ public struct ParentGenesisLink: Codable, Hashable, Sendable {
 public struct ChildValidationPackage: Sendable {
     public let proof: ChildBlockProof
     public let parentContinuityLinks: [ParentContinuityLink]
-    public let parentGenesisLink: ParentGenesisLink?
+    public let parentGenesisLinks: [ParentGenesisLink]
 
     public init(
         proof: ChildBlockProof,
         parentContinuityLinks: [ParentContinuityLink] = [],
-        parentGenesisLink: ParentGenesisLink? = nil
+        parentGenesisLinks: [ParentGenesisLink] = []
     ) {
         self.proof = proof
         self.parentContinuityLinks = parentContinuityLinks.sorted {
@@ -70,7 +70,15 @@ public struct ChildValidationPackage: Sendable {
             }
             return $0.successorCID < $1.successorCID
         }
-        self.parentGenesisLink = parentGenesisLink
+        self.parentGenesisLinks = parentGenesisLinks.sorted {
+            if $0.parentPath != $1.parentPath {
+                return $0.parentPath.lexicographicallyPrecedes($1.parentPath)
+            }
+            if $0.directory != $1.directory {
+                return $0.directory < $1.directory
+            }
+            return $0.childGenesisCID < $1.childGenesisCID
+        }
     }
 }
 

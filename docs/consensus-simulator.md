@@ -12,7 +12,7 @@ swift run LatticeSim --seed 42
 The output is sorted JSON. The same seed must produce the same trace byte-for-byte.
 The three default scenarios pin the chain-local edges in the current library:
 
-- equal subtree work chooses by segment-base `nextTarget`, then base CID;
+- equal subtree work chooses by canonical segment-base CID bytes only;
 - a seeded withhold/release schedule converges to the heavier GHOST subtree;
 - the 1h proportional retarget path uses `ChainSpec.calculateWindowedTarget`.
 

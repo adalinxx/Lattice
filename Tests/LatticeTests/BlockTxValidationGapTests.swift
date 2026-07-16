@@ -144,7 +144,7 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
             storer: backing,
             stage: testAdmissionStage
         )
-        guard case .canonicalized = accepted else {
+        guard case .accepted = accepted else {
             return XCTFail("an unavailable block must canonicalize once evidence arrives")
         }
         let heightAfterAccept = await level.chain.getHighestBlockHeight()
