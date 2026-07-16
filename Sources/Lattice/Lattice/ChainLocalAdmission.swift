@@ -3,20 +3,20 @@ import cashew
 public enum ChainAdmissionFailure: Error, Sendable, Equatable {
     case unavailableEvidence
     case providerMalformedEvidence
-    case missingChildProof
+    case crossChainEvidenceRequired(CrossChainEvidenceRequirement)
     case protocolInvalid
     case localVerificationFailure
     case notYetAdmissible
     case notAcceptedAtCurrentChain
 }
 
-public struct MissingBodyRequest: Sendable, Equatable {
-    public let tipHash: String
-    public let missingBodies: [String]
+public struct SameChainPredecessorRequirement: Sendable, Equatable {
+    public let descendantCID: String
+    public let predecessorCID: String
 
-    public init(tipHash: String, missingBodies: [String]) {
-        self.tipHash = tipHash
-        self.missingBodies = missingBodies
+    public init(descendantCID: String, predecessorCID: String) {
+        self.descendantCID = descendantCID
+        self.predecessorCID = predecessorCID
     }
 }
 
@@ -74,7 +74,7 @@ public struct ChainAcceptance: Sendable {
     public let facts: ChainAdmissionBatch
     public let materializedPostState: LatticeState?
     public let commit: ChainCommit
-    public let followUps: [MissingBodyRequest]
+    public let sameChainPredecessor: SameChainPredecessorRequirement?
 
     public var stateDiff: StateDiff? {
         for case .block(let fact) in facts.facts { return fact.stateDiff }
@@ -95,11 +95,18 @@ public enum ChainLocalBlockResult: Sendable {
         }
     }
 
-    public var followUps: [MissingBodyRequest] {
+    public var sameChainPredecessor: SameChainPredecessorRequirement? {
         switch self {
-        case .accepted(let acceptance): acceptance.followUps
-        case .carrier, .duplicate, .rejected: []
+        case .accepted(let acceptance): acceptance.sameChainPredecessor
+        case .carrier, .duplicate, .rejected: nil
         }
+    }
+
+    public var crossChainEvidenceRequirement: CrossChainEvidenceRequirement? {
+        guard case .rejected(.crossChainEvidenceRequired(let requirement)) = self else {
+            return nil
+        }
+        return requirement
     }
 
     public var commit: ChainCommit? {
@@ -205,7 +212,8 @@ private enum ChainLocalAdmission {
             parentGenesisLinks: package.parentGenesisLinks
         ).mapError { failure -> ChainAdmissionFailure in
             switch failure {
-            case .unavailableEvidence: .unavailableEvidence
+            case .crossChainEvidenceRequired(let requirement):
+                .crossChainEvidenceRequired(requirement)
             case .malformedEvidence: .providerMalformedEvidence
             case .protocolInvalid: .protocolInvalid
             }
@@ -223,7 +231,10 @@ private enum ChainLocalAdmission {
         let context = level.context
         if !context.isRoot {
             guard let childPackage else {
-                return .result(.rejected(.missingChildProof))
+                return .result(.rejected(.crossChainEvidenceRequired(.childProof(
+                    chainPath: context.path,
+                    childCID: blockHeader.rawCID
+                ))))
             }
             switch childPackage.proof.verifyRootFloor(
                 minimumRootWork: context.minimumRootWork
@@ -263,7 +274,10 @@ private enum ChainLocalAdmission {
                 : nil
         } else {
             guard let childPackage else {
-                return .result(.rejected(.missingChildProof))
+                return .result(.rejected(.crossChainEvidenceRequired(.childProof(
+                    chainPath: context.path,
+                    childCID: blockHash
+                ))))
             }
             switch await verifyChildPackage(
                 childPackage,
@@ -441,13 +455,14 @@ private enum ChainLocalAdmission {
         for submission: SubmissionResult,
         prepared: PreparedAdmission
     ) -> ChainLocalBlockResult {
-        var followUps: [MissingBodyRequest] = []
-        if submission.needsParentBlock, let parentHash = prepared.block.parent?.rawCID {
-            followUps.append(MissingBodyRequest(
-                tipHash: prepared.resolvedHeader.rawCID,
-                missingBodies: [parentHash]
-            ))
-        }
+        let sameChainPredecessor = submission.needsPredecessorBlock
+            ? prepared.block.parent.map {
+                SameChainPredecessorRequirement(
+                    descendantCID: prepared.resolvedHeader.rawCID,
+                    predecessorCID: $0.rawCID
+                )
+            }
+            : nil
         guard let commit = submission.commit else { return .duplicate }
         let materializedPostState: LatticeState?
         if case .block(_, let state) = prepared.kind {
@@ -459,7 +474,7 @@ private enum ChainLocalAdmission {
             facts: prepared.facts,
             materializedPostState: materializedPostState,
             commit: commit,
-            followUps: followUps
+            sameChainPredecessor: sameChainPredecessor
         ))
     }
 }
@@ -477,7 +492,8 @@ private func mapProofFailure(
     _ failure: ChildProofVerificationFailure
 ) -> ChainAdmissionFailure {
     switch failure {
-    case .unavailableEvidence: .unavailableEvidence
+    case .crossChainEvidenceRequired(let requirement):
+        .crossChainEvidenceRequired(requirement)
     case .malformedEvidence: .providerMalformedEvidence
     case .protocolInvalid: .protocolInvalid
     }

@@ -501,7 +501,7 @@ final class OutOfOrderSubmissionTests: XCTestCase {
             blockHeader: try! VolumeImpl<Block>(node: block2),
             block: block2
         )
-        XCTAssertTrue(result.needsParentBlock, "Block with a missing predecessor should request its parent")
+        XCTAssertTrue(result.needsPredecessorBlock, "Block with a missing predecessor should report it")
     }
 
     func testParentArrivalConnectsQueuedDescendant() async throws {
@@ -515,7 +515,7 @@ final class OutOfOrderSubmissionTests: XCTestCase {
             blockHeader: try! VolumeImpl<Block>(node: block2),
             block: block2
         )
-        XCTAssertTrue(orphanResult.needsParentBlock)
+        XCTAssertTrue(orphanResult.needsPredecessorBlock)
 
         let _ = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block1),

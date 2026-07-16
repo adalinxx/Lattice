@@ -491,7 +491,7 @@ final class PersistWorkRoundTripTests: XCTestCase {
             block: fork2,
             contribution: fork2ExtraWork
         )
-        XCTAssertTrue(detached.needsParentBlock)
+        XCTAssertTrue(detached.needsPredecessorBlock)
         XCTAssertTrue(extraGrind.addedContribution)
         let snapshot = await live.persist()
 

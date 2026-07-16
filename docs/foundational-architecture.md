@@ -105,6 +105,14 @@ sparse path and carrier continuity, executes this chain's transition, and derive
 typed facts. The node stores verified content and materialized state, then stages
 the facts before the actor mutation becomes visible.
 
+Relationship requirements stay explicit. A locally accepted orphan may report
+the CID of its same-chain predecessor so the node can submit that predecessor
+through the same boundary. Cross-chain acquisition is different: the parent
+carrier commits the child, but the child commits only `parentState`, not the
+carrier CID. Lattice therefore names the missing proof or parent-issued fact and
+the node routes that requirement to the authenticated parent process. It never
+turns a state root into an inferred parent block.
+
 `ChainBlockFact` carries immutable block consensus data and one derived
 `StateDiff`. An immutable `ChainWorkFact` is identified by
 `(blockHash, grindID, work)`; observations join under the logical coverage key
