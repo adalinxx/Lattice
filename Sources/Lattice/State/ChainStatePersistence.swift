@@ -1,36 +1,36 @@
 import UInt256
+import CID
 
 public enum ChainStateRestoreError: Error, Sendable, Equatable {
     case corruptConsensusGraph
+    case missingBlockFact
 }
 
 /// Node-persistable projection of one chain's consensus state.
-public struct PersistedChainState: Codable, Sendable {
+public struct PersistedChainState: Codable, Sendable, Equatable {
+    public let revision: UInt64
     public let chainTip: String
     public let mainChainHashes: [String]
     public let blocks: [PersistedBlockMeta]
-    public let prunedBlocks: [PersistedBlockMeta]
 
     public init(
+        revision: UInt64 = 0,
         chainTip: String,
         mainChainHashes: [String],
-        blocks: [PersistedBlockMeta],
-        prunedBlocks: [PersistedBlockMeta] = []
+        blocks: [PersistedBlockMeta]
     ) {
+        self.revision = revision
         self.chainTip = chainTip
         self.mainChainHashes = mainChainHashes
         self.blocks = blocks
-        self.prunedBlocks = prunedBlocks
     }
 }
 
-public struct PersistedBlockMeta: Codable, Sendable {
+public struct PersistedBlockMeta: Codable, Sendable, Equatable {
     public let blockHash: String
     public let parentBlockHash: String?
     public let blockHeight: UInt64
     public let childHashes: [String]
-    public let createdDiffs: [String: Int]
-    public let removedDiffs: [String: Int]
     public let workContributions: [VerifiedWorkContribution]
     public let cumulativeWork: String
     public let subtreeWeight: String?
@@ -46,8 +46,6 @@ public struct PersistedBlockMeta: Codable, Sendable {
         parentBlockHash: String?,
         blockHeight: UInt64,
         childHashes: [String],
-        createdDiffs: [String: Int] = [:],
-        removedDiffs: [String: Int] = [:],
         workContributions: [VerifiedWorkContribution],
         cumulativeWork: String,
         subtreeWeight: String? = nil,
@@ -62,8 +60,6 @@ public struct PersistedBlockMeta: Codable, Sendable {
         self.parentBlockHash = parentBlockHash
         self.blockHeight = blockHeight
         self.childHashes = childHashes
-        self.createdDiffs = createdDiffs
-        self.removedDiffs = removedDiffs
         self.workContributions = workContributions
         self.cumulativeWork = cumulativeWork
         self.subtreeWeight = subtreeWeight
@@ -86,7 +82,13 @@ private extension PersistedBlockMeta {
 
     var hasValidEncoding: Bool {
         guard decodedWork != nil,
-              WorkSum(hex: cumulativeWork) != nil else { return false }
+              WorkSum(hex: cumulativeWork) != nil,
+              (try? CID(blockHash)) != nil,
+              parentBlockHash.map({ (try? CID($0)) != nil }) ?? true,
+              childHashes.allSatisfy({ (try? CID($0)) != nil }),
+              postStateCID.map({ (try? CID($0)) != nil }) ?? true,
+              prevStateCID.map({ (try? CID($0)) != nil }) ?? true,
+              specCID.map({ (try? CID($0)) != nil }) ?? true else { return false }
         if let target, UInt256(target, radix: 16) == nil { return false }
         if let nextTarget, UInt256(nextTarget, radix: 16) == nil { return false }
         if let subtreeWeight, WorkSum(hex: subtreeWeight) == nil { return false }
@@ -96,8 +98,7 @@ private extension PersistedBlockMeta {
 
 private func hasValidConsensusGraph(_ persisted: PersistedChainState) -> Bool {
     let blocks = Dictionary(
-        uniqueKeysWithValues: (persisted.blocks + persisted.prunedBlocks)
-            .map { ($0.blockHash, $0) }
+        uniqueKeysWithValues: persisted.blocks.map { ($0.blockHash, $0) }
     )
     guard blocks[persisted.chainTip] != nil else { return false }
 
@@ -178,9 +179,6 @@ private func hasValidConsensusGraph(_ persisted: PersistedChainState) -> Bool {
           let canonicalRootWork = subtreeMemo[canonicalRoot]
     else { return false }
 
-    func nextTarget(of hash: String) -> UInt256? {
-        blocks[hash]?.nextTarget.flatMap { UInt256($0, radix: 16) }
-    }
     func selectedChild(of hash: String) -> String? {
         guard let children = blocks[hash]?.childHashes, !children.isEmpty else {
             return nil
@@ -197,9 +195,7 @@ private func hasValidConsensusGraph(_ persisted: PersistedChainState) -> Bool {
         for candidate in weighted where candidate.1 == bestWork {
             if forkChoicePrefersSegmentBase(
                 candidate.0,
-                candidateNextTarget: nextTarget(of: candidate.0),
-                over: selected,
-                currentNextTarget: nextTarget(of: selected)
+                over: selected
             ) {
                 selected = candidate.0
             }
@@ -226,9 +222,7 @@ private func hasValidConsensusGraph(_ persisted: PersistedChainState) -> Bool {
     for root in roots where subtreeMemo[root.blockHash] == bestRootWork {
         if forkChoicePrefersSegmentBase(
             root.blockHash,
-            candidateNextTarget: nextTarget(of: root.blockHash),
-            over: preferredRoot.blockHash,
-            currentNextTarget: nextTarget(of: preferredRoot.blockHash)
+            over: preferredRoot.blockHash
         ) {
             preferredRoot = root
         }
@@ -250,8 +244,6 @@ public extension ChainState {
                 parentBlockHash: meta.parentBlockHash,
                 blockHeight: meta.blockHeight,
                 childHashes: meta.childHashes,
-                createdDiffs: meta.createdDiffs,
-                removedDiffs: meta.removedDiffs,
                 workContributions: Array(meta.workContributions.values).sorted { $0.id < $1.id },
                 cumulativeWork: meta.cumulativeWork.toHexString(),
                 subtreeWeight: meta.subtreeWeight.toHexString(),
@@ -263,28 +255,17 @@ public extension ChainState {
                 nextTarget: snapshot?.nextTarget.toHexString()
             )
         }
-        var blocks: [PersistedBlockMeta] = []
-        var pruned: [PersistedBlockMeta] = []
-        for meta in hashToBlock.values {
-            if meta.stateDiff != nil {
-                blocks.append(persistedMeta(meta))
-            } else {
-                pruned.append(persistedMeta(meta))
-            }
-        }
         return PersistedChainState(
+            revision: mutationGeneration,
             chainTip: chainTip,
             mainChainHashes: Array(mainChainHashes).sorted(),
-            blocks: blocks.sorted { $0.blockHash < $1.blockHash },
-            prunedBlocks: pruned.sorted { $0.blockHash < $1.blockHash }
+            blocks: hashToBlock.values.map(persistedMeta)
+                .sorted { $0.blockHash < $1.blockHash }
         )
     }
 
-    static func restore(
-        from persisted: PersistedChainState,
-        retentionDepth: UInt64 = .max
-    ) throws -> ChainState {
-        let persistedBlocks = persisted.blocks + persisted.prunedBlocks
+    static func restore(from persisted: PersistedChainState) throws -> ChainState {
+        let persistedBlocks = persisted.blocks
         let blockHashes = persistedBlocks.map(\.blockHash)
         let contributionIDs = persistedBlocks.flatMap {
             $0.workContributions.map(\.id)
@@ -293,9 +274,6 @@ public extension ChainState {
               Set(persisted.mainChainHashes).count == persisted.mainChainHashes.count,
               Set(contributionIDs).count == contributionIDs.count,
               persisted.blocks.allSatisfy(\.hasValidEncoding),
-              persisted.prunedBlocks.allSatisfy({
-                  $0.hasValidEncoding && $0.subtreeWeight != nil
-              }),
               hasValidConsensusGraph(persisted) else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
@@ -308,7 +286,7 @@ public extension ChainState {
             if let timestamp = block.timestamp { timestamps[block.blockHash] = timestamp }
             if let snapshot = snapshot(from: block) { snapshots[block.blockHash] = snapshot }
         }
-        for block in persisted.blocks {
+        for block in persistedBlocks {
             guard block.decodedWork != nil,
                   let cumulativeWork = WorkSum(hex: block.cumulativeWork) else {
                 throw ChainStateRestoreError.corruptConsensusGraph
@@ -318,10 +296,6 @@ public extension ChainState {
                 parentBlockHash: block.parentBlockHash,
                 blockHeight: block.blockHeight,
                 childHashes: block.childHashes,
-                stateDiff: StateDiff(
-                    replaced: block.removedDiffs,
-                    created: block.createdDiffs
-                ),
                 workContributions: block.workContributions,
                 cumulativeWork: cumulativeWork
             )
@@ -333,11 +307,10 @@ public extension ChainState {
             mainChainHashes: Set(persisted.mainChainHashes),
             indexToBlockHash: byHeight,
             hashToBlock: blocks,
-            retentionDepth: retentionDepth,
             blockTimestamps: timestamps,
             tipSnapshot: snapshots[persisted.chainTip],
             tipSnapshotsByHash: snapshots,
-            prunedBlocks: persisted.prunedBlocks
+            mutationGeneration: persisted.revision
         )
     }
 }

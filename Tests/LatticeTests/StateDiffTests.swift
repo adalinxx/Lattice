@@ -285,6 +285,29 @@ final class StateDiffTests: XCTestCase {
             "nonce tracking inserts an extra key, creating additional CIDs")
     }
 
+    func testMaximumNonceRejectsWithoutWrapping() async throws {
+        XCTAssertThrowsError(
+            try AccountStateHeader.nextExpectedNonce(afterStored: .max)
+        )
+
+        let state = try AccountStateHeader(node: AccountState())
+        let transaction = TransactionBody(
+            accountActions: [], actions: [], depositActions: [], genesisActions: [],
+            receiptActions: [], withdrawalActions: [], signers: ["owner"], fee: 0,
+            nonce: .max
+        )
+        do {
+            _ = try await state.proveAndUpdateState(
+                allAccountActions: [],
+                transactionBodies: [transaction, transaction],
+                fetcher: makeFetcher()
+            )
+            XCTFail("duplicate maximum nonces must be rejected")
+        } catch StateErrors.nonceGap {
+            // Expected.
+        }
+    }
+
     // MARK: - LatticeState aggregated diff
 
     func testLatticeStateAggregatesDiffsFromSubStates() async throws {
@@ -296,7 +319,7 @@ final class StateDiffTests: XCTestCase {
         let kp = CryptoUtils.generateKeyPair()
         let owner = try! HeaderImpl<PublicKey>(node: PublicKey(key: kp.publicKey)).rawCID
 
-        let (_, diff) = try await state.proveAndUpdateState(
+        let (updated, diff) = try await state.proveAndUpdateState(
             allAccountActions: [AccountAction(owner: owner, delta: 100)],
             allActions: [Action(key: "foo", oldValue: nil, newValue: "bar")],
             allDepositActions: [],
@@ -310,6 +333,10 @@ final class StateDiffTests: XCTestCase {
         XCTAssertFalse(diff.isEmpty)
         XCTAssertGreaterThanOrEqual(diff.created.count, 2,
             "at least account + general state should have created CIDs")
+        let previousRoot = try LatticeStateHeader(node: state).rawCID
+        let updatedRoot = try LatticeStateHeader(node: updated).rawCID
+        XCTAssertEqual(diff.replaced[previousRoot], 1)
+        XCTAssertEqual(diff.created[updatedRoot], 1)
     }
 
     func testEmptyActionsProduceEmptyDiff() async throws {

@@ -23,6 +23,8 @@ private func bucketContribution(_ id: String, work: UInt256 = UInt256(1)) -> Ver
     VerifiedWorkContribution(id: id, work: work)
 }
 
+private let persistedGenesisCID = "bafyreieonsjxgx7d7cnbebfixgzcdoxopsbrfbbgujnqp74przhtmmbn5a"
+
 final class ConsensusForkChoiceBucketATests: XCTestCase {
     private var forkMainSet: Set<String> { ["G", "M1", "M2"] }
 
@@ -80,7 +82,7 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
 
     func testRestoreRejectsUndecodableTarget() {
         let block = PersistedBlockMeta(
-            blockHash: "G",
+            blockHash: persistedGenesisCID,
             parentBlockHash: nil,
             blockHeight: 0,
             childHashes: [],
@@ -89,8 +91,8 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
             target: "not-hex"
         )
         let persisted = PersistedChainState(
-            chainTip: "G",
-            mainChainHashes: ["G"],
+            chainTip: persistedGenesisCID,
+            mainChainHashes: [persistedGenesisCID],
             blocks: [block]
         )
 
@@ -101,7 +103,7 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
 
     func testRestoreRejectsUndecodableNextTarget() {
         let block = PersistedBlockMeta(
-            blockHash: "G",
+            blockHash: persistedGenesisCID,
             parentBlockHash: nil,
             blockHeight: 0,
             childHashes: [],
@@ -110,8 +112,8 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
             nextTarget: "not-hex"
         )
         let persisted = PersistedChainState(
-            chainTip: "G",
-            mainChainHashes: ["G"],
+            chainTip: persistedGenesisCID,
+            mainChainHashes: [persistedGenesisCID],
             blocks: [block]
         )
 
@@ -121,6 +123,24 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
     }
 
     func testRestoreAllowsAbsentTargetWhenWorkContributionIsPresent() throws {
+        let block = PersistedBlockMeta(
+            blockHash: persistedGenesisCID,
+            parentBlockHash: nil,
+            blockHeight: 0,
+            childHashes: [],
+            workContributions: [bucketContribution("grind:G")],
+            cumulativeWork: UInt256(1).toHexString()
+        )
+        let persisted = PersistedChainState(
+            chainTip: persistedGenesisCID,
+            mainChainHashes: [persistedGenesisCID],
+            blocks: [block]
+        )
+
+        XCTAssertNoThrow(try ChainState.restore(from: persisted))
+    }
+
+    func testRestoreRejectsMalformedBlockCID() {
         let block = PersistedBlockMeta(
             blockHash: "G",
             parentBlockHash: nil,
@@ -135,6 +155,8 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
             blocks: [block]
         )
 
-        XCTAssertNoThrow(try ChainState.restore(from: persisted))
+        XCTAssertThrowsError(try ChainState.restore(from: persisted)) { error in
+            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
+        }
     }
 }

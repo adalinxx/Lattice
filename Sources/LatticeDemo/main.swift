@@ -28,8 +28,7 @@ private func store(_ block: Block, in store: DemoStore) async throws {
 }
 
 private func canonicalized(_ result: ChainLocalBlockResult) -> Bool {
-    if case .canonicalized = result { return true }
-    return false
+    result.commit?.canonicalChanged == true
 }
 
 print("Lattice Demo")

@@ -9,24 +9,15 @@ public extension AccountStateHeader {
     /// the same trie (Ethereum-style per-account nonce).
     func proveAndUpdateState(
         allAccountActions: [AccountAction],
+        allReceiptActions: [ReceiptAction] = [],
         transactionBodies: [TransactionBody] = [],
         fetcher: Fetcher
     ) async throws -> (AccountStateHeader, StateDiff) {
-        // Aggregate deltas per owner (preserve insertion order)
-        var ownerOrder: [String] = []
-        var netDeltas: [String: Int64] = [:]
-        for action in allAccountActions {
-            if netDeltas[action.owner] == nil {
-                ownerOrder.append(action.owner)
-            }
-            let (sum, overflow) = netDeltas[action.owner, default: 0].addingReportingOverflow(action.delta)
-            guard !overflow else { throw StateErrors.balanceOverflow }
-            netDeltas[action.owner] = sum
-        }
-        ownerOrder.removeAll { netDeltas[$0] == 0 }
-        for key in netDeltas.keys where netDeltas[key] == 0 {
-            netDeltas.removeValue(forKey: key)
-        }
+        let netDeltas = try TransactionBody.netBalanceDeltas(
+            accountActions: allAccountActions,
+            receiptActions: allReceiptActions
+        )
+        let ownerOrder = netDeltas.keys.sorted()
 
         // Group transactions by signer account, validate each signer's contiguous
         // nonce sequence independently. Multi-signer transactions advance every
@@ -44,7 +35,8 @@ public extension AccountStateHeader {
             groups[signer]!.sort { $0.nonce < $1.nonce }
             let sorted = groups[signer]!
             for i in 1..<sorted.count {
-                if sorted[i].nonce != sorted[i - 1].nonce + 1 {
+                let (expected, overflow) = sorted[i - 1].nonce.addingReportingOverflow(1)
+                if overflow || sorted[i].nonce != expected {
                     throw StateErrors.nonceGap
                 }
             }
@@ -71,14 +63,12 @@ public extension AccountStateHeader {
             let current: UInt64 = resolved.node.flatMap({ try? $0.get(key: owner) }) ?? 0
 
             let newBalance: UInt64
-            if delta < 0 {
-                // SEC-601 (belt-and-suspenders): -Int64.min overflows; throw rather than trap.
-                guard delta > Int64.min else { throw StateErrors.balanceOverflow }
-                let debit = UInt64(-delta)
+            switch delta {
+            case .debit(let debit):
                 guard current >= debit else { throw StateErrors.insufficientBalance }
                 newBalance = current - debit
-            } else {
-                let (result, overflow) = current.addingReportingOverflow(UInt64(delta))
+            case .credit(let credit):
+                let (result, overflow) = current.addingReportingOverflow(credit)
                 guard !overflow else { throw StateErrors.balanceOverflow }
                 newBalance = result
             }
@@ -103,7 +93,7 @@ public extension AccountStateHeader {
             let sorted = groups[signer]!
             let nonceKey = Self.nonceTrackingKey(signer)
             let currentNonce: UInt64? = resolved.node.flatMap { try? $0.get(key: nonceKey) }
-            let expectedFirst: UInt64 = Self.nextExpectedNonce(afterStored: currentNonce)
+            let expectedFirst = try Self.nextExpectedNonce(afterStored: currentNonce)
             guard sorted.first!.nonce == expectedFirst else {
                 throw StateErrors.nonceGap
             }
@@ -131,8 +121,11 @@ public extension AccountStateHeader {
     /// transacted — floors at 0; otherwise stored + 1). Consumed by the state
     /// transition's contiguity check in `proveAndUpdateState` and by node-side
     /// admission — one definition so the two cannot drift.
-    static func nextExpectedNonce(afterStored currentNonce: UInt64?) -> UInt64 {
-        (currentNonce ?? 0) + (currentNonce != nil ? 1 : 0)
+    static func nextExpectedNonce(afterStored currentNonce: UInt64?) throws -> UInt64 {
+        guard let currentNonce else { return 0 }
+        let (next, overflow) = currentNonce.addingReportingOverflow(1)
+        guard !overflow else { throw StateErrors.nonceGap }
+        return next
     }
 
     /// Public read API over the floor rule: resolve `account`'s stored nonce
@@ -141,7 +134,7 @@ public extension AccountStateHeader {
         let nonceKey = Self.nonceTrackingKey(account)
         let resolved = try await resolve(paths: [[nonceKey]: ResolutionStrategy.targeted], fetcher: fetcher)
         let currentNonce: UInt64? = resolved.node.flatMap { try? $0.get(key: nonceKey) }
-        return Self.nextExpectedNonce(afterStored: currentNonce)
+        return try Self.nextExpectedNonce(afterStored: currentNonce)
     }
 
     static let nonceKeyPrefix = "_nonce_"

@@ -17,10 +17,6 @@ private func prefixSpec() -> ChainSpec {
     )
 }
 
-private func prefixContribution(_ id: String, work: UInt256) -> VerifiedWorkContribution {
-    VerifiedWorkContribution(id: id, work: work)
-}
-
 final class CumulativeWorkPrefixSumTests: XCTestCase {
     func testIncrementalPrefixSumEqualsTotalWork() async throws {
         let fetcher = StorableFetcher()
@@ -86,48 +82,6 @@ final class CumulativeWorkPrefixSumTests: XCTestCase {
         XCTAssertEqual(after, before)
     }
 
-    func testPersistedPrefixRemainsExactWhenAncestorLifecycleDataIsPruned() async throws {
-        let one = UInt256(1)
-        let genesis = PersistedBlockMeta(
-            blockHash: "G",
-            parentBlockHash: nil,
-            blockHeight: 0,
-            childHashes: ["A"],
-            workContributions: [prefixContribution("grind:G", work: one)],
-            cumulativeWork: one.toHexString(),
-            subtreeWeight: UInt256(3).toHexString()
-        )
-        let parent = PersistedBlockMeta(
-            blockHash: "A",
-            parentBlockHash: "G",
-            blockHeight: 1,
-            childHashes: ["B"],
-            workContributions: [prefixContribution("grind:A", work: one)],
-            cumulativeWork: UInt256(2).toHexString(),
-            subtreeWeight: UInt256(2).toHexString()
-        )
-        let tip = PersistedBlockMeta(
-            blockHash: "B",
-            parentBlockHash: "A",
-            blockHeight: 2,
-            childHashes: [],
-            workContributions: [prefixContribution("grind:B", work: one)],
-            cumulativeWork: UInt256(3).toHexString()
-        )
-        let persisted = PersistedChainState(
-            chainTip: "B",
-            mainChainHashes: ["G", "A", "B"],
-            blocks: [tip],
-            prunedBlocks: [genesis, parent]
-        )
-        let chain = try ChainState.restore(from: persisted)
-
-        let exact = await chain.getTipCumulativeWork()
-        let localWindow = await chain.getCumulativeWork(limit: 1)
-        XCTAssertEqual(exact, WorkSum(UInt256(3)))
-        XCTAssertEqual(localWindow, WorkSum(UInt256(2)))
-    }
-
     func testOutOfOrderInsertRepairsDescendantPrefixSum() async throws {
         let fetcher = StorableFetcher()
         let base = Int64(Date().timeIntervalSince1970 * 1_000) - 50_000
@@ -177,5 +131,19 @@ final class CumulativeWorkPrefixSumTests: XCTestCase {
             WorkSum(UInt256.max - UInt256(5)) + UInt256(10),
             beyondMax + UInt256(4)
         )
+    }
+
+    func testWorkSumPreservesUInt256WordOrder() {
+        let values = [
+            UInt256(0),
+            UInt256(1),
+            UInt256(UInt64.max),
+            UInt256.max - UInt256(1),
+            UInt256.max
+        ]
+
+        for value in values {
+            XCTAssertEqual(WorkSum(value).toHexString(), value.toHexString())
+        }
     }
 }

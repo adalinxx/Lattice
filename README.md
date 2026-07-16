@@ -121,7 +121,7 @@ choice. The node authenticates the process that supplied each fact.
 
 **Five partitioned sub-states.** World state is split into five independent Sparse Merkle Trees: accounts, general key-value, deposits, receipts, and genesis blocks. Account state also tracks per-signer nonces via `_nonce_<prefix>` keys in the same trie. All five are proved and updated concurrently via Swift `async let`. Light clients only need proofs for the sub-state they care about.
 
-**Node-owned state retention.** Validation derives a `StateDiff` for the materialized transition. The diff is local lifecycle metadata on `BlockMeta` and admission records; it is not committed in `Block`. Lattice returns admitted and evicted lifecycle metadata, while the node applies CID reference counts and decides which materialized state Volumes to pin or unpin. Pruning a diff never changes fork choice; a reorganization simply reports any newly canonical transition bodies the node may need to reacquire. `diffCIDs(old:new:)` walks only materialized nodes on modified paths — O(log n) per modified key.
+**Node-owned state retention.** Validation derives a `StateDiff` for the materialized transition and includes it in the immutable block admission fact; it is not committed in `Block` or retained in Lattice's consensus graph. The node owns durable fact storage, CID reference counts, pinning, projections, and state-retention policy. If a crash occurs after staging but before the actor commit, the node gives the staged local facts back to `ChainState.restore(..., replaying:)`; Lattice rebuilds its own graph and fork choice. Lattice retains the complete accepted consensus graph and never prunes it based on node storage policy. `diffCIDs(old:new:)` walks only materialized nodes on modified paths — O(log n) per modified key.
 
 **Actor-based concurrency.** Within each Lattice process, `ChainLevel` and `ChainState` actors isolate one chain's admission and fork choice. Reorganizations remain local to that process, and Swift 6's strict sendability checking catches data races at compile time.
 
@@ -130,13 +130,15 @@ choice. The node authenticates the process that supplied each fact.
 ```
 Block arrives
   │
-  ├── Resolve the targeted block data and validation package
-  ├── Check the root-work floor, proof path, and carrier continuity
+  ├── Capture one explicit validation-time context
+  ├── Validate the root CID and root-work floor
+  ├── Resolve the targeted child data and validation package
+  ├── Check the proof path and carrier continuity
   ├── Compare the same root hash with this chain's target
   ├── Execute this chain's transition when accepted here
   ├── Store verified content and materialized state
-  ├── Let the node durably stage the admission record
-  └── Commit to ChainState and return the chain-local result
+  ├── Atomically stage immutable block/work facts in the node
+  └── Commit to ChainState and return a revisioned ChainCommit
 ```
 
 Gossip, sync, mining, and peer recovery all use this same admission path. The
@@ -155,10 +157,12 @@ work(B)          = sum(verified contributions attached to B)
 subtreeWeight(B) = work(B) + Σ subtreeWeight(same-chain children(B))
 ```
 
-GHOST descends through the greatest same-chain subtree weight. Only strictly
-greater work reorganizes; an exact tie holds the incumbent. There is no live
-parent-weight provider, parent-canonicality coupling, or consensus finality
-threshold. The node's retention policy does not change validity or fork choice.
+GHOST descends through the greatest same-chain subtree weight. At a fork it
+compares the competing segment bases by `trueCumWork`, then by canonical CID
+bytes only; the lexicographically smaller CID wins an exact work tie. Tips and
+`nextTarget` are not tie-break inputs. There is no live parent-weight provider,
+parent-canonicality coupling, or consensus finality threshold. The node's
+retention policy does not change validity or fork choice.
 (Normative spec: `docs/spec.md` §9.)
 
 ### Cross-chain value transfer
@@ -272,7 +276,7 @@ Sources/Lattice/
 - [x] Stateless block verification (nodes lazy-load state via Fetcher protocol)
 - [x] Transaction/action chain policies using the WASM runtime
 - [x] Targeted Cashew resolve/store with independent nested Volume boundaries
-- [x] Admission returns local `StateDiff` lifecycle metadata and retention evictions to the node
+- [x] Atomic typed block/work admission facts and revisioned chain-local commits
 - [x] State continuity validation — `prevState`/`postState` (anti-forgery for intermediate blocks)
 - [x] Formal protocol specification
 - [x] Parent-derived target: enforce `B.target == parent.nextTarget` + clamped proportional retarget (see `docs/spec.md` §5.5)

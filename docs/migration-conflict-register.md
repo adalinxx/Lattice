@@ -20,10 +20,12 @@ The replacement is one boundary, not a compatibility layer:
 ```text
 ChainRuntimeContext + ChildValidationPackage
   -> ChainLevel.bootstrap / admitBlockHeaderChainLocal
-  -> targeted store + node durable stage
-  -> one ChainState commit
+  -> targeted store + node-atomic ChainAdmissionBatch
+  -> one revisioned ChainCommit
 ```
 
 `lattice-node` owns one-process-per-chain topology, acquisition, filesystem
-persistence, CAS pin counts, retention, and projections. Every candidate from
-gossip, sync, mining, or peer recovery re-enters the same admission API.
+persistence of restart-equivalent block data and every work fact, CAS pin counts,
+state retention, and projections. Lattice retains the complete consensus graph.
+Every candidate from gossip, sync, mining, or peer recovery re-enters the same
+admission API.

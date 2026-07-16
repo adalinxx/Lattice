@@ -403,8 +403,8 @@ final class BalanceConservationTests: XCTestCase {
             receiptActions: [], withdrawalActions: [],
             signers: ["sender"], fee: 1, nonce: 0
         ).valueConservation()
-        XCTAssertEqual(valid.totalDebits, 101)
-        XCTAssertEqual(valid.totalCredits, 100)
+        XCTAssertEqual(valid.totalDebits, WorkSum(UInt256(101)))
+        XCTAssertEqual(valid.totalCredits, WorkSum(UInt256(100)))
         XCTAssertFalse(valid.overflow)
         XCTAssertTrue(valid.conserved)
 
@@ -430,19 +430,41 @@ final class BalanceConservationTests: XCTestCase {
             withdrawalActions: [WithdrawalAction(withdrawer: "sender", nonce: 1, demander: "recipient", amountDemanded: 20, amountWithdrawn: 20)],
             signers: ["sender"], fee: 40, nonce: 0
         ).valueConservation()
-        XCTAssertEqual(bridged.totalDebits, 150)
-        XCTAssertEqual(bridged.totalCredits, 100)
+        XCTAssertEqual(bridged.totalDebits, WorkSum(UInt256(150)))
+        XCTAssertEqual(bridged.totalCredits, WorkSum(UInt256(100)))
         XCTAssertFalse(bridged.overflow)
         XCTAssertTrue(bridged.conserved)
 
-        let overflow = TransactionBody(
+        let invalidExtremeDebit = TransactionBody(
             accountActions: [AccountAction(owner: "sender", delta: Int64.min)],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
             signers: ["sender"], fee: 0, nonce: 0
         ).valueConservation()
-        XCTAssertTrue(overflow.overflow)
-        XCTAssertFalse(overflow.conserved)
+        XCTAssertEqual(invalidExtremeDebit.totalDebits, .zero)
+        XCTAssertTrue(invalidExtremeDebit.overflow)
+        XCTAssertFalse(invalidExtremeDebit.conserved)
+
+        let beyondUInt64 = TransactionBody(
+            accountActions: [
+                AccountAction(owner: "sender", delta: -Int64.max),
+                AccountAction(owner: "sender", delta: -Int64.max),
+                AccountAction(owner: "sender", delta: -Int64.max),
+                AccountAction(owner: "recipient", delta: Int64.max),
+                AccountAction(owner: "recipient", delta: Int64.max),
+                AccountAction(owner: "recipient", delta: Int64.max),
+            ],
+            actions: [], depositActions: [], genesisActions: [],
+            receiptActions: [], withdrawalActions: [],
+            signers: ["sender"], fee: 0, nonce: 0
+        ).valueConservation()
+        let amount = UInt256(UInt64(Int64.max))
+        let expected = WorkSum(amount) + amount + amount
+        XCTAssertGreaterThan(expected, WorkSum(UInt256(UInt64.max)))
+        XCTAssertEqual(beyondUInt64.totalDebits, expected)
+        XCTAssertEqual(beyondUInt64.totalCredits, expected)
+        XCTAssertFalse(beyondUInt64.overflow)
+        XCTAssertTrue(beyondUInt64.conserved)
     }
 
     func testCannotCreateMoneyFromNothing() throws {
@@ -1178,7 +1200,8 @@ final class StateRootValidationTests: XCTestCase {
             stage: testAdmissionStage
         )
 
-        guard case let .canonicalized(_, materializedPostState: materializedPostState?, reorganization: _, evictedBlocks: _, followUps: _) = accepted else {
+        guard case let .accepted(acceptance) = accepted,
+              let materializedPostState = acceptance.materializedPostState else {
             return XCTFail("accepted block should canonicalize with its materialized post-state")
         }
         XCTAssertEqual(
@@ -1252,7 +1275,7 @@ final class StateRootValidationTests: XCTestCase {
             stage: testAdmissionStage
         )
 
-        guard case .canonicalized = accepted else {
+        guard case .accepted = accepted else {
             return XCTFail("an unavailable block must canonicalize once evidence arrives")
         }
         let acceptedHeight = await level.chain.getHighestBlockHeight()

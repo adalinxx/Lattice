@@ -121,7 +121,7 @@ final class ReorgBookkeepingTests: XCTestCase {
     // Tip extension must emit the connect set when GHOST descent advances the tip
     // past already-attached out-of-order descendants. Genesis→C0(tip); grandchild
     // G(parent=C1) is attached before C1. The tip jumps C0→C1→G, so the
-    // result must carry a Reorganization listing BOTH C1 and G (not reorganization==nil).
+    // commit must list BOTH C1 and G.
     func test_tipExtendEmitsConnectSetForOutOfOrderDescendants() async throws {
         let fetcher = StorableFetcher()
         let diff = UInt256(1000)
@@ -150,91 +150,10 @@ final class ReorgBookkeepingTests: XCTestCase {
         XCTAssertTrue(result.extendsMainChain, "C1's parent is the tip, so this extends the main chain")
         let finalTip = await chain.getMainChainTip()
         XCTAssertEqual(finalTip, cid(gg), "the tip advances past the out-of-order grandchild")
-        let added = result.reorganization?.mainChainBlocksAdded
-        XCTAssertNotNil(added, "tip-extend that advances past out-of-order descendants must emit a Reorganization")
+        let added = result.commit?.mainChainBlocksAdded
+        XCTAssertNotNil(added, "tip-extend that advances past out-of-order descendants must emit a commit")
         XCTAssertTrue(added?.keys.contains(cid(c1)) ?? false, "connect set contains C1")
         XCTAssertTrue(added?.keys.contains(cid(gg)) ?? false, "connect set contains the out-of-order grandchild G")
-    }
-
-    // Lifecycle pruning never changes fork choice. The heavier branch becomes
-    // canonical and the reorg reports the exact transition body Node may reacquire.
-    func test_ghostDescentCanonicalizesPrunedHeavierChild() async {
-        // G→A1 (main tip). A1 has two children: H (heavy subtree H→H2, weight 2) and
-        // L (light leaf, weight 1). H has pruned lifecycle metadata but remains in
-        // the consensus graph. Descent must pick H (heavier), not L, and surface H/H2 as
-        // refetch targets — never silently descend L.
-        let g  = makeBlockMeta(hash: "G",  height: 0, childHashes: ["A1"])
-        let a1 = makeBlockMeta(hash: "A1", previousHash: "G", height: 1, childHashes: ["H", "L"])
-        let h  = makeBlockMeta(hash: "H",  previousHash: "A1", height: 2, childHashes: ["H2"])
-        let h2 = makeBlockMeta(hash: "H2", previousHash: "H", height: 3)
-        let l  = makeBlockMeta(hash: "L",  previousHash: "A1", height: 2)
-        let chain = makeChain(blocks: [g, a1, h, h2, l], mainChainHashes: Set(["G", "A1"]))
-
-        // Drop H2's lifecycle metadata while retaining its consensus weight and
-        // linkage. The heavier child of A1 remains subtree-weighed as {H, H2} = 2
-        // and must beat the lighter sibling L = 1.
-        await chain.pruneBlocksAtIndex(3)
-
-        let descent = await chain.heaviestDescent(fromHash: "A1")
-        XCTAssertEqual(descent?.tipHash, "H2", "descent identifies the heavier (pruned) branch's leaf, not the lighter sibling")
-
-        let reorg = await chain.checkForReorg(block: h)
-        let tip = await chain.getMainChainTip()
-        XCTAssertEqual(tip, "H2")
-        XCTAssertEqual(reorg?.missingBodies, ["H2"])
-        XCTAssertFalse(reorg?.missingBodies.contains("L") ?? true, "the lighter sibling is never chosen")
-    }
-
-    func test_prunedForkBaseIsInstalledAndReported() async {
-        let g = makeBlockMeta(hash: "G", height: 0, childHashes: ["M", "F"])
-        let m = makeBlockMeta(
-            hash: "M",
-            previousHash: "G",
-            height: 1,
-            work: UInt256(1),
-            cumulativeWork: UInt256(2)
-        )
-        let f = makeBlockMeta(
-            hash: "F",
-            previousHash: "G",
-            height: 1,
-            childHashes: ["F2"],
-            work: UInt256(1),
-            cumulativeWork: UInt256(2)
-        )
-        let f2 = makeBlockMeta(
-            hash: "F2",
-            previousHash: "F",
-            height: 2,
-            work: UInt256(1),
-            cumulativeWork: UInt256(3)
-        )
-        let chain = makeChain(
-            blocks: [g, m, f, f2],
-            mainChainHashes: ["G", "M"]
-        )
-        await chain.pruneBlocksAtIndex(1)
-
-        let reorg = await chain.checkForReorg(block: f)
-
-        let tip = await chain.getMainChainTip()
-        XCTAssertEqual(tip, "F2")
-        XCTAssertEqual(reorg?.missingBodies, ["F"])
-    }
-
-    // applyReorg must not force-unwrap an unknown fork block.
-    func test_applyReorgGuardsDetachedFallback() async {
-        let g  = makeBlockMeta(hash: "G",  height: 0, childHashes: ["A1"])
-        let a1 = makeBlockMeta(hash: "A1", previousHash: "G", height: 1)
-        let chain = makeChain(blocks: [g, a1], mainChainHashes: Set(["G", "A1"]))
-        // newForkBlocks includes a hash absent from the consensus graph.
-        let reorg = await chain.applyReorg(
-            newForkBlocks: Set(["G", "phantom-detached"]),
-            newForkTipHash: "G",
-            mainChainBlocks: Set()
-        )
-        XCTAssertFalse(reorg.mainChainBlocksAdded.keys.contains("phantom-detached"),
-                       "an absent fork block is skipped, not force-unwrapped")
     }
 
     // (6) getCumulativeWork(limit:) must retain exact ordering beyond UInt256.

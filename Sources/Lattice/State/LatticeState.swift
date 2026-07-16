@@ -65,13 +65,12 @@ public struct LatticeState: Node {
     }
 
     public func proveAndUpdateState(allAccountActions: [AccountAction], allActions: [Action], allDepositActions: [DepositAction], allGenesisActions: [GenesisAction], allReceiptActions: [ReceiptAction], allWithdrawalActions: [WithdrawalAction], transactionBodies: [TransactionBody], fetcher: Fetcher) async throws -> (LatticeState, StateDiff) {
-        // The receipt withdrawer/demander transfer is part of the consensus
-        // account-delta rule — one definition, shared with node admission.
-        let mergedAccountActions = try TransactionBody.netAccountDeltas(
-            accountActions: allAccountActions,
-            receiptActions: allReceiptActions
+        async let accountResult = accountState.proveAndUpdateState(
+            allAccountActions: allAccountActions,
+            allReceiptActions: allReceiptActions,
+            transactionBodies: transactionBodies,
+            fetcher: fetcher
         )
-        async let accountResult = accountState.proveAndUpdateState(allAccountActions: mergedAccountActions, transactionBodies: transactionBodies, fetcher: fetcher)
         async let generalResult = generalState.proveAndUpdateState(allActions: allActions, fetcher: fetcher)
         async let genesisResult = genesisState.proveAndUpdateState(allGenesisActions: allGenesisActions, fetcher: fetcher)
         async let receiptResult = receiptState.proveAndUpdateState(allReceiptActions: allReceiptActions, fetcher: fetcher)
@@ -91,7 +90,20 @@ public struct LatticeState: Node {
         diff.merge(genesisDiff)
         diff.merge(receiptDiff)
 
-        return (Self(accountState: finalAccountState, generalState: finalGeneralState, depositState: finalDepositState, genesisState: finalGenesisState, receiptState: finalReceiptState), diff)
+        let updated = Self(
+            accountState: finalAccountState,
+            generalState: finalGeneralState,
+            depositState: finalDepositState,
+            genesisState: finalGenesisState,
+            receiptState: finalReceiptState
+        )
+        let previousRoot = try LatticeStateHeader(node: self).rawCID
+        let updatedRoot = try LatticeStateHeader(node: updated).rawCID
+        if previousRoot != updatedRoot {
+            diff.replaced[previousRoot, default: 0] += 1
+            diff.created[updatedRoot, default: 0] += 1
+        }
+        return (updated, diff)
     }
 }
 

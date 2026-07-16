@@ -20,75 +20,87 @@ public struct MissingBodyRequest: Sendable, Equatable {
     }
 }
 
-public enum ChainAdmissionRecordKind: Sendable {
-    case block
-    case evidence
-    case carrier
-}
-
-/// Immutable facts the node must make durable before Lattice changes fork choice.
-public struct ChainAdmissionRecord: Sendable {
-    public let kind: ChainAdmissionRecordKind
+public struct ChainBlockFact: Codable, Sendable, Equatable {
     public let blockHash: String
+    public let parentBlockHash: String?
     public let blockHeight: UInt64
     public let postStateCID: String
-    public let stateDiff: StateDiff?
-    public let workContribution: VerifiedWorkContribution?
-    public let childEvidence: VerifiedChildEvidence?
+    public let prevStateCID: String
+    public let specCID: String
+    public let target: String
+    public let nextTarget: String
+    public let timestamp: Int64
+    public let stateDiff: StateDiff
+}
+
+public struct ChainWorkFact: Codable, Sendable, Equatable {
+    public let blockHash: String
+    public let contribution: VerifiedWorkContribution
+}
+
+public enum ChainFactID: Codable, Hashable, Sendable {
+    case block(String)
+    case work(String)
+}
+
+public enum ChainAdmissionFact: Codable, Sendable, Equatable {
+    case block(ChainBlockFact)
+    case work(ChainWorkFact)
+
+    public var id: ChainFactID {
+        switch self {
+        case .block(let fact): .block(fact.blockHash)
+        case .work(let fact): .work(fact.contribution.id)
+        }
+    }
+}
+
+/// One node-atomic durability unit. New blocks stage their block and first work
+/// facts together; later grinds append only another independently keyed work fact.
+public struct ChainAdmissionBatch: Codable, Sendable, Equatable {
+    public let facts: [ChainAdmissionFact]
+
+    init(facts: [ChainAdmissionFact]) {
+        self.facts = facts
+    }
+}
+
+public struct ChainAcceptance: Sendable {
+    public let facts: ChainAdmissionBatch
+    public let materializedPostState: LatticeState?
+    public let commit: ChainCommit
+    public let followUps: [MissingBodyRequest]
+
+    public var stateDiff: StateDiff? {
+        for case .block(let fact) in facts.facts { return fact.stateDiff }
+        return nil
+    }
 }
 
 public enum ChainLocalBlockResult: Sendable {
-    case canonicalized(
-        StateDiff,
-        materializedPostState: LatticeState?,
-        reorganization: Reorganization?,
-        evictedBlocks: [BlockMeta],
-        followUps: [MissingBodyRequest]
-    )
-    case acceptedSide(
-        StateDiff,
-        materializedPostState: LatticeState?,
-        evictedBlocks: [BlockMeta],
-        followUps: [MissingBodyRequest]
-    )
-    case acceptedEvidence(
-        VerifiedWorkContribution,
-        reorganization: Reorganization?,
-        evictedBlocks: [BlockMeta],
-        followUps: [MissingBodyRequest]
-    )
+    case accepted(ChainAcceptance)
     case carrier
     case duplicate
     case rejected(ChainAdmissionFailure)
 
     public var materializedPostState: LatticeState? {
         switch self {
-        case .canonicalized(_, let state, _, _, _), .acceptedSide(_, let state, _, _):
-            state
-        case .acceptedEvidence, .carrier, .duplicate, .rejected:
-            nil
+        case .accepted(let acceptance): acceptance.materializedPostState
+        case .carrier, .duplicate, .rejected: nil
         }
     }
 
     public var followUps: [MissingBodyRequest] {
         switch self {
-        case .canonicalized(_, _, _, _, let requests),
-             .acceptedSide(_, _, _, let requests),
-             .acceptedEvidence(_, _, _, let requests):
-            requests
-        case .carrier, .duplicate, .rejected:
-            []
+        case .accepted(let acceptance): acceptance.followUps
+        case .carrier, .duplicate, .rejected: []
         }
     }
 
-    public var evictedBlocks: [BlockMeta] {
+    public var commit: ChainCommit? {
         switch self {
-        case .canonicalized(_, _, _, let blocks, _),
-             .acceptedSide(_, _, let blocks, _),
-             .acceptedEvidence(_, _, let blocks, _):
-            blocks
-        case .carrier, .duplicate, .rejected:
-            []
+        case .accepted(let acceptance): acceptance.commit
+        case .carrier, .duplicate, .rejected: nil
         }
     }
 
@@ -97,15 +109,6 @@ public enum ChainLocalBlockResult: Sendable {
         return nil
     }
 
-    public var reorganization: Reorganization? {
-        switch self {
-        case .canonicalized(_, _, let reorganization, _, _),
-             .acceptedEvidence(_, let reorganization, _, _):
-            reorganization
-        case .acceptedSide, .carrier, .duplicate, .rejected:
-            nil
-        }
-    }
 }
 
 private struct PreparedAdmission: Sendable {
@@ -120,32 +123,36 @@ private struct PreparedAdmission: Sendable {
     let block: Block
     let fetcher: any Fetcher
     let contribution: VerifiedWorkContribution?
-    let childEvidence: VerifiedChildEvidence?
     let kind: Kind
 
-    var record: ChainAdmissionRecord {
-        let recordKind: ChainAdmissionRecordKind
-        let diff: StateDiff?
+    var facts: ChainAdmissionBatch {
+        var facts: [ChainAdmissionFact] = []
         switch kind {
         case .block(let stateDiff, _):
-            recordKind = .block
-            diff = stateDiff
+            facts.append(.block(ChainBlockFact(
+                blockHash: resolvedHeader.rawCID,
+                parentBlockHash: block.parent?.rawCID,
+                blockHeight: block.height,
+                postStateCID: block.postState.rawCID,
+                prevStateCID: block.prevState.rawCID,
+                specCID: block.spec.rawCID,
+                target: block.target.toHexString(),
+                nextTarget: block.nextTarget.toHexString(),
+                timestamp: block.timestamp,
+                stateDiff: stateDiff
+            )))
         case .evidence:
-            recordKind = .evidence
-            diff = nil
+            break
         case .carrier:
-            recordKind = .carrier
-            diff = nil
+            return ChainAdmissionBatch(facts: [])
         }
-        return ChainAdmissionRecord(
-            kind: recordKind,
-            blockHash: resolvedHeader.rawCID,
-            blockHeight: block.height,
-            postStateCID: block.postState.rawCID,
-            stateDiff: diff,
-            workContribution: contribution,
-            childEvidence: childEvidence
-        )
+        if let contribution {
+            facts.append(.work(ChainWorkFact(
+                blockHash: resolvedHeader.rawCID,
+                contribution: contribution
+            )))
+        }
+        return ChainAdmissionBatch(facts: facts)
     }
 
     func store(to storer: any Storer & VolumeStorer) async throws {
@@ -189,28 +196,14 @@ private enum ChainLocalAdmission {
             childCID: childCID,
             chainPath: context.path,
             minimumRootWork: context.minimumRootWork,
-            parentContinuityLinks: package.parentContinuityLinks
+            parentContinuityLinks: package.parentContinuityLinks,
+            parentGenesisLinks: package.parentGenesisLinks
         ).mapError { failure -> ChainAdmissionFailure in
             switch failure {
             case .unavailableEvidence: .unavailableEvidence
             case .malformedEvidence: .providerMalformedEvidence
             case .protocolInvalid: .protocolInvalid
             }
-        }
-        guard case .success = proofResult else { return proofResult }
-
-        if child.parent == nil {
-            guard let link = package.parentGenesisLink else {
-                return .failure(.unavailableEvidence)
-            }
-            guard let directory = context.path.last,
-                  link.parentPath == Array(context.path.dropLast()),
-                  link.directory == directory,
-                  link.childGenesisCID == childCID else {
-                return .failure(.providerMalformedEvidence)
-            }
-        } else if package.parentGenesisLink != nil {
-            return .failure(.providerMalformedEvidence)
         }
         return proofResult
     }
@@ -219,8 +212,24 @@ private enum ChainLocalAdmission {
         level: ChainLevel,
         blockHeader: BlockHeader,
         fetcher: any Fetcher,
-        childPackage: ChildValidationPackage?
+        childPackage: ChildValidationPackage?,
+        validationContext: ValidationContext
     ) async -> Preparation {
+        let context = level.context
+        if !context.isRoot {
+            guard let childPackage else {
+                return .result(.rejected(.missingChildProof))
+            }
+            switch childPackage.proof.verifyRootFloor(
+                minimumRootWork: context.minimumRootWork
+            ) {
+            case .success:
+                break
+            case .failure(let failure):
+                return .result(.rejected(mapProofFailure(failure)))
+            }
+        }
+
         let resolvedHeader: BlockHeader
         let block: Block
         switch await resolveBlock(blockHeader, fetcher: fetcher) {
@@ -232,8 +241,6 @@ private enum ChainLocalAdmission {
         }
         let blockHash = resolvedHeader.rawCID
 
-        let context = level.context
-        let evidence: VerifiedChildEvidence?
         let contribution: VerifiedWorkContribution?
         if context.isRoot {
             guard childPackage == nil else {
@@ -243,7 +250,6 @@ private enum ChainLocalAdmission {
             guard workForHash(rootHash) >= context.minimumRootWork else {
                 return .result(.rejected(.protocolInvalid))
             }
-            evidence = nil
             contribution = block.validateProofOfWork(nexusHash: rootHash)
                 ? VerifiedWorkContribution(
                     id: blockHash,
@@ -261,7 +267,6 @@ private enum ChainLocalAdmission {
                 context: context
             ) {
             case .success(let verified):
-                evidence = verified
                 contribution = verified.contribution(for: block)
             case .failure(let failure):
                 return .result(.rejected(failure))
@@ -282,7 +287,6 @@ private enum ChainLocalAdmission {
                 block: block,
                 fetcher: fetcher,
                 contribution: nil,
-                childEvidence: evidence,
                 kind: .carrier
             ))
         }
@@ -307,7 +311,6 @@ private enum ChainLocalAdmission {
                 block: block,
                 fetcher: fetcher,
                 contribution: contribution,
-                childEvidence: evidence,
                 kind: .evidence
             ))
         }
@@ -320,14 +323,16 @@ private enum ChainLocalAdmission {
             transition = await validateGenesis(
                 block: block,
                 fetcher: fetcher,
-                context: context
+                context: context,
+                validationContext: validationContext
             )
         } else {
             transition = await validateBlock(
                 block: block,
                 fetcher: fetcher,
                 chain: level.chain,
-                context: context
+                context: context,
+                validationContext: validationContext
             )
         }
 
@@ -345,7 +350,6 @@ private enum ChainLocalAdmission {
                 block: block,
                 fetcher: fetcher,
                 contribution: contribution,
-                childEvidence: evidence,
                 kind: .block(stateDiff, state)
             ))
         }
@@ -369,14 +373,16 @@ private enum ChainLocalAdmission {
     static func validateGenesis(
         block: Block,
         fetcher: any Fetcher,
-        context: ChainRuntimeContext
+        context: ChainRuntimeContext,
+        validationContext: ValidationContext
     ) async -> Result<(StateDiff, LatticeState?), ChainAdmissionFailure> {
         do {
             let validation = try await block.validateGenesisTransition(
                 fetcher: fetcher,
                 directory: context.path.last,
                 chainPath: context.path,
-                reportTemporalFailure: true
+                reportTemporalFailure: true,
+                validationContext: validationContext
             )
             guard validation.0 else { return .failure(.protocolInvalid) }
             return .success((validation.1, validation.2))
@@ -410,14 +416,16 @@ private enum ChainLocalAdmission {
         block: Block,
         fetcher: any Fetcher,
         chain: ChainState,
-        context: ChainRuntimeContext
+        context: ChainRuntimeContext,
+        validationContext: ValidationContext
     ) async -> Result<(StateDiff, LatticeState?), ChainAdmissionFailure> {
         do {
             let validation = try await block.validateNexus(
                 fetcher: fetcher,
                 chain: chain,
                 chainPath: context.path,
-                reportTemporalFailure: true
+                reportTemporalFailure: true,
+                validationContext: validationContext
             )
             guard validation.0 else { return .failure(.protocolInvalid) }
             return .success((validation.1, validation.2))
@@ -437,59 +445,19 @@ private enum ChainLocalAdmission {
                 missingBodies: [parentHash]
             ))
         }
-        if let reorganization = submission.reorganization,
-           !reorganization.missingBodies.isEmpty {
-            merge(MissingBodyRequest(
-                tipHash: reorganization.newTipHash,
-                missingBodies: reorganization.missingBodies
-            ), into: &followUps)
+        guard let commit = submission.commit else { return .duplicate }
+        let materializedPostState: LatticeState?
+        if case .block(_, let state) = prepared.kind {
+            materializedPostState = state
+        } else {
+            materializedPostState = nil
         }
-
-        switch prepared.kind {
-        case .evidence:
-            return .acceptedEvidence(
-                prepared.contribution!,
-                reorganization: submission.reorganization,
-                evictedBlocks: submission.evictedBlocks,
-                followUps: followUps
-            )
-        case .block(let stateDiff, let state):
-            if submission.extendsMainChain || submission.reorganization != nil {
-                return .canonicalized(
-                    stateDiff,
-                    materializedPostState: state,
-                    reorganization: submission.reorganization,
-                    evictedBlocks: submission.evictedBlocks,
-                    followUps: followUps
-                )
-            }
-            return .acceptedSide(
-                stateDiff,
-                materializedPostState: state,
-                evictedBlocks: submission.evictedBlocks,
-                followUps: followUps
-            )
-        case .carrier:
-            return .carrier
-        }
-    }
-
-    private static func merge(
-        _ request: MissingBodyRequest,
-        into requests: inout [MissingBodyRequest]
-    ) {
-        guard let index = requests.firstIndex(where: { $0.tipHash == request.tipHash }) else {
-            requests.append(request)
-            return
-        }
-        var bodies = requests[index].missingBodies
-        for body in request.missingBodies where !bodies.contains(body) {
-            bodies.append(body)
-        }
-        requests[index] = MissingBodyRequest(
-            tipHash: request.tipHash,
-            missingBodies: bodies
-        )
+        return .accepted(ChainAcceptance(
+            facts: prepared.facts,
+            materializedPostState: materializedPostState,
+            commit: commit,
+            followUps: followUps
+        ))
     }
 }
 
@@ -500,6 +468,16 @@ private func classifyResolutionFailure(_ error: Error) -> ChainAdmissionFailure 
         return .protocolInvalid
     }
     return .localVerificationFailure
+}
+
+private func mapProofFailure(
+    _ failure: ChildProofVerificationFailure
+) -> ChainAdmissionFailure {
+    switch failure {
+    case .unavailableEvidence: .unavailableEvidence
+    case .malformedEvidence: .providerMalformedEvidence
+    case .protocolInvalid: .protocolInvalid
+    }
 }
 
 private func classifyValidationFailure(_ error: Error) -> ChainAdmissionFailure {
@@ -638,15 +616,17 @@ public extension ChainLevel {
         _ blockHeader: BlockHeader,
         fetcher: any Fetcher,
         childPackage: ChildValidationPackage? = nil,
+        validationContext: ValidationContext = .current,
         storer: any Storer & VolumeStorer,
-        stage: @Sendable (ChainAdmissionRecord) async throws -> Void
+        stage: @Sendable (ChainAdmissionBatch) async throws -> Void
     ) async throws -> ChainLocalBlockResult {
         while true {
             switch await ChainLocalAdmission.prepare(
                 level: self,
                 blockHeader: blockHeader,
                 fetcher: fetcher,
-                childPackage: childPackage
+                childPackage: childPackage,
+                validationContext: validationContext
             ) {
             case .stale:
                 continue
@@ -654,20 +634,13 @@ public extension ChainLevel {
                 return result
             case .ready(let prepared):
                 try await prepared.store(to: storer)
-                try await stage(prepared.record)
                 if case .carrier = prepared.kind { return .carrier }
+                try await stage(prepared.facts)
                 guard let contribution = prepared.contribution else { return .carrier }
-                let stateDiff: StateDiff
-                if case .block(let diff, _) = prepared.kind {
-                    stateDiff = diff
-                } else {
-                    stateDiff = .empty
-                }
                 guard let submission = await chain.submitBlockIfUnchanged(
                     expectedMutationGeneration: prepared.generation,
                     blockHeader: prepared.resolvedHeader,
                     block: prepared.block,
-                    stateDiff: stateDiff,
                     contribution: contribution
                 ) else {
                     continue
@@ -687,13 +660,15 @@ public extension ChainLevel {
         _ blockHeader: BlockHeader,
         source: any ContentSource,
         childPackage: ChildValidationPackage? = nil,
+        validationContext: ValidationContext = .current,
         storer: any Storer & VolumeStorer,
-        stage: @Sendable (ChainAdmissionRecord) async throws -> Void
+        stage: @Sendable (ChainAdmissionBatch) async throws -> Void
     ) async throws -> ChainLocalBlockResult {
         try await admitBlockHeaderChainLocal(
             blockHeader,
             fetcher: CoalescingFetcher(source),
             childPackage: childPackage,
+            validationContext: validationContext,
             storer: storer,
             stage: stage
         )
@@ -705,11 +680,19 @@ public extension ChainLevel {
         genesisHeader: BlockHeader,
         fetcher: any Fetcher,
         childPackage: ChildValidationPackage,
+        validationContext: ValidationContext = .current,
         storer: any Storer & VolumeStorer,
-        retentionDepth: UInt64 = .max,
-        stage: @Sendable (ChainAdmissionRecord) async throws -> Void
+        stage: @Sendable (ChainAdmissionBatch) async throws -> Void
     ) async throws -> (level: ChainLevel, stateDiff: StateDiff, materializedPostState: LatticeState?) {
         guard !context.isRoot else { throw ChainAdmissionFailure.protocolInvalid }
+        switch childPackage.proof.verifyRootFloor(
+            minimumRootWork: context.minimumRootWork
+        ) {
+        case .success:
+            break
+        case .failure(let failure):
+            throw mapProofFailure(failure)
+        }
         let resolved: (header: BlockHeader, block: Block)
         switch await ChainLocalAdmission.resolveBlock(genesisHeader, fetcher: fetcher) {
         case .failure(let failure): throw failure
@@ -742,18 +725,17 @@ public extension ChainLevel {
                 block: resolved.block,
                 fetcher: fetcher,
                 contribution: nil,
-                childEvidence: evidence,
                 kind: .carrier
             )
             try await carrier.store(to: storer)
-            try await stage(carrier.record)
             throw ChainAdmissionFailure.notAcceptedAtCurrentChain
         }
         let transition: (StateDiff, LatticeState?)
         switch await ChainLocalAdmission.validateGenesis(
             block: resolved.block,
             fetcher: fetcher,
-            context: context
+            context: context,
+            validationContext: validationContext
         ) {
         case .failure(let failure): throw failure
         case .success(let value): transition = value
@@ -764,16 +746,13 @@ public extension ChainLevel {
             block: resolved.block,
             fetcher: fetcher,
             contribution: contribution,
-            childEvidence: evidence,
             kind: .block(transition.0, transition.1)
         )
         try await prepared.store(to: storer)
-        try await stage(prepared.record)
+        try await stage(prepared.facts)
         let chain = ChainState.fromVerifiedGenesis(
             block: resolved.block,
-            stateDiff: transition.0,
-            contribution: contribution,
-            retentionDepth: retentionDepth
+            contribution: contribution
         )
         return (ChainLevel(chain: chain, context: context), transition.0, transition.1)
     }

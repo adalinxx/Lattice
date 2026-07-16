@@ -170,10 +170,14 @@ final class ForkChoiceTests: XCTestCase {
         )
 
         let block = await chain.getConsensusBlock(hash: "B4")!
+        let revisionBefore = await chain.persist().revision
         let reorg = await chain.checkForReorg(block: block)
         XCTAssertNotNil(reorg)
         XCTAssertTrue(reorg!.mainChainBlocksAdded.keys.contains("B4"))
         XCTAssertTrue(reorg!.mainChainBlocksRemoved.contains("A3"))
+        XCTAssertEqual(reorg!.revision, revisionBefore + 1)
+        let revisionAfter = await chain.persist().revision
+        XCTAssertEqual(revisionAfter, reorg!.revision)
 
         let newTip = await chain.getMainChainTip()
         XCTAssertEqual(newTip, "B4")

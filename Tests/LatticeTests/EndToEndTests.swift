@@ -151,7 +151,7 @@ final class BlockSubmissionE2ETests: XCTestCase {
         )
         XCTAssertTrue(result1.addedBlock)
         XCTAssertTrue(result1.extendsMainChain)
-        XCTAssertNil(result1.reorganization)
+        XCTAssertTrue(result1.commit?.canonicalChanged == true)
 
         let newTip = await chain.getMainChainTip()
         XCTAssertEqual(newTip, header1.rawCID)
@@ -230,7 +230,7 @@ final class BlockSubmissionE2ETests: XCTestCase {
 
         XCTAssertFalse(promoted.addedBlock)
         XCTAssertTrue(promoted.addedContribution)
-        XCTAssertNotNil(promoted.reorganization)
+        XCTAssertTrue(promoted.commit?.canonicalChanged == true)
         let promotedTip = await chain.getMainChainTip()
         XCTAssertEqual(promotedTip, b1Header.rawCID)
 
@@ -283,7 +283,7 @@ final class ForkReorgE2ETests: XCTestCase {
         let _ = await chain.submitTestBlock(blockHeader: blockHeader(b2), block: b2)
         let resultB3 = await chain.submitTestBlock(blockHeader: blockHeader(b3), block: b3)
 
-        XCTAssertNotNil(resultB3.reorganization, "Longer B fork should trigger reorg")
+        XCTAssertTrue(resultB3.commit?.canonicalChanged == true, "Longer B fork should trigger reorg")
 
         let tipAfterB = await chain.getMainChainTip()
         XCTAssertEqual(tipAfterB, blockHeader(b3).rawCID)
@@ -314,8 +314,11 @@ final class ForkReorgE2ETests: XCTestCase {
         let _ = await chain.submitTestBlock(blockHeader: blockHeader(b1), block: b1)
         let resultB2 = await chain.submitTestBlock(blockHeader: blockHeader(b2), block: b2)
 
-        let bWins = blockHeader(b1).rawCID < blockHeader(a1).rawCID
-        XCTAssertEqual(resultB2.reorganization != nil, bWins)
+        let bWins = forkChoicePrefersSegmentBase(
+            blockHeader(b1).rawCID,
+            over: blockHeader(a1).rawCID
+        )
+        XCTAssertEqual(resultB2.commit?.canonicalChanged == true, bWins)
         let tip = await chain.getMainChainTip()
         XCTAssertEqual(tip, blockHeader(bWins ? b2 : a2).rawCID)
     }
@@ -466,7 +469,7 @@ final class FullPipelineSmokeTests: XCTestCase {
                 block: block
             )
             if i < 10 {
-                XCTAssertNil(result.reorganization, "Shorter fork should not reorg at block \(i)")
+                XCTAssertFalse(result.commit?.canonicalChanged == true, "Shorter fork should not reorg at block \(i)")
             }
             forkBlocks.append(block)
         }

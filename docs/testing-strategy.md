@@ -12,5 +12,8 @@ Correctness is established in layers:
 
 The suite must exercise the same candidate through gossip, sync, mining, and
 recovery adapters; root-floor failure, carrier target misses, root-CID replay,
-parent reorganization, storage failure, retention, and restart must not create
-alternate consensus meanings.
+multiple grinds for one block, parent reorganization, atomic staging failure,
+concurrent commit ordering, node state retention, and restart must not create
+alternate consensus meanings. It must also prove that the root floor prevents
+child resolution, one captured validation-time context survives retries, and
+equal work compares canonical segment-base CID bytes only.

@@ -20,6 +20,10 @@ private func childForestHash(_ block: Block) -> String {
     try! BlockHeader(node: block).rawCID
 }
 
+private func preferredChildForestHash(_ first: String, _ second: String) -> String {
+    forkChoicePrefersSegmentBase(first, over: second) ? first : second
+}
+
 private func submitChildForestBlock(_ block: Block, to chain: ChainState) async -> SubmissionResult {
     await chain.submitTestBlock(blockHeader: try! BlockHeader(node: block), block: block)
 }
@@ -49,7 +53,7 @@ final class ChildRootForestTests: XCTestCase {
         let (_, first, second) = try await makeChildForestRoots()
         let firstHash = childForestHash(first)
         let secondHash = childForestHash(second)
-        let expectedTip = min(firstHash, secondHash)
+        let expectedTip = preferredChildForestHash(firstHash, secondHash)
         let firstIncumbent = ChainState.fromGenesis(block: first)
         let secondIncumbent = ChainState.fromGenesis(block: second)
 
@@ -68,7 +72,7 @@ final class ChildRootForestTests: XCTestCase {
         XCTAssertTrue(secondContainsFirst)
     }
 
-    func testEqualWorkChoosesEasiestNextTargetRegardlessOfInsertionOrder() async throws {
+    func testEqualWorkIgnoresNextTargetAndChoosesSegmentBaseCID() async throws {
         let (fetcher, genesis, _) = try await makeChildForestRoots()
         let harder = try await buildAndStoreBlock(
             previous: genesis,
@@ -86,7 +90,10 @@ final class ChildRootForestTests: XCTestCase {
             nonce: 11,
             fetcher: fetcher
         )
-        let expectedTip = childForestHash(easier)
+        let expectedTip = preferredChildForestHash(
+            childForestHash(harder),
+            childForestHash(easier)
+        )
         let harderFirst = ChainState.fromGenesis(block: genesis)
         let easierFirst = ChainState.fromGenesis(block: genesis)
 
@@ -107,7 +114,7 @@ final class ChildRootForestTests: XCTestCase {
         XCTAssertEqual(restoredEasierFirstTip, expectedTip)
     }
 
-    func testEqualWorkAndNextTargetChoosesTheSameSegmentBaseByCID() async throws {
+    func testEqualWorkChoosesTheSameSegmentBaseByCID() async throws {
         let (fetcher, genesis, _) = try await makeChildForestRoots()
         let first = try await buildAndStoreBlock(
             previous: genesis,
@@ -125,7 +132,10 @@ final class ChildRootForestTests: XCTestCase {
             nonce: 13,
             fetcher: fetcher
         )
-        let expectedTip = min(childForestHash(first), childForestHash(second))
+        let expectedTip = preferredChildForestHash(
+            childForestHash(first),
+            childForestHash(second)
+        )
         let firstOrder = ChainState.fromGenesis(block: genesis)
         let secondOrder = ChainState.fromGenesis(block: genesis)
 
@@ -142,7 +152,7 @@ final class ChildRootForestTests: XCTestCase {
 
     func testTieBreakComparesSegmentBasesNotTips() async throws {
         let (fetcher, genesis, _) = try await makeChildForestRoots()
-        let preferredBase = try await buildAndStoreBlock(
+        let firstBase = try await buildAndStoreBlock(
             previous: genesis,
             timestamp: genesis.timestamp + 1_000,
             target: UInt256.max,
@@ -150,7 +160,7 @@ final class ChildRootForestTests: XCTestCase {
             nonce: 14,
             fetcher: fetcher
         )
-        let otherBase = try await buildAndStoreBlock(
+        let secondBase = try await buildAndStoreBlock(
             previous: genesis,
             timestamp: genesis.timestamp + 2_000,
             target: UInt256.max,
@@ -158,16 +168,16 @@ final class ChildRootForestTests: XCTestCase {
             nonce: 15,
             fetcher: fetcher
         )
-        let preferredLeaf = try await buildAndStoreBlock(
-            previous: preferredBase,
+        let firstLeaf = try await buildAndStoreBlock(
+            previous: firstBase,
             timestamp: genesis.timestamp + 3_000,
             target: UInt256.max,
             nextTarget: UInt256.max / UInt256(4),
             nonce: 16,
             fetcher: fetcher
         )
-        let otherLeaf = try await buildAndStoreBlock(
-            previous: otherBase,
+        let secondLeaf = try await buildAndStoreBlock(
+            previous: secondBase,
             timestamp: genesis.timestamp + 4_000,
             target: UInt256.max,
             nextTarget: UInt256.max,
@@ -176,12 +186,19 @@ final class ChildRootForestTests: XCTestCase {
         )
         let chain = ChainState.fromGenesis(block: genesis)
 
-        for block in [otherBase, otherLeaf, preferredBase, preferredLeaf] {
+        for block in [secondBase, secondLeaf, firstBase, firstLeaf] {
             _ = await submitChildForestBlock(block, to: chain)
         }
 
+        let preferredBaseHash = preferredChildForestHash(
+            childForestHash(firstBase),
+            childForestHash(secondBase)
+        )
+        let expectedTip = preferredBaseHash == childForestHash(firstBase)
+            ? childForestHash(firstLeaf)
+            : childForestHash(secondLeaf)
         let tip = await chain.getMainChainTip()
-        XCTAssertEqual(tip, childForestHash(preferredLeaf))
+        XCTAssertEqual(tip, expectedTip)
     }
 
     func testGreaterTrueCumWorkWinsBeforeEasierTarget() async throws {
@@ -294,34 +311,4 @@ final class ChildRootForestTests: XCTestCase {
         XCTAssertTrue(containsSideChild)
     }
 
-    func testRestoreRejectsStrictlyHeavierPrunedSideRoot() {
-        let mainContribution = VerifiedWorkContribution(id: "grind:main", work: UInt256(1))
-        let sideContribution = VerifiedWorkContribution(id: "grind:side", work: UInt256(2))
-        let mainRoot = PersistedBlockMeta(
-            blockHash: "main-root",
-            parentBlockHash: nil,
-            blockHeight: 0,
-            childHashes: [],
-            workContributions: [mainContribution],
-            cumulativeWork: UInt256(1).toHexString()
-        )
-        let sideRoot = PersistedBlockMeta(
-            blockHash: "side-root",
-            parentBlockHash: nil,
-            blockHeight: 0,
-            childHashes: [],
-            workContributions: [sideContribution],
-            cumulativeWork: UInt256(2).toHexString(),
-            subtreeWeight: UInt256(2).toHexString()
-        )
-        let persisted = PersistedChainState(
-            chainTip: mainRoot.blockHash,
-            mainChainHashes: [mainRoot.blockHash],
-            blocks: [mainRoot],
-            prunedBlocks: [sideRoot]
-        )
-        XCTAssertThrowsError(try ChainState.restore(from: persisted)) { error in
-            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
-        }
-    }
 }

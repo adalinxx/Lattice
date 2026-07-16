@@ -146,15 +146,15 @@ public enum LatticeConsensusSimulator {
             let chain = simChain(blocks: visibleBlocks, main: currentMain)
             let releasedBlock = await chain.getConsensusBlock(hash: release.blockHash)
             let candidateRoot = forkRoot(for: release.blockHash, visible: visibleHashes, currentMain: currentMain, blocksByHash: blocksByHash)
-            let reorg: Reorganization?
+            let commit: ChainCommit?
             if let releasedBlock {
-                reorg = await chain.checkForReorg(block: releasedBlock)
+                commit = await chain.checkForReorg(block: releasedBlock)
             } else {
-                reorg = nil
+                commit = nil
             }
-            if let reorg {
-                currentMain.subtract(reorg.mainChainBlocksRemoved)
-                currentMain.formUnion(reorg.mainChainBlocksAdded.keys)
+            if let commit {
+                currentMain.subtract(commit.mainChainBlocksRemoved)
+                currentMain.formUnion(commit.mainChainBlocksAdded.keys)
             }
 
             let tip = await chain.getMainChainTip()
@@ -165,7 +165,7 @@ public enum LatticeConsensusSimulator {
                 tip: tip,
                 candidate: snapshot,
                 main: nil,
-                reorged: reorg != nil
+                reorged: commit != nil
             ))
         }
 

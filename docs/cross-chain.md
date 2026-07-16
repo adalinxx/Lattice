@@ -98,7 +98,7 @@ forall K: |{ entry in receiptState | entry.key == K }| <= 1
 
 **INV-4: Balance conservation.** For any block B at index i with spec S:
 ```
-totalCredits + totalDeposited == totalDebits + S.reward(i) + totalWithdrawn
+totalCredits + totalDeposited <= totalDebits + S.reward(i) + totalWithdrawn
 ```
 
 **INV-5: Withdrawal exactness.** The stored amountDeposited must exactly match the declared amountWithdrawn:

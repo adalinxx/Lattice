@@ -321,13 +321,11 @@ extension ChainState {
     func submitTestBlock(
         blockHeader: BlockHeader,
         block: Block,
-        stateDiff: StateDiff = .empty,
         contribution: VerifiedWorkContribution? = nil
     ) -> SubmissionResult {
         submitBlock(
             blockHeader: blockHeader,
             block: block,
-            stateDiff: stateDiff,
             contribution: contribution ?? VerifiedWorkContribution(
                 id: blockHeader.rawCID,
                 work: workForTarget(block.target)
@@ -336,19 +334,51 @@ extension ChainState {
     }
 }
 
-func testAdmissionStage(_ record: ChainAdmissionRecord) async throws {}
+func testAdmissionStage(_ batch: ChainAdmissionBatch) async throws {}
+
+func testAdmissionBatch(
+    block: Block,
+    contribution: VerifiedWorkContribution,
+    stateDiff: StateDiff = .empty
+) throws -> ChainAdmissionBatch {
+    let header = try BlockHeader(node: block)
+    return ChainAdmissionBatch(facts: [
+        .block(ChainBlockFact(
+            blockHash: header.rawCID,
+            parentBlockHash: block.parent?.rawCID,
+            blockHeight: block.height,
+            postStateCID: block.postState.rawCID,
+            prevStateCID: block.prevState.rawCID,
+            specCID: block.spec.rawCID,
+            target: block.target.toHexString(),
+            nextTarget: block.nextTarget.toHexString(),
+            timestamp: block.timestamp,
+            stateDiff: stateDiff
+        )),
+        .work(ChainWorkFact(blockHash: header.rawCID, contribution: contribution))
+    ])
+}
+
+func testWorkBatch(
+    blockHash: String,
+    contribution: VerifiedWorkContribution
+) -> ChainAdmissionBatch {
+    ChainAdmissionBatch(facts: [
+        .work(ChainWorkFact(blockHash: blockHash, contribution: contribution))
+    ])
+}
 
 func childValidationPackage(
     proof: ChildBlockProof,
     fetcher: any Fetcher,
     parentContinuityLinks: [ParentContinuityLink] = [],
-    parentGenesisLink: ParentGenesisLink? = nil
+    parentGenesisLinks: [ParentGenesisLink] = []
 ) async throws -> ChildValidationPackage {
     _ = fetcher
     return ChildValidationPackage(
         proof: proof,
         parentContinuityLinks: parentContinuityLinks,
-        parentGenesisLink: parentGenesisLink
+        parentGenesisLinks: parentGenesisLinks
     )
 }
 

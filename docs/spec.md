@@ -183,24 +183,36 @@ BlockMeta = (
     childBlockHashes:   [string],
     workContributions:  Map<RootCID, VerifiedWorkContribution>,
     cumulativeWork:     WorkSum,
-    subtreeWeight:      WorkSum,
-    stateDiff:          StateDiff?
+    subtreeWeight:      WorkSum
 )
 ```
 
-`stateDiff` is locally derived lifecycle metadata. Its `created` and `replaced`
-counts are exposed to the node as `createdDiffs` and `removedDiffs`; none of
-these are fields of `Block` or consensus commitments. Pruning drops this local
-diff while retaining the consensus graph and work facts.
+`BlockMeta` contains consensus graph and fork-choice state only. It does not
+retain materialized-state lifecycle metadata.
 
-#### Reorganization
+#### Admission facts and chain commits
 
 ```
-Reorganization = (
+ChainAdmissionFact = ChainBlockFact | ChainWorkFact
+
+ChainAdmissionBatch = (
+    facts: [ChainAdmissionFact]
+)
+
+ChainCommit = (
+    revision:               U64,
+    tipHash:                BlockHash,
     mainChainBlocksAdded:   Map<BlockHash, BlockIndex>,
-    mainChainBlocksRemoved: Set<BlockHash>
+    mainChainBlocksRemoved: Set<BlockHash>,
+    canonicalChanged:       Bool  // derived from the canonical delta
 )
 ```
+
+`ChainBlockFact` records one immutable admitted block and its derived
+`StateDiff`. `ChainWorkFact` records one distinct root grind attached to one
+block. A batch stages the initial block and work facts atomically. `ChainCommit`
+orders successful consensus mutations; a nonempty canonical delta is the output
+of a chain-local reorganization.
 
 ## 4. Chain Hierarchy
 
@@ -245,7 +257,8 @@ A genesis block `B` is valid if and only if ALL of the following hold:
 
 1. `B.previousBlock == nil`
 2. `B.height == 0`
-3. `B.timestamp <= now()`
+3. `B.timestamp <= validationContext.now + 2 hours`, where the admission
+   attempt captures `validationContext.now` once and keeps it across retries
 4. `B.prevState == CID(emptyState())`
 5. All transactions in `B.transactions` are fully resolvable
 6. For each transaction `tx`: `tx.validateTransactionForGenesis()` returns true
@@ -259,7 +272,7 @@ A genesis block `B` is valid if and only if ALL of the following hold:
 10. `sum(stateDelta(tx) for tx in transactions) <= spec.maxStateGrowth`
 11. **Balance conservation (genesis)**:
     ```
-    totalCredits + totalDeposited == premineAmount
+    totalCredits + totalDeposited <= premineAmount
     ```
 12. Every `GenesisAction` has a non-empty separator-free directory and non-empty
     genesis block CID. The child process validates that block's content.
@@ -276,7 +289,9 @@ A non-genesis nexus block `B` with previous block `P` is valid if and only if:
 2. `B.spec == P.spec` (chain spec continuity)
 3. `B.prevState == P.postState` (state continuity)
 4. `B.height == P.height + 1`
-5. `P.timestamp < B.timestamp <= now()`
+5. `P.timestamp < B.timestamp <= validationContext.now + 2 hours`, and
+   `B.timestamp > MedianTimePast(11)` when that window is available. The
+   attempt captures `validationContext.now` once and keeps it across retries.
 6. `B.target == P.nextTarget`, and `B.nextTarget` equals the clamped proportional retarget of section 5.5
 7. All transactions pass `validateTransactionForNexus()`:
    - Signatures valid (Ed25519 over `CID(tx.body)`)
@@ -288,7 +303,7 @@ A non-genesis nexus block `B` with previous block `P` is valid if and only if:
 10. State delta within limits
 11. **Balance conservation (non-genesis)**:
     ```
-    totalCredits + totalDeposited == totalDebits + reward(B.height) + totalWithdrawn
+    totalCredits + totalDeposited <= totalDebits + reward(B.height) + totalWithdrawn
     ```
 12. All genesis actions valid
 13. Post-state correctness
@@ -306,8 +321,8 @@ A child candidate `B` is admitted with a `ChildValidationPackage` containing:
 
 - a `ChildBlockProof` for the exact sparse path from the mined root to `B`; and
 - a `ParentContinuityLink` for each non-genesis carrier on that path; and
-- for child genesis, a `ParentGenesisLink` proving that validated parent state
-  anchored this genesis CID.
+- a `ParentGenesisLink` for every parentless child-chain genesis encountered on
+  that path, proving that validated parent state anchored that exact genesis CID.
 
 The Lattice process responsible for a parent path issues these immutable facts
 after validating its own chain. The node authenticates that process and
@@ -322,7 +337,10 @@ this order:
 1. Recompute `CID(R)` and require `workForHash(h) >= minimumRootWork`.
 2. Require the proof path to equal the runtime path below the outer root and its
    terminal CID to equal `CID(B)`.
-3. For every carrier `Q` above `B`, require its parent-issued continuity link.
+3. For every non-genesis carrier `Q` above `B`, require its parent-issued
+   continuity link. For every parentless carrier below the setup root, and for
+   `B` itself when it is a genesis block, require its exact parent-issued genesis
+   link. Every supplied link must be consumed exactly once.
    The issuing process validates version, spec, `prevState`, height, target
    succession, and a strictly increasing timestamp against `Q`'s own same-chain
    predecessor. MTP/future drift, state execution, and `Q`'s proposed
@@ -590,16 +608,19 @@ The child chain verifies a receipt exists on the parent by checking `parentState
 For any block at index `i`:
 
 ```
-totalCredits + totalDeposited == totalDebits + reward(i) + totalWithdrawn
+totalCredits + totalDeposited <= totalDebits + reward(i) + totalWithdrawn
 ```
 
 Where:
-- `totalCredits` = sum of all positive account action deltas (including the miner's coinbase credit of `reward(i) + Σfees`)
-- `totalDebits` = sum of all negative account action deltas (absolute values), including each transaction's `body.fee` debited from a signer
+- `totalCredits` = sum of all positive account action deltas
+- `totalDebits` = sum of all negative account action deltas (absolute values)
 - `totalDeposited` = sum of all `DepositAction.amountDeposited` values
 - `totalWithdrawn` = sum of all `WithdrawalAction.amountWithdrawn` values
 
-The transaction `fee` is an ordinary transfer — debited from a signer (in `totalDebits`) and credited to the miner via the coinbase (`reward(i) + Σfees`, in `totalCredits`) — so it cancels and does not appear as a separate term. The block subsidy `reward(i)` is the only minting source.
+The transaction `fee` does not independently expand this budget. A block may
+claim at most the credits funded by its actual account debits, withdrawals, and
+subsidy. Any unused budget is unclaimed and therefore burned; the block subsidy
+`reward(i)` remains the only minting source.
 
 Deposits reduce the available balance (tokens locked in deposit state). Withdrawals increase it (tokens released from deposit state).
 
@@ -632,9 +653,10 @@ contribution.work = floor(U256_MAX / target(B_i))
 ```
 
 The contribution is immutable and does not point to a live parent process. A
-`rootCID` may identify at most one contribution record in a chain. Replay is a
-duplicate even after local lifecycle metadata is pruned; a conflicting block or
-value for the same identity is rejected.
+`rootCID` may identify at most one contribution record in a chain. Every
+distinct root grind is persisted, including multiple grinds attached to one
+block. Replay is a duplicate; a conflicting block or value for the same
+identity is rejected.
 
 ### 9.2 Chain State and Hierarchical GHOST
 
@@ -674,38 +696,39 @@ erase the strict ordering between two branches.
 `ChainLevel.bootstrap` and `ChainLevel.admitBlockHeaderChainLocal` are the public
 consensus boundaries. Admission performs:
 
-1. targeted resolution of the candidate and required package;
-2. setup-wide root-work, exact-path, carrier-continuity, and chain-target checks;
-3. deterministic genesis or non-genesis state-transition validation;
-4. targeted storage of verified block content and materialized state;
-5. node-owned durable staging of the `ChainAdmissionRecord`; and
-6. generation-checked commit to `ChainState`.
+1. capture of one explicit `ValidationContext` for the attempt and any retry;
+2. root CID and setup-wide root-work-floor validation before child resolution;
+3. targeted resolution of the candidate and required package;
+4. exact-path, carrier-continuity, and chain-target checks;
+5. deterministic genesis or non-genesis state-transition validation;
+6. targeted storage of verified block content and materialized state;
+7. node-owned atomic staging of a `ChainAdmissionBatch`; and
+8. generation-checked commit to `ChainState`, returning a revisioned
+   `ChainCommit`.
 
 If another mutation makes a prepared result stale, admission prepares again. The
-node's staging operation must therefore be idempotent by fact identity. A storage
-or staging failure leaves the accepted graph unchanged.
+node's staging operation must therefore be idempotent by typed fact identity. A
+storage or staging failure leaves the accepted graph unchanged.
 
 A current-level target miss returns a carrier result without executing or
-inserting a block for this chain. During bootstrap, a valid carrier is stored and
-staged before the typed `notAcceptedAtCurrentChain` result, and no chain runtime
-is created. A missing same-chain predecessor returns a follow-up requirement;
-consensus does not fetch it itself.
+inserting a block for this chain. During bootstrap, a valid carrier may be stored
+for availability, but it stages no consensus fact and creates no chain runtime.
+A missing same-chain predecessor returns a follow-up requirement; consensus does
+not fetch it itself.
 
 ### 9.4 Fork Choice and Reorganization
 
 At each fork, GHOST compares the competing segments at their same-chain child
 bases. The segment with greatest `subtreeWeight` (its `trueCumWork`) wins. Equal
-work prefers the base with the greatest `nextTarget`, making its next block
-easiest to mine. Equal targets fall back to the lexicographically smaller base
-CID. The same rule applies to competing genesis roots, so arrival and replay
-order cannot change fork choice.
+work compares the canonical CID bytes of the segment bases; the
+lexicographically smaller CID wins. `nextTarget` and the segment tips are not
+comparators. The same rule applies to competing genesis roots, so arrival and
+replay order cannot change fork choice.
 
 When a branch wins, `ChainState` updates only this chain's canonical indexes and
-returns a `Reorganization` describing the new tip, added and removed blocks, and
-newly canonical blocks whose transition bodies are not locally retained. Fork
-choice does not wait for those bodies; the node decides how to acquire or
-materialize them. Lattice sends no commands to parent, child, or sibling
-processes.
+returns a revisioned `ChainCommit` describing the new tip and exact added and
+removed blocks. This canonical delta represents a chain-local reorganization.
+Lattice sends no commands to parent, child, or sibling processes.
 
 Adding a new contribution to an existing block may make its subtree strictly
 heavier and trigger this same reorganization procedure. It does not replay the
@@ -730,25 +753,32 @@ in acquisition. Every candidate enters the admission procedure in section 9.3.
 There is no library `ChainSyncer`, direct chain replacement, or trusted sync
 projection.
 
-### 9.7 Retention and State Lifecycle
+### 9.7 Consensus Graph and Node State Lifecycle
 
-Retention is node policy, not consensus validity. Lattice may retain a compact
-header-derived consensus graph after lifecycle metadata leaves memory so fork-choice facts
-remain available. It does not reject an otherwise valid candidate merely because
-of age.
+Lattice retains the complete accepted consensus graph and every verified work
+contribution. It performs no age-, depth-, body-, or state-retention pruning of
+consensus inputs.
 
-State execution derives `StateDiff` locally. The diff is stored on live
-`BlockMeta` and admission records, not in `Block` or a second relationship index.
-The node consumes admitted and evicted diffs to maintain CID counts and choose
-which materialized state Volumes to pin or unpin.
+State execution derives `StateDiff` locally and carries it once in the immutable
+`ChainBlockFact`; the diff is not stored in `Block`, `BlockMeta`, or a second
+relationship index. The node atomically stages the fact, applies its lifecycle
+effects, and decides whether to retain that payload. It owns CID counts, pinning,
+materialized-state retention, projections, archival, and garbage collection.
 
 ### 9.8 Persistence
 
-Persisted chain state includes every retained verified contribution plus exact
-`cumulativeWork` and `subtreeWeight`. Restoration rejects missing, duplicate, or
-malformed contribution facts and reconstructs the same canonical decision used
-live. Filesystem layout, snapshots, archival, and garbage collection belong to
-the node.
+The node durably preserves every accepted block's consensus fields, every
+distinct work fact, and the latest `ChainCommit.revision`. A crash may occur
+after durable staging and before the actor mutation. On recovery, the node gives
+those already-authenticated local batches to `ChainState.restore(..., replaying:)`;
+Lattice replays them idempotently through its own graph and fork-choice logic.
+The node never reconstructs weights, ancestry, or canonical choice itself.
+
+Whether it retains a staged block fact's `StateDiff` is node policy. Restoration
+rejects missing, duplicate, or malformed contribution facts and reconstructs the
+complete accepted graph, exact `cumulativeWork` and `subtreeWeight`, canonical
+decision, and revision used live. Filesystem layout, snapshots, state retention,
+and garbage collection belong to the node.
 
 ## 10. Economic Model
 
@@ -827,17 +857,16 @@ B[i].postState == B[i+1].prevState
 
 ### 12.2 Balance Conservation
 
-For any valid block, value is conserved as a **closed equality**:
+For any valid block, value is conserved as a **non-creation bound**:
 
 ```
-totalCredits + totalDeposited == totalDebits + reward + totalWithdrawn
+totalCredits + totalDeposited <= totalDebits + reward + totalWithdrawn
 ```
 
-No tokens are created or destroyed; the block subsidy `reward` is the only minting
-source. The transaction `fee` is an ordinary transfer — a real signer-owned debit
-(in `totalDebits`) credited to the miner through the coinbase (`reward + Σfees`, in
-`totalCredits`) — so it cancels and is not a separate conservation term. Deposits
-lock balance (move it into deposit state); withdrawals release it.
+No credits may exceed the available budget. Unclaimed budget is burned; the block
+subsidy `reward` is the only minting source. A declared transaction fee does not
+independently create spendable budget. Deposits lock balance (move it into deposit
+state); withdrawals release it.
 
 ### 12.3 Consensus Invariants
 
@@ -845,7 +874,7 @@ lock balance (move it into deposit state); withdrawals release it.
 2. The chain tip block always exists in the block map
 3. The genesis block is always on the main chain (never removed by reorg)
 4. Main chain blocks form a connected path from genesis to tip
-5. `mainChainBlocksAdded` and `mainChainBlocksRemoved` in a `Reorganization` are disjoint sets
+5. `mainChainBlocksAdded` and `mainChainBlocksRemoved` in a `ChainCommit` are disjoint sets
 6. One `ChainLevel` owns one absolute path and cannot mutate another chain
 
 ### 12.4 Cross-Chain Transfer Invariants
@@ -860,16 +889,19 @@ lock balance (move it into deposit state); withdrawals release it.
 
 ### 12.5 Fork Choice Invariants
 
-1. The setup-wide minimum root-work floor is evaluated before all chain targets
+1. The setup-wide minimum root-work floor is evaluated before child resolution
+   and all chain targets
 2. Every level evaluates the same root hash against its own target
 3. Every carrier proves same-chain predecessor continuity even when its target misses
 4. A grind is credited at its first accepted boundary and deduplicated by root CID
 5. `subtreeWeight` counts every verified contribution once at its block
-6. Equal-work segments prefer the base with greatest `nextTarget`, then the
-   lexicographically smaller base CID
+6. Equal-work segments prefer the lexicographically smaller canonical base CID;
+   `nextTarget` and segment tips are not comparators
 7. Parent canonicity cannot change child validity, contributions, or fork choice
-8. Retention and body availability cannot change fork-choice facts
+8. Lattice never prunes accepted graph or verified-work facts
 9. There is no finality threshold; a strictly heavier same-chain subtree may reorg at any depth
+10. Every successful consensus mutation has a monotonically increasing revision
+11. One explicit validation-time context governs an admission and its retries
 
 ## 13. Constants
 

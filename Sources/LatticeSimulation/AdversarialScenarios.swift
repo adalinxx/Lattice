@@ -207,8 +207,8 @@ extension LatticeConsensusSimulator {
     /// only state where γ matters: the attacker has published a private block at the SAME
     /// height as the honest tip, and γ is the probability the network adopts the attacker's
     /// block. We build that exact equal-height race and drive it through the REAL fork choice
-    /// via `runDiscreteEventScenario`. With equal next targets and independent block hashes,
-    /// the stable hash fallback selects either miner with probability 1/2, so the network
+    /// via `runDiscreteEventScenario`. With equal work and independent block hashes,
+    /// the stable CID tie-break selects either miner with probability 1/2, so the network
     /// measures γ = 1/2 and the profitability threshold is f = 1/4.
     static func selfishMiningPoint(seed: UInt64, fraction: Double, rounds: Int) async -> SelfishMiningPoint {
         // Ground γ in complementary real fork-choice races where the attacker's hash sorts
@@ -394,7 +394,7 @@ extension LatticeConsensusSimulator {
         out += "share `f` of this chain's admitted root-grind contributions. Exact path proofs, "
         out += "the setup-wide root-work floor, and per-chain target classification happen before "
         out += "these scenarios. All scenarios drive the real chain-local `ChainState` fork choice: "
-        out += "true cumulative work first, then segment-base target and CID. Parent canonicity and sibling state are not inputs.\n\n"
+        out += "true cumulative work first, then canonical segment-base CID bytes. Parent canonicity and sibling state are not inputs.\n\n"
 
         out += "## (a) Deep reorg — achievable reorg depth vs f\n\n"
         out += "Honest segment depth: \(r.honestSegmentDepth) blocks (work=1 each), \(r.deepReorg.first?.trials ?? 0) "

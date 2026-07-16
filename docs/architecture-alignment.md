@@ -17,17 +17,21 @@ each chain it chooses to follow.
 
 `admitBlockHeaderChainLocal`:
 
-1. resolves only the targeted block and validation data;
-2. verifies the root CID and setup-wide minimum root-work floor;
-3. verifies the exact sparse root-to-candidate path;
-4. binds every carrier to a continuity fact issued by the responsible parent
+1. captures one explicit validation-time context for the whole attempt,
+   including generation-checked retries;
+2. verifies the supplied root CID and setup-wide minimum root-work floor before
+   resolving child content;
+3. resolves only the targeted candidate and validation data;
+4. verifies the exact sparse root-to-candidate path;
+5. binds every carrier to a continuity fact issued by the responsible parent
    process, and binds child genesis to its parent-issued genesis fact;
-5. compares the same root hash with this chain's target;
-6. executes this chain's state transition when accepted at this level;
-7. stores verified block content and materialized state before visible mutation;
-8. calls the node's durable staging callback; and
-9. commits the contribution and block to `ChainState` if the prepared generation
-   is still current.
+6. compares the same root hash with this chain's target;
+7. executes this chain's state transition when accepted at this level;
+8. stores verified block content and materialized state before visible mutation;
+9. atomically stages an immutable `ChainAdmissionBatch` of typed block/work facts
+   through the node; and
+10. commits to `ChainState` if the prepared generation is still current, returning
+    a revisioned `ChainCommit`.
 
 A failed setup floor rejects the whole nested tree. A target miss at this level
 returns a carrier result; it does not reject descendants. A competing valid
@@ -40,13 +44,18 @@ another trusted ingress route.
 ## Work Facts
 
 The first target-accepting boundary on the root-to-leaf path fixes the grind's
-contribution amount. Deeper levels carry the same immutable fact. The root CID is
-the contribution identity, so one physical grind is counted once and conflicting
-reuse is rejected.
+contribution amount. Deeper levels carry the same immutable fact. Each distinct
+root CID is a grind identity and is staged as its own `ChainWorkFact`, including
+additional grinds later attached to an existing block. Replay is idempotent and
+conflicting reuse is rejected.
 
 These facts are immutable. Parent or sibling processes may provide their proof
 bytes, but their current tips and canonicality are not inputs to this chain's
 fork choice. There is no live inherited-weight provider or parent anchor map.
+
+Fork choice compares competing segment bases by `trueCumWork`, then by canonical
+CID bytes only. The lexicographically smaller CID wins an exact tie;
+`nextTarget` and segment tips are not comparators.
 
 ## Cross-Process Facts
 
@@ -64,20 +73,26 @@ Cashew resolve and store operations use matching targeted paths. Each nested
 Volume creates no ownership or retention relationship with a referenced nested
 Volume.
 
-Validation derives `StateDiff` locally. It is lifecycle metadata on `BlockMeta`
-and `ChainAdmissionRecord`, not block-committed data. Lattice reports admitted
-and evicted metadata; the node owns filesystem persistence, CID reference counts,
-pinning, retention, archival, and garbage collection.
+Validation derives `StateDiff` locally and carries it once in the immutable
+`ChainBlockFact`; it is neither block-committed nor retained in `BlockMeta`.
+The node owns filesystem persistence, CID reference counts, pinning, state
+retention, archival, garbage collection, and projections. After atomically
+staging the fact, the node may compact its lifecycle payload once it has
+preserved restart-equivalent consensus data. If a crash happens before the
+actor mutation, the node replays its authenticated staged batches through
+Lattice's `ChainState.restore(..., replaying:)`; it does not reconstruct fork
+choice itself.
 
-Retention never gates GHOST. A reorganization names its new tip, exact canonical
-changes, and any newly canonical blocks whose transition metadata is absent so
-the node can satisfy acquisition without becoming a consensus authority.
+Lattice retains the complete accepted consensus graph and every verified work
+contribution. It does not prune that graph according to node retention policy.
 
 ## Responsibility Boundary
 
-Lattice owns validity, execution, contribution derivation, the accepted graph,
-GHOST fork choice, and chain-local reorganization. The node owns acquisition,
-durable orchestration, retention, projections, and multi-process topology.
+Lattice owns protocol validity (including execution and contribution derivation),
+the accepted graph, GHOST fork choice, and chain-local reorganization. It emits
+revisioned `ChainCommit` values so the node can apply concurrent results in
+consensus order. The node owns acquisition, atomic fact durability, state
+retention and pinning, projections, recovery, and multi-process topology.
 
 The concise rule is:
 
