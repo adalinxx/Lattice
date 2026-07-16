@@ -35,7 +35,7 @@ final class ChildChainDifficultyIndependenceTests: XCTestCase {
     }
 
     private func genesis(spec: ChainSpec, timestamp: Int64, target: UInt256, fetcher: StorableFetcher) async throws -> Block {
-        try await BlockBuilder.buildGenesis(spec: spec, timestamp: timestamp, target: target, fetcher: fetcher)
+        try await buildAndStoreGenesis(spec: spec, timestamp: timestamp, target: target, fetcher: fetcher)
     }
 
     /// Extend a chain by one block at `timestamp`, letting the builder retarget
@@ -51,7 +51,7 @@ final class ChildChainDifficultyIndependenceTests: XCTestCase {
         newestFirstAncestors: [Int64],
         fetcher: StorableFetcher
     ) async throws -> Block {
-        let block = try await BlockBuilder.buildBlock(previous: previous, timestamp: timestamp, fetcher: fetcher)
+        let block = try await buildAndStoreBlock(previous: previous, timestamp: timestamp, fetcher: fetcher)
         XCTAssertTrue(
             block.validateNextTarget(spec: spec, parent: previous, ancestorTimestamps: newestFirstAncestors),
             "builder-produced retarget at height \(block.height) must satisfy the consensus gate"
@@ -108,12 +108,12 @@ final class ChildChainDifficultyIndependenceTests: XCTestCase {
 
         // The child's OWN honest retarget (builder uses the child spec), captured
         // so we can confirm the rejection below is meaningful (values differ).
-        let childHonest = try await BlockBuilder.buildBlock(previous: childGenesis, timestamp: 1_000 + interval, fetcher: fetcher)
+        let childHonest = try await buildAndStoreBlock(previous: childGenesis, timestamp: 1_000 + interval, fetcher: fetcher)
         XCTAssertNotEqual(childHonest.nextTarget, parentBlock.nextTarget,
                           "precondition: the two chains' retargets genuinely differ")
 
         // Forge a child block that copies the parent chain's next target.
-        let imported = try await BlockBuilder.buildBlock(
+        let imported = try await buildAndStoreBlock(
             previous: childGenesis,
             timestamp: 1_000 + interval,
             target: childGenesis.nextTarget,

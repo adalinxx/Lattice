@@ -10,20 +10,20 @@ final class BlockBuilderParentHomesteadTests: XCTestCase {
         let childSpec = spec("Child")
         let timestamp = Int64(Date().timeIntervalSince1970 * 1000) - 10_000
 
-        let parentGenesis = try await BlockBuilder.buildGenesis(
+        let parentGenesis = try await buildAndStoreGenesis(
             spec: parentSpec,
             timestamp: timestamp,
             target: UInt256.max,
             fetcher: fetcher
         )
-        let parentBlock = try await BlockBuilder.buildBlock(
+        let parentBlock = try await buildAndStoreBlock(
             previous: parentGenesis,
             transactions: [transaction(delta: 7, nonce: 0, chainPath: ["Nexus"])],
             timestamp: timestamp + 1_000,
             target: UInt256.max,
             fetcher: fetcher
         )
-        let childGenesis = try await BlockBuilder.buildGenesis(
+        let childGenesis = try await buildAndStoreGenesis(
             spec: childSpec,
             timestamp: timestamp,
             target: UInt256.max,
@@ -32,7 +32,7 @@ final class BlockBuilderParentHomesteadTests: XCTestCase {
 
         XCTAssertNotEqual(parentBlock.prevState.rawCID, parentBlock.postState.rawCID)
 
-        let childBlock = try await BlockBuilder.buildBlock(
+        let childBlock = try await buildAndStoreBlock(
             previous: childGenesis,
             parentChainBlock: parentBlock,
             timestamp: timestamp + 1_000,

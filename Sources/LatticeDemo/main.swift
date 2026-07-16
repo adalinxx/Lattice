@@ -2,11 +2,33 @@ import Lattice
 import UInt256
 import cashew
 import Foundation
+import os
 
-struct NoopFetcher: Fetcher {
+final class DemoStore: Fetcher, Storer, VolumeStorer, @unchecked Sendable {
+    private let storage = OSAllocatedUnfairLock<[String: Data]>(initialState: [:])
+
     func fetch(rawCid: String) async throws -> Data {
-        throw NSError(domain: "NoopFetcher", code: 1)
+        guard let data = storage.withLock({ $0[rawCid] }) else {
+            throw NSError(domain: "DemoStore", code: 1)
+        }
+        return data
     }
+
+    func store(entries: [String: Data]) async throws {
+        storage.withLock { $0.merge(entries) { _, new in new } }
+    }
+
+    func store(volume: SerializedVolume) async throws {
+        storage.withLock { $0.merge(volume.entries) { _, new in new } }
+    }
+}
+
+private func store(_ block: Block, in store: DemoStore) async throws {
+    try await VolumeImpl<Block>(node: block).storeBlock(storer: store)
+}
+
+private func canonicalized(_ result: ChainLocalBlockResult) -> Bool {
+    result.commit?.canonicalChanged == true
 }
 
 print("Lattice Demo")
@@ -29,21 +51,27 @@ print("  Target block time: \(spec.targetBlockTime)ms")
 print("  Max transactions/block: \(spec.maxNumberOfTransactionsPerBlock)")
 print()
 
-let fetcher = NoopFetcher()
+let fetcher = DemoStore()
 
 Task {
     let genesis = try await BlockBuilder.buildGenesis(
         spec: spec,
         timestamp: Int64(Date().timeIntervalSince1970 * 1000),
-        target: UInt256(1000),
+        target: UInt256.max,
         fetcher: fetcher
     )
+    try await store(genesis, in: fetcher)
     let genesisHeader = try VolumeImpl<Block>(node: genesis)
     print("Genesis block CID: \(genesisHeader.rawCID)")
     print("Genesis target hash: \(genesis.proofOfWorkHash())")
     print()
 
     let chain = ChainState.fromGenesis(block: genesis)
+    let context = try ChainRuntimeContext(
+        path: [DEFAULT_ROOT_DIRECTORY],
+        minimumRootWork: UInt256(1)
+    )
+    let level = ChainLevel(chain: chain, context: context)
 
     print("Building a 5-block chain...")
     var prev = genesis
@@ -53,17 +81,18 @@ Task {
         let block = try await BlockBuilder.buildBlock(
             previous: prev,
             timestamp: prevTimestamp,
-            target: UInt256(1000),
+            target: UInt256.max,
             nonce: UInt64(i),
             fetcher: fetcher
         )
         let header = try VolumeImpl<Block>(node: block)
-        let result = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
-            blockHeader: header,
-            block: block
+        let result = try await level.admitBlockHeaderChainLocal(
+            header,
+            fetcher: fetcher,
+            storer: fetcher,
+            stage: { _ in }
         )
-        print("  Block \(i): CID=\(String(header.rawCID.prefix(20)))... extends=\(result.extendsMainChain)")
+        print("  Block \(i): CID=\(String(header.rawCID.prefix(20)))... canonical=\(canonicalized(result))")
         prev = block
     }
 
@@ -82,18 +111,18 @@ Task {
         let block = try await BlockBuilder.buildBlock(
             previous: forkPrev,
             timestamp: forkBaseTimestamp + Int64(i) * 1000,
-            target: UInt256(1000),
+            target: UInt256.max,
             nonce: UInt64(100 + i),
             fetcher: fetcher
         )
         let header = try VolumeImpl<Block>(node: block)
-        let result = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
-            blockHeader: header,
-            block: block
+        let result = try await level.admitBlockHeaderChainLocal(
+            header,
+            fetcher: fetcher,
+            storer: fetcher,
+            stage: { _ in }
         )
-        let reorged = result.reorganization != nil ? " [REORG]" : ""
-        print("  Fork block \(i): extends=\(result.extendsMainChain)\(reorged)")
+        print("  Fork block \(i): canonical=\(canonicalized(result))")
         forkPrev = block
     }
 

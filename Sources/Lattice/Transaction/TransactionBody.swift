@@ -1,6 +1,17 @@
 import cashew
 import CollectionConcurrencyKit
 import Foundation
+import UInt256
+
+public enum AccountBalanceDelta: Sendable, Equatable {
+    case credit(UInt64)
+    case debit(UInt64)
+
+    public var outflow: UInt64 {
+        if case .debit(let amount) = self { return amount }
+        return 0
+    }
+}
 
 public struct TransactionBody: Scalar {
     public let accountActions: [AccountAction]
@@ -65,41 +76,24 @@ public struct TransactionBody: Scalar {
         return true
     }
 
-    public func valueConservation() -> (totalDebits: UInt64, totalCredits: UInt64, overflow: Bool, conserved: Bool) {
-        var totalDebits: UInt64 = 0
-        var totalCredits: UInt64 = 0
+    public func valueConservation() -> (totalDebits: WorkSum, totalCredits: WorkSum, overflow: Bool, conserved: Bool) {
+        var totalDebits = WorkSum.zero
+        var totalCredits = WorkSum.zero
         for action in accountActions {
-            if action.delta == Int64.min { return (totalDebits, totalCredits, true, false) }
-            if action.delta < 0 {
-                let (next, overflow) = totalDebits.addingReportingOverflow(UInt64(-action.delta))
-                if overflow { return (totalDebits, totalCredits, true, false) }
-                totalDebits = next
-            } else if action.delta > 0 {
-                let (next, overflow) = totalCredits.addingReportingOverflow(UInt64(action.delta))
-                if overflow { return (totalDebits, totalCredits, true, false) }
-                totalCredits = next
-            }
+            guard action.verify() else { return (totalDebits, totalCredits, true, false) }
+            if action.isDebit { totalDebits = totalDebits + UInt256(action.absoluteAmount) }
+            if action.isCredit { totalCredits = totalCredits + UInt256(action.absoluteAmount) }
         }
 
-        var totalDeposited: UInt64 = 0
-        for deposit in depositActions {
-            let (next, overflow) = totalDeposited.addingReportingOverflow(deposit.amountDeposited)
-            if overflow { return (totalDebits, totalCredits, true, false) }
-            totalDeposited = next
+        let totalDeposited = depositActions.reduce(WorkSum.zero) {
+            $0 + UInt256($1.amountDeposited)
         }
-
-        var totalWithdrawn: UInt64 = 0
-        for withdrawal in withdrawalActions {
-            let (next, overflow) = totalWithdrawn.addingReportingOverflow(withdrawal.amountWithdrawn)
-            if overflow { return (totalDebits, totalCredits, true, false) }
-            totalWithdrawn = next
+        let totalWithdrawn = withdrawalActions.reduce(WorkSum.zero) {
+            $0 + UInt256($1.amountWithdrawn)
         }
-
-        let (lhs, lhsOverflow) = totalDebits.addingReportingOverflow(totalWithdrawn)
-        let (creditsWithFee, feeOverflow) = totalCredits.addingReportingOverflow(fee)
-        let (rhs, rhsOverflow) = creditsWithFee.addingReportingOverflow(totalDeposited)
-        let overflow = lhsOverflow || feeOverflow || rhsOverflow
-        return (totalDebits, totalCredits, overflow, !overflow && lhs == rhs)
+        let lhs = totalDebits + totalWithdrawn
+        let rhs = totalCredits + UInt256(fee) + totalDeposited
+        return (totalDebits, totalCredits, false, lhs == rhs)
     }
 
     func withdrawalsAreValid(directory: String, prevState: LatticeState, parentState: LatticeState, fetcher: Fetcher) async throws -> Bool {
@@ -108,7 +102,7 @@ public struct TransactionBody: Scalar {
         // mismatched deposit/receipt, so awaiting without throwing IS the
         // validation — the returned proof headers are intentionally discarded.
         // (The authoritative enforcement of deposit existence + amount is the
-        // post-state transition, DepositState.proveAndDeleteForWithdrawals.)
+        // post-state transition, DepositState.proveAndSpendForWithdrawals.)
         async let proofOfDeposits = prevState.depositState.proveExistenceOfCorrespondingDeposit(withdrawalActions: withdrawalActions, fetcher: fetcher)
         async let proofOfReceipts = parentState.receiptState.proveExistenceAndVerifyWithdrawers(directory: directory, withdrawalActions: withdrawalActions, fetcher: fetcher)
         let (_, _) = try await (proofOfDeposits, proofOfReceipts)
@@ -118,7 +112,7 @@ public struct TransactionBody: Scalar {
     /// THE consensus shape rule for genesis actions: an anchor must name a
     /// non-empty directory and a non-empty genesis block CID. The parent only
     /// RECORDS the anchor (directory → genesis CID); the genesis block's CONTENT
-    /// is validated by the child chain it belongs to (on sync), not here.
+    /// is validated by the child chain it belongs to during admission, not here.
     /// Consumed by block validation and by node-side admission — one definition
     /// so the two cannot drift.
     ///
@@ -152,78 +146,74 @@ public struct TransactionBody: Scalar {
         return true
     }
 
-    /// THE consensus account-delta builder: the merged list of account deltas a
-    /// transaction's actions imply, INCLUDING the receipt-implied transfer
-    /// (withdrawer is debited `amountDemanded`, demander credited the same).
-    /// This is the exact rule the state transition applies — consumed by
-    /// `LatticeState.proveAndUpdateState` (block validation/building) and by
-    /// node-side admission (mempool balance checks); one definition so the two
-    /// cannot drift. Throws `StateErrors.balanceOverflow` for a receipt amount
-    /// of 0 or exceeding `Int64.max`.
-    public static func netAccountDeltas(accountActions: [AccountAction], receiptActions: [ReceiptAction]) throws -> [AccountAction] {
-        var mergedAccountActions = accountActions
-        for receipt in receiptActions {
-            guard receipt.amountDemanded > 0 && receipt.amountDemanded <= UInt64(Int64.max) else {
-                throw StateErrors.balanceOverflow
+    /// Aggregate all balance effects before touching state. Exact unsigned
+    /// totals make the result independent of transaction ordering.
+    public static func netBalanceDeltas(
+        accountActions: [AccountAction],
+        receiptActions: [ReceiptAction]
+    ) throws -> [String: AccountBalanceDelta] {
+        var totals: [String: (credits: WorkSum, debits: WorkSum)] = [:]
+
+        func add(_ amount: UInt64, owner: String, credit: Bool) {
+            var total = totals[owner] ?? (.zero, .zero)
+            if credit {
+                total.credits = total.credits + UInt256(amount)
+            } else {
+                total.debits = total.debits + UInt256(amount)
             }
-            mergedAccountActions.append(AccountAction(owner: receipt.withdrawer, delta: -Int64(receipt.amountDemanded)))
-            mergedAccountActions.append(AccountAction(owner: receipt.demander, delta: Int64(receipt.amountDemanded)))
+            totals[owner] = total
         }
-        return mergedAccountActions
+
+        for action in accountActions {
+            guard action.verify() else { throw StateErrors.balanceOverflow }
+            add(action.absoluteAmount, owner: action.owner, credit: action.isCredit)
+        }
+        for receipt in receiptActions {
+            guard receipt.amountDemanded > 0 else { throw StateErrors.balanceOverflow }
+            add(receipt.amountDemanded, owner: receipt.withdrawer, credit: false)
+            add(receipt.amountDemanded, owner: receipt.demander, credit: true)
+        }
+
+        var result: [String: AccountBalanceDelta] = [:]
+        for (owner, total) in totals where total.credits != total.debits {
+            if total.credits > total.debits {
+                guard let amount = total.credits.subtracting(total.debits)?.uint64Value else {
+                    throw StateErrors.balanceOverflow
+                }
+                result[owner] = .credit(amount)
+            } else {
+                guard let amount = total.debits.subtracting(total.credits)?.uint64Value else {
+                    throw StateErrors.balanceOverflow
+                }
+                result[owner] = .debit(amount)
+            }
+        }
+        return result
     }
 
-    /// Per-transaction convenience over the static rule above.
-    public func netAccountDeltas(includeReceiptTransfers: Bool = true) throws -> [AccountAction] {
-        try Self.netAccountDeltas(
+    public func netBalanceDeltas() throws -> [String: AccountBalanceDelta] {
+        try Self.netBalanceDeltas(
             accountActions: accountActions,
-            receiptActions: includeReceiptTransfers ? receiptActions : []
+            receiptActions: receiptActions
         )
     }
 
-    /// Per-owner NET balance delta for this body: the explicit `accountActions`
-    /// plus the receipt-implied transfers (`netAccountDeltas`), aggregated by
-    /// owner. Negative = the owner must fund that amount. This is the single
-    /// source of net-debit arithmetic, shared by the consensus balance check and
-    /// node admission so the two cannot drift. Throws `StateErrors.balanceOverflow`
-    /// on the arithmetic-overflow / `Int64.min` cases a caller must reject
-    /// (propagating `netAccountDeltas`' own overflow throw).
-    public func netBalanceDeltas() throws -> [String: Int64] {
-        let merged = try netAccountDeltas()
-        // The receipt-implied transfers are appended AFTER the explicit actions.
-        let receiptImpliedStart = accountActions.count
-        var netDelta: [String: Int64] = [:]
-        for (index, action) in merged.enumerated() {
-            if action.delta == Int64.min { continue }
-            let (sum, overflow) = netDelta[action.owner, default: 0].addingReportingOverflow(action.delta)
-            if overflow { throw StateErrors.balanceOverflow }
-            // A receipt-debit sum of Int64.min is not an overflow per
-            // addingReportingOverflow but -Int64.min would trap downstream. No
-            // account can hold 2^63 tokens, so treat it as a reject.
-            if index >= receiptImpliedStart, sum == Int64.min { throw StateErrors.balanceOverflow }
-            netDelta[action.owner] = sum
-        }
-        return netDelta
-    }
-
     /// Per-owner net OUTFLOW (non-negative magnitudes of the net-negative
-    /// deltas) — `netBalanceDeltas` restricted to owners that must fund. Empty on
-    /// the overflow cases `netBalanceDeltas` rejects.
-    public func netOutflows() -> [String: UInt64] {
-        guard let netDelta = try? netBalanceDeltas() else { return [:] }
+    /// deltas) — `netBalanceDeltas` restricted to owners that must fund.
+    public func netOutflows() throws -> [String: UInt64] {
+        let netDelta = try netBalanceDeltas()
         var outflows: [String: UInt64] = [:]
-        for (owner, delta) in netDelta where delta < 0 {
-            // -Int64.min would trap; its magnitude 2^63 is representable in UInt64.
-            outflows[owner] = delta == Int64.min ? UInt64(Int64.max) + 1 : UInt64(-delta)
+        for (owner, delta) in netDelta where delta.outflow > 0 {
+            outflows[owner] = delta.outflow
         }
         return outflows
     }
 
     /// Funds `owner` must afford for this body alone, as a non-negative outflow.
-    /// Returns 0 when the owner's net position is non-negative or on the overflow
-    /// cases `netBalanceDeltas` rejects.
-    public func netOutflow(of owner: String) -> UInt64 {
+    /// Returns 0 when the owner's net position is non-negative.
+    public func netOutflow(of owner: String) throws -> UInt64 {
         guard !owner.isEmpty else { return 0 }
-        return netOutflows()[owner] ?? 0
+        return try netOutflows()[owner] ?? 0
     }
 
     func actionsAreValid() -> Bool {
@@ -250,7 +240,7 @@ public struct TransactionBody: Scalar {
         chainPath: [String],
         fetcher: Fetcher,
         scopes: Set<WasmPolicyRef.Scope>? = nil
-    ) async -> Bool {
+    ) async throws -> Bool {
         let policies = scopes.map { allowedScopes in
             spec.wasmPolicies.filter { allowedScopes.contains($0.scope) }
         } ?? spec.wasmPolicies
@@ -261,19 +251,28 @@ public struct TransactionBody: Scalar {
             guard policy.abiVersion == WasmPolicyRef.currentABIVersion else { return false }
             if moduleBytesByCID[policy.moduleCID] == nil {
                 let moduleHeader = WasmPolicyModuleHeader(rawCID: policy.moduleCID)
-                guard let moduleNode = try? await moduleHeader.resolve(fetcher: fetcher).node else {
-                    return false
+                let moduleNode: WasmPolicyModule
+                do {
+                    guard let resolved = try await moduleHeader.resolve(fetcher: fetcher).node else {
+                        throw WasmPolicyError.missingModule(policy.moduleCID)
+                    }
+                    moduleNode = resolved
+                } catch is FetcherError {
+                    throw WasmPolicyError.missingModule(policy.moduleCID)
                 }
                 moduleBytesByCID[policy.moduleCID] = moduleNode.bytes
             }
         }
 
-        func evaluate(_ policy: WasmPolicyRef, _ context: WasmPolicyContext) -> Bool {
-            guard let moduleBytes = moduleBytesByCID[policy.moduleCID],
-                  let contextData = try? context.canonicalData() else {
-                return false
+        func evaluate(_ policy: WasmPolicyRef, _ context: WasmPolicyContext) throws -> Bool {
+            guard let moduleBytes = moduleBytesByCID[policy.moduleCID] else {
+                throw WasmPolicyError.missingModule(policy.moduleCID)
             }
-            return (try? WasmPolicyEvaluator.evaluate(policy: policy, contextData: contextData, moduleBytes: moduleBytes)) == true
+            return try WasmPolicyEvaluator.evaluate(
+                policy: policy,
+                contextData: context.canonicalData(),
+                moduleBytes: moduleBytes
+            )
         }
 
         for policy in policies {
@@ -284,7 +283,7 @@ public struct TransactionBody: Scalar {
                         scope: .transaction, chainSpec: spec, chainPath: chainPath,
                         transaction: body, action: nil, actionIndex: nil
                     )
-                    guard evaluate(policy, context) else { return false }
+                    guard try evaluate(policy, context) else { return false }
                 }
             case .action:
                 for body in bodies {
@@ -293,7 +292,7 @@ public struct TransactionBody: Scalar {
                             scope: .action, chainSpec: spec, chainPath: chainPath,
                             transaction: body, action: action, actionIndex: actionIndex
                         )
-                        guard evaluate(policy, context) else { return false }
+                        guard try evaluate(policy, context) else { return false }
                     }
                 }
             }

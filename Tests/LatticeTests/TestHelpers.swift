@@ -2,20 +2,25 @@ import Foundation
 #if canImport(os)
 import os
 #endif
+import ArrayTrie
 @testable import Lattice
 import cashew
 import UInt256
 import WAT
 
-enum FetcherError: Error {
-    case notFound(String)
-}
-
-final class StorableFetcher: Fetcher, Storer, Sendable {
+final class StorableFetcher: Fetcher, Storer, VolumeStorer, Sendable {
     private let state = OSAllocatedUnfairLock<[String: Data]>(initialState: [:])
 
     func store(rawCid: String, data: Data) {
         state.withLock { $0[rawCid] = data }
+    }
+
+    func store(entries: [String: Data]) async {
+        state.withLock { $0.merge(entries) { _, new in new } }
+    }
+
+    func store(volume: SerializedVolume) async {
+        state.withLock { $0.merge(volume.entries) { _, new in new } }
     }
 
     func contains(rawCid: String) -> Bool {
@@ -24,7 +29,7 @@ final class StorableFetcher: Fetcher, Storer, Sendable {
 
     func fetch(rawCid: String) async throws -> Data {
         guard let data = state.withLock({ $0[rawCid] }) else {
-            throw FetcherError.notFound(rawCid)
+            throw cashew.FetcherError.notFound(rawCid)
         }
         return data
     }
@@ -33,31 +38,125 @@ final class StorableFetcher: Fetcher, Storer, Sendable {
     /// callback that serves CAS bytes off a socket).
     func fetchSync(rawCid: String) throws -> Data {
         guard let data = state.withLock({ $0[rawCid] }) else {
-            throw FetcherError.notFound(rawCid)
+            throw cashew.FetcherError.notFound(rawCid)
         }
         return data
     }
 }
 
+func testCID(_ seed: String) -> String {
+    try! HeaderImpl<PublicKey>(node: PublicKey(key: seed)).rawCID
+}
+
 struct ThrowingFetcher: Fetcher {
     func fetch(rawCid: String) async throws -> Data {
-        throw FetcherError.notFound(rawCid)
+        throw cashew.FetcherError.notFound(rawCid)
     }
 }
 
-/// Synchronous storer that collects CAS data in memory, then flushes to a StorableFetcher.
-final class CollectingStorer: Storer, @unchecked Sendable {
-    private var collected: [(String, Data)] = []
+struct NoopStorer: Storer, VolumeStorer {
+    func store(entries: [String: Data]) async throws {}
+    func store(volume: SerializedVolume) async throws {}
+}
 
-    func store(rawCid: String, data: Data) throws {
-        collected.append((rawCid, data))
+private func stateStructurePaths() -> ArrayTrie<ResolutionStrategy> {
+    var paths = ArrayTrie<ResolutionStrategy>()
+    for property in LATTICE_STATE_PROPERTIES {
+        paths.set([property, ""], value: .list)
     }
+    return paths
+}
 
-    func flush(to fetcher: StorableFetcher) async {
-        for (cid, data) in collected {
-            await fetcher.store(rawCid: cid, data: data)
+@discardableResult
+func storeBuiltBlock(
+    _ result: BlockBuildResult,
+    in fetcher: any Fetcher & Storer
+) async throws -> Block {
+    try await storeBuiltBlock(result.block, in: fetcher)
+}
+
+@discardableResult
+func storeBuiltBlock(
+    _ block: Block,
+    in fetcher: any Fetcher & Storer
+) async throws -> Block {
+    let header = try BlockHeader(node: block)
+    try await header.storeBlockContent(storer: fetcher)
+    if let children = block.children.node {
+        var childPaths = ArrayTrie<ResolutionStrategy>()
+        for directory in try children.allKeysAndValues().keys {
+            childPaths.set([CHILDREN_PROPERTY, directory], value: .targeted)
         }
+        try await header.store(paths: childPaths, storer: fetcher)
     }
+    if block.height == 0 {
+        try await LatticeState.emptyHeader.storeRecursively(storer: fetcher)
+    }
+    if let postState = block.postState.node {
+        let state = try LatticeStateHeader(node: postState)
+        let paths = stateStructurePaths()
+        let indexedState = try await state.resolve(paths: paths, fetcher: fetcher)
+        try await indexedState.store(paths: paths, storer: fetcher)
+    }
+    return block
+}
+
+/// Test local-CAS policy for fixtures that build a chain locally: retain block
+/// content plus state-trie structure only when the supplied fetcher is also a
+/// storer. Production `BlockBuilder` remains storage-neutral.
+func buildAndStoreGenesis(
+    spec: ChainSpec,
+    transactions: [Transaction] = [],
+    children: [String: Block] = [:],
+    timestamp: Int64,
+    target: UInt256,
+    nonce: UInt64 = 0,
+    version: UInt16 = Block.currentVersion,
+    fetcher: Fetcher
+) async throws -> Block {
+    let result = try await BlockBuilder.buildGenesisWithTransition(
+        spec: spec,
+        transactions: transactions,
+        children: children,
+        timestamp: timestamp,
+        target: target,
+        nonce: nonce,
+        version: version,
+        fetcher: fetcher
+    )
+    guard let storer = fetcher as? (any Fetcher & Storer) else {
+        return result.block
+    }
+    return try await storeBuiltBlock(result, in: storer)
+}
+
+/// Test local-CAS policy counterpart to ``buildAndStoreGenesis``.
+func buildAndStoreBlock(
+    previous: Block,
+    transactions: [Transaction] = [],
+    children: [String: Block] = [:],
+    parentChainBlock: Block? = nil,
+    timestamp: Int64,
+    target: UInt256? = nil,
+    nextTarget: UInt256? = nil,
+    nonce: UInt64 = 0,
+    fetcher: Fetcher
+) async throws -> Block {
+    let result = try await BlockBuilder.buildBlockWithTransition(
+        previous: previous,
+        transactions: transactions,
+        children: children,
+        parentChainBlock: parentChainBlock,
+        timestamp: timestamp,
+        target: target,
+        nextTarget: nextTarget,
+        nonce: nonce,
+        fetcher: fetcher
+    )
+    guard let storer = fetcher as? (any Fetcher & Storer) else {
+        return result.block
+    }
+    return try await storeBuiltBlock(result, in: storer)
 }
 
 func testAddress(publicKey: String) -> String {
@@ -71,7 +170,7 @@ func signedTestTransaction(
 ) -> Transaction {
     // known-valid local node; CID computation cannot fail (no Float/Double fields)
     let header = try! HeaderImpl<TransactionBody>(node: body)
-    let signature = CryptoUtils.sign(message: header.rawCID, privateKeyHex: keyPair.privateKey)!
+    let signature = TransactionSigning.sign(bodyHeader: header, privateKeyHex: keyPair.privateKey)!
     return Transaction(signatures: [keyPair.publicKey: signature], body: header)
 }
 
@@ -94,13 +193,14 @@ func buildPremineGenesis(
         fee: 0,
         nonce: 0
     )
-    return try await BlockBuilder.buildGenesis(
+    let result = try await BlockBuilder.buildGenesisWithTransition(
         spec: spec,
         transactions: [signedTestTransaction(body, by: owner)],
         timestamp: timestamp,
         target: target,
         fetcher: fetcher
     )
+    return try await storeBuiltBlock(result, in: fetcher)
 }
 
 func wasmPolicyFixture(accepts: Bool) throws -> Data {
@@ -209,10 +309,100 @@ func storeWasmPolicy(
     scope: WasmPolicyRef.Scope,
     fetcher: StorableFetcher,
     entrypoint: String? = nil
-) throws -> WasmPolicyRef {
+) async throws -> WasmPolicyRef {
     let module = try WasmPolicyModuleHeader(node: WasmPolicyModule(bytes: try wasmPolicyFixture(accepts: accepts)))
-    try module.storeRecursively(storer: fetcher)
+    try await module.storeRecursively(storer: fetcher)
     return WasmPolicyRef(moduleCID: module.rawCID, scope: scope, entrypoint: entrypoint)
+}
+
+func testChainContext(
+    path: [String] = [DEFAULT_ROOT_DIRECTORY],
+    minimumRootWork: UInt256 = UInt256(1)
+) -> ChainRuntimeContext {
+    try! ChainRuntimeContext(path: path, minimumRootWork: minimumRootWork)
+}
+
+extension ChainLevel {
+    init(testChain chain: ChainState) {
+        self.init(chain: chain, context: testChainContext())
+    }
+}
+
+extension ChainState {
+    func submitTestBlock(
+        blockHeader: BlockHeader,
+        block: Block,
+        contribution: VerifiedWorkContribution? = nil
+    ) -> SubmissionResult {
+        submitBlock(
+            blockHeader: blockHeader,
+            block: block,
+            contribution: contribution ?? VerifiedWorkContribution(
+                id: blockHeader.rawCID,
+                work: workForTarget(block.target)
+            )
+        )
+    }
+}
+
+func testAdmissionStage(_ batch: ChainAdmissionBatch) async throws {}
+
+func testAdmissionBatch(
+    block: Block,
+    contribution: VerifiedWorkContribution,
+    stateDiff: StateDiff = .empty
+) throws -> ChainAdmissionBatch {
+    let header = try BlockHeader(node: block)
+    return ChainAdmissionBatch(facts: [
+        .block(ChainBlockFact(
+            blockHash: header.rawCID,
+            parentBlockHash: block.parent?.rawCID,
+            blockHeight: block.height,
+            postStateCID: block.postState.rawCID,
+            prevStateCID: block.prevState.rawCID,
+            specCID: block.spec.rawCID,
+            target: block.target.toHexString(),
+            nextTarget: block.nextTarget.toHexString(),
+            timestamp: block.timestamp,
+            stateDiff: stateDiff
+        )),
+        .work(ChainWorkFact(blockHash: header.rawCID, contribution: contribution))
+    ])
+}
+
+func testWorkBatch(
+    blockHash: String,
+    contribution: VerifiedWorkContribution
+) -> ChainAdmissionBatch {
+    ChainAdmissionBatch(facts: [
+        .work(ChainWorkFact(blockHash: blockHash, contribution: contribution))
+    ])
+}
+
+func childValidationPackage(
+    proof: ChildBlockProof,
+    fetcher: any Fetcher,
+    parentContinuityLinks: [ParentContinuityLink] = [],
+    parentGenesisLinks: [ParentGenesisLink] = []
+) async throws -> ChildValidationPackage {
+    _ = fetcher
+    return ChildValidationPackage(
+        proof: proof,
+        parentContinuityLinks: parentContinuityLinks,
+        parentGenesisLinks: parentGenesisLinks
+    )
+}
+
+func testParentGenesisLink(
+    directory: String,
+    childGenesisCID: String,
+    parentPath: [String] = [DEFAULT_ROOT_DIRECTORY]
+) -> ParentGenesisLink {
+    ParentGenesisLink(
+        parentPath: parentPath,
+        directory: directory,
+        childGenesisCID: childGenesisCID
+    )
 }
 
 @discardableResult
@@ -221,8 +411,8 @@ func storeWasmPolicy(
     scope: WasmPolicyRef.Scope,
     fetcher: StorableFetcher,
     entrypoint: String? = nil
-) throws -> WasmPolicyRef {
+) async throws -> WasmPolicyRef {
     let module = try WasmPolicyModuleHeader(node: WasmPolicyModule(bytes: try wasmPolicyFixture(requiringSubstring: needle)))
-    try module.storeRecursively(storer: fetcher)
+    try await module.storeRecursively(storer: fetcher)
     return WasmPolicyRef(moduleCID: module.rawCID, scope: scope, entrypoint: entrypoint)
 }

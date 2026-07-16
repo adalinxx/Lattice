@@ -53,6 +53,10 @@ public struct Transaction {
     /// one definition so the two cannot drift. Requires a resolved body.
     public func signaturesAreValid() -> Bool {
         guard let bodyNode = body.node else { return false }
+        return signaturesAreValid(bodyNode)
+    }
+
+    private func signaturesAreValid(_ bodyNode: TransactionBody) -> Bool {
         if signatures.isEmpty { return false }
         for (publicKeyHex, signature) in signatures {
             if !TransactionSigning.verify(body: bodyNode, bodyCID: body.rawCID, signature: signature, publicKeyHex: publicKeyHex) {
@@ -68,16 +72,19 @@ public struct Transaction {
     /// cannot drift. Requires a resolved body.
     public func signaturesMatchSigners() -> Bool {
         guard let bodyNode = body.node else { return false }
+        return signaturesMatchSigners(bodyNode)
+    }
+
+    private func signaturesMatchSigners(_ bodyNode: TransactionBody) -> Bool {
         let signatureHashes = Set(signatures.keys.map { CryptoUtils.createAddress(from: $0) })
         let signerSet = Set(bodyNode.signers)
         return signatureHashes == signerSet
     }
 
     private func validateSignaturesAndResolve(fetcher: Fetcher) async throws -> TransactionBody? {
-        if !signaturesAreValid() { return nil }
-        let _ = try await body.resolve(fetcher: fetcher)
-        guard let bodyNode = body.node else { throw ValidationErrors.transactionNotResolved }
-        if !signaturesMatchSigners() { return nil }
+        let resolvedBody = try await body.resolve(fetcher: fetcher)
+        guard let bodyNode = resolvedBody.node else { throw ValidationErrors.transactionNotResolved }
+        if !signaturesAreValid(bodyNode) || !signaturesMatchSigners(bodyNode) { return nil }
         return bodyNode
     }
 

@@ -6,6 +6,24 @@ import Foundation
 
 private let fetcher = ThrowingFetcher()
 
+private struct RuntimeGenesisResult {
+    let block: Block
+    let blockHash: String
+    let chainState: ChainState
+}
+
+private func makeRuntimeGenesis(
+    config: GenesisConfig,
+    fetcher: any Fetcher
+) async throws -> RuntimeGenesisResult {
+    let result = try await GenesisCeremony.create(config: config, fetcher: fetcher)
+    return RuntimeGenesisResult(
+        block: result.block,
+        blockHash: result.blockHash,
+        chainState: ChainState.fromGenesis(block: result.block)
+    )
+}
+
 // MARK: - Genesis Ceremony Tests
 
 @MainActor
@@ -20,8 +38,8 @@ final class GenesisCeremonyTests: XCTestCase {
             initialReward: 1024, halvingInterval: 10_000
         ))
 
-        let result1 = try await GenesisCeremony.create(config: config, fetcher: fetcher)
-        let result2 = try await GenesisCeremony.create(config: config, fetcher: fetcher)
+        let result1 = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
+        let result2 = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
 
         XCTAssertEqual(result1.blockHash, result2.blockHash,
             "Same genesis config must produce identical genesis block")
@@ -43,8 +61,30 @@ final class GenesisCeremonyTests: XCTestCase {
             timestamp: 42,
             target: UInt256(1000)
         )
-        let result = try await GenesisCeremony.create(config: config, fetcher: fetcher)
+        let result = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
         XCTAssertTrue(GenesisCeremony.verify(block: result.block, config: config))
+    }
+
+    func testCreateRejectsZeroWorkGenesisWithoutTrapping() async {
+        let config = GenesisConfig(
+            spec: ChainSpec(
+                maxNumberOfTransactionsPerBlock: 100,
+                maxStateGrowth: 100_000,
+                premine: 0,
+                targetBlockTime: 1_000,
+                initialReward: 1024,
+                halvingInterval: 10_000
+            ),
+            timestamp: 0,
+            target: .zero
+        )
+
+        do {
+            _ = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
+            XCTFail("zero-work genesis must be rejected")
+        } catch {
+            XCTAssertEqual(error as? GenesisCeremonyError, .invalidTarget)
+        }
     }
 
     func testVerifyRejectsWrongTimestamp() async throws {
@@ -59,7 +99,7 @@ final class GenesisCeremonyTests: XCTestCase {
             timestamp: 42,
             target: UInt256(1000)
         )
-        let result = try await GenesisCeremony.create(config: config, fetcher: fetcher)
+        let result = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
 
         let wrongConfig = GenesisConfig(
             spec: config.spec, timestamp: 999, target: config.target
@@ -76,7 +116,7 @@ final class GenesisCeremonyTests: XCTestCase {
             initialReward: 1024, halvingInterval: 10_000
         )
         let configA = GenesisConfig(spec: specA, timestamp: 0, target: UInt256.max)
-        let result = try await GenesisCeremony.create(config: configA, fetcher: fetcher)
+        let result = try await makeRuntimeGenesis(config: configA, fetcher: fetcher)
 
         let configB = GenesisConfig(spec: specA, timestamp: 0, target: UInt256(1))
         XCTAssertTrue(GenesisCeremony.verify(block: result.block, config: configA))
@@ -101,7 +141,7 @@ final class GenesisCeremonyTests: XCTestCase {
             initialReward: 1024, halvingInterval: 10_000
         )
         let configA = GenesisConfig(spec: specA, timestamp: 0, target: UInt256.max)
-        let result = try await GenesisCeremony.create(config: configA, fetcher: fetcher)
+        let result = try await makeRuntimeGenesis(config: configA, fetcher: fetcher)
 
         let configC = GenesisConfig(spec: specB, timestamp: 0, target: UInt256.max)
         XCTAssertTrue(GenesisCeremony.verify(block: result.block, config: configA))
@@ -116,7 +156,7 @@ final class GenesisCeremonyTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024, halvingInterval: 10_000
         ))
-        let result = try await GenesisCeremony.create(config: config, fetcher: fetcher)
+        let result = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
 
         let height = await result.chainState.getHighestBlockHeight()
         XCTAssertEqual(height, 0)
@@ -127,12 +167,11 @@ final class GenesisCeremonyTests: XCTestCase {
         let onMain = await result.chainState.isOnMainChain(hash: result.blockHash)
         XCTAssertTrue(onMain)
 
-        let block1 = try await BlockBuilder.buildBlock(
+        let block1 = try await buildAndStoreBlock(
             previous: result.block, timestamp: 1_000, target: UInt256.max,
             nonce: 1, fetcher: fetcher
         )
-        let submitResult = await result.chainState.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let submitResult = await result.chainState.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block1),
             block: block1
         )
@@ -156,12 +195,12 @@ final class BlockReceptionTests: XCTestCase {
 
         let storableFetcher = StorableFetcher()
 
-        let result = try await GenesisCeremony.create(config: config, fetcher: fetcher)
+        let result = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
         if let data = result.block.toData() {
             await storableFetcher.store(rawCid: result.blockHash, data: data)
         }
 
-        let block1 = try await BlockBuilder.buildBlock(
+        let block1 = try await buildAndStoreBlock(
             previous: result.block, timestamp: 1_000,
             target: UInt256.max, nonce: 1, fetcher: fetcher
         )
@@ -188,15 +227,14 @@ final class BlockReceptionTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024, halvingInterval: 10_000
         ))
-        let result = try await GenesisCeremony.create(config: config, fetcher: fetcher)
+        let result = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
 
-        let block1 = try await BlockBuilder.buildBlock(
+        let block1 = try await buildAndStoreBlock(
             previous: result.block, timestamp: 1_000,
             target: UInt256.max, nonce: 1, fetcher: fetcher
         )
         let header = try! VolumeImpl<Block>(node: block1)
-        let submitResult = await result.chainState.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let submitResult = await result.chainState.submitTestBlock(
             blockHeader: header,
             block: block1
         )
@@ -221,21 +259,20 @@ final class GenesisToBlockE2ETests: XCTestCase {
             initialReward: 1024, halvingInterval: 10_000
         )
         let genesisConfig = GenesisConfig.standard(spec: spec)
-        let genesis = try await GenesisCeremony.create(config: genesisConfig, fetcher: fetcher)
+        let genesis = try await makeRuntimeGenesis(config: genesisConfig, fetcher: fetcher)
 
         XCTAssertTrue(GenesisCeremony.verify(block: genesis.block, config: genesisConfig))
 
         var prev = genesis.block
         for i in 1...10 {
-            let template = try await BlockBuilder.buildBlock(
+            let template = try await buildAndStoreBlock(
                 previous: prev, timestamp: Int64(i) * 1000,
                 target: UInt256.max, nonce: 0, fetcher: fetcher
             )
             let mined = BlockBuilder.mine(block: template, target: UInt256.max, maxAttempts: 10)!
 
             let header = try! VolumeImpl<Block>(node: mined)
-            let result = await genesis.chainState.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let result = await genesis.chainState.submitTestBlock(
                 blockHeader: header,
                 block: mined
             )
@@ -263,24 +300,24 @@ final class GenesisToBlockE2ETests: XCTestCase {
         )
         let genesisConfig = GenesisConfig.standard(spec: spec)
 
-        let nodeA = try await GenesisCeremony.create(config: genesisConfig, fetcher: fetcher)
-        let nodeB = try await GenesisCeremony.create(config: genesisConfig, fetcher: fetcher)
+        let nodeA = try await makeRuntimeGenesis(config: genesisConfig, fetcher: fetcher)
+        let nodeB = try await makeRuntimeGenesis(config: genesisConfig, fetcher: fetcher)
 
         XCTAssertEqual(nodeA.blockHash, nodeB.blockHash, "Both nodes must agree on genesis")
 
-        let blockA1 = try await BlockBuilder.buildBlock(
+        let blockA1 = try await buildAndStoreBlock(
             previous: nodeA.block, timestamp: 1_000,
             target: UInt256.max, nonce: 1, fetcher: fetcher
         )
         let headerA1 = try! VolumeImpl<Block>(node: blockA1)
 
-        let resultOnA = await nodeA.chainState.submitBlock(
-            parentBlockHeaderAndIndex: nil, blockHeader: headerA1, block: blockA1
+        let resultOnA = await nodeA.chainState.submitTestBlock(
+            blockHeader: headerA1, block: blockA1
         )
         XCTAssertTrue(resultOnA.extendsMainChain)
 
-        let resultOnB = await nodeB.chainState.submitBlock(
-            parentBlockHeaderAndIndex: nil, blockHeader: headerA1, block: blockA1
+        let resultOnB = await nodeB.chainState.submitTestBlock(
+            blockHeader: headerA1, block: blockA1
         )
         XCTAssertTrue(resultOnB.extendsMainChain, "Node B accepts block mined by Node A")
 
@@ -298,45 +335,48 @@ final class GenesisToBlockE2ETests: XCTestCase {
             initialReward: 1024, halvingInterval: 10_000
         )
         let genesisConfig = GenesisConfig.standard(spec: spec)
-        let nodeA = try await GenesisCeremony.create(config: genesisConfig, fetcher: fetcher)
-        let nodeB = try await GenesisCeremony.create(config: genesisConfig, fetcher: fetcher)
+        let nodeA = try await makeRuntimeGenesis(config: genesisConfig, fetcher: fetcher)
+        let nodeB = try await makeRuntimeGenesis(config: genesisConfig, fetcher: fetcher)
 
-        let blockA1 = try await BlockBuilder.buildBlock(
+        let blockA1 = try await buildAndStoreBlock(
             previous: nodeA.block, timestamp: 1_000,
             target: UInt256.max, nonce: 1, fetcher: fetcher
         )
-        let blockA2 = try await BlockBuilder.buildBlock(
+        let blockA2 = try await buildAndStoreBlock(
             previous: blockA1, timestamp: 2_000,
             target: UInt256.max, nonce: 2, fetcher: fetcher
         )
 
-        let blockB1 = try await BlockBuilder.buildBlock(
+        let blockB1 = try await buildAndStoreBlock(
             previous: nodeB.block, timestamp: 1_000,
             target: UInt256.max, nonce: 100, fetcher: fetcher
         )
 
-        let _ = await nodeA.chainState.submitBlock(
-            parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl(node: blockA1), block: blockA1
+        let _ = await nodeA.chainState.submitTestBlock(
+            blockHeader: try! VolumeImpl(node: blockA1), block: blockA1
         )
-        let _ = await nodeA.chainState.submitBlock(
-            parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl(node: blockA2), block: blockA2
+        let _ = await nodeA.chainState.submitTestBlock(
+            blockHeader: try! VolumeImpl(node: blockA2), block: blockA2
         )
 
-        let _ = await nodeB.chainState.submitBlock(
-            parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl(node: blockB1), block: blockB1
+        let _ = await nodeB.chainState.submitTestBlock(
+            blockHeader: try! VolumeImpl(node: blockB1), block: blockB1
         )
 
         let tipB_before = await nodeB.chainState.getMainChainTip()
         XCTAssertEqual(tipB_before, try! VolumeImpl<Block>(node: blockB1).rawCID)
 
-        let _ = await nodeB.chainState.submitBlock(
-            parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl(node: blockA1), block: blockA1
+        let resultA1onB = await nodeB.chainState.submitTestBlock(
+            blockHeader: try! VolumeImpl(node: blockA1), block: blockA1
         )
-        let resultA2onB = await nodeB.chainState.submitBlock(
-            parentBlockHeaderAndIndex: nil, blockHeader: try! VolumeImpl(node: blockA2), block: blockA2
+        let resultA2onB = await nodeB.chainState.submitTestBlock(
+            blockHeader: try! VolumeImpl(node: blockA2), block: blockA2
         )
 
-        XCTAssertNotNil(resultA2onB.reorganization, "Node B should reorg to longer chain from A")
+        XCTAssertTrue(
+            resultA1onB.commit?.canonicalChanged == true || resultA2onB.commit?.canonicalChanged == true,
+            "Node B should reorg when A wins the stable tie or becomes strictly heavier"
+        )
 
         let tipA = await nodeA.chainState.getMainChainTip()
         let tipB = await nodeB.chainState.getMainChainTip()

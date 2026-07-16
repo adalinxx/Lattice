@@ -30,7 +30,7 @@ func genesisBlock(
     target: UInt256 = UInt256(1000),
     nonce: UInt64 = 0
 ) async throws -> Block {
-    try await BlockBuilder.buildGenesis(
+    try await buildAndStoreGenesis(
         spec: spec ?? testSpec(),
         timestamp: timestamp,
         target: target,
@@ -45,7 +45,7 @@ func nextBlock(
     target: UInt256? = nil,
     nonce: UInt64 = 0
 ) async throws -> Block {
-    try await BlockBuilder.buildBlock(
+    try await buildAndStoreBlock(
         previous: previous,
         timestamp: timestamp,
         target: target,
@@ -80,6 +80,34 @@ final class BlockBuilderTests: XCTestCase {
             try! LatticeStateHeader(node: LatticeState.emptyState()).rawCID)
         XCTAssertEqual(genesis.prevState.rawCID, genesis.postState.rawCID,
             "Genesis with no transactions should have prevState == postState")
+    }
+
+    func testGenesisValidationRejectsInvalidSpec() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await buildAndStoreGenesis(
+            spec: testSpec(),
+            timestamp: 1_000,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+        let invalidSpec = ChainSpec(
+            maxNumberOfTransactionsPerBlock: 0,
+            maxStateGrowth: 100_000,
+            premine: 0,
+            targetBlockTime: 1_000,
+            initialReward: 1_024,
+            halvingInterval: 10_000
+        )
+        let invalidHeader = try VolumeImpl<ChainSpec>(node: invalidSpec)
+        try await invalidHeader.storeRecursively(storer: fetcher)
+        let tampered = genesis.set(properties: [SPEC_PROPERTY: invalidHeader])
+
+        let valid = try await tampered.validateGenesis(
+            fetcher: fetcher,
+            directory: nil
+        ).0
+
+        XCTAssertFalse(valid)
     }
 
     func testBuildBlockChainsFrontierToHomestead() async throws {
@@ -148,8 +176,7 @@ final class BlockBuilderSubmissionTests: XCTestCase {
         for i in 1...10 {
             let block = try await nextBlock(previous: prev, timestamp: ts, nonce: UInt64(i))
             let header = try! VolumeImpl<Block>(node: block)
-            let result = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let result = await chain.submitTestBlock(
                 blockHeader: header,
                 block: block
             )
@@ -170,8 +197,7 @@ final class BlockBuilderSubmissionTests: XCTestCase {
         var ts: Int64 = 2_000_000
         for i in 1...3 {
             let block = try await nextBlock(previous: mainPrev, timestamp: ts, nonce: UInt64(i))
-            let _ = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: block),
                 block: block
             )
@@ -188,12 +214,11 @@ final class BlockBuilderSubmissionTests: XCTestCase {
         var sawReorg = false
         for i in 1...5 {
             let block = try await nextBlock(previous: forkPrev, timestamp: ts, nonce: UInt64(100 + i))
-            let result = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let result = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: block),
                 block: block
             )
-            if result.reorganization != nil { sawReorg = true }
+            if result.commit?.canonicalChanged == true { sawReorg = true }
             forkPrev = block
             ts += 1_000
         }
@@ -460,61 +485,55 @@ final class CryptoUtilsTests: XCTestCase {
     }
 }
 
-// MARK: - Missing Block Tracking Tests
+// MARK: - Out-of-Order Submission Tests
 
 @MainActor
-final class MissingBlockTrackingTests: XCTestCase {
+final class OutOfOrderSubmissionTests: XCTestCase {
 
-    func testNoMissingBlocksInitially() async {
-        let (chain, _) = makeLinearChain(length: 3)
-        let missing = await chain.getMissingBlockHashes()
-        XCTAssertTrue(missing.isEmpty)
-    }
-
-    func testMissingParentIsTracked() async throws {
+    func testMissingParentIsRequested() async throws {
         let genesis = try await genesisBlock()
         let chain = ChainState.fromGenesis(block: genesis)
 
         let block1 = try await nextBlock(previous: genesis, timestamp: 2_000_000, nonce: 1)
         let block2 = try await nextBlock(previous: block1, timestamp: 3_000_000, nonce: 2)
 
-        let result = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        _ = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block2),
             block: block2
         )
-        XCTAssertTrue(result.needsChildBlock, "Block with missing parent should flag needsChildBlock")
-
-        let missing = await chain.getMissingBlockHashes()
-        let block1Hash = try! VolumeImpl<Block>(node: block1).rawCID
-        XCTAssertTrue(missing.contains(block1Hash), "Missing parent should be tracked")
+        let requirements = await chain.missingSameChainPredecessors()
+        XCTAssertEqual(
+            requirements,
+            [SameChainPredecessorRequirement(
+                descendantCID: try VolumeImpl<Block>(node: block2).rawCID,
+                predecessorCID: try VolumeImpl<Block>(node: block1).rawCID
+            )]
+        )
     }
 
-    func testMissingBlockResolvedWhenParentArrives() async throws {
+    func testParentArrivalConnectsQueuedDescendant() async throws {
         let genesis = try await genesisBlock()
         let chain = ChainState.fromGenesis(block: genesis)
 
         let block1 = try await nextBlock(previous: genesis, timestamp: 2_000_000, nonce: 1)
         let block2 = try await nextBlock(previous: block1, timestamp: 3_000_000, nonce: 2)
 
-        let _ = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        _ = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block2),
             block: block2
         )
+        let orphanRequirements = await chain.missingSameChainPredecessors()
+        XCTAssertEqual(orphanRequirements.count, 1)
 
-        let missingBefore = await chain.getMissingBlockHashes()
-        XCTAssertFalse(missingBefore.isEmpty)
-
-        let _ = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let _ = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block1),
             block: block1
         )
 
-        let missingAfter = await chain.getMissingBlockHashes()
-        let block1Hash = try! VolumeImpl<Block>(node: block1).rawCID
-        XCTAssertFalse(missingAfter.contains(block1Hash), "Should be resolved after parent arrives")
+        let tip = await chain.getMainChainTip()
+        let remainingRequirements = await chain.missingSameChainPredecessors()
+        XCTAssertEqual(tip, try! VolumeImpl<Block>(node: block2).rawCID)
+        XCTAssertTrue(remainingRequirements.isEmpty)
     }
 }
 
@@ -547,7 +566,7 @@ final class WasmPolicyTests: XCTestCase {
 
     func testTransactionPolicyAccepts() async throws {
         let fetcher = StorableFetcher()
-        let policy = try storeWasmPolicy(accepts: true, scope: .transaction, fetcher: fetcher)
+        let policy = try await storeWasmPolicy(accepts: true, scope: .transaction, fetcher: fetcher)
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
@@ -562,13 +581,13 @@ final class WasmPolicyTests: XCTestCase {
             halvingInterval: 10_000,
             wasmPolicies: [policy]
         )
-        let accepted = await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
+        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
         XCTAssertTrue(accepted)
     }
 
     func testTransactionPolicyRejects() async throws {
         let fetcher = StorableFetcher()
-        let policy = try storeWasmPolicy(accepts: false, scope: .transaction, fetcher: fetcher)
+        let policy = try await storeWasmPolicy(accepts: false, scope: .transaction, fetcher: fetcher)
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
@@ -583,13 +602,13 @@ final class WasmPolicyTests: XCTestCase {
             halvingInterval: 10_000,
             wasmPolicies: [policy]
         )
-        let accepted = await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
+        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
         XCTAssertFalse(accepted)
     }
 
     func testTransactionPolicyCanInspectContextBytes() async throws {
         let fetcher = StorableFetcher()
-        let policy = try storeWasmPolicy(requiringSubstring: "high-signer", scope: .transaction, fetcher: fetcher)
+        let policy = try await storeWasmPolicy(requiringSubstring: "high-signer", scope: .transaction, fetcher: fetcher)
         let lowFee = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
@@ -609,15 +628,15 @@ final class WasmPolicyTests: XCTestCase {
             halvingInterval: 10_000,
             wasmPolicies: [policy]
         )
-        let lowAccepted = await TransactionBody.batchVerifyPolicies(bodies: [lowFee], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
-        let highAccepted = await TransactionBody.batchVerifyPolicies(bodies: [highFee], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
+        let lowAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [lowFee], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
+        let highAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [highFee], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
         XCTAssertFalse(lowAccepted)
         XCTAssertTrue(highAccepted)
     }
 
     func testTransactionPolicyCanInspectChainPath() async throws {
         let fetcher = StorableFetcher()
-        let policy = try storeWasmPolicy(requiringSubstring: "policy-chain-sentinel", scope: .transaction, fetcher: fetcher)
+        let policy = try await storeWasmPolicy(requiringSubstring: "policy-chain-sentinel", scope: .transaction, fetcher: fetcher)
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
@@ -632,10 +651,10 @@ final class WasmPolicyTests: XCTestCase {
             halvingInterval: 10_000,
             wasmPolicies: [policy]
         )
-        let acceptedOnMatchingPath = await TransactionBody.batchVerifyPolicies(
+        let acceptedOnMatchingPath = try await TransactionBody.batchVerifyPolicies(
             bodies: [body], spec: spec, chainPath: ["Nexus", "policy-chain-sentinel"], fetcher: fetcher
         )
-        let rejectedOnDifferentPath = await TransactionBody.batchVerifyPolicies(
+        let rejectedOnDifferentPath = try await TransactionBody.batchVerifyPolicies(
             bodies: [body], spec: spec, chainPath: ["Nexus", "other-chain"], fetcher: fetcher
         )
         XCTAssertTrue(acceptedOnMatchingPath)
@@ -644,8 +663,8 @@ final class WasmPolicyTests: XCTestCase {
 
     func testMultiplePoliciesAreAllRequired() async throws {
         let fetcher = StorableFetcher()
-        let acceptingPolicy = try storeWasmPolicy(accepts: true, scope: .transaction, fetcher: fetcher)
-        let rejectingPolicy = try storeWasmPolicy(accepts: false, scope: .transaction, fetcher: fetcher)
+        let acceptingPolicy = try await storeWasmPolicy(accepts: true, scope: .transaction, fetcher: fetcher)
+        let rejectingPolicy = try await storeWasmPolicy(accepts: false, scope: .transaction, fetcher: fetcher)
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
@@ -660,7 +679,7 @@ final class WasmPolicyTests: XCTestCase {
             halvingInterval: 10_000,
             wasmPolicies: [acceptingPolicy, rejectingPolicy]
         )
-        let accepted = await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
+        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
         XCTAssertFalse(accepted)
     }
 
@@ -712,7 +731,7 @@ final class WasmPolicyTests: XCTestCase {
 
     func testActionPolicyAccepts() async throws {
         let fetcher = StorableFetcher()
-        let policy = try storeWasmPolicy(accepts: true, scope: .action, fetcher: fetcher)
+        let policy = try await storeWasmPolicy(accepts: true, scope: .action, fetcher: fetcher)
         let action = Action(key: "test/key", oldValue: nil, newValue: "hello")
         let body = TransactionBody(
             accountActions: [], actions: [action], depositActions: [],
@@ -728,13 +747,13 @@ final class WasmPolicyTests: XCTestCase {
             halvingInterval: 10_000,
             wasmPolicies: [policy]
         )
-        let accepted = await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
+        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
         XCTAssertTrue(accepted)
     }
 
     func testActionPolicyCanInspectContextBytes() async throws {
         let fetcher = StorableFetcher()
-        let policy = try storeWasmPolicy(requiringSubstring: "app", scope: .action, fetcher: fetcher)
+        let policy = try await storeWasmPolicy(requiringSubstring: "app", scope: .action, fetcher: fetcher)
         let goodAction = Action(key: "app/v1/data", oldValue: nil, newValue: "value")
         let badAction = Action(key: "forbidden/data", oldValue: nil, newValue: "value")
         let spec = ChainSpec(
@@ -748,15 +767,15 @@ final class WasmPolicyTests: XCTestCase {
         )
         let goodBody = TransactionBody(accountActions: [], actions: [goodAction], depositActions: [], genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 1, nonce: 1)
         let badBody = TransactionBody(accountActions: [], actions: [badAction], depositActions: [], genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 1, nonce: 1)
-        let goodAccepted = await TransactionBody.batchVerifyPolicies(bodies: [goodBody], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
-        let badAccepted = await TransactionBody.batchVerifyPolicies(bodies: [badBody], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
+        let goodAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [goodBody], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
+        let badAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [badBody], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
         XCTAssertTrue(goodAccepted)
         XCTAssertFalse(badAccepted)
     }
 
     func testUnsupportedAbiRejects() async throws {
         let fetcher = StorableFetcher()
-        let storedPolicy = try storeWasmPolicy(accepts: true, scope: .transaction, fetcher: fetcher)
+        let storedPolicy = try await storeWasmPolicy(accepts: true, scope: .transaction, fetcher: fetcher)
         let policy = WasmPolicyRef(
             moduleCID: storedPolicy.moduleCID,
             abiVersion: WasmPolicyRef.currentABIVersion + 1,
@@ -776,7 +795,7 @@ final class WasmPolicyTests: XCTestCase {
             halvingInterval: 10_000,
             wasmPolicies: [policy]
         )
-        let accepted = await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
+        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
         XCTAssertFalse(accepted)
 
         XCTAssertThrowsError(try WasmPolicyEvaluator.validate(
@@ -810,7 +829,7 @@ final class WasmPolicyTests: XCTestCase {
         )
         """
         let module = try! WasmPolicyModuleHeader(node: WasmPolicyModule(bytes: Data(try wat2wasm(wat))))
-        try module.storeRecursively(storer: fetcher)
+        try await module.storeRecursively(storer: fetcher)
         let policy = WasmPolicyRef(
             moduleCID: module.rawCID,
             scope: .transaction,
@@ -830,11 +849,11 @@ final class WasmPolicyTests: XCTestCase {
             halvingInterval: 10_000,
             wasmPolicies: [policy]
         )
-        let accepted = await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
+        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
         XCTAssertTrue(accepted)
     }
 
-    func testMissingPolicyModuleRejects() async throws {
+    func testMissingPolicyModuleIsUnavailable() async throws {
         let fetcher = StorableFetcher()
         let policy = WasmPolicyRef(moduleCID: "missing", scope: .transaction)
         let spec = ChainSpec(
@@ -850,8 +869,15 @@ final class WasmPolicyTests: XCTestCase {
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 5, nonce: 1
         )
-        let accepted = await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
-        XCTAssertFalse(accepted)
+        do {
+            _ = try await TransactionBody.batchVerifyPolicies(
+                bodies: [body],
+                spec: spec,
+                chainPath: ["Nexus"],
+                fetcher: fetcher
+            )
+            XCTFail("missing module bytes must remain retriable")
+        } catch WasmPolicyError.missingModule("missing") {}
     }
 
     func testInvalidAllocatorRejectsWithoutWritingOutOfBounds() throws {
@@ -1087,7 +1113,7 @@ final class WasmPolicyTests: XCTestCase {
         cache.onParse = { _ in parseCount += 1 }
 
         let fetcher = StorableFetcher()
-        let policy = try storeWasmPolicy(accepts: true, scope: .transaction, fetcher: fetcher)
+        let policy = try await storeWasmPolicy(accepts: true, scope: .transaction, fetcher: fetcher)
         let context = cacheTestContext(policy: policy)
 
         for _ in 0..<4 {
@@ -1105,7 +1131,7 @@ final class WasmPolicyTests: XCTestCase {
 
         for accepts in [true, false] {
             let fetcher = StorableFetcher()
-            let policy = try storeWasmPolicy(accepts: accepts, scope: .transaction, fetcher: fetcher)
+            let policy = try await storeWasmPolicy(accepts: accepts, scope: .transaction, fetcher: fetcher)
             let context = cacheTestContext(policy: policy)
 
             cache.removeAll() // force a cold parse
@@ -1135,9 +1161,9 @@ final class WasmPolicyTests: XCTestCase {
 
         let fetcher = StorableFetcher()
         // Three distinct modules (distinct content ids via distinct sentinel substrings).
-        let policyA = try storeWasmPolicy(requiringSubstring: "module-a", scope: .transaction, fetcher: fetcher)
-        let policyB = try storeWasmPolicy(requiringSubstring: "module-b", scope: .transaction, fetcher: fetcher)
-        let policyC = try storeWasmPolicy(requiringSubstring: "module-c", scope: .transaction, fetcher: fetcher)
+        let policyA = try await storeWasmPolicy(requiringSubstring: "module-a", scope: .transaction, fetcher: fetcher)
+        let policyB = try await storeWasmPolicy(requiringSubstring: "module-b", scope: .transaction, fetcher: fetcher)
+        let policyC = try await storeWasmPolicy(requiringSubstring: "module-c", scope: .transaction, fetcher: fetcher)
         let ctxA = cacheTestContext(policy: policyA)
         let ctxB = cacheTestContext(policy: policyB)
         let ctxC = cacheTestContext(policy: policyC)

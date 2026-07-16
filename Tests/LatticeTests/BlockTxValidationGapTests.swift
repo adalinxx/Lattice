@@ -6,12 +6,12 @@ import Foundation
 
 // MARK: - Bucket-A block-tx validation gaps test phase)
 //
-// BTV-A1: missing-data DEFER vs permanent-reject at acceptance.
-//   processBlockHeader must return `.deferred` when block content cannot be
-//   resolved because of a *transient* fetch failure (the data is re-requestable
-//   and a later attempt succeeds), while a genuinely-invalid but fully-resolvable
-//   block must be permanently `.rejected` and stay rejected on reprocessing.
-//   Exercised through the real Lattice.processBlockHeader entry point with an
+// BTV-A1: unavailable evidence vs permanent rejection at admission.
+//   admitBlockHeaderChainLocal must report `.unavailableEvidence` when block
+//   content cannot be resolved because of a *transient* fetch failure (the data
+//   is re-requestable and a later attempt succeeds), while a genuinely-invalid
+//   but fully-resolvable block must be permanently rejected on reprocessing.
+//   Exercised through the real chain-local admission entry point with an
 //   injectable resolution-failing Fetcher.
 //
 // BTV-A2: a leaf-chain withdrawal whose deposit exists (so block building /
@@ -22,7 +22,7 @@ import Foundation
 
 // MARK: - Shared infrastructure
 
-private func gapSpec(_ dir: String = "Nexus") -> ChainSpec {
+private func gapSpec() -> ChainSpec {
     ChainSpec(
         maxNumberOfTransactionsPerBlock: 100,
         maxStateGrowth: 100_000,
@@ -58,9 +58,7 @@ private func gapSignTx(
 private func gapNow() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
 private func storeBlock(_ block: Block, fetcher: StorableFetcher) async throws {
-    let storer = CollectingStorer()
-    try VolumeImpl<Block>(node: block).storeRecursively(storer: storer)
-    await storer.flush(to: fetcher)
+    try await VolumeImpl<Block>(node: block).storeBlock(storer: fetcher)
 }
 
 /// Fetcher that wraps a fully-populated `StorableFetcher` but can be told to
@@ -88,7 +86,7 @@ private final class TransientFailingFetcher: Fetcher, @unchecked Sendable {
             lock.lock(); defer { lock.unlock() }
             return failing.contains(rawCid)
         }()
-        if shouldFail { throw FetcherError.notFound(rawCid) }
+        if shouldFail { throw cashew.FetcherError.notFound(rawCid) }
         return try await backing.fetch(rawCid: rawCid)
     }
 }
@@ -99,19 +97,19 @@ private final class TransientFailingFetcher: Fetcher, @unchecked Sendable {
 final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
 
     /// A transient resolution failure for an *ancestor* (the parent block body,
-    /// fetched by CID during validation) yields `.deferred` (not `.rejected`),
-    /// and reprocessing the SAME header through the SAME fetcher once the data
-    /// resolves yields `.accepted`. This proves the defer outcome is transient +
+    /// fetched by CID during validation) reports unavailable evidence, and
+    /// reprocessing the SAME header through the SAME fetcher once the data
+    /// resolves canonicalizes it. This proves the outcome is transient and
     /// re-requestable rather than poisoning the block.
-    func testTransientAncestorFetchFailureDefersThenAcceptsOnReRequest() async throws {
+    func testTransientAncestorFetchFailureReportsUnavailableThenAcceptsOnReRequest() async throws {
         let backing = StorableFetcher()
         let t = gapNow()
         let easyDifficulty = UInt256.max
 
-        let g = try await BlockBuilder.buildGenesis(
+        let g = try await buildAndStoreGenesis(
             spec: gapSpec(), timestamp: t - 20_000, target: easyDifficulty, nonce: 0, fetcher: backing
         )
-        let block = try await BlockBuilder.buildBlock(
+        let block = try await buildAndStoreBlock(
             previous: g, timestamp: t - 10_000, target: easyDifficulty, nonce: 0, fetcher: backing
         )
         try await storeBlock(g, fetcher: backing)
@@ -123,26 +121,38 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
         let parentCID = gapHeader(g).rawCID
         let fetcher = TransientFailingFetcher(backing: backing, failing: [parentCID])
 
-        let level = ChainLevel(chain: ChainState.fromGenesis(block: g), children: [:])
-        let lattice = Lattice(nexus: level)
+        let level = ChainLevel(testChain: ChainState.fromGenesis(block: g))
 
-        let deferred = await lattice.processBlockHeader(gapHeader(block), fetcher: fetcher)
-        XCTAssertTrue(deferred.isDeferred, "Transient ancestor-resolution failure must DEFER, not reject")
-        XCTAssertFalse(deferred.isRejected, "A transient fetch failure must not be a permanent rejection")
-        let heightWhileDeferred = await level.chain.getHighestBlockHeight()
-        XCTAssertEqual(heightWhileDeferred, 0, "Deferred blocks must not be submitted")
+        let unavailable = try await level.admitBlockHeaderChainLocal(
+            gapHeader(block),
+            fetcher: fetcher,
+            storer: backing,
+            stage: testAdmissionStage
+        )
+        guard case .rejected(.unavailableEvidence) = unavailable else {
+            return XCTFail("transient ancestor-resolution failure must be unavailable")
+        }
+        let heightWhileUnavailable = await level.chain.getHighestBlockHeight()
+        XCTAssertEqual(heightWhileUnavailable, 0, "Unavailable blocks must not be submitted")
 
         // Simulate the re-request succeeding: clear the failure and reprocess
         // the SAME header through the SAME fetcher instance.
         fetcher.setFailing([])
-        let accepted = await lattice.processBlockHeader(gapHeader(block), fetcher: fetcher)
-        XCTAssertTrue(accepted.isAccepted, "A deferred block must become acceptable once a re-request resolves its data")
+        let accepted = try await level.admitBlockHeaderChainLocal(
+            gapHeader(block),
+            fetcher: fetcher,
+            storer: backing,
+            stage: testAdmissionStage
+        )
+        guard case .accepted = accepted else {
+            return XCTFail("an unavailable block must canonicalize once evidence arrives")
+        }
         let heightAfterAccept = await level.chain.getHighestBlockHeight()
         XCTAssertEqual(heightAfterAccept, 1, "Block must extend the chain after the re-request resolves")
     }
 
     /// A genuinely-invalid block (tampered postState) that is FULLY resolvable
-    /// must be permanently `.rejected` — never `.deferred` — and must stay
+    /// must be permanently rejected with a protocol failure and must stay
     /// rejected when reprocessed, so a bad block cannot masquerade as missing
     /// data to be re-requested forever.
     func testGenuinelyInvalidBlockRejectsPermanentlyEvenWhenResolvable() async throws {
@@ -150,10 +160,10 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
         let t = gapNow()
         let easyDifficulty = UInt256.max
 
-        let g = try await BlockBuilder.buildGenesis(
+        let g = try await buildAndStoreGenesis(
             spec: gapSpec(), timestamp: t - 20_000, target: easyDifficulty, nonce: 0, fetcher: f
         )
-        let validBlock = try await BlockBuilder.buildBlock(
+        let validBlock = try await buildAndStoreBlock(
             previous: g, timestamp: t - 10_000, target: easyDifficulty, nonce: 0, fetcher: f
         )
 
@@ -165,15 +175,27 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
         try await storeBlock(g, fetcher: f)
         try await storeBlock(minedTampered, fetcher: f)
 
-        let level = ChainLevel(chain: ChainState.fromGenesis(block: g), children: [:])
-        let lattice = Lattice(nexus: level)
+        let level = ChainLevel(testChain: ChainState.fromGenesis(block: g))
 
-        let rejected = await lattice.processBlockHeader(gapHeader(minedTampered), fetcher: f)
-        XCTAssertTrue(rejected.isRejected, "A fully-resolvable invalid block must be rejected")
-        XCTAssertFalse(rejected.isDeferred, "A genuinely-invalid block must not be reported as deferred")
+        let rejected = try await level.admitBlockHeaderChainLocal(
+            gapHeader(minedTampered),
+            fetcher: f,
+            storer: f,
+            stage: testAdmissionStage
+        )
+        guard case .rejected(.protocolInvalid) = rejected else {
+            return XCTFail("a fully-resolvable invalid block must be rejected")
+        }
 
-        let rejectedAgain = await lattice.processBlockHeader(gapHeader(minedTampered), fetcher: f)
-        XCTAssertTrue(rejectedAgain.isRejected, "Reprocessing a fully-resolvable invalid block must stay rejected")
+        let rejectedAgain = try await level.admitBlockHeaderChainLocal(
+            gapHeader(minedTampered),
+            fetcher: f,
+            storer: f,
+            stage: testAdmissionStage
+        )
+        guard case .rejected(.protocolInvalid) = rejectedAgain else {
+            return XCTFail("reprocessing a fully-resolvable invalid block must stay rejected")
+        }
         let finalHeight = await level.chain.getHighestBlockHeight()
         XCTAssertEqual(finalHeight, 0)
     }
@@ -223,7 +245,7 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
         let depositAmount: UInt64 = 200
         let swapNonce: UInt128 = 4242
         let cSpec = childSpecWithDeposit(depositAmount)
-        let nSpec = gapSpec("Nexus")
+        let nSpec = gapSpec()
         let nexusReward = nSpec.rewardAtBlock(1)
 
         let genesisTs: Int64 = t - 40_000
@@ -239,13 +261,13 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
             genesisActions: [], receiptActions: [], withdrawalActions: [],
             signers: [demanderAddr], fee: 0, nonce: 0, chainPath: ["Nexus", "Payments"]
         )
-        let childGenesis = try await BlockBuilder.buildGenesis(
+        let childGenesis = try await buildAndStoreGenesis(
             spec: cSpec, transactions: [gapSignTx(body: depositGenesisBody, keypair: demander)],
             timestamp: genesisTs, target: target, fetcher: fetcher
         )
 
         // --- Nexus genesis + block 1; receipt (when present) lives in n1's frontier ---
-        let nexusGenesis = try await BlockBuilder.buildGenesis(
+        let nexusGenesis = try await buildAndStoreGenesis(
             spec: nSpec, timestamp: genesisTs, target: target, fetcher: fetcher
         )
         let n1Transactions: [Transaction]
@@ -264,7 +286,7 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
         } else {
             n1Transactions = []
         }
-        let n1 = try await BlockBuilder.buildBlock(
+        let n1 = try await buildAndStoreBlock(
             previous: nexusGenesis, transactions: n1Transactions,
             timestamp: block1Ts, target: target, fetcher: fetcher
         )
@@ -273,7 +295,7 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
         // child's parentState is its anchor block's PREV state, so the child must
         // anchor to n2 (n2.prevState == n1.postState, which holds the receipt) to
         // see a receipt that n1 created. n2.timestamp == cb1.timestamp.
-        let n2 = try await BlockBuilder.buildBlock(
+        let n2 = try await buildAndStoreBlock(
             previous: n1, timestamp: block1Ts, target: target, fetcher: fetcher
         )
 
@@ -288,15 +310,15 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
             ],
             signers: [withdrawerAddr], fee: 0, nonce: 0, chainPath: ["Nexus", "Payments"]
         )
-        let childBlock1 = try await BlockBuilder.buildBlock(
+        let childBlock1 = try await buildAndStoreBlock(
             previous: childGenesis, transactions: [gapSignTx(body: withdrawalBody, keypair: withdrawer)],
             parentChainBlock: n2,
             timestamp: block1Ts, target: target, fetcher: fetcher
         )
 
         // The withdrawal-correspondence proofs THROW on a missing receipt;
-        // validateNexus surfaces that as a thrown error (processBlockHeader
-        // treats it as not-accepted). Either signal means "did not validate".
+        // validateNexus surfaces that as a thrown error. Either signal means
+        // "did not validate".
         do {
             let (valid, _, _) = try await childBlock1.validateNexus(
                 fetcher: fetcher, chainPath: ["Nexus", "Payments"]

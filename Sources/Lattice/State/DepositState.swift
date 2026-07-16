@@ -41,6 +41,7 @@ public struct DepositKey: LosslessStringConvertible {
 
 public typealias DepositState = VolumeMerkleDictionaryImpl<UInt64>
 public typealias DepositStateHeader = VolumeImpl<DepositState>
+let SPENT_DEPOSIT_MARKER: UInt64 = 0
 
 public extension DepositStateHeader {
     func proveExistenceOfCorrespondingDeposit(withdrawalActions: [WithdrawalAction], fetcher: Fetcher) async throws -> DepositStateHeader {
@@ -52,7 +53,10 @@ public extension DepositStateHeader {
         return try await proof(paths: proofs, fetcher: fetcher)
     }
 
-    func proveAndDeleteForWithdrawals(allWithdrawalActions: [WithdrawalAction], fetcher: Fetcher) async throws -> (DepositStateHeader, StateDiff) {
+    /// Consume deposits without deleting their identities. Receipts are permanent
+    /// parent-chain facts, so a spent marker is the child chain's lifetime
+    /// nullifier and prevents an old receipt from consuming a recreated deposit.
+    func proveAndSpendForWithdrawals(allWithdrawalActions: [WithdrawalAction], fetcher: Fetcher) async throws -> (DepositStateHeader, StateDiff) {
         if allWithdrawalActions.isEmpty { return (self, .empty) }
         var seenKeys = Set<String>()
         var resolvePaths = [[String]: ResolutionStrategy]()
@@ -70,13 +74,13 @@ public extension DepositStateHeader {
                 throw StateErrors.conflictingActions
             }
             if storedDeposited != wa.amountWithdrawn { throw StateErrors.conflictingActions }
-            proofs[[key]] = .deletion
-            transforms[[key]] = .delete
+            proofs[[key]] = .mutation
+            transforms[[key]] = .update(String(SPENT_DEPOSIT_MARKER))
         }
         if proofs.isEmpty { return (self, .empty) }
         let proven = try await proof(paths: proofs, fetcher: fetcher)
         guard let result = try proven.transform(transforms: transforms) else {
-            throw TransformErrors.transformFailed("deposit deletion transform returned nil")
+            throw TransformErrors.transformFailed("deposit spend transform returned nil")
         }
         return (result, diffCIDs(old: proven, new: result))
     }

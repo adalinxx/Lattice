@@ -64,7 +64,7 @@ final class DoubleSpendAdversarialTests: XCTestCase {
         )
 
         do {
-            let _ = try await BlockBuilder.buildBlock(
+            let _ = try await buildAndStoreBlock(
                 previous: genesis, transactions: [sign(spend1, alice), sign(spend2, alice)],
                 timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
             )
@@ -96,7 +96,7 @@ final class DoubleSpendAdversarialTests: XCTestCase {
             receiptActions: [], withdrawalActions: [],
             signers: [aliceAddr], fee: 0, nonce: 1
         )
-        let block1 = try await BlockBuilder.buildBlock(
+        let block1 = try await buildAndStoreBlock(
             previous: genesis, transactions: [sign(spend1Body, alice)],
             timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
@@ -112,7 +112,7 @@ final class DoubleSpendAdversarialTests: XCTestCase {
         )
 
         do {
-            let _ = try await BlockBuilder.buildBlock(
+            let _ = try await buildAndStoreBlock(
                 previous: block1, transactions: [sign(spend2Body, alice)],
                 timestamp: base + 2000, target: UInt256(1000), nonce: 2, fetcher: fetcher
             )
@@ -137,16 +137,17 @@ final class FeeAccountingValidationTests: XCTestCase {
         let fee: UInt64 = 50
         let reward = s.rewardAtBlock(1)
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
+        try await storeBuiltBlock(genesis, in: fetcher)
         let body = TransactionBody(
             accountActions: [AccountAction(owner: minerAddr, delta: Int64(reward + fee))],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
             signers: [minerAddr], fee: fee, nonce: 0, chainPath: ["Nexus"]
         )
-        let block = try await BlockBuilder.buildBlock(
+        let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [sign(body, miner)],
             timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
@@ -176,7 +177,7 @@ final class FeeAccountingValidationTests: XCTestCase {
             receiptActions: [], withdrawalActions: [],
             signers: [payerAddr], fee: fee, nonce: 1, chainPath: ["Nexus"]
         )
-        let block = try await BlockBuilder.buildBlock(
+        let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [sign(body, payer)],
             timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
@@ -198,7 +199,7 @@ final class FeeAccountingValidationTests: XCTestCase {
             receiptActions: [], withdrawalActions: [],
             signers: [minerAddr], fee: fee, nonce: 0
         )
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, transactions: [sign(body, miner)],
             timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
@@ -221,7 +222,7 @@ final class SignatureSecurityTests: XCTestCase {
         let s = spec(premine: 0)
         let reward = s.rewardAtBlock(0)
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
 
@@ -241,7 +242,7 @@ final class SignatureSecurityTests: XCTestCase {
 
         let tx = Transaction(signatures: [kp.publicKey: tamperedSig], body: bodyHeader)
 
-        let block = try await BlockBuilder.buildBlock(
+        let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [tx],
             timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
@@ -258,7 +259,7 @@ final class SignatureSecurityTests: XCTestCase {
         let s = spec(premine: 0)
         let reward = s.rewardAtBlock(0)
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
 
@@ -272,7 +273,7 @@ final class SignatureSecurityTests: XCTestCase {
         let sig = TransactionSigning.sign(bodyHeader: bodyHeader, privateKeyHex: imposter.privateKey)!
         let tx = Transaction(signatures: [imposter.publicKey: sig], body: bodyHeader)
 
-        let block = try await BlockBuilder.buildBlock(
+        let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [tx],
             timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
@@ -283,11 +284,9 @@ final class SignatureSecurityTests: XCTestCase {
     func testEmptySignatureRejected() async throws {
         let fetcher = makeFetcher()
         let base = t() - 10_000
-        let kp = CryptoUtils.generateKeyPair()
-        let kpAddr = cid(kp.publicKey)
         let s = spec(premine: 0)
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
 
@@ -298,7 +297,7 @@ final class SignatureSecurityTests: XCTestCase {
         )
         let tx = Transaction(signatures: [:], body: try! HeaderImpl<TransactionBody>(node: body))
 
-        let block = try await BlockBuilder.buildBlock(
+        let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [tx],
             timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
@@ -330,7 +329,7 @@ final class SignatureSecurityTests: XCTestCase {
         )
         let tx = sign(body, thief)
 
-        let block = try await BlockBuilder.buildBlock(
+        let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [tx],
             timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
@@ -352,9 +351,10 @@ final class BalanceOverflowTests: XCTestCase {
         let s = spec(premine: 0)
         let reward = s.rewardAtBlock(0)
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
+        try await storeBuiltBlock(genesis, in: fetcher)
 
         let body = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(reward + 1))],
@@ -362,7 +362,7 @@ final class BalanceOverflowTests: XCTestCase {
             receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], fee: 0, nonce: 0
         )
-        let block = try await BlockBuilder.buildBlock(
+        let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [sign(body, kp)],
             timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
@@ -384,7 +384,7 @@ final class BalanceOverflowTests: XCTestCase {
             receiptActions: [], withdrawalActions: [], signers: [kpAddr], fee: 0, nonce: 0
         )
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, transactions: [sign(body, kp)],
             timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
@@ -430,7 +430,7 @@ final class CrossChainSecurityTests: XCTestCase {
         )
 
         do {
-            let _ = try await BlockBuilder.buildBlock(
+            let _ = try await buildAndStoreBlock(
                 previous: genesis, transactions: [sign(body, kp)],
                 timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
             )
@@ -463,7 +463,7 @@ final class CrossChainSecurityTests: XCTestCase {
         )
 
         do {
-            let _ = try await BlockBuilder.buildBlock(
+            let _ = try await buildAndStoreBlock(
                 previous: genesis, transactions: [sign(body, kp)],
                 timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
             )
@@ -490,7 +490,7 @@ final class EconomicInvariantAdversarialTests: XCTestCase {
         let minerAddr = cid(miner.publicKey)
         let s = spec(premine: 0)
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
 
@@ -507,7 +507,7 @@ final class EconomicInvariantAdversarialTests: XCTestCase {
                 receiptActions: [], withdrawalActions: [],
                 signers: [minerAddr], fee: 0, nonce: UInt64(i), chainPath: ["Nexus"]
             )
-            let block = try await BlockBuilder.buildBlock(
+            let block = try await buildAndStoreBlock(
                 previous: prev, transactions: [sign(body, miner)],
                 timestamp: base + Int64(i + 1) * 1000, target: UInt256(1000), nonce: UInt64(i + 1), fetcher: fetcher
             )
@@ -546,7 +546,7 @@ final class EconomicInvariantAdversarialTests: XCTestCase {
             receiptActions: [], withdrawalActions: [],
             signers: [payerAddr], fee: fee, nonce: 1, chainPath: ["Nexus"]
         )
-        let block = try await BlockBuilder.buildBlock(
+        let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [sign(body, payer)],
             timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
@@ -613,10 +613,10 @@ final class EconomicInvariantAdversarialTests: XCTestCase {
         )
         let tx = sign(body, kp)
 
-        let genesis1 = try await BlockBuilder.buildGenesis(
+        let genesis1 = try await buildAndStoreGenesis(
             spec: s, transactions: [tx], timestamp: base, target: UInt256(1000), fetcher: fetcher1
         )
-        let genesis2 = try await BlockBuilder.buildGenesis(
+        let genesis2 = try await buildAndStoreGenesis(
             spec: s, transactions: [tx], timestamp: base, target: UInt256(1000), fetcher: fetcher2
         )
 
@@ -635,19 +635,18 @@ final class ConsensusResilienceTests: XCTestCase {
         let fetcher = makeFetcher()
         let base = t() - 100_000
         let s = spec(premine: 0)
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
         let chain = ChainState.fromGenesis(block: genesis)
 
         var shortPrev = genesis
         for i in 1...3 {
-            let b = try await BlockBuilder.buildBlock(
+            let b = try await buildAndStoreBlock(
                 previous: shortPrev, timestamp: base + Int64(i) * 1000,
                 target: UInt256(1000), nonce: UInt64(i), fetcher: fetcher
             )
-            let _ = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: b), block: b
             )
             shortPrev = b
@@ -656,12 +655,11 @@ final class ConsensusResilienceTests: XCTestCase {
 
         var longPrev = genesis
         for i in 1...5 {
-            let b = try await BlockBuilder.buildBlock(
+            let b = try await buildAndStoreBlock(
                 previous: longPrev, timestamp: base + Int64(i) * 500,
                 target: UInt256(1000), nonce: UInt64(i + 100), fetcher: fetcher
             )
-            let _ = await chain.submitBlock(
-                parentBlockHeaderAndIndex: nil,
+            let _ = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: b), block: b
             )
             longPrev = b
@@ -676,29 +674,27 @@ final class ConsensusResilienceTests: XCTestCase {
         let fetcher = makeFetcher()
         let base = t() - 100_000
         let s = spec(premine: 0)
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
 
-        let block1 = try await BlockBuilder.buildBlock(
+        let block1 = try await buildAndStoreBlock(
             previous: genesis, timestamp: base + 1000,
             target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
-        let block2 = try await BlockBuilder.buildBlock(
+        let block2 = try await buildAndStoreBlock(
             previous: block1, timestamp: base + 2000,
             target: UInt256(1000), nonce: 2, fetcher: fetcher
         )
 
         let chain = ChainState.fromGenesis(block: genesis)
 
-        let result2 = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let result2 = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block2), block: block2
         )
         XCTAssertFalse(result2.extendsMainChain, "Block 2 submitted before block 1 should not extend")
 
-        let result1 = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let result1 = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block1), block: block1
         )
         XCTAssertTrue(result1.extendsMainChain)
@@ -708,24 +704,22 @@ final class ConsensusResilienceTests: XCTestCase {
         let fetcher = makeFetcher()
         let base = t() - 10_000
         let s = spec(premine: 0)
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
         let chain = ChainState.fromGenesis(block: genesis)
 
-        let block1 = try await BlockBuilder.buildBlock(
+        let block1 = try await buildAndStoreBlock(
             previous: genesis, timestamp: base + 1000,
             target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
 
-        let result1 = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let result1 = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block1), block: block1
         )
         XCTAssertTrue(result1.extendsMainChain)
 
-        let result2 = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil,
+        let result2 = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block1), block: block1
         )
         XCTAssertFalse(result2.extendsMainChain, "Duplicate should not extend")
@@ -734,52 +728,6 @@ final class ConsensusResilienceTests: XCTestCase {
         XCTAssertEqual(height, 1)
     }
 
-    func testParentAnchoringTiebreaker() async throws {
-        let fetcher = makeFetcher()
-        let base = t() - 100_000
-        let nexusSpec = spec("Nexus", premine: 0)
-        let childSpec = spec("Child", premine: 0)
-
-        var nexusBlocks: [Block] = []
-        let nGen = try await BlockBuilder.buildGenesis(
-            spec: nexusSpec, timestamp: base, target: UInt256(1000), fetcher: fetcher
-        )
-        nexusBlocks.append(nGen)
-        for i in 1...5 {
-            let b = try await BlockBuilder.buildBlock(
-                previous: nexusBlocks.last!, timestamp: base + Int64(i) * 1000,
-                target: UInt256(1000), nonce: UInt64(i), fetcher: fetcher
-            )
-            nexusBlocks.append(b)
-        }
-
-        let childGenesis = try await BlockBuilder.buildGenesis(
-            spec: childSpec, timestamp: base, target: UInt256(1000), fetcher: fetcher
-        )
-        let childChain = ChainState.fromGenesis(block: childGenesis)
-
-        let deepAnchor = try await BlockBuilder.buildBlock(
-            previous: childGenesis, parentChainBlock: nexusBlocks[1],
-            timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
-        )
-        let _ = await childChain.submitBlock(
-            parentBlockHeaderAndIndex: (try! VolumeImpl<Block>(node: nexusBlocks[1]).rawCID, 1),
-            blockHeader: try! VolumeImpl<Block>(node: deepAnchor), block: deepAnchor
-        )
-
-        let shallowAnchor = try await BlockBuilder.buildBlock(
-            previous: childGenesis, parentChainBlock: nexusBlocks[5],
-            timestamp: base + 5000, target: UInt256(1000), nonce: 2, fetcher: fetcher
-        )
-        let _ = await childChain.submitBlock(
-            parentBlockHeaderAndIndex: (try! VolumeImpl<Block>(node: nexusBlocks[5]).rawCID, 5),
-            blockHeader: try! VolumeImpl<Block>(node: shallowAnchor), block: shallowAnchor
-        )
-
-        let tip = await childChain.getMainChainTip()
-        XCTAssertEqual(tip, try! VolumeImpl<Block>(node: deepAnchor).rawCID,
-                       "Deeper parent anchoring should win")
-    }
 }
 
 // MARK: - 7. Block Limits & Stress
@@ -794,7 +742,7 @@ final class BlockLimitTests: XCTestCase {
                           maxBlockSize: 1_000_000, premine: 0, targetBlockTime: 1_000,
                           initialReward: 1024, halvingInterval: 10_000, retargetWindow: 5)
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
 
@@ -809,7 +757,7 @@ final class BlockLimitTests: XCTestCase {
             txs.append(sign(body, kp))
         }
 
-        let block = try await BlockBuilder.buildBlock(
+        let block = try await buildAndStoreBlock(
             previous: genesis, transactions: txs,
             timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
@@ -822,12 +770,12 @@ final class BlockLimitTests: XCTestCase {
         let base = t() - 200_000
         let s = spec(premine: 0)
 
-        var prev = try await BlockBuilder.buildGenesis(
+        var prev = try await buildAndStoreGenesis(
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
 
         for i in 1...100 {
-            let block = try await BlockBuilder.buildBlock(
+            let block = try await buildAndStoreBlock(
                 previous: prev, timestamp: base + Int64(i) * 1000,
                 target: UInt256(1000), nonce: UInt64(i), fetcher: fetcher
             )
@@ -845,7 +793,7 @@ final class BlockLimitTests: XCTestCase {
                                  maxBlockSize: 100, premine: 0, targetBlockTime: 1_000,
                                  initialReward: 1024, halvingInterval: 10_000, retargetWindow: 5)
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: tinySpec, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
 
@@ -884,12 +832,12 @@ final class TimestampSecurityTests: XCTestCase {
         let base = t() - 10_000
         let s = spec(premine: 0)
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
 
         // 60 s of clock skew is within the 2-hour drift budget.
-        let slightlyFuture = try await BlockBuilder.buildBlock(
+        let slightlyFuture = try await buildAndStoreBlock(
             previous: genesis, timestamp: t() + 60_000,
             target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
@@ -902,13 +850,13 @@ final class TimestampSecurityTests: XCTestCase {
         let base = t() - 10_000
         let s = spec(premine: 0)
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
 
         // 3 h is beyond the 2 h drift budget — rejection prevents warp
         // attacks that fast-forward timestamps to lower target.
-        let farFuture = try await BlockBuilder.buildBlock(
+        let farFuture = try await buildAndStoreBlock(
             previous: genesis, timestamp: t() + 3 * 60 * 60 * 1000,
             target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
@@ -924,10 +872,10 @@ final class TimestampSecurityTests: XCTestCase {
         let base = t() - 24 * 60 * 60 * 1000
         let s = spec(premine: 0)
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
-        let nextOld = try await BlockBuilder.buildBlock(
+        let nextOld = try await buildAndStoreBlock(
             previous: genesis, timestamp: base + 1_000,
             target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
@@ -943,12 +891,12 @@ final class TimestampSecurityTests: XCTestCase {
         let s = spec(premine: 0)
 
         var blocks: [Block] = []
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
         blocks.append(genesis)
         for i in 1...11 {
-            let next = try await BlockBuilder.buildBlock(
+            let next = try await buildAndStoreBlock(
                 previous: blocks.last!,
                 timestamp: base + Int64(i) * 1_000,
                 target: UInt256(1000), nonce: UInt64(i),
@@ -971,7 +919,7 @@ final class TimestampSecurityTests: XCTestCase {
         // and fails the monotonic check first. So MTP's practical role is
         // to catch blocks that slip past monotonic via a single-block burst;
         // we exercise it directly via the helper.
-        let violating = try await BlockBuilder.buildBlock(
+        let violating = try await buildAndStoreBlock(
             previous: blocks[5], // fork from older block with ts = base+5000
             timestamp: base + 4_000, // below median of blocks 1..11
             target: UInt256(1000), nonce: 99,
@@ -988,18 +936,18 @@ final class TimestampSecurityTests: XCTestCase {
         let base = t() - 10_000
         let s = spec(premine: 0)
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
 
-        let sameTime = try await BlockBuilder.buildBlock(
+        let sameTime = try await buildAndStoreBlock(
             previous: genesis, timestamp: base,
             target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
         let v1 = try await sameTime.validateNexus(fetcher: fetcher).0
         XCTAssertFalse(v1)
 
-        let earlier = try await BlockBuilder.buildBlock(
+        let earlier = try await buildAndStoreBlock(
             previous: genesis, timestamp: base - 1,
             target: UInt256(1000), nonce: 2, fetcher: fetcher
         )

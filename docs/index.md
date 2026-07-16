@@ -1,20 +1,65 @@
 # Lattice Documentation
 
-**Lattice** is a proof-of-work protocol in which every chain is both a *root chain* (its own blocks, state, and operations) and a *tree of chains* (the subtree rooted at it) — the same object, which is what makes Lattice fractal. Each chain secures its children with one shared proof-of-work (nested merged mining). The first outermost chain is the **nexus** (other outermost chains may exist); descendants are addressed by route, e.g. `Nexus/Payments`.
+Lattice has two shapes that must not be confused:
 
-## By goal
+- one mined root commits a nested, content-addressed tree of chain candidates;
+- one Lattice process validates and chooses a tip for exactly one chain path.
 
-| I want to… | Read |
+The node runs those processes, moves authenticated evidence between them, and
+decides what content to acquire and retain.
+
+## Start Here
+
+1. [README](../README.md) - build the library and learn the model in one minute.
+2. [Architecture](foundational-architecture.md) - process boundaries, ownership,
+   admission, recovery, and retention.
+3. [Work and fork choice](consensus-fork-choice.md) - how verified grinds become
+   chain-local weight.
+4. [Cross-chain transfers](cross-chain.md) - a worked parent-child exchange.
+5. [Protocol specification](spec.md) - exact consensus rules.
+
+Read [Philosophy](philosophy.md) for motivation and tradeoffs, not protocol
+definitions.
+
+## Document Roles
+
+| Document | Role |
 |---|---|
-| Get the project running | [README](../README.md#quickstart) |
-| Understand the design philosophy | [philosophy.md](philosophy.md) |
-| Read the protocol specification | [spec.md](spec.md) |
-| Run deterministic fork-choice scenarios | [consensus-simulator.md](consensus-simulator.md) |
-| Understand trustless cross-chain transfers | [cross-chain.md](cross-chain.md) |
+| [Protocol specification](spec.md) | Normative consensus definition |
+| [Architecture](foundational-architecture.md) | Runtime and component boundaries |
+| [Work and fork choice](consensus-fork-choice.md) | Intuitive consensus rationale |
+| [Cross-chain transfers](cross-chain.md) | Non-normative transfer walkthrough |
+| [Philosophy](philosophy.md) | Motivation, design choices, and limits |
+| `Sources/` and `Tests/` | Implementation and executable conformance evidence |
 
-## Documents
+A disagreement between these layers is a defect to resolve, not wording to
+paper over.
 
-- **[philosophy.md](philosophy.md)** — the design philosophy and ideas: the hierarchical insight, content-addressing, the three-phase state model, partitioned state, fork choice, and cross-chain transfers without bridges.
-- **[spec.md](spec.md)** — the formal protocol specification: data structures, consensus, transaction validation, the state model, the cross-chain protocol, and constants.
-- **[consensus-simulator.md](consensus-simulator.md)** — the deterministic `LatticeSim` harness for Hierarchical-GHOST fork-choice fixtures.
-- **[cross-chain.md](cross-chain.md)** — the deposit → receipt → withdrawal protocol for trustless value transfer between a parent and a child chain.
+## Mental Model
+
+A recursive content DAG supplies sparse evidence to independent chain-local
+forests, each owned by one node-supervised process. The
+[architecture guide](foundational-architecture.md) develops those three
+structures and their ownership boundaries.
+
+## Vocabulary
+
+| Term | Meaning |
+|---|---|
+| mined root | The outer block whose hash is evaluated along a proof path |
+| chain path | An absolute chain identity such as `Nexus/Payments` |
+| chain root | A genesis block in that path's accepted forest |
+| predecessor | The previous block on the same chain |
+| parent chain | The next chain level toward the mined root |
+| `parentState` | The carrier's committed `prevState`, never a parent-block backlink |
+| grind | One physical PoW attempt, identified by its root CID |
+| carrier | A level that commits descendants even when the grind misses its target |
+| accepted | Locally validated consensus evidence retained in the forest |
+| canonical | The currently preferred projection of accepted evidence |
+
+## Reference
+
+- [Consensus simulator](consensus-simulator.md)
+- [Adversarial consensus report](consensus/tre-134-adversarial-report.md)
+- [Nexus tokenomics](economics/nexus-tokenomics.md)
+- [Fee policy and majority-reorg model](economics/fee-market-and-51pct.md)
