@@ -228,7 +228,10 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         }
         XCTAssertEqual(fetcherDiff.replaced, sourceDiff.replaced)
         XCTAssertEqual(fetcherDiff.created, sourceDiff.created)
-        XCTAssertEqual(fetcherAcceptance.followUps, sourceAcceptance.followUps)
+        XCTAssertEqual(
+            fetcherAcceptance.sameChainPredecessor,
+            sourceAcceptance.sameChainPredecessor
+        )
         XCTAssertEqual(
             try fetcherAcceptance.materializedPostState.map { try LatticeStateHeader(node: $0).rawCID },
             try sourceAcceptance.materializedPostState.map { try LatticeStateHeader(node: $0).rawCID }

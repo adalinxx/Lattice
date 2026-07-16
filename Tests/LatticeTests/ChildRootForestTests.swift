@@ -252,7 +252,7 @@ final class ChildRootForestTests: XCTestCase {
         _ = await submitChildForestBlock(sideChild, to: parentFirst)
 
         let orphanResult = await submitChildForestBlock(sideChild, to: childFirst)
-        XCTAssertTrue(orphanResult.needsParentBlock)
+        XCTAssertTrue(orphanResult.needsPredecessorBlock)
         _ = await submitChildForestBlock(sideRoot, to: childFirst)
 
         let parentFirstTip = await parentFirst.getMainChainTip()

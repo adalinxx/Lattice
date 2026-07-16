@@ -128,25 +128,25 @@ public struct SubmissionResult: Sendable {
     public let addedBlock: Bool
     public let addedContribution: Bool
     public let extendsMainChain: Bool
-    public let needsParentBlock: Bool
+    public let needsPredecessorBlock: Bool
     public let commit: ChainCommit?
 
     init(
         addedBlock: Bool,
         addedContribution: Bool = false,
         extendsMainChain: Bool,
-        needsParentBlock: Bool,
+        needsPredecessorBlock: Bool,
         commit: ChainCommit? = nil
     ) {
         self.addedBlock = addedBlock
         self.addedContribution = addedContribution
         self.extendsMainChain = extendsMainChain
-        self.needsParentBlock = needsParentBlock
+        self.needsPredecessorBlock = needsPredecessorBlock
         self.commit = commit
     }
 
     public static func discarded() -> Self {
-        SubmissionResult(addedBlock: false, addedContribution: false, extendsMainChain: false, needsParentBlock: false)
+        SubmissionResult(addedBlock: false, addedContribution: false, extendsMainChain: false, needsPredecessorBlock: false)
     }
 }
 
@@ -964,7 +964,7 @@ public actor ChainState {
             addedBlock: true,
             addedContribution: result.addedContribution,
             extendsMainChain: extendsMainChain,
-            needsParentBlock: result.needsParentBlock,
+            needsPredecessorBlock: result.needsPredecessorBlock,
             commit: (canonicalChange ?? ChainCommit(tipHash: chainTip))
                 .atRevision(mutationGeneration)
         )
@@ -1030,7 +1030,7 @@ public actor ChainState {
                 addedBlock: true,
                 addedContribution: addedContribution,
                 extendsMainChain: false,
-                needsParentBlock: false
+                needsPredecessorBlock: false
             )
         }
 
@@ -1039,7 +1039,7 @@ public actor ChainState {
                 addedBlock: true,
                 addedContribution: addedContribution,
                 extendsMainChain: false,
-                needsParentBlock: true
+                needsPredecessorBlock: true
             )
         }
 
@@ -1047,7 +1047,7 @@ public actor ChainState {
             addedBlock: true,
             addedContribution: addedContribution,
             extendsMainChain: false,
-            needsParentBlock: false
+            needsPredecessorBlock: false
         )
     }
 
@@ -1389,7 +1389,7 @@ public actor ChainState {
             addedBlock: false,
             addedContribution: true,
             extendsMainChain: false,
-            needsParentBlock: false,
+            needsPredecessorBlock: false,
             commit: (canonicalChange ?? ChainCommit(tipHash: chainTip))
                 .atRevision(mutationGeneration)
         )

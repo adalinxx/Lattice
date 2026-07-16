@@ -334,6 +334,14 @@ path and content-addressed successor or genesis CID. The successor CID already
 commits its predecessor, spec, and state references. The fact grants no
 authority over child validity or fork choice.
 
+The vertical relationship is directional: a parent carrier commits the child in
+its `children` trie, while the child commits only the carrier's `prevState` as
+`parentState`. The child does not identify the carrier block. Consequently,
+cross-chain acquisition asks the authenticated parent process for a proof or
+parent-issued fact keyed by child CID and chain path; it never attempts to invert
+`parentState` into a parent block CID. Different valid proofs may contribute
+different grinds for the same child.
+
 Let `R` be the proof root and `h = proofOfWorkHash(R)`. Validation proceeds in
 this order:
 
@@ -735,8 +743,13 @@ storage or staging failure leaves the accepted graph unchanged.
 A current-level target miss returns a carrier result without executing or
 inserting a block for this chain. During bootstrap, a valid carrier may be stored
 for availability, but it stages no consensus fact and creates no chain runtime.
-A missing same-chain predecessor returns a follow-up requirement; consensus does
-not fetch it itself.
+An accepted block whose `previousBlock` is absent from the local accepted graph
+returns a `SameChainPredecessorRequirement`; the predecessor must enter this same
+admission boundary. This does not claim its body is unavailable. Missing
+cross-chain input instead returns a `CrossChainEvidenceRequirement` identifying
+the child proof, parent continuity fact, or parent genesis fact the node must
+obtain from the authenticated parent process. `parentState` is a state CID, not a
+parent-block lookup key. Consensus fetches neither relationship itself.
 
 ### 9.4 Fork Choice and Reorganization
 

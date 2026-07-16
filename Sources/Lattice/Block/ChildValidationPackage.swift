@@ -83,8 +83,17 @@ public struct ChildValidationPackage: Sendable {
     }
 }
 
+/// Node-owned acquisition needed before child-chain admission can continue.
+/// A child CID commits its parent-state root but does not identify a parent-chain
+/// carrier; the authenticated parent process supplies these facts.
+public enum CrossChainEvidenceRequirement: Sendable, Equatable {
+    case childProof(chainPath: [String], childCID: String)
+    case parentContinuity(parentPath: [String], successorCID: String)
+    case parentGenesis(parentPath: [String], directory: String, childGenesisCID: String)
+}
+
 public enum ChildProofVerificationFailure: Error, Sendable, Equatable {
-    case unavailableEvidence
+    case crossChainEvidenceRequired(CrossChainEvidenceRequirement)
     case malformedEvidence
     case protocolInvalid
 }

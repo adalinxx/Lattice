@@ -604,7 +604,14 @@ final class ChainLocalAdmissionTests: XCTestCase {
             storer: fixture.fetcher,
             stage: testAdmissionStage
         )
-        XCTAssertEqual(missingProof.failure, .missingChildProof)
+        XCTAssertEqual(
+            missingProof.crossChainEvidenceRequirement,
+            .childProof(
+                chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"],
+                childCID: header.rawCID
+            )
+        )
+        XCTAssertNil(missingProof.sameChainPredecessor)
 
         let admitted = try await fixture.childLevel.admitBlockHeaderChainLocal(
             header,
@@ -848,7 +855,14 @@ final class ChainLocalAdmissionTests: XCTestCase {
             storer: fetcher,
             stage: testAdmissionStage
         )
-        XCTAssertEqual(missing.failure, .unavailableEvidence)
+        XCTAssertEqual(
+            missing.crossChainEvidenceRequirement,
+            .parentContinuity(
+                parentPath: [DEFAULT_ROOT_DIRECTORY],
+                successorCID: proof.rootCID
+            )
+        )
+        XCTAssertNil(missing.sameChainPredecessor)
 
         let parentLevel = makeLevel(genesis: parentGenesis)
         let link: ParentContinuityLink
@@ -1049,7 +1063,14 @@ final class ChainLocalAdmissionTests: XCTestCase {
             )
             XCTFail("child genesis must wait for its parent-issued fact")
         } catch let failure as ChainAdmissionFailure {
-            XCTAssertEqual(failure, .unavailableEvidence)
+            XCTAssertEqual(
+                failure,
+                .crossChainEvidenceRequired(.parentGenesis(
+                    parentPath: [DEFAULT_ROOT_DIRECTORY],
+                    directory: "Child",
+                    childGenesisCID: header.rawCID
+                ))
+            )
         }
 
         do {
@@ -1411,7 +1432,14 @@ final class ChainLocalAdmissionTests: XCTestCase {
             storer: fetcher,
             stage: testAdmissionStage
         )
-        XCTAssertEqual(missingGenesisLink.failure, .unavailableEvidence)
+        XCTAssertEqual(
+            missingGenesisLink.crossChainEvidenceRequirement,
+            .parentGenesis(
+                parentPath: [DEFAULT_ROOT_DIRECTORY],
+                directory: "Middle",
+                childGenesisCID: try BlockHeader(node: middleCarrier).rawCID
+            )
+        )
 
         let authorizedPackage = try await childValidationPackage(
             proof: proof,
@@ -1724,7 +1752,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(stageCount, 1)
     }
 
-    func testAcceptedOrphanReturnsItsMissingParentAsFollowUp() async throws {
+    func testAcceptedOrphanReportsItsSameChainPredecessor() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
         let missingParent = try await makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
@@ -1741,14 +1769,15 @@ final class ChainLocalAdmissionTests: XCTestCase {
         guard case .accepted = result else {
             return XCTFail("expected valid orphan side admission, got \(result)")
         }
-        let missingParentHash = try BlockHeader(node: missingParent).rawCID
+        let missingPredecessorCID = try BlockHeader(node: missingParent).rawCID
         XCTAssertEqual(
-            result.followUps,
-            [MissingBodyRequest(
-                tipHash: orphanHeader.rawCID,
-                missingBodies: [missingParentHash]
-            )]
+            result.sameChainPredecessor,
+            SameChainPredecessorRequirement(
+                descendantCID: orphanHeader.rawCID,
+                predecessorCID: missingPredecessorCID
+            )
         )
+        XCTAssertNil(result.crossChainEvidenceRequirement)
     }
 
     func testAdmissionReturnsExactChainLocalReorganization() async throws {

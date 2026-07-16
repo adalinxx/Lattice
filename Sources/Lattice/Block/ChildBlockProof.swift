@@ -181,12 +181,18 @@ public struct ChildBlockProof: Sendable {
             childCID: String,
             childPath: [String]
         ) -> ChildProofVerificationFailure? {
+            guard let directory = childPath.last else {
+                return .malformedEvidence
+            }
             guard let link = genesisLinksByChild[childCID] else {
-                return .unavailableEvidence
+                return .crossChainEvidenceRequired(.parentGenesis(
+                    parentPath: Array(childPath.dropLast()),
+                    directory: directory,
+                    childGenesisCID: childCID
+                ))
             }
             consumedGenesisLinks.insert(childCID)
-            guard let directory = childPath.last,
-                  link.parentPath == Array(childPath.dropLast()),
+            guard link.parentPath == Array(childPath.dropLast()),
                   link.directory == directory,
                   link.childGenesisCID == childCID else {
                 return .malformedEvidence
@@ -208,7 +214,10 @@ public struct ChildBlockProof: Sendable {
                     : genesisFailure(childCID: carrierCID, childPath: carrierPath)
             }
             guard let link = linksBySuccessor[carrierCID] else {
-                return .unavailableEvidence
+                return .crossChainEvidenceRequired(.parentContinuity(
+                    parentPath: carrierPath,
+                    successorCID: carrierCID
+                ))
             }
             consumedLinks.insert(carrierCID)
             guard link.parentPath == carrierPath,
