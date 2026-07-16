@@ -23,10 +23,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", "1.0.0" ..< "4.0.0"),
         .package(url: "https://github.com/adalinxx/Multikey.git", from: "1.0.0"),
-        .package(
-            url: "https://github.com/adalinxx/cashew.git",
-            revision: "24831f2e1a9d995f6e303602828db9c192216249"
-        ),
+        .package(url: "https://github.com/adalinxx/cashew.git", exact: "4.0.0"),
         .package(url: "https://github.com/adalinxx/UInt256.git", from: "1.1.0"),
         .package(url: "https://github.com/swift-libp2p/swift-cid.git", from: "0.0.1"),
         .package(url: "https://github.com/swift-libp2p/swift-multicodec.git", .upToNextMinor(from: "0.2.1")),
