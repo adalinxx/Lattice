@@ -2,6 +2,11 @@
 
 Version 0.1.0
 
+This document is the normative consensus definition. For an intuitive reading
+order, start with the [documentation index](index.md),
+[architecture](foundational-architecture.md), and
+[work and fork choice](consensus-fork-choice.md).
+
 ## 1. Overview
 
 Lattice is a hierarchical proof-of-work protocol, not a single blockchain. Every chain may commit child blocks, and each child may do the same. One mined root therefore commits a nested block tree. The **nexus** is the first outermost chain -- the entry point from outside the hierarchy; other outermost chains may also exist. Descendants inherit identity-bearing work from accepted ancestor graphs: the root CID identifies one grind, its strongest verified accepted-target bound fixes its quantity, and arbitrary coverage never multiplies it. Value moves across chains through a three-phase **deposit/receipt/withdrawal** protocol.
@@ -171,52 +176,6 @@ ReceiptKey = directory || "/" || demander || "/" || amountDemanded || "/" || non
 
 Used to index `receiptState`. Associates a receipt on the parent chain with the child chain directory where the deposit originated.
 
-### 3.8 Consensus Types
-
-#### BlockMeta
-
-```
-BlockMeta = (
-    blockHash:          CID,
-    parentBlockHash:    CID?,
-    blockHeight:        U64,
-    childBlockHashes:   [string],
-    workContributions:  Map<RootCID, VerifiedWorkContribution>,
-    cumulativeWork:     WorkSum,
-    subtreeWeight:      WorkSum
-)
-```
-
-`BlockMeta` contains consensus graph and fork-choice state only. It does not
-retain materialized-state lifecycle metadata.
-
-#### Admission facts and chain commits
-
-```
-ChainAdmissionFact = ChainBlockFact | ChainWorkFact
-
-ChainAdmissionBatch = (
-    facts: [ChainAdmissionFact]
-)
-
-ChainCommit = (
-    revision:               U64,
-    tipHash:                BlockHash,
-    mainChainBlocksAdded:   Map<BlockHash, BlockIndex>,
-    mainChainBlocksRemoved: Set<BlockHash>,
-    canonicalChanged:       Bool  // derived from the canonical delta
-)
-```
-
-`ChainBlockFact` records one immutable admitted block and its derived
-`StateDiff`. `ChainWorkFact` records one immutable verified observation, identified
-by `(blockHash, grindID, work)`. Its logical coverage key is
-`(blockHash, grindID)`. The same grind may cover many blocks and many grinds may
-cover one block. Observations join by maximum work and coverage-set union; weaker
-or equal replay is idempotent. A batch stages the initial block and work facts
-atomically. `ChainCommit` orders successful consensus mutations; a nonempty
-canonical delta is the output of a chain-local reorganization.
-
 ## 4. Chain Hierarchy
 
 ### 4.1 Structure
@@ -237,20 +196,12 @@ names the child only with respect to that parent and is not stored in
 chain, e.g. `Nexus/Payments`. Siblings under different parents may reuse a
 directory because their full paths differ.
 
-### 4.2 Chain Level
+### 4.2 Process Boundary
 
-Each chain process is managed by one `ChainLevel`:
-
-```
-ChainLevel = (
-    context: ChainRuntimeContext, // absolute path + minimum root work
-    chain:   ChainState            // consensus for this chain only
-)
-```
-
-`ChainLevel` contains no child runtimes. A target miss yields a carrier-only
-result. The node may pass the corresponding sparse proof to a separately
-supervised descendant process, which performs its own admission.
+One validator process owns one absolute chain path, one accepted same-chain
+forest, and one canonical projection. It contains no child validators. A target
+miss at the current level yields only a carrier result; the node may route the
+corresponding sparse proof to a separately supervised descendant process.
 
 ## 5. Block Validation
 
@@ -266,17 +217,18 @@ A genesis block `B` is valid if and only if ALL of the following hold:
 5. `B.target >= minimumTarget` and `B.nextTarget == B.target`
 6. All transactions in `B.transactions` are fully resolvable
 7. For each transaction `tx`: `tx.validateTransactionForGenesis()` returns true
-   - Signatures are valid Ed25519 signatures over `CID(tx.body)`
+   - Signatures are valid Ed25519 signatures over the `lattice-tx-v1` envelope
+     defined in section 7.1
    - Signers match signature public keys
    - Account debits are authorized by signers
-   - No withdrawal actions present
+   - No deposit, receipt, or withdrawal actions are present
 8. Every transaction's `chainPath` equals the runtime's absolute path
 9. All transaction bodies pass the chain's policies
 10. `|transactions| <= spec.maxNumberOfTransactionsPerBlock`
 11. `sum(stateDelta(tx) for tx in transactions) <= spec.maxStateGrowth`
 12. **Balance conservation (genesis)**:
     ```
-    totalCredits + totalDeposited <= premineAmount
+    totalCredits <= premineAmount
     ```
 13. Every `GenesisAction` has a non-empty separator-free directory and non-empty
     genesis block CID. The child process validates that block's content.
@@ -297,13 +249,15 @@ A non-genesis nexus block `B` with previous block `P` is valid if and only if:
 5. `P.timestamp < B.timestamp <= validationContext.now + 2 hours`, and
    `B.timestamp > MedianTimePast(11)` when that window is available. The
    attempt captures `validationContext.now` once.
-6. `B.target == P.nextTarget`, and `B.nextTarget` equals the clamped
-   proportional retarget of section 5.5
+6. `B.target == P.nextTarget`, except for the minimum-target recovery in
+   section 5.5, and `B.nextTarget` equals that section's clamped proportional
+   retarget
 7. All transactions pass `validateTransactionForNexus()`:
-   - Signatures valid (Ed25519 over `CID(tx.body)`)
+   - Signatures are valid over the `lattice-tx-v1` envelope
    - Signers match signature public keys
    - Account debits authorized by signers
    - Receipt action withdrawers are signers
+   - No deposit or withdrawal actions are present; a root chain has no parent
 8. The chain's policies pass
 9. Transaction count within limits
 10. State delta within limits
@@ -418,12 +372,18 @@ credited. A larger target is easier and represents less credited work.
 
 ### 5.5 Target Adjustment (Retargeting)
 
-The target is **derived from the parent, not chosen by the miner**. Every block
-MUST satisfy the binding rule:
+The target is **derived from the parent, not chosen by the miner**. Normally,
+every non-genesis block MUST satisfy the binding rule:
 
 ```
 B.target == parent.nextTarget
 ```
+
+There is one fail-safe for a previously committed underflowed target. If
+`parent.nextTarget < minimumTarget`, the successor MUST use
+`B.target == minimumTarget` and `B.nextTarget == B.target`. No other mismatch is
+accepted. This makes a chain with an unmineable below-floor scheduled target
+recoverable without giving the miner a target choice.
 
 Genesis has no parent-derived target: its configured target is committed in the
 block and its `nextTarget` MUST equal that target. Each non-genesis block's
@@ -438,10 +398,10 @@ heavily: for `N` intervals the `i`-th most-recent (`i = 0` is newest) gets weigh
 solveTime_i    = max(0, timestamp(b_i) - timestamp(b_{i-1}))   // clamped ≥ 0
 weightedActual = Σ_i (w_i · solveTime_i)
 weightedTarget = spec.targetBlockTime · Σ_i w_i
-proposed       = parent.target · weightedActual / weightedTarget
+proposed       = B.target · weightedActual / weightedTarget
 nextTarget     = clamp(proposed,
-                       parent.target / maxTargetChange,    // lower bound, floored at minimumTarget
-                       parent.target · maxTargetChange)     // upper bound (saturating)
+                       B.target / maxTargetChange,    // lower bound, floored at minimumTarget
+                       B.target · maxTargetChange)     // upper bound (saturating)
 ```
 
 The result is never below `minimumTarget`. A faster-than-target window shrinks
@@ -450,8 +410,9 @@ The result is never below `minimumTarget`. A faster-than-target window shrinks
 to a factor of `maxTargetChange` in either direction. Validity requires
 `B.nextTarget == nextTarget` exactly — there is no acceptance band. Because the
 retarget reads only the candidate's committed ancestry, is bounded per block,
-and `B.target` is bound to the parent, validity is independent of the current
-fork-choice projection and a miner cannot choose its own target. Timestamp
+and `B.target` is bound to the parent or the single recovery floor, validity is
+independent of the current fork-choice projection and a miner cannot choose its
+own target. Timestamp
 influence is bounded separately by the MTP and future-drift rules.
 
 ## 6. State Transitions
@@ -545,17 +506,32 @@ Total delta per block must not exceed `spec.maxStateGrowth`.
 
 ### 7.1 Signature Verification
 
-For each `(publicKeyHex, signatureHex)` in `tx.signatures`:
+Transactions use both an outer `lattice-tx-v1:` signature prefix and an inner
+versioned envelope. The inner envelope is the following newline-separated text,
+with every length measured in UTF-8 bytes and no trailing newline:
 
-```
-valid = Ed25519_Verify(
-    message:   CID(tx.body),
-    signature: signatureHex,
-    publicKey: publicKeyHex
-)
+```text
+domain:13:lattice-tx-v1
+chainPath.count:<component count>
+chainPath.component:<byte length>:<component>
+nonce:<decimal uint64>
+bodyCID:<byte length>:<CID(tx.body)>
 ```
 
-All signatures must verify. All signers listed in `tx.body.signers` must have corresponding valid signatures.
+The `chainPath.component` line is repeated once per component, in order. The
+exact Ed25519 message is:
+
+```text
+signaturePayload = UTF8("lattice-tx-v1:" || envelope)
+```
+
+Both domain markers are consensus bytes; there is no newline between the outer
+prefix and the first envelope line.
+
+For each `(publicKeyHex, signatureHex)` in `tx.signatures`, Ed25519 verification
+over this exact preimage MUST succeed. At least one signature is required. The
+set of addresses derived from the signing public keys MUST equal the set in
+`tx.body.signers`; extra and missing signers are both invalid.
 
 ### 7.2 Authorization
 
@@ -600,26 +576,55 @@ The policy context byte layout is:
 
 | Context | Deposits | Receipts | Withdrawals |
 |---|---|---|---|
-| Genesis | Yes | No | No |
-| Nexus | No | Yes (from child chains) | No |
-| Child chain | Yes | No | Yes (requires parent receipt proof) |
+| Genesis block | No | No | No |
+| Non-genesis outermost chain | No | Yes | No |
+| Non-genesis child chain | Yes | Yes | Yes (requires parent receipt proof) |
+
+A non-root chain may be both a child of one chain and a parent of another. Its
+deposits and withdrawals relate to its own parent; its receipts may serve its
+children.
 
 ## 8. Cross-Chain Transfer Protocol
 
-The cross-chain transfer protocol enables trustless value movement between parent and child chains in the hierarchy. All verification is performed via Sparse Merkle proofs against state roots committed in blocks. No bridges, federations, or relayers are required.
+The cross-chain transfer protocol enables trustless value movement between
+parent and child chains in the hierarchy. Consensus requires signatures and
+Sparse Merkle proofs against state roots committed in blocks. Providers may
+relay the required bytes, but no bridge, federation, or relayer has validity
+authority.
 
 ### 8.1 Protocol Phases
 
 A cross-chain transfer proceeds in three phases across a parent-child chain pair:
 
 **Phase 1 -- Deposit (child chain):**
-A user includes a `DepositAction` in a transaction on the child chain. This locks `amountDeposited` tokens and records a demand: `demander` should receive `amountDemanded` tokens on the parent chain. The deposit is stored in the child's `depositState` via an insertion proof.
+A signed child transaction includes a `DepositAction`. This locks
+`amountDeposited` and records a demand: `demander` should receive
+`amountDemanded` on the parent chain. The demander MUST sign. Block-wide balance
+conservation funds aggregate deposits; consensus does not require a
+transaction-local debit for this deposit. The deposit is stored in the child's
+`depositState` via an insertion proof.
 
 **Phase 2 -- Receipt (parent chain):**
-The parent chain verifies the deposit exists by checking the child's state root (committed in the child block embedded in the parent block). A `ReceiptAction` records the receipt in the parent's `receiptState` and derives two account actions: debiting `amountDemanded` from the `withdrawer` and crediting `amountDemanded` to the `demander`.
+A signed parent transaction includes a `ReceiptAction`. The parent validates
+only its own authorized payment: the withdrawer MUST sign, the receipt key MUST
+be absent, and the derived account actions debit `amountDemanded` from the
+`withdrawer` and credit it to the `demander`. The parent does NOT verify the
+child deposit when admitting the receipt.
 
 **Phase 3 -- Withdrawal (child chain):**
-The child chain verifies a receipt exists on the parent by checking `parentState.receiptState`. A `WithdrawalAction` replaces the deposit value with a permanent zero-valued spent marker and releases `amountWithdrawn` back to the `withdrawer`. The stored nonzero `amountDeposited` must exactly match `amountWithdrawn`.
+The child proves both the matching nonzero deposit in
+`prevState.depositState` and the matching withdrawer in
+`parentState.receiptState`. For a child nested beneath a carrier,
+`parentState` MUST equal that carrier's `prevState`; the receipt must therefore
+already exist in the carrier's entering state. A `WithdrawalAction` replaces
+the deposit value with a permanent zero-valued spent marker and adds
+`amountWithdrawn` to the block-wide credit budget. It does not create an account
+credit automatically; any recipient credit MUST be an explicit `AccountAction`.
+The stored `amountDeposited` MUST exactly match `amountWithdrawn`.
+
+A parent receipt without a matching child deposit cannot authorize child value,
+because withdrawal requires both proofs. It is not cost-free: the signed parent
+payment and receipt-state insertion still execute.
 
 ### 8.2 Balance Conservation with Cross-Chain Transfers
 
@@ -640,7 +645,9 @@ claim at most the credits funded by its actual account debits, withdrawals, and
 subsidy. Any unused budget is unclaimed and therefore burned; the block subsidy
 `reward(i)` remains the only minting source.
 
-Deposits reduce the available balance (tokens locked in deposit state). Withdrawals increase it (tokens released from deposit state).
+Deposits reduce the block-wide available budget by locking value in deposit
+state. Withdrawals add the matching locked value back to that budget; explicit
+account actions determine any credited recipients.
 
 ### 8.3 Security Properties
 
@@ -652,9 +659,13 @@ Deposits reduce the available balance (tokens locked in deposit state). Withdraw
 second withdrawal fails the nonzero amount check, and insertion cannot recreate
 the same deposit key.
 
-**No over-withdrawal**: The stored `amountDeposited` must exactly match the declared `amountWithdrawn`. If a withdrawer claims more than was deposited, the state proof rejects the transaction.
+**No over-withdrawal**: The stored `amountDeposited` must exactly match the
+declared `amountWithdrawn`. A larger declaration fails the state proof.
 
-**No forged receipts**: Receipt verification uses `parentState.receiptState`, which is committed in the child block's proof-of-work hash. An attacker cannot fabricate a receipt without controlling the parent chain's hashrate.
+**No forged parent state**: A withdrawal accepts only a receipt proven in the
+carrier's committed `prevState`, supplied as `parentState`, after the carrier
+and sparse proof path pass consensus validation. Receipt admission itself does
+not assert that a child deposit exists.
 
 **Cross-chain replay protection**: Each transaction declares a `chainPath` targeting the exact chain hierarchy path. Transactions are rejected if the `chainPath` doesn't match the validating chain.
 
@@ -691,16 +702,13 @@ therefore neutral even when its strongest observation arrived on only one side.
 
 ### 9.2 Chain State and Hierarchical GHOST
 
-Each `ChainState` contains only one chain's accepted graph:
+Fork-choice state contains only one chain's accepted graph:
 
 ```text
-ChainState = actor {
-    chainTip:             string
-    mainChainHashes:      Set<string>
-    indexToBlockHash:     Map<uint64, Set<string>>
-    hashToBlock:          Map<string, BlockMeta>
-    inheritedWorkProvider: (() -> InheritedWorkSnapshot)?
-}
+accepted blocks + same-chain predecessor edges
+local grind coverage + strongest verified quantities
+one retained immediate-parent inherited-work snapshot
+one derived canonical projection
 ```
 
 For each block, `own(B)` is the measure formed by all local grind coverage on that
@@ -720,9 +728,9 @@ trueCumWork(B)     = total(effectiveSubtree(B))
 
 Measure union occurs before totaling. A grind covering an ancestor and descendant,
 both sibling subtrees, or both local and inherited inputs therefore contributes
-once to that comparison. `BlockMeta.cumulativeWork` and `subtreeWeight` cache
-local-only totals for persistence and queries. Fork choice captures one inherited
-snapshot and computes `trueCumWork` from the effective measures.
+once to that comparison. Implementations may cache local-only totals, but fork
+choice MUST capture one inherited snapshot and compute `trueCumWork` from the
+effective measures.
 
 `WorkSum` is an exact growable unsigned integer. Individual contributions remain
 `U256`, but their sums must not wrap or saturate because either behavior can
@@ -730,9 +738,7 @@ erase the strict ordering between two branches.
 
 ### 9.3 Admission
 
-The root and child overloads of `ChainLevel.bootstrap`, together with
-`ChainLevel.admitBlockHeaderChainLocal`, are the public consensus boundaries.
-Admission performs:
+Every external candidate enters one admission procedure:
 
 1. capture of one explicit `ValidationContext` for the attempt;
 2. root CID and setup-wide root-work-floor validation before child resolution;
@@ -740,23 +746,16 @@ Admission performs:
 4. complete structural path validation before requesting cross-chain evidence;
 5. exact-path, carrier-continuity, and chain-target checks;
 6. deterministic genesis or non-genesis state-transition validation;
-7. targeted storage of verified local block content and materialized state;
-8. node-owned atomic staging of one immutable `ChainAdmissionBatch`; and
-9. application of that exact batch through the same reducer used by recovery,
-   returning a revisioned `ChainCommit`.
+7. targeted storage of verified local content and materialized state;
+8. atomic durability of one immutable accepted-fact batch; and
+9. application of that exact batch through the reducer used by recovery.
 
-The staged batch is the durable admission receipt. Live admission never
-re-resolves or re-stages it after another local mutation; recovery applies the
-same fact through the same reducer. Reapplying an identical batch is idempotent,
-while conflicting immutable metadata is rejected. A storage or staging failure
-leaves the accepted graph unchanged, and bootstrap exposes no runtime until the
-genesis batch has been stored, staged, and restored.
-
-Before staging an existing runtime mutation, Lattice reserves capacity for one
-distinct `U64` commit revision. Other mutations cannot consume that slot while
-the node stages the batch. Exhaustion returns `revisionExhausted` without
-staging. The stage callback is atomic: returning means the complete batch is
-durable, while throwing means none of its facts became visible.
+Durability MUST precede visible graph mutation. Live admission MUST NOT
+re-resolve or rebuild the batch after durability, and recovery MUST apply the
+same immutable facts through the same reducer. Identical replay is idempotent;
+conflicting immutable metadata is rejected. Storage or durability failure leaves
+the accepted graph unchanged, and genesis bootstrap exposes no runtime until its
+facts are durable and restored.
 
 A current-level target miss returns a carrier result without executing its
 transition, inserting it, or implicitly retaining it for this chain. A node may
@@ -764,12 +763,10 @@ explicitly retain a carrier or an exact child-link path as availability policy;
 Lattice does not enumerate an attacker-sized child trie. Missing same-chain
 predecessors are derived from the accepted graph, including after recovery, and
 must enter this same admission boundary. This does not claim a predecessor body
-is unavailable.
-Missing cross-chain input instead returns a `CrossChainEvidenceRequirement`
-identifying the child proof, parent continuity fact, or parent genesis fact the
-node must obtain from the authenticated parent process. `parentState` is a state
-CID, not a parent-block lookup key. Consensus fetches neither relationship
-itself.
+is unavailable. Missing cross-chain input instead identifies the child proof,
+parent continuity fact, or parent genesis fact that the node must obtain from
+the authenticated parent process. `parentState` is a state CID, not a
+parent-block lookup key. Consensus derives neither relationship by inversion.
 
 ### 9.4 Fork Choice and Reorganization
 
@@ -782,10 +779,10 @@ replay order cannot change fork choice. The deliberate security tradeoff of
 this grindable deterministic tie-break is quantified in the
 [TRE-134 adversarial report](consensus/tre-134-adversarial-report.md).
 
-When a branch wins, `ChainState` updates only this chain's canonical indexes and
-returns a revisioned `ChainCommit` describing the new tip and exact added and
-removed blocks. This canonical delta represents a chain-local reorganization.
-Lattice sends no commands to parent, child, or sibling processes.
+When a branch wins, only this chain's canonical indexes change. The emitted
+canonical delta identifies the new tip and exact added and removed blocks. This
+is a chain-local reorganization; Lattice sends no commands to parent, child, or
+sibling processes.
 
 Adding grind coverage, strengthening a verified grind quantity, or receiving a
 newer inherited-work snapshot may make a subtree strictly heavier and trigger
@@ -795,14 +792,15 @@ this same reorganization procedure. None replays the block's state transition.
 
 The sparse proof and authenticated parent-issued continuity/genesis facts derive
 local child coverage. In addition, each chain may consume one live rolled-up view
-from its immediate parent. The parent exports securing `WorkMeasure`s from its
-complete accepted graph, including noncanonical branches. The node authenticates
-and routes that process, derives child-block bindings from validated
-content-addressed paths, and supplies a coherent revisioned
-`InheritedWorkSnapshot`. If any requested securing parent block is unknown, the
-export is unavailable rather than a zero-valued measure. A known block whose
-accepted ancestry is not yet connected to a genesis root is likewise ineligible
-for export.
+from its immediate parent. For each child block, the parent exports only
+connected, accepted work whose validated content binding covers that child.
+Eligible work may come from noncanonical parent branches; unrelated parent work
+is excluded. The node authenticates and routes that process, derives the
+child-block bindings from validated content-addressed paths, and supplies a
+coherent revisioned inherited-work snapshot. If any requested securing parent
+block is unknown, the export is unavailable rather than a zero-valued measure. A
+known block whose accepted ancestry is not yet connected to a genesis root is
+likewise ineligible for export.
 
 Snapshots are append-only joins. Every authenticated snapshot unions with the
 retained view and revisions combine by maximum. An older or equal revision may
@@ -826,8 +824,8 @@ Gossip, sync, mining, parent extraction, and sibling relay differ only in
 acquisition. Every external candidate enters the admission procedure in section
 9.3. Recovery instead replays already-authenticated durable facts through the
 same graph mutation and fork-choice logic; it does not treat a local fact log as
-new wire evidence. There is no library `ChainSyncer`, direct chain replacement,
-or trusted sync projection.
+new wire evidence. No ingress path may replace the chain directly or inject a
+trusted canonical projection.
 
 ### 9.7 Consensus Graph and Node State Lifecycle
 
@@ -836,37 +834,27 @@ grind coverage. It performs no age-, depth-, body-, or state-retention pruning o
 consensus inputs. Live inherited work is an immediate-parent input retained as a
 monotone snapshot, not a recursively stored copy of every ancestor graph.
 
-State execution derives `StateDiff` locally and carries it once in the immutable
-`ChainBlockFact`; the diff is not stored in `Block`, `BlockMeta`, or a second
-relationship index. The node atomically stages the fact, applies its lifecycle
-effects, and decides whether to retain that payload. It owns CID counts, pinning,
-materialized-state retention, projections, archival, and garbage collection.
+State execution may derive local lifecycle metadata, but that metadata is not a
+block commitment or a second cross-volume relationship index. The node decides
+whether to retain it and owns CID counts, pinning, materialized-state retention,
+projections, archival, and garbage collection.
 
 ### 9.8 Persistence
 
 The node durably preserves every accepted block's consensus fields, every
-distinct coverage fact and strengthening observation, and the latest
-`ChainCommit.revision`. Cold fact-log recovery supplies that value as a revision
-floor. A crash may occur
-after durable staging and before the actor mutation. On recovery, the node gives
-those already-authenticated local batches to `ChainState.restore(..., replaying:)`;
-Lattice replays them idempotently through its own graph and fork-choice logic.
-The node never reconstructs weights, ancestry, or canonical choice itself.
+distinct coverage fact and strengthening observation, and a monotone mutation
+order. A crash may occur after durable staging and before in-memory mutation;
+recovery therefore replays those already-authenticated facts idempotently through
+Lattice's graph and fork-choice reducer. The node does not reconstruct weights,
+ancestry, or canonical choice itself.
 
-Whether it retains a staged block fact's `StateDiff` is node policy. For
-inherited work, the node either retains the snapshot or reconstructs that exact
-snapshot from durable parent facts before restore. A revision watermark alone
-does not prove complete coverage, so a marker without its snapshot fails closed
-rather than accepting a newer-looking live subset or substituting zero.
-Restoration rejects malformed graph or work facts, joins idempotent coverage by
-grind identity, reconstructs exact local measures, captures the current
-inherited snapshot once, and reprojects canonicality. A persisted tip is
-a derived cache, not durable protocol truth. With no new evidence the result is
-the live decision; with a newer inherited snapshot the restored process starts at
-the current decision. The node rebuilds its projections from that final state.
-Filesystem layout, snapshots, state retention, and garbage collection belong to
-the node. `PersistedChainState.schemaVersion` is mandatory; unsupported layouts
-fail closed rather than guessing a migration.
+For inherited work, the node either retains the complete snapshot or
+reconstructs it from durable parent facts before restore. A revision watermark
+alone does not prove complete coverage, so a marker without its snapshot fails
+closed rather than substituting zero. Restoration rejects malformed facts,
+reconstructs exact measures, captures one coherent inherited snapshot, and
+reprojects canonicality. A persisted tip is a derived cache, not protocol truth.
+Filesystem layout, payload retention, and format migration belong to the node.
 
 ## 10. Economic Model
 
@@ -954,7 +942,7 @@ totalCredits + totalDeposited <= totalDebits + reward + totalWithdrawn
 No credits may exceed the available budget. Unclaimed budget is burned; the block
 subsidy `reward` is the only minting source. A declared transaction fee does not
 independently create spendable budget. Deposits lock balance (move it into deposit
-state); withdrawals release it.
+state); withdrawals return it to the block-wide credit budget.
 
 ### 12.3 Consensus Invariants
 
@@ -962,8 +950,8 @@ state); withdrawals release it.
 2. The chain tip block always exists in the block map
 3. Exactly one accepted genesis root anchors the selected main-chain path
 4. Main chain blocks form a connected path from genesis to tip
-5. `mainChainBlocksAdded` and `mainChainBlocksRemoved` in a `ChainCommit` are disjoint sets
-6. One `ChainLevel` owns one absolute path and cannot mutate another chain
+5. A canonical delta's added and removed block sets are disjoint
+6. One validator process owns one absolute path and cannot mutate another chain
 
 ### 12.4 Cross-Chain Transfer Invariants
 
@@ -986,7 +974,7 @@ state); withdrawals release it.
 5. Work measures union by grind ID before totaling, so shared work is counted once
    while distinct grinds sum
 6. Effective `trueCumWork` includes one coherent monotone immediate-parent
-   snapshot from the full accepted parent graph
+   snapshot scoped to accepted work whose validated binding covers each child
 7. Equal-work segments prefer the lexicographically smaller canonical base CID;
    `nextTarget` and segment tips are not comparators
 8. Parent accepted work may change child fork choice; parent canonicity alone
@@ -994,7 +982,7 @@ state); withdrawals release it.
 9. Lattice never prunes accepted graph or verified local-work facts
 10. There is no finality threshold; a strictly heavier effective subtree may reorg at any depth
 11. Every successful consensus mutation has a monotonically increasing revision
-12. One explicit validation-time context governs an admission and its retries
+12. One explicit validation-time context governs one admission attempt
 
 ## 13. Constants
 
