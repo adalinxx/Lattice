@@ -90,7 +90,7 @@ final class BlockContentResolverTests: XCTestCase {
         XCTAssertNil(paths.get([PARENT_STATE_PROPERTY, RECEIPT_STATE_PROPERTY, ""]))
     }
 
-    func testResolveBlockContentIncludesTransactionsAndSpecButExcludesStateAndChildBlocks() async throws {
+    func testResolveBlockContentIncludesTransactionsAndSpecButLeavesChildrenIndependent() async throws {
         let fetcher = TestVolumeFetcher()
         let parent = try await buildAndStoreGenesis(
             spec: testSpec(directory: "Nexus"),
@@ -127,16 +127,16 @@ final class BlockContentResolverTests: XCTestCase {
             nonce: 0,
             fetcher: fetcher
         )
-        try await VolumeImpl<Block>(node: block).storeBlockContent(storer: fetcher)
+        let contentOnly = TestVolumeFetcher()
+        try await VolumeImpl<Block>(node: block).storeBlockContent(storer: contentOnly)
 
         let header = VolumeImpl<Block>(rawCID: try! VolumeImpl<Block>(node: block).rawCID)
-        let resolved = try await header.resolveBlockContent(fetcher: fetcher)
+        let resolved = try await header.resolveBlockContent(fetcher: contentOnly)
         let resolvedBlock = try XCTUnwrap(resolved.node)
 
-        // Owned children IN the content package are resolved.
         XCTAssertNotNil(resolvedBlock.spec.node)
         XCTAssertNotNil(resolvedBlock.transactions.node)
-        XCTAssertNotNil(resolvedBlock.children.node)
+        XCTAssertNil(resolvedBlock.children.node)
         // postState is owned but excluded from the content package — left unresolved.
         XCTAssertNil(resolvedBlock.postState.node)
         // Independent roots are omitted by the content policy; their CID
@@ -151,10 +151,8 @@ final class BlockContentResolverTests: XCTestCase {
         XCTAssertNotNil(resolvedTx.node)
         XCTAssertNotNil(resolvedTx.node?.body.node)
 
-        let children = try XCTUnwrap(resolvedBlock.children.node?.allKeysAndValues())
-        XCTAssertEqual(children.count, 1)
-        let childHeader = try XCTUnwrap(children["Child"])
-        XCTAssertNil(childHeader.node)
+        XCTAssertEqual(resolvedBlock.children.rawCID, block.children.rawCID)
+        XCTAssertNil(contentOnly.entries[block.children.rawCID])
     }
 
     func testStoreBlockCopiesTheSameValidationPackageFromNodefulAndDecodedBlocks() async throws {

@@ -97,6 +97,16 @@ private extension PersistedBlockMeta {
     }
 
     var hasValidEncoding: Bool {
+        let snapshotPayload = [
+            target != nil,
+            postStateCID != nil,
+            prevStateCID != nil,
+            specCID != nil,
+            nextTarget != nil,
+        ]
+        let hasNoSnapshot = snapshotPayload.allSatisfy { !$0 }
+        let hasCompleteSnapshot = timestamp != nil
+            && snapshotPayload.allSatisfy { $0 }
         guard decodedWork != nil,
               WorkSum(hex: cumulativeWork) != nil,
               (try? CID(blockHash)) != nil,
@@ -104,7 +114,8 @@ private extension PersistedBlockMeta {
               childHashes.allSatisfy({ (try? CID($0)) != nil }),
               postStateCID.map({ (try? CID($0)) != nil }) ?? true,
               prevStateCID.map({ (try? CID($0)) != nil }) ?? true,
-              specCID.map({ (try? CID($0)) != nil }) ?? true else { return false }
+              specCID.map({ (try? CID($0)) != nil }) ?? true,
+              hasNoSnapshot || hasCompleteSnapshot else { return false }
         if let target, UInt256(target, radix: 16) == nil { return false }
         if let nextTarget, UInt256(nextTarget, radix: 16) == nil { return false }
         if let subtreeWeight, WorkSum(hex: subtreeWeight) == nil { return false }

@@ -26,12 +26,10 @@ public struct GenesisConfig: Sendable {
 public struct GenesisResult: Sendable {
     public let block: Block
     public let blockHash: String
-    public let chainState: ChainState
 
-    public init(block: Block, blockHash: String, chainState: ChainState) {
+    public init(block: Block, blockHash: String) {
         self.block = block
         self.blockHash = blockHash
-        self.chainState = chainState
     }
 }
 
@@ -41,9 +39,8 @@ public enum GenesisCeremonyError: Error, Sendable, Equatable {
 
 public enum GenesisCeremony {
 
-    /// Creates a runtime chain state for the supplied genesis. Root topology is
-    /// runtime configuration, deliberately separate from the content-addressed
-    /// genesis configuration.
+    /// Build a deterministic root-genesis candidate. Runtime creation belongs to
+    /// the store-and-stage `ChainLevel.bootstrap` admission boundary.
     public static func create(
         config: GenesisConfig,
         fetcher: Fetcher
@@ -58,21 +55,17 @@ public enum GenesisCeremony {
             fetcher: fetcher
         )
         let blockHash = try VolumeImpl<Block>(node: block).rawCID
-        let chainState = ChainState.fromGenesis(block: block)
-        return GenesisResult(block: block, blockHash: blockHash, chainState: chainState)
+        return GenesisResult(block: block, blockHash: blockHash)
     }
 
     public static func verify(block: Block, config: GenesisConfig) -> Bool {
         guard config.target >= ChainSpec.minimumTarget else { return false }
-        guard block.height == 0 else { return false }
-        guard block.parent == nil else { return false }
+        guard block.hasGenesisAdmissionShape() else { return false }
         guard block.timestamp == config.timestamp else { return false }
         guard block.spec.node != nil else { return false }
         guard block.target == config.target else { return false }
         // known-valid local node; CID computation cannot fail (no Float/Double fields)
         guard block.spec.rawCID == (try! VolumeImpl<ChainSpec>(node: config.spec).rawCID) else { return false }
-        let emptyState = LatticeState.emptyHeader
-        guard block.prevState.rawCID == emptyState.rawCID else { return false }
         return true
     }
 }

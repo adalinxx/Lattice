@@ -251,8 +251,15 @@ final class ChildRootForestTests: XCTestCase {
         _ = await submitChildForestBlock(sideRoot, to: parentFirst)
         _ = await submitChildForestBlock(sideChild, to: parentFirst)
 
-        let orphanResult = await submitChildForestBlock(sideChild, to: childFirst)
-        XCTAssertTrue(orphanResult.needsPredecessorBlock)
+        _ = await submitChildForestBlock(sideChild, to: childFirst)
+        let requirements = await childFirst.missingSameChainPredecessors()
+        XCTAssertEqual(
+            requirements,
+            [SameChainPredecessorRequirement(
+                descendantCID: childForestHash(sideChild),
+                predecessorCID: childForestHash(sideRoot)
+            )]
+        )
         _ = await submitChildForestBlock(sideRoot, to: childFirst)
 
         let parentFirstTip = await parentFirst.getMainChainTip()

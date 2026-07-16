@@ -497,11 +497,18 @@ final class OutOfOrderSubmissionTests: XCTestCase {
         let block1 = try await nextBlock(previous: genesis, timestamp: 2_000_000, nonce: 1)
         let block2 = try await nextBlock(previous: block1, timestamp: 3_000_000, nonce: 2)
 
-        let result = await chain.submitTestBlock(
+        _ = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block2),
             block: block2
         )
-        XCTAssertTrue(result.needsPredecessorBlock, "Block with a missing predecessor should report it")
+        let requirements = await chain.missingSameChainPredecessors()
+        XCTAssertEqual(
+            requirements,
+            [SameChainPredecessorRequirement(
+                descendantCID: try VolumeImpl<Block>(node: block2).rawCID,
+                predecessorCID: try VolumeImpl<Block>(node: block1).rawCID
+            )]
+        )
     }
 
     func testParentArrivalConnectsQueuedDescendant() async throws {
@@ -511,11 +518,12 @@ final class OutOfOrderSubmissionTests: XCTestCase {
         let block1 = try await nextBlock(previous: genesis, timestamp: 2_000_000, nonce: 1)
         let block2 = try await nextBlock(previous: block1, timestamp: 3_000_000, nonce: 2)
 
-        let orphanResult = await chain.submitTestBlock(
+        _ = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block2),
             block: block2
         )
-        XCTAssertTrue(orphanResult.needsPredecessorBlock)
+        let orphanRequirements = await chain.missingSameChainPredecessors()
+        XCTAssertEqual(orphanRequirements.count, 1)
 
         let _ = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block1),
@@ -523,7 +531,9 @@ final class OutOfOrderSubmissionTests: XCTestCase {
         )
 
         let tip = await chain.getMainChainTip()
+        let remainingRequirements = await chain.missingSameChainPredecessors()
         XCTAssertEqual(tip, try! VolumeImpl<Block>(node: block2).rawCID)
+        XCTAssertTrue(remainingRequirements.isEmpty)
     }
 }
 

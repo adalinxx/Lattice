@@ -878,8 +878,15 @@ final class ConsensusStressTests: XCTestCase {
         let blocks = try await buildChain(length: 5)
         let chain = ChainState.fromGenesis(block: blocks[0])
 
-        let r3 = await chain.submitTestBlock(blockHeader: header(blocks[3]), block: blocks[3])
-        XCTAssertTrue(r3.needsPredecessorBlock, "Block 3 submitted before 1,2 should need its predecessor")
+        _ = await chain.submitTestBlock(blockHeader: header(blocks[3]), block: blocks[3])
+        let requirements = await chain.missingSameChainPredecessors()
+        XCTAssertEqual(
+            requirements,
+            [SameChainPredecessorRequirement(
+                descendantCID: header(blocks[3]).rawCID,
+                predecessorCID: header(blocks[2]).rawCID
+            )]
+        )
 
         let r1 = await chain.submitTestBlock(blockHeader: header(blocks[1]), block: blocks[1])
         XCTAssertTrue(r1.extendsMainChain)

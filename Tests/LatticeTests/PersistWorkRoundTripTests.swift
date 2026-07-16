@@ -481,7 +481,7 @@ final class PersistWorkRoundTripTests: XCTestCase {
         let live = ChainState.fromGenesis(block: genesis)
         _ = await live.submitBlock(blockHeader: main1Header, block: main1, contribution: main1Work)
         _ = await live.submitBlock(blockHeader: main2Header, block: main2, contribution: main2Work)
-        let detached = await live.submitBlock(
+        _ = await live.submitBlock(
             blockHeader: fork2Header,
             block: fork2,
             contribution: fork2Work
@@ -491,7 +491,14 @@ final class PersistWorkRoundTripTests: XCTestCase {
             block: fork2,
             contribution: fork2ExtraWork
         )
-        XCTAssertTrue(detached.needsPredecessorBlock)
+        let liveRequirements = await live.missingSameChainPredecessors()
+        XCTAssertEqual(
+            liveRequirements,
+            [SameChainPredecessorRequirement(
+                descendantCID: fork2Header.rawCID,
+                predecessorCID: fork1Header.rawCID
+            )]
+        )
         XCTAssertTrue(extraGrind.addedContribution)
         let snapshot = await live.persist()
 
@@ -505,6 +512,14 @@ final class PersistWorkRoundTripTests: XCTestCase {
         let expected = await live.persist()
 
         let restored = try ChainState.restore(from: snapshot)
+        let restoredRequirements = await restored.missingSameChainPredecessors()
+        XCTAssertEqual(
+            restoredRequirements,
+            [SameChainPredecessorRequirement(
+                descendantCID: fork2Header.rawCID,
+                predecessorCID: fork1Header.rawCID
+            )]
+        )
         let restoredParentArrival = await restored.submitBlock(
             blockHeader: fork1Header,
             block: fork1,
@@ -512,12 +527,14 @@ final class PersistWorkRoundTripTests: XCTestCase {
         )
         let restoredTip = await restored.getMainChainTip()
         let recovered = await restored.persist()
+        let remainingRequirements = await restored.missingSameChainPredecessors()
         let restoredFork2 = try XCTUnwrap(
             recovered.blocks.first { $0.blockHash == fork2Header.rawCID }
         )
 
         XCTAssertTrue(restoredParentArrival.commit?.canonicalChanged ?? false)
         XCTAssertEqual(restoredTip, expectedTip)
+        XCTAssertTrue(remainingRequirements.isEmpty)
         XCTAssertEqual(recovered.revision, expected.revision)
         XCTAssertEqual(
             Set(restoredFork2.workContributions.map(\.id)),
@@ -1214,6 +1231,132 @@ final class PersistWorkRoundTripTests: XCTestCase {
         let after = await exhausted.persist()
         XCTAssertFalse(containsChild)
         XCTAssertEqual(after, before)
+    }
+
+    func testDurableReplayHydratesSparseSnapshotMetadataWithoutRecountingWork() async throws {
+        let fetcher = StorableFetcher()
+        let target = UInt256.max
+        let genesis = try await buildAndStoreGenesis(
+            spec: persistedWorkSpec(),
+            timestamp: 1_000,
+            target: target,
+            fetcher: fetcher
+        )
+        let child = try await buildAndStoreBlock(
+            previous: genesis,
+            timestamp: 2_000,
+            target: target,
+            nonce: 1,
+            fetcher: fetcher
+        )
+        let childHeader = try BlockHeader(node: child)
+        let contribution = VerifiedWorkContribution(
+            id: childHeader.rawCID,
+            work: workForTarget(target)
+        )
+        let live = ChainState.fromGenesis(block: genesis)
+        _ = await live.submitBlock(
+            blockHeader: childHeader,
+            block: child,
+            contribution: contribution
+        )
+        let complete = await live.persist()
+        let sparseBlocks = complete.blocks.map { block in
+            guard block.blockHash == childHeader.rawCID else { return block }
+            return PersistedBlockMeta(
+                blockHash: block.blockHash,
+                parentBlockHash: block.parentBlockHash,
+                blockHeight: block.blockHeight,
+                childHashes: block.childHashes,
+                workContributions: block.workContributions,
+                cumulativeWork: block.cumulativeWork,
+                subtreeWeight: block.subtreeWeight,
+                timestamp: block.timestamp
+            )
+        }
+        let sparse = PersistedChainState(
+            schemaVersion: complete.schemaVersion,
+            revision: complete.revision,
+            inheritedWorkRevision: complete.inheritedWorkRevision,
+            inheritedWorkSnapshot: complete.inheritedWorkSnapshot,
+            chainTip: complete.chainTip,
+            mainChainHashes: complete.mainChainHashes,
+            blocks: sparseBlocks
+        )
+        let batch = try testAdmissionBatch(
+            block: child,
+            contribution: contribution
+        )
+
+        let restored = try await ChainState.restore(
+            from: sparse,
+            replaying: [batch]
+        )
+
+        let hydrated = await restored.persist()
+        XCTAssertEqual(hydrated, complete)
+        let duplicate = try await restored.replay(batch)
+        XCTAssertNil(duplicate)
+
+        let conflictingBlocks = sparseBlocks.map { block in
+            guard block.blockHash == childHeader.rawCID else { return block }
+            return PersistedBlockMeta(
+                blockHash: block.blockHash,
+                parentBlockHash: block.parentBlockHash,
+                blockHeight: block.blockHeight,
+                childHashes: block.childHashes,
+                workContributions: block.workContributions,
+                cumulativeWork: block.cumulativeWork,
+                subtreeWeight: block.subtreeWeight,
+                timestamp: child.timestamp + 1
+            )
+        }
+        let conflicting = PersistedChainState(
+            schemaVersion: sparse.schemaVersion,
+            revision: sparse.revision,
+            inheritedWorkRevision: sparse.inheritedWorkRevision,
+            inheritedWorkSnapshot: sparse.inheritedWorkSnapshot,
+            chainTip: sparse.chainTip,
+            mainChainHashes: sparse.mainChainHashes,
+            blocks: conflictingBlocks
+        )
+        let conflictingRestore = try ChainState.restore(from: conflicting)
+        let beforeConflict = await conflictingRestore.persist()
+        do {
+            _ = try await conflictingRestore.replay(batch)
+            XCTFail("durable replay must not overwrite conflicting metadata")
+        } catch let error as ChainStateRestoreError {
+            XCTAssertEqual(error, .corruptConsensusGraph)
+        }
+        let afterConflict = await conflictingRestore.persist()
+        XCTAssertEqual(afterConflict, beforeConflict)
+
+        let partialBlocks = sparseBlocks.map { block in
+            guard block.blockHash == childHeader.rawCID else { return block }
+            return PersistedBlockMeta(
+                blockHash: block.blockHash,
+                parentBlockHash: block.parentBlockHash,
+                blockHeight: block.blockHeight,
+                childHashes: block.childHashes,
+                workContributions: block.workContributions,
+                cumulativeWork: block.cumulativeWork,
+                subtreeWeight: block.subtreeWeight,
+                target: target.toHexString(),
+                timestamp: block.timestamp
+            )
+        }
+        let partial = PersistedChainState(
+            schemaVersion: sparse.schemaVersion,
+            revision: sparse.revision,
+            inheritedWorkRevision: sparse.inheritedWorkRevision,
+            inheritedWorkSnapshot: sparse.inheritedWorkSnapshot,
+            chainTip: sparse.chainTip,
+            mainChainHashes: sparse.mainChainHashes,
+            blocks: partialBlocks
+        )
+        XCTAssertThrowsError(try ChainState.restore(from: partial)) { error in
+            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
+        }
     }
 
     func testRestoreAllowsOneGrindToCoverMultipleBlocksWithoutDoubleCounting() async throws {

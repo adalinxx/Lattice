@@ -128,14 +128,11 @@ public extension Block {
         reportTemporalFailure: Bool = false,
         validationContext: ValidationContext
     ) async throws -> (Bool, StateDiff, LatticeState?) {
-        if version != Block.currentVersion { return (false, .empty, nil) }
-        if parent != nil { return (false, .empty, nil) }
+        if !hasGenesisAdmissionShape() { return (false, .empty, nil) }
         if !validationContext.admits(timestamp: timestamp) {
             if reportTemporalFailure { throw BlockValidationError.notYetAdmissible }
             return (false, .empty, nil)
         }
-        if height != 0 { return (false, .empty, nil) }
-        if prevState.rawCID != LatticeState.emptyHeader.rawCID { return (false, .empty, nil) }
         guard let transactionBodies = try await resolveTransactionBodies(fetcher: fetcher, validator: { tx in
             try await tx.validateTransactionForGenesis(fetcher: fetcher)
         }) else { return (false, .empty, nil) }
@@ -434,6 +431,16 @@ public extension Block {
     func validateHeight(parent: Block) -> Bool {
         let (expected, overflow) = parent.height.addingReportingOverflow(1)
         return !overflow && expected == height
+    }
+
+    /// Header-local rules shared by every path that can accept a genesis.
+    func hasGenesisAdmissionShape() -> Bool {
+        version == Block.currentVersion
+            && parent == nil
+            && height == 0
+            && prevState.rawCID == LatticeState.emptyHeader.rawCID
+            && target >= ChainSpec.minimumTarget
+            && nextTarget == target
     }
 
     /// Header-only continuity needed to carry a root grind to a descendant.

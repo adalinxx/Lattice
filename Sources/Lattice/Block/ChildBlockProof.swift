@@ -133,7 +133,6 @@ public struct ChildBlockProof: Sendable {
     /// used only to classify where this one grind is credited.
     public func verify(
         child: Block,
-        childCID: String,
         chainPath: [String],
         minimumRootWork: UInt256,
         parentContinuityLinks: [ParentContinuityLink],
@@ -150,9 +149,18 @@ public struct ChildBlockProof: Sendable {
               !directoryPath.isEmpty else {
             return .failure(.malformedEvidence)
         }
+        guard let childCID = try? BlockHeader(node: child).rawCID else {
+            return .failure(.malformedEvidence)
+        }
 
         let rootBlock = root.block
         let rootHash = root.hash
+
+        func validParentlessCarrier(_ block: Block) -> Bool {
+            guard block.hasCarrierContinuity(parent: nil) else { return false }
+            return !block.validateProofOfWork(nexusHash: rootHash)
+                || block.hasGenesisAdmissionShape()
+        }
 
         var proofEntries: [String: Data] = [:]
         for entry in entries {
@@ -174,71 +182,12 @@ public struct ChildBlockProof: Sendable {
         }
         let fetcher = _TrackingProofFetcher(proofEntries)
         var directlyConsumed = Set([rootCID])
-        var consumedLinks = Set<String>()
-        var consumedGenesisLinks = Set<String>()
-
-        func genesisFailure(
-            childCID: String,
-            childPath: [String]
-        ) -> ChildProofVerificationFailure? {
-            guard let directory = childPath.last else {
-                return .malformedEvidence
-            }
-            guard let link = genesisLinksByChild[childCID] else {
-                return .crossChainEvidenceRequired(.parentGenesis(
-                    parentPath: Array(childPath.dropLast()),
-                    directory: directory,
-                    childGenesisCID: childCID
-                ))
-            }
-            consumedGenesisLinks.insert(childCID)
-            guard link.parentPath == Array(childPath.dropLast()),
-                  link.directory == directory,
-                  link.childGenesisCID == childCID else {
-                return .malformedEvidence
-            }
-            return nil
-        }
-
-        func continuityFailure(
-            _ carrier: Block,
-            carrierCID: String,
-            carrierPath: [String]
-        ) -> ChildProofVerificationFailure? {
-            guard carrier.parent != nil else {
-                guard carrier.hasCarrierContinuity(parent: nil) else {
-                    return .protocolInvalid
-                }
-                return carrierPath.count == 1
-                    ? nil
-                    : genesisFailure(childCID: carrierCID, childPath: carrierPath)
-            }
-            guard let link = linksBySuccessor[carrierCID] else {
-                return .crossChainEvidenceRequired(.parentContinuity(
-                    parentPath: carrierPath,
-                    successorCID: carrierCID
-                ))
-            }
-            consumedLinks.insert(carrierCID)
-            guard link.parentPath == carrierPath,
-                  link.successorCID == carrierCID else {
-                return .protocolInvalid
-            }
-            return nil
-        }
-
-        var carriers = [rootBlock]
+        var carriers: [(block: Block, cid: String, path: [String])] = [
+            (rootBlock, rootCID, Array(chainPath.prefix(1)))
+        ]
         var currentBlock = rootBlock
-        var currentCID = rootCID
 
         for (index, directory) in directoryPath.enumerated() {
-            if let failure = continuityFailure(
-                currentBlock,
-                carrierCID: currentCID,
-                carrierPath: Array(chainPath.prefix(index + 1))
-            ) {
-                return .failure(failure)
-            }
             guard let children = try? await currentBlock.children.resolve(
                     paths: [[directory]: .targeted], fetcher: fetcher
                   ).node,
@@ -252,28 +201,125 @@ public struct ChildBlockProof: Sendable {
                 guard child.parentState.rawCID == currentBlock.prevState.rawCID else {
                     return .failure(.protocolInvalid)
                 }
-                if child.parent == nil,
-                   let failure = genesisFailure(
-                    childCID: childCID,
-                    childPath: chainPath
-                   ) {
-                    return .failure(failure)
+                let consumed = await fetcher.consumed().union(directlyConsumed)
+                guard consumed == Set(proofEntries.keys) else {
+                    return .failure(.malformedEvidence)
+                }
+                if child.parent == nil, !validParentlessCarrier(child) {
+                    return .failure(.protocolInvalid)
+                }
+
+                var expectedContinuity: [String: ParentContinuityLink] = [:]
+                var expectedGenesis: [String: ParentGenesisLink] = [:]
+                var requirements: [CrossChainEvidenceRequirement] = []
+
+                for carrier in carriers {
+                    if carrier.block.parent == nil {
+                        guard validParentlessCarrier(carrier.block) else {
+                            return .failure(.protocolInvalid)
+                        }
+                        guard carrier.path.count > 1 else { continue }
+                        guard let directory = carrier.path.last else {
+                            return .failure(.malformedEvidence)
+                        }
+                        let link = ParentGenesisLink(
+                            parentPath: Array(carrier.path.dropLast()),
+                            directory: directory,
+                            childGenesisCID: carrier.cid
+                        )
+                        guard expectedGenesis.updateValue(
+                            link,
+                            forKey: carrier.cid
+                        ) == nil else {
+                            return .failure(.malformedEvidence)
+                        }
+                        requirements.append(.parentGenesis(
+                            parentPath: link.parentPath,
+                            directory: link.directory,
+                            childGenesisCID: link.childGenesisCID
+                        ))
+                    } else {
+                        let link = ParentContinuityLink(
+                            parentPath: carrier.path,
+                            successorCID: carrier.cid
+                        )
+                        guard expectedContinuity.updateValue(
+                            link,
+                            forKey: carrier.cid
+                        ) == nil else {
+                            return .failure(.malformedEvidence)
+                        }
+                        requirements.append(.parentContinuity(
+                            parentPath: link.parentPath,
+                            successorCID: link.successorCID
+                        ))
+                    }
+                }
+
+                if child.parent == nil {
+                    guard let directory = chainPath.last else {
+                        return .failure(.malformedEvidence)
+                    }
+                    let link = ParentGenesisLink(
+                        parentPath: Array(chainPath.dropLast()),
+                        directory: directory,
+                        childGenesisCID: childCID
+                    )
+                    guard expectedGenesis.updateValue(
+                        link,
+                        forKey: childCID
+                    ) == nil else {
+                        return .failure(.malformedEvidence)
+                    }
+                    requirements.append(.parentGenesis(
+                        parentPath: link.parentPath,
+                        directory: link.directory,
+                        childGenesisCID: link.childGenesisCID
+                    ))
+                }
+
+                guard linksBySuccessor.allSatisfy({
+                    expectedContinuity[$0.key] == $0.value
+                }), genesisLinksByChild.allSatisfy({
+                    expectedGenesis[$0.key] == $0.value
+                }) else {
+                    return .failure(.malformedEvidence)
+                }
+
+                for requirement in requirements {
+                    switch requirement {
+                    case .parentContinuity(_, let successorCID)
+                    where linksBySuccessor[successorCID] == nil:
+                        return .failure(.crossChainEvidenceRequired(requirement))
+                    case .parentGenesis(_, _, let childGenesisCID)
+                    where genesisLinksByChild[childGenesisCID] == nil:
+                        return .failure(.crossChainEvidenceRequired(requirement))
+                    default:
+                        continue
+                    }
                 }
 
                 let strongestAncestorWork = carriers.reduce(UInt256.zero) {
-                    guard $1.validateProofOfWork(nexusHash: rootHash) else { return $0 }
-                    return max($0, workForTarget($1.target))
+                    guard $1.block.validateProofOfWork(nexusHash: rootHash) else {
+                        return $0
+                    }
+                    return max($0, workForTarget($1.block.target))
                 }
-                let consumed = await fetcher.consumed().union(directlyConsumed)
-                guard consumed == Set(proofEntries.keys),
-                      consumedLinks == Set(linksBySuccessor.keys),
-                      consumedGenesisLinks == Set(genesisLinksByChild.keys) else {
-                    return .failure(.malformedEvidence)
-                }
+                let contribution = child.validateProofOfWork(nexusHash: rootHash)
+                    ? VerifiedWorkContribution(
+                        id: rootCID,
+                        work: max(
+                            strongestAncestorWork,
+                            workForTarget(child.target)
+                        )
+                    )
+                    : nil
                 return .success(VerifiedChildEvidence(
                     grindID: rootCID,
                     rootHash: rootHash,
-                    strongestAncestorWork: strongestAncestorWork
+                    strongestAncestorWork: strongestAncestorWork,
+                    childCID: childCID,
+                    contribution: contribution
                 ))
             }
 
@@ -285,9 +331,12 @@ public struct ChildBlockProof: Sendable {
             guard next.parentState.rawCID == currentBlock.prevState.rawCID else {
                 return .failure(.protocolInvalid)
             }
-            currentCID = childHeader.rawCID
             currentBlock = next
-            carriers.append(currentBlock)
+            carriers.append((
+                currentBlock,
+                childHeader.rawCID,
+                Array(chainPath.prefix(index + 2))
+            ))
         }
         return .failure(.malformedEvidence)
     }

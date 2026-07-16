@@ -133,7 +133,9 @@ The security cost of this grindable deterministic tie-break is quantified in the
 
 External candidates use `ChainLevel.admitBlockHeaderChainLocal`. Recovery replays
 only previously authenticated durable facts through the same graph mutation and
-fork-choice code.
+fork-choice code. The immutable staged batch is the admission receipt: live
+admission applies that exact batch once after staging, and restart applies the
+same fact without fetching or reconstructing a different candidate.
 
 Persistence stores the accepted local graph, all grind coverage, and the retained
 inherited snapshot used by the decision. A node may reconstruct that snapshot

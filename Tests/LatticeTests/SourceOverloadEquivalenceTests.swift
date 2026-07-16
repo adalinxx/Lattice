@@ -115,11 +115,11 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         XCTAssertEqual(f.children.rawCID, s.children.rawCID)
         XCTAssertEqual(f.toData(), s.toData())
 
-        // Same resolution policy applied: spec/transactions/children resolved,
-        // postState left external.
+        // Same resolution policy applied: spec/transactions resolved while
+        // child links and state remain external.
         XCTAssertNotNil(s.spec.node)
         XCTAssertNotNil(s.transactions.node)
-        XCTAssertNotNil(s.children.node)
+        XCTAssertNil(s.children.node)
         XCTAssertNil(s.postState.node)
 
         let fTxs = try XCTUnwrap(f.transactions.node?.allKeysAndValues())
