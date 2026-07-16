@@ -86,11 +86,11 @@ Accepted work and canonicity remain separate:
 - the strongest known quantity for one grind ID applies to all of its local,
   inherited, and transitive coverage, then counts once.
 
-Whether the node persists its last inherited snapshot is a node retention choice.
-A cacheless child waits for a complete current parent view during restore; it
-must not substitute zero for unavailable inherited work. Lattice rebuilds the
-local graph and projects it under that snapshot. A persisted tip is a cache, not
-protocol truth.
+The node may persist the last inherited snapshot directly or reconstruct it from
+durable parent facts. A revision watermark or live subset cannot prove complete
+coverage, so Lattice rejects a persisted marker without its snapshot rather than
+substituting zero. Lattice rebuilds the local graph and projects it under the
+restored snapshot. A persisted tip is a cache, not protocol truth.
 
 ## Admission And Recovery
 

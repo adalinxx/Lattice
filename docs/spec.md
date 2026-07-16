@@ -745,7 +745,9 @@ bases. The segment with greatest effective `trueCumWork` wins. Equal
 work compares the canonical CID bytes of the segment bases; the
 lexicographically smaller CID wins. `nextTarget` and the segment tips are not
 comparators. The same rule applies to competing genesis roots, so arrival and
-replay order cannot change fork choice.
+replay order cannot change fork choice. The deliberate security tradeoff of
+this grindable deterministic tie-break is quantified in the
+[TRE-134 adversarial report](consensus/tre-134-adversarial-report.md).
 
 When a branch wins, `ChainState` updates only this chain's canonical indexes and
 returns a revisioned `ChainCommit` describing the new tip and exact added and
@@ -818,13 +820,14 @@ those already-authenticated local batches to `ChainState.restore(..., replaying:
 Lattice replays them idempotently through its own graph and fork-choice logic.
 The node never reconstructs weights, ancestry, or canonical choice itself.
 
-Whether it retains a staged block fact's `StateDiff` or an inherited snapshot is
-node policy. A child restore must receive a complete cached or live inherited
-snapshot at least as new as the revision used before shutdown; a cacheless node
-waits or fetches rather than substituting zero. Restoration rejects malformed
-graph or work facts, joins idempotent coverage by grind identity, reconstructs
-exact local measures, captures the current inherited snapshot once, and
-reprojects canonicality. A persisted tip is
+Whether it retains a staged block fact's `StateDiff` is node policy. For
+inherited work, the node either retains the snapshot or reconstructs that exact
+snapshot from durable parent facts before restore. A revision watermark alone
+does not prove complete coverage, so a marker without its snapshot fails closed
+rather than accepting a newer-looking live subset or substituting zero.
+Restoration rejects malformed graph or work facts, joins idempotent coverage by
+grind identity, reconstructs exact local measures, captures the current
+inherited snapshot once, and reprojects canonicality. A persisted tip is
 a derived cache, not durable protocol truth. With no new evidence the result is
 the live decision; with a newer inherited snapshot the restored process starts at
 the current decision. The node rebuilds its projections from that final state.
