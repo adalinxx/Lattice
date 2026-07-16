@@ -6,6 +6,24 @@ import Foundation
 
 private let fetcher = ThrowingFetcher()
 
+private struct RuntimeGenesisResult {
+    let block: Block
+    let blockHash: String
+    let chainState: ChainState
+}
+
+private func makeRuntimeGenesis(
+    config: GenesisConfig,
+    fetcher: any Fetcher
+) async throws -> RuntimeGenesisResult {
+    let result = try await GenesisCeremony.create(config: config, fetcher: fetcher)
+    return RuntimeGenesisResult(
+        block: result.block,
+        blockHash: result.blockHash,
+        chainState: ChainState.fromGenesis(block: result.block)
+    )
+}
+
 // MARK: - Genesis Ceremony Tests
 
 @MainActor
@@ -20,8 +38,8 @@ final class GenesisCeremonyTests: XCTestCase {
             initialReward: 1024, halvingInterval: 10_000
         ))
 
-        let result1 = try await GenesisCeremony.create(config: config, fetcher: fetcher)
-        let result2 = try await GenesisCeremony.create(config: config, fetcher: fetcher)
+        let result1 = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
+        let result2 = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
 
         XCTAssertEqual(result1.blockHash, result2.blockHash,
             "Same genesis config must produce identical genesis block")
@@ -43,7 +61,7 @@ final class GenesisCeremonyTests: XCTestCase {
             timestamp: 42,
             target: UInt256(1000)
         )
-        let result = try await GenesisCeremony.create(config: config, fetcher: fetcher)
+        let result = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
         XCTAssertTrue(GenesisCeremony.verify(block: result.block, config: config))
     }
 
@@ -62,7 +80,7 @@ final class GenesisCeremonyTests: XCTestCase {
         )
 
         do {
-            _ = try await GenesisCeremony.create(config: config, fetcher: fetcher)
+            _ = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
             XCTFail("zero-work genesis must be rejected")
         } catch {
             XCTAssertEqual(error as? GenesisCeremonyError, .invalidTarget)
@@ -81,7 +99,7 @@ final class GenesisCeremonyTests: XCTestCase {
             timestamp: 42,
             target: UInt256(1000)
         )
-        let result = try await GenesisCeremony.create(config: config, fetcher: fetcher)
+        let result = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
 
         let wrongConfig = GenesisConfig(
             spec: config.spec, timestamp: 999, target: config.target
@@ -98,7 +116,7 @@ final class GenesisCeremonyTests: XCTestCase {
             initialReward: 1024, halvingInterval: 10_000
         )
         let configA = GenesisConfig(spec: specA, timestamp: 0, target: UInt256.max)
-        let result = try await GenesisCeremony.create(config: configA, fetcher: fetcher)
+        let result = try await makeRuntimeGenesis(config: configA, fetcher: fetcher)
 
         let configB = GenesisConfig(spec: specA, timestamp: 0, target: UInt256(1))
         XCTAssertTrue(GenesisCeremony.verify(block: result.block, config: configA))
@@ -123,7 +141,7 @@ final class GenesisCeremonyTests: XCTestCase {
             initialReward: 1024, halvingInterval: 10_000
         )
         let configA = GenesisConfig(spec: specA, timestamp: 0, target: UInt256.max)
-        let result = try await GenesisCeremony.create(config: configA, fetcher: fetcher)
+        let result = try await makeRuntimeGenesis(config: configA, fetcher: fetcher)
 
         let configC = GenesisConfig(spec: specB, timestamp: 0, target: UInt256.max)
         XCTAssertTrue(GenesisCeremony.verify(block: result.block, config: configA))
@@ -138,7 +156,7 @@ final class GenesisCeremonyTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024, halvingInterval: 10_000
         ))
-        let result = try await GenesisCeremony.create(config: config, fetcher: fetcher)
+        let result = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
 
         let height = await result.chainState.getHighestBlockHeight()
         XCTAssertEqual(height, 0)
@@ -177,7 +195,7 @@ final class BlockReceptionTests: XCTestCase {
 
         let storableFetcher = StorableFetcher()
 
-        let result = try await GenesisCeremony.create(config: config, fetcher: fetcher)
+        let result = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
         if let data = result.block.toData() {
             await storableFetcher.store(rawCid: result.blockHash, data: data)
         }
@@ -209,7 +227,7 @@ final class BlockReceptionTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024, halvingInterval: 10_000
         ))
-        let result = try await GenesisCeremony.create(config: config, fetcher: fetcher)
+        let result = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
 
         let block1 = try await buildAndStoreBlock(
             previous: result.block, timestamp: 1_000,
@@ -241,7 +259,7 @@ final class GenesisToBlockE2ETests: XCTestCase {
             initialReward: 1024, halvingInterval: 10_000
         )
         let genesisConfig = GenesisConfig.standard(spec: spec)
-        let genesis = try await GenesisCeremony.create(config: genesisConfig, fetcher: fetcher)
+        let genesis = try await makeRuntimeGenesis(config: genesisConfig, fetcher: fetcher)
 
         XCTAssertTrue(GenesisCeremony.verify(block: genesis.block, config: genesisConfig))
 
@@ -282,8 +300,8 @@ final class GenesisToBlockE2ETests: XCTestCase {
         )
         let genesisConfig = GenesisConfig.standard(spec: spec)
 
-        let nodeA = try await GenesisCeremony.create(config: genesisConfig, fetcher: fetcher)
-        let nodeB = try await GenesisCeremony.create(config: genesisConfig, fetcher: fetcher)
+        let nodeA = try await makeRuntimeGenesis(config: genesisConfig, fetcher: fetcher)
+        let nodeB = try await makeRuntimeGenesis(config: genesisConfig, fetcher: fetcher)
 
         XCTAssertEqual(nodeA.blockHash, nodeB.blockHash, "Both nodes must agree on genesis")
 
@@ -317,8 +335,8 @@ final class GenesisToBlockE2ETests: XCTestCase {
             initialReward: 1024, halvingInterval: 10_000
         )
         let genesisConfig = GenesisConfig.standard(spec: spec)
-        let nodeA = try await GenesisCeremony.create(config: genesisConfig, fetcher: fetcher)
-        let nodeB = try await GenesisCeremony.create(config: genesisConfig, fetcher: fetcher)
+        let nodeA = try await makeRuntimeGenesis(config: genesisConfig, fetcher: fetcher)
+        let nodeB = try await makeRuntimeGenesis(config: genesisConfig, fetcher: fetcher)
 
         let blockA1 = try await buildAndStoreBlock(
             previous: nodeA.block, timestamp: 1_000,

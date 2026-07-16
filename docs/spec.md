@@ -261,25 +261,27 @@ A genesis block `B` is valid if and only if ALL of the following hold:
 1. `B.previousBlock == nil`
 2. `B.height == 0`
 3. `B.timestamp <= validationContext.now + 2 hours`, where the admission
-   attempt captures `validationContext.now` once and keeps it across retries
+   attempt captures `validationContext.now` once
 4. `B.prevState == CID(emptyState())`
-5. All transactions in `B.transactions` are fully resolvable
-6. For each transaction `tx`: `tx.validateTransactionForGenesis()` returns true
+5. `B.target >= minimumTarget` and `B.nextTarget == B.target`
+6. All transactions in `B.transactions` are fully resolvable
+7. For each transaction `tx`: `tx.validateTransactionForGenesis()` returns true
    - Signatures are valid Ed25519 signatures over `CID(tx.body)`
    - Signers match signature public keys
    - Account debits are authorized by signers
    - No withdrawal actions present
-7. Every transaction's `chainPath` equals the runtime's absolute path
-8. All transaction bodies pass the chain's policies
-9. `|transactions| <= spec.maxNumberOfTransactionsPerBlock`
-10. `sum(stateDelta(tx) for tx in transactions) <= spec.maxStateGrowth`
-11. **Balance conservation (genesis)**:
+8. Every transaction's `chainPath` equals the runtime's absolute path
+9. All transaction bodies pass the chain's policies
+10. `|transactions| <= spec.maxNumberOfTransactionsPerBlock`
+11. `sum(stateDelta(tx) for tx in transactions) <= spec.maxStateGrowth`
+12. **Balance conservation (genesis)**:
     ```
     totalCredits + totalDeposited <= premineAmount
     ```
-12. Every `GenesisAction` has a non-empty separator-free directory and non-empty
+13. Every `GenesisAction` has a non-empty separator-free directory and non-empty
     genesis block CID. The child process validates that block's content.
-13. **Post-state correctness**: Applying all actions to `prevState` (empty state) produces `postState`:
+14. **Post-state correctness**: Applying all actions to `prevState` (empty
+    state) produces `postState`:
     ```
     proveAndUpdateState(prevState, allActions) == postState
     ```
@@ -294,8 +296,9 @@ A non-genesis nexus block `B` with previous block `P` is valid if and only if:
 4. `B.height == P.height + 1`
 5. `P.timestamp < B.timestamp <= validationContext.now + 2 hours`, and
    `B.timestamp > MedianTimePast(11)` when that window is available. The
-   attempt captures `validationContext.now` once and keeps it across retries.
-6. `B.target == P.nextTarget`, and `B.nextTarget` equals the clamped proportional retarget of section 5.5
+   attempt captures `validationContext.now` once.
+6. `B.target == P.nextTarget`, and `B.nextTarget` equals the clamped
+   proportional retarget of section 5.5
 7. All transactions pass `validateTransactionForNexus()`:
    - Signatures valid (Ed25519 over `CID(tx.body)`)
    - Signers match signature public keys
@@ -346,8 +349,11 @@ Let `R` be the proof root and `h = proofOfWorkHash(R)`. Validation proceeds in
 this order:
 
 1. Recompute `CID(R)` and require `workForHash(h) >= minimumRootWork`.
-2. Require the proof path to equal the runtime path below the outer root and its
-   terminal CID to equal `CID(B)`.
+2. Require the proof path to equal the runtime path below the outer root, consume
+   every supplied proof entry, and require its terminal CID to equal `CID(B)`.
+   Reject any locally impossible parentless carrier shape before requesting
+   parent-issued evidence. If that level accepts the grind, also enforce the
+   complete genesis shape, including `nextTarget == target`.
 3. For every non-genesis carrier `Q` above `B`, require its parent-issued
    continuity link. For every parentless carrier below the setup root, and for
    `B` itself when it is a genesis block, require its exact parent-issued genesis
@@ -419,10 +425,11 @@ MUST satisfy the binding rule:
 B.target == parent.nextTarget
 ```
 
-(genesis takes its target from the `ChainSpec`.) Each block's `nextTarget` is a
-**clamped, linearly-weighted retarget (LWMA)** recomputed *every block* from the
-candidate's own ancestor-branch solve times over the most recent `spec.retargetWindow`
-intervals (including the current block's own solve time), targeting
+Genesis has no parent-derived target: its configured target is committed in the
+block and its `nextTarget` MUST equal that target. Each non-genesis block's
+`nextTarget` is a **clamped, linearly-weighted retarget (LWMA)** recomputed every
+block from the candidate's own ancestor-branch solve times over the most recent
+`spec.retargetWindow` intervals (including the current block's own solve time), targeting
 `spec.targetBlockTime` per block. More recent intervals are weighted more
 heavily: for `N` intervals the `i`-th most-recent (`i = 0` is newest) gets weight
 `w_i = N - i`.
@@ -723,33 +730,46 @@ erase the strict ordering between two branches.
 
 ### 9.3 Admission
 
-`ChainLevel.bootstrap` and `ChainLevel.admitBlockHeaderChainLocal` are the public
-consensus boundaries. Admission performs:
+The root and child overloads of `ChainLevel.bootstrap`, together with
+`ChainLevel.admitBlockHeaderChainLocal`, are the public consensus boundaries.
+Admission performs:
 
-1. capture of one explicit `ValidationContext` for the attempt and any retry;
+1. capture of one explicit `ValidationContext` for the attempt;
 2. root CID and setup-wide root-work-floor validation before child resolution;
 3. targeted resolution of the candidate and required package;
-4. exact-path, carrier-continuity, and chain-target checks;
-5. deterministic genesis or non-genesis state-transition validation;
-6. targeted storage of verified block content and materialized state;
-7. node-owned atomic staging of a `ChainAdmissionBatch`; and
-8. generation-checked commit to `ChainState`, returning a revisioned
-   `ChainCommit`.
+4. complete structural path validation before requesting cross-chain evidence;
+5. exact-path, carrier-continuity, and chain-target checks;
+6. deterministic genesis or non-genesis state-transition validation;
+7. targeted storage of verified local block content and materialized state;
+8. node-owned atomic staging of one immutable `ChainAdmissionBatch`; and
+9. application of that exact batch through the same reducer used by recovery,
+   returning a revisioned `ChainCommit`.
 
-If another mutation makes a prepared result stale, admission prepares again. The
-node's staging operation must therefore be idempotent by typed fact identity. A
-storage or staging failure leaves the accepted graph unchanged.
+The staged batch is the durable admission receipt. Live admission never
+re-resolves or re-stages it after another local mutation; recovery applies the
+same fact through the same reducer. Reapplying an identical batch is idempotent,
+while conflicting immutable metadata is rejected. A storage or staging failure
+leaves the accepted graph unchanged, and bootstrap exposes no runtime until the
+genesis batch has been stored, staged, and restored.
 
-A current-level target miss returns a carrier result without executing or
-inserting a block for this chain. During bootstrap, a valid carrier may be stored
-for availability, but it stages no consensus fact and creates no chain runtime.
-An accepted block whose `previousBlock` is absent from the local accepted graph
-returns a `SameChainPredecessorRequirement`; the predecessor must enter this same
-admission boundary. This does not claim its body is unavailable. Missing
-cross-chain input instead returns a `CrossChainEvidenceRequirement` identifying
-the child proof, parent continuity fact, or parent genesis fact the node must
-obtain from the authenticated parent process. `parentState` is a state CID, not a
-parent-block lookup key. Consensus fetches neither relationship itself.
+Before staging an existing runtime mutation, Lattice reserves capacity for one
+distinct `U64` commit revision. Other mutations cannot consume that slot while
+the node stages the batch. Exhaustion returns `revisionExhausted` without
+staging. The stage callback is atomic: returning means the complete batch is
+durable, while throwing means none of its facts became visible.
+
+A current-level target miss returns a carrier result without executing its
+transition, inserting it, or implicitly retaining it for this chain. A node may
+explicitly retain a carrier or an exact child-link path as availability policy;
+Lattice does not enumerate an attacker-sized child trie. Missing same-chain
+predecessors are derived from the accepted graph, including after recovery, and
+must enter this same admission boundary. This does not claim a predecessor body
+is unavailable.
+Missing cross-chain input instead returns a `CrossChainEvidenceRequirement`
+identifying the child proof, parent continuity fact, or parent genesis fact the
+node must obtain from the authenticated parent process. `parentState` is a state
+CID, not a parent-block lookup key. Consensus fetches neither relationship
+itself.
 
 ### 9.4 Fork Choice and Reorganization
 

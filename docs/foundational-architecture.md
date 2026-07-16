@@ -101,14 +101,25 @@ acquire -> verify -> targeted store -> atomically stage facts -> mutate -> proje
 ```
 
 Lattice verifies the root-work floor before child resolution, proves the exact
-sparse path and carrier continuity, executes this chain's transition, and derives
-typed facts. The node stores verified content and materialized state, then stages
-the facts before the actor mutation becomes visible.
+sparse path before requesting cross-chain evidence, proves carrier continuity,
+executes this chain's transition, and derives typed facts. The node stores
+verified local content and materialized state, then stages one immutable batch
+before the actor mutation becomes visible. The node's atomic stage either makes
+the whole batch durable and returns or throws without exposing any fact. Live
+admission and recovery apply that exact receipt through the same reducer, so a
+concurrent mutation cannot change the fact that was durably accepted. Root and
+child bootstrap use this same boundary and expose a runtime only after its
+genesis receipt is durable.
 
-Relationship requirements stay explicit. A locally accepted orphan may report
-the CID of its same-chain predecessor so the node can submit that predecessor
-through the same boundary. Cross-chain acquisition is different: the parent
-carrier commits the child, but the child commits only `parentState`, not the
+A target miss creates no local consensus fact and causes no implicit Lattice
+retention. Likewise, storing a block does not enumerate its child-link trie.
+The node may retain a carrier or exact child path when its availability policy
+calls for it; Lattice validates only the targeted path submitted for this chain.
+
+Relationship requirements stay explicit. Lattice derives same-chain graph holes
+from accepted state, including after restart, so the node can submit each
+predecessor through the same boundary. Cross-chain acquisition is different: the
+parent carrier commits the child, but the child commits only `parentState`, not the
 carrier CID. Lattice therefore names the missing proof or parent-issued fact and
 the node routes that requirement to the authenticated parent process. It never
 turns a state root into an inferred parent block.
@@ -120,10 +131,11 @@ turns a state root into an inferred parent block.
 verified observations to remain durable without mutable fact IDs.
 
 Recovery does not treat local durable facts as wire evidence. It restores the
-snapshot, replays already-authenticated staged batches through the same graph
-mutation rules from the node's durable revision floor, captures inherited work,
-and recomputes canonicality. The node then rebuilds its projections from the
-resulting state.
+snapshot, replays already-authenticated staged batches through the same reducer
+used by live admission from the node's durable revision floor, captures inherited
+work, and recomputes canonicality. A sparse retained record may be hydrated only
+by an authenticated staged fact; conflicting immutable metadata fails closed.
+The node then rebuilds its projections from the resulting state.
 
 ## Ownership
 

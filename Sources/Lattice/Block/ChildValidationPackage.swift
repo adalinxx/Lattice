@@ -104,24 +104,20 @@ public struct VerifiedChildEvidence: Sendable {
     public let grindID: String
     public let rootHash: UInt256
     public let strongestAncestorWork: UInt256
+    package let childCID: String
+    package let contribution: VerifiedWorkContribution?
 
     init(
         grindID: String,
         rootHash: UInt256,
-        strongestAncestorWork: UInt256
+        strongestAncestorWork: UInt256,
+        childCID: String,
+        contribution: VerifiedWorkContribution?
     ) {
         self.grindID = grindID
         self.rootHash = rootHash
         self.strongestAncestorWork = strongestAncestorWork
-    }
-
-    /// Credit this physical grind at its strongest accepted difficulty while
-    /// keeping its coverage of this child as a separate fact.
-    public func contribution(for child: Block) -> VerifiedWorkContribution? {
-        guard child.validateProofOfWork(nexusHash: rootHash) else { return nil }
-        return VerifiedWorkContribution(
-            id: grindID,
-            work: max(strongestAncestorWork, workForTarget(child.target))
-        )
+        self.childCID = childCID
+        self.contribution = contribution
     }
 }

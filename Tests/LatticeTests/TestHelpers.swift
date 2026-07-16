@@ -82,6 +82,13 @@ func storeBuiltBlock(
 ) async throws -> Block {
     let header = try BlockHeader(node: block)
     try await header.storeBlockContent(storer: fetcher)
+    if let children = block.children.node {
+        var childPaths = ArrayTrie<ResolutionStrategy>()
+        for directory in try children.allKeysAndValues().keys {
+            childPaths.set([CHILDREN_PROPERTY, directory], value: .targeted)
+        }
+        try await header.store(paths: childPaths, storer: fetcher)
+    }
     if block.height == 0 {
         try await LatticeState.emptyHeader.storeRecursively(storer: fetcher)
     }

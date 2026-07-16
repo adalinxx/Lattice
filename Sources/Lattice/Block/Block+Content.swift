@@ -24,7 +24,6 @@ public extension Block {
         var paths = ArrayTrie<ResolutionStrategy>()
         paths.set([SPEC_PROPERTY], value: .targeted)
         paths.set([TRANSACTIONS_PROPERTY], value: .recursive)
-        paths.set([CHILDREN_PROPERTY, ""], value: .list)
         return paths
     }
 
@@ -75,9 +74,9 @@ public extension Block {
 
 public extension VolumeImpl where NodeType == Block {
     /// Resolve the block content package:
-    /// block internals, chain spec, transaction trie + transaction bodies, and
-    /// the child-link trie structure. This does not resolve state Volumes,
-    /// parent/ancestor block Volumes, or child block Volumes.
+    /// block internals, chain spec, and transaction trie + transaction bodies.
+    /// This does not resolve state Volumes, parent/ancestor block Volumes, or
+    /// the independently retained child-link trie and child block Volumes.
     func resolveBlockContent(fetcher: Fetcher) async throws -> Self {
         try await resolve(paths: Block.contentResolutionPaths, fetcher: fetcher)
     }

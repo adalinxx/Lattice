@@ -8,6 +8,7 @@ public enum ChainAdmissionFailure: Error, Sendable, Equatable {
     case localVerificationFailure
     case notYetAdmissible
     case notAcceptedAtCurrentChain
+    case revisionExhausted
 }
 
 public struct SameChainPredecessorRequirement: Sendable, Equatable {
@@ -127,14 +128,12 @@ private struct PreparedAdmission: Sendable {
     enum Kind: Sendable {
         case block(StateDiff, LatticeState?)
         case evidence
-        case carrier
     }
 
-    let generation: UInt64
     let resolvedHeader: BlockHeader
     let block: Block
     let fetcher: any Fetcher
-    let contribution: VerifiedWorkContribution?
+    let contribution: VerifiedWorkContribution
     let kind: Kind
 
     var facts: ChainAdmissionBatch {
@@ -155,29 +154,16 @@ private struct PreparedAdmission: Sendable {
             )))
         case .evidence:
             break
-        case .carrier:
-            return ChainAdmissionBatch(facts: [])
         }
-        if let contribution {
-            facts.append(.work(ChainWorkFact(
-                blockHash: resolvedHeader.rawCID,
-                contribution: contribution
-            )))
-        }
+        facts.append(.work(ChainWorkFact(
+            blockHash: resolvedHeader.rawCID,
+            contribution: contribution
+        )))
         return ChainAdmissionBatch(facts: facts)
     }
 
     func store(to storer: any Storer & VolumeStorer) async throws {
         switch kind {
-        case .carrier:
-            let paths: [[String]: ResolutionStrategy] = [
-                [CHILDREN_PROPERTY, ""]: .list
-            ]
-            let carrier = try await resolvedHeader.resolve(
-                paths: paths,
-                fetcher: fetcher
-            )
-            try await carrier.store(paths: paths, storer: storer)
         case .evidence:
             return
         case .block(let stateDiff, let materializedPostState):
@@ -193,19 +179,16 @@ private struct PreparedAdmission: Sendable {
 private enum Preparation {
     case ready(PreparedAdmission)
     case result(ChainLocalBlockResult)
-    case stale
 }
 
 private enum ChainLocalAdmission {
     static func verifyChildPackage(
         _ package: ChildValidationPackage,
         child: Block,
-        childCID: String,
         context: ChainRuntimeContext
     ) async -> Result<VerifiedChildEvidence, ChainAdmissionFailure> {
         let proofResult = await package.proof.verify(
             child: child,
-            childCID: childCID,
             chainPath: context.path,
             minimumRootWork: context.minimumRootWork,
             parentContinuityLinks: package.parentContinuityLinks,
@@ -282,17 +265,15 @@ private enum ChainLocalAdmission {
             switch await verifyChildPackage(
                 childPackage,
                 child: block,
-                childCID: blockHash,
                 context: context
             ) {
             case .success(let verified):
-                contribution = verified.contribution(for: block)
+                contribution = verified.contribution
             case .failure(let failure):
                 return .result(.rejected(failure))
             }
         }
 
-        let generation = await level.chain.currentMutationGeneration()
         guard let contribution else {
             switch await validateCarrierContinuity(block: block, fetcher: fetcher) {
             case .failure(let failure):
@@ -300,14 +281,7 @@ private enum ChainLocalAdmission {
             case .success:
                 break
             }
-            return .ready(PreparedAdmission(
-                generation: generation,
-                resolvedHeader: resolvedHeader,
-                block: block,
-                fetcher: fetcher,
-                contribution: nil,
-                kind: .carrier
-            ))
+            return .result(.carrier)
         }
 
         let knownBlock = await level.chain.contains(blockHash: blockHash)
@@ -318,12 +292,7 @@ private enum ChainLocalAdmission {
         }
 
         if knownBlock {
-            let currentGeneration = await level.chain.currentMutationGeneration()
-            guard generation == currentGeneration else {
-                return .stale
-            }
             return .ready(PreparedAdmission(
-                generation: generation,
                 resolvedHeader: resolvedHeader,
                 block: block,
                 fetcher: fetcher,
@@ -353,16 +322,11 @@ private enum ChainLocalAdmission {
             )
         }
 
-        let currentGeneration = await level.chain.currentMutationGeneration()
-        guard generation == currentGeneration else {
-            return .stale
-        }
         switch transition {
         case .failure(let failure):
             return .result(.rejected(failure))
         case .success(let (stateDiff, state)):
             return .ready(PreparedAdmission(
-                generation: generation,
                 resolvedHeader: resolvedHeader,
                 block: block,
                 fetcher: fetcher,
@@ -451,18 +415,41 @@ private enum ChainLocalAdmission {
         }
     }
 
+    static func finishBootstrap(
+        context: ChainRuntimeContext,
+        resolved: (header: BlockHeader, block: Block),
+        fetcher: any Fetcher,
+        contribution: VerifiedWorkContribution,
+        transition: (StateDiff, LatticeState?),
+        storer: any Storer & VolumeStorer,
+        stage: @Sendable (ChainAdmissionBatch) async throws -> Void
+    ) async throws -> (
+        level: ChainLevel,
+        stateDiff: StateDiff,
+        materializedPostState: LatticeState?
+    ) {
+        let prepared = PreparedAdmission(
+            resolvedHeader: resolved.header,
+            block: resolved.block,
+            fetcher: fetcher,
+            contribution: contribution,
+            kind: .block(transition.0, transition.1)
+        )
+        try await prepared.store(to: storer)
+        try await stage(prepared.facts)
+        let chain = try await ChainState.restore(replaying: [prepared.facts])
+        return (
+            ChainLevel(chain: chain, context: context),
+            transition.0,
+            transition.1
+        )
+    }
+
     static func result(
         for submission: SubmissionResult,
-        prepared: PreparedAdmission
+        prepared: PreparedAdmission,
+        sameChainPredecessor: SameChainPredecessorRequirement?
     ) -> ChainLocalBlockResult {
-        let sameChainPredecessor = submission.needsPredecessorBlock
-            ? prepared.block.parent.map {
-                SameChainPredecessorRequirement(
-                    descendantCID: prepared.resolvedHeader.rawCID,
-                    predecessorCID: $0.rawCID
-                )
-            }
-            : nil
         guard let commit = submission.commit else { return .duplicate }
         let materializedPostState: LatticeState?
         if case .block(_, let state) = prepared.kind {
@@ -629,8 +616,10 @@ public extension ChainLevel {
         }
     }
 
-    /// Admit one candidate. `stage` is the node-owned durability boundary. It may
-    /// run more than once after a stale generation and must be idempotent by fact ID.
+    /// Admit one candidate. `stage` is the node-owned atomic durability
+    /// boundary: success means the whole batch is durable, while throwing means
+    /// no fact from the batch became visible. Once it succeeds, live execution
+    /// applies that exact batch without reacquisition.
     func admitBlockHeaderChainLocal(
         _ blockHeader: BlockHeader,
         fetcher: any Fetcher,
@@ -639,39 +628,39 @@ public extension ChainLevel {
         storer: any Storer & VolumeStorer,
         stage: @Sendable (ChainAdmissionBatch) async throws -> Void
     ) async throws -> ChainLocalBlockResult {
-        while true {
-            switch await ChainLocalAdmission.prepare(
-                level: self,
-                blockHeader: blockHeader,
-                fetcher: fetcher,
-                childPackage: childPackage,
-                validationContext: validationContext
-            ) {
-            case .stale:
-                continue
-            case .result(let result):
-                return result
-            case .ready(let prepared):
-                try await prepared.store(to: storer)
-                if case .carrier = prepared.kind { return .carrier }
-                try await stage(prepared.facts)
-                guard let contribution = prepared.contribution else { return .carrier }
-                guard let submission = await chain.submitBlockIfUnchanged(
-                    expectedMutationGeneration: prepared.generation,
-                    blockHeader: prepared.resolvedHeader,
-                    block: prepared.block,
-                    contribution: contribution
-                ) else {
-                    continue
-                }
-                if !submission.addedBlock && !submission.addedContribution {
-                    return .duplicate
-                }
-                return ChainLocalAdmission.result(
-                    for: submission,
-                    prepared: prepared
-                )
+        switch await ChainLocalAdmission.prepare(
+            level: self,
+            blockHeader: blockHeader,
+            fetcher: fetcher,
+            childPackage: childPackage,
+            validationContext: validationContext
+        ) {
+        case .result(let result):
+            return result
+        case .ready(let prepared):
+            try await prepared.store(to: storer)
+            guard await chain.reserveAdmissionRevision() else {
+                return .rejected(.revisionExhausted)
             }
+            do {
+                try await stage(prepared.facts)
+            } catch {
+                await chain.releaseAdmissionRevision()
+                throw error
+            }
+            guard let submission = try await chain.applyReservedStaged(
+                prepared.facts
+            ) else {
+                return .duplicate
+            }
+            let requirement = await chain.sameChainPredecessorRequirement(
+                for: prepared.resolvedHeader.rawCID
+            )
+            return ChainLocalAdmission.result(
+                for: submission,
+                prepared: prepared,
+                sameChainPredecessor: requirement
+            )
         }
     }
 
@@ -688,6 +677,63 @@ public extension ChainLevel {
             fetcher: CoalescingFetcher(source),
             childPackage: childPackage,
             validationContext: validationContext,
+            storer: storer,
+            stage: stage
+        )
+    }
+
+    /// Create the root-chain process from an externally supplied, fully
+    /// validated genesis. The runtime becomes visible only after storage and
+    /// atomic staging succeed.
+    static func bootstrap(
+        context: ChainRuntimeContext,
+        genesisHeader: BlockHeader,
+        fetcher: any Fetcher,
+        validationContext: ValidationContext = .current,
+        storer: any Storer & VolumeStorer,
+        stage: @Sendable (ChainAdmissionBatch) async throws -> Void
+    ) async throws -> (level: ChainLevel, stateDiff: StateDiff, materializedPostState: LatticeState?) {
+        guard context.isRoot else { throw ChainAdmissionFailure.protocolInvalid }
+        let resolved: (header: BlockHeader, block: Block)
+        switch await ChainLocalAdmission.resolveBlock(genesisHeader, fetcher: fetcher) {
+        case .failure(let failure): throw failure
+        case .success(let value): resolved = value
+        }
+        guard resolved.block.parent == nil, resolved.block.height == 0 else {
+            throw ChainAdmissionFailure.protocolInvalid
+        }
+        let rootHash = resolved.block.proofOfWorkHash()
+        guard workForHash(rootHash) >= context.minimumRootWork else {
+            throw ChainAdmissionFailure.protocolInvalid
+        }
+        guard resolved.block.validateProofOfWork(nexusHash: rootHash) else {
+            switch await ChainLocalAdmission.validateCarrierContinuity(
+                block: resolved.block,
+                fetcher: fetcher
+            ) {
+            case .failure(let failure): throw failure
+            case .success: throw ChainAdmissionFailure.notAcceptedAtCurrentChain
+            }
+        }
+        let transition: (StateDiff, LatticeState?)
+        switch await ChainLocalAdmission.validateGenesis(
+            block: resolved.block,
+            fetcher: fetcher,
+            context: context,
+            validationContext: validationContext
+        ) {
+        case .failure(let failure): throw failure
+        case .success(let value): transition = value
+        }
+        return try await ChainLocalAdmission.finishBootstrap(
+            context: context,
+            resolved: resolved,
+            fetcher: fetcher,
+            contribution: VerifiedWorkContribution(
+                id: resolved.header.rawCID,
+                work: workForTarget(resolved.block.target)
+            ),
+            transition: transition,
             storer: storer,
             stage: stage
         )
@@ -724,30 +770,19 @@ public extension ChainLevel {
         switch await ChainLocalAdmission.verifyChildPackage(
             childPackage,
             child: resolved.block,
-            childCID: genesisHeader.rawCID,
             context: context
         ) {
         case .success(let verified): evidence = verified
         case .failure(let failure): throw failure
         }
-        guard let contribution = evidence.contribution(for: resolved.block) else {
+        guard let contribution = evidence.contribution else {
             switch await ChainLocalAdmission.validateCarrierContinuity(
                 block: resolved.block,
                 fetcher: fetcher
             ) {
             case .failure(let failure): throw failure
-            case .success: break
+            case .success: throw ChainAdmissionFailure.notAcceptedAtCurrentChain
             }
-            let carrier = PreparedAdmission(
-                generation: 0,
-                resolvedHeader: resolved.header,
-                block: resolved.block,
-                fetcher: fetcher,
-                contribution: nil,
-                kind: .carrier
-            )
-            try await carrier.store(to: storer)
-            throw ChainAdmissionFailure.notAcceptedAtCurrentChain
         }
         let transition: (StateDiff, LatticeState?)
         switch await ChainLocalAdmission.validateGenesis(
@@ -759,20 +794,14 @@ public extension ChainLevel {
         case .failure(let failure): throw failure
         case .success(let value): transition = value
         }
-        let prepared = PreparedAdmission(
-            generation: 0,
-            resolvedHeader: resolved.header,
-            block: resolved.block,
+        return try await ChainLocalAdmission.finishBootstrap(
+            context: context,
+            resolved: resolved,
             fetcher: fetcher,
             contribution: contribution,
-            kind: .block(transition.0, transition.1)
+            transition: transition,
+            storer: storer,
+            stage: stage
         )
-        try await prepared.store(to: storer)
-        try await stage(prepared.facts)
-        let chain = ChainState.fromVerifiedGenesis(
-            block: resolved.block,
-            contribution: contribution
-        )
-        return (ChainLevel(chain: chain, context: context), transition.0, transition.1)
     }
 }

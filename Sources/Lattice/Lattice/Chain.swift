@@ -128,25 +128,26 @@ public struct SubmissionResult: Sendable {
     public let addedBlock: Bool
     public let addedContribution: Bool
     public let extendsMainChain: Bool
-    public let needsPredecessorBlock: Bool
     public let commit: ChainCommit?
 
     init(
         addedBlock: Bool,
         addedContribution: Bool = false,
         extendsMainChain: Bool,
-        needsPredecessorBlock: Bool,
         commit: ChainCommit? = nil
     ) {
         self.addedBlock = addedBlock
         self.addedContribution = addedContribution
         self.extendsMainChain = extendsMainChain
-        self.needsPredecessorBlock = needsPredecessorBlock
         self.commit = commit
     }
 
     public static func discarded() -> Self {
-        SubmissionResult(addedBlock: false, addedContribution: false, extendsMainChain: false, needsPredecessorBlock: false)
+        SubmissionResult(
+            addedBlock: false,
+            addedContribution: false,
+            extendsMainChain: false
+        )
     }
 }
 
@@ -331,9 +332,12 @@ public actor ChainState {
 
     var mainChainBlockAtIndex: [UInt64: String]
     var blockTimestamps: [String: Int64]
-    /// Advances for every visible chain insertion or replacement. Admission
-    /// captures it before node persistence and refuses a stale mutation.
+    /// Advances for every successful consensus mutation.
     var mutationGeneration: UInt64
+    /// Capacity held across the node's asynchronous stage boundary. These
+    /// reservations are fungible and disappear on restart; staged facts replay
+    /// against the same pre-stage revision floor.
+    var reservedAdmissionRevisions: UInt64
 
     public private(set) var tipSnapshot: TipBlockSnapshot?
     var tipSnapshotsByHash: [String: TipBlockSnapshot]
@@ -395,6 +399,7 @@ public actor ChainState {
         }
         self.blockTimestamps = blockTimestamps
         self.mutationGeneration = mutationGeneration
+        self.reservedAdmissionRevisions = 0
         self.mainChainBlockAtIndex = [:]
         for meta in self.hashToBlock.values {
             let contributions = meta.workContributions.values
@@ -422,10 +427,6 @@ public actor ChainState {
             }
             self.mainChainBlockAtIndex[height] = hash
         }
-    }
-
-    func currentMutationGeneration() -> UInt64 {
-        mutationGeneration
     }
 
     package static func fromGenesis(
@@ -637,7 +638,7 @@ public actor ChainState {
     /// Re-read a live provider whose cached snapshot changed.
     @discardableResult
     public func reevaluateForkChoice() -> ChainCommit? {
-        guard mutationGeneration < .max else { return nil }
+        guard hasUnreservedMutationCapacity else { return nil }
         let inheritedChanged = refreshInheritedWork()
         let canonicalChange = projectCanonicalChain()
         guard inheritedChanged || canonicalChange != nil else { return nil }
@@ -798,6 +799,35 @@ public actor ChainState {
         hashToBlock[blockHash] != nil
     }
 
+    /// Same-chain acquisition needs are holes in the accepted graph, not
+    /// separately persisted relationship state.
+    public func missingSameChainPredecessors() -> [SameChainPredecessorRequirement] {
+        hashToBlock.values.compactMap { sameChainPredecessorRequirement(for: $0) }
+            .sorted {
+                if $0.descendantCID != $1.descendantCID {
+                    return $0.descendantCID < $1.descendantCID
+                }
+                return $0.predecessorCID < $1.predecessorCID
+            }
+    }
+
+    func sameChainPredecessorRequirement(
+        for descendantCID: String
+    ) -> SameChainPredecessorRequirement? {
+        hashToBlock[descendantCID].flatMap(sameChainPredecessorRequirement(for:))
+    }
+
+    private func sameChainPredecessorRequirement(
+        for block: BlockMeta
+    ) -> SameChainPredecessorRequirement? {
+        guard let parent = block.parentBlockHash,
+              hashToBlock[parent] == nil else { return nil }
+        return SameChainPredecessorRequirement(
+            descendantCID: block.blockHash,
+            predecessorCID: parent
+        )
+    }
+
     /// Whether `blockHash` belongs to a complete accepted path ending at one of
     /// this path-defined chain's admitted genesis roots. Parent processes issue
     /// cross-process facts only for blocks with validated ancestry.
@@ -946,7 +976,7 @@ public actor ChainState {
             return addWorkContribution(contribution, to: blockHash)
         }
 
-        guard mutationGeneration < .max else { return .discarded() }
+        guard hasUnreservedMutationCapacity else { return .discarded() }
 
         let result = insertBlock(
             input: input,
@@ -964,7 +994,6 @@ public actor ChainState {
             addedBlock: true,
             addedContribution: result.addedContribution,
             extendsMainChain: extendsMainChain,
-            needsPredecessorBlock: result.needsPredecessorBlock,
             commit: (canonicalChange ?? ChainCommit(tipHash: chainTip))
                 .atRevision(mutationGeneration)
         )
@@ -1029,8 +1058,7 @@ public actor ChainState {
             return SubmissionResult(
                 addedBlock: true,
                 addedContribution: addedContribution,
-                extendsMainChain: false,
-                needsPredecessorBlock: false
+                extendsMainChain: false
             )
         }
 
@@ -1038,16 +1066,14 @@ public actor ChainState {
             return SubmissionResult(
                 addedBlock: true,
                 addedContribution: addedContribution,
-                extendsMainChain: false,
-                needsPredecessorBlock: true
+                extendsMainChain: false
             )
         }
 
         return SubmissionResult(
             addedBlock: true,
             addedContribution: addedContribution,
-            extendsMainChain: false,
-            needsPredecessorBlock: false
+            extendsMainChain: false
         )
     }
 
@@ -1375,7 +1401,7 @@ public actor ChainState {
         let addsCoverage = existing?.blockHashes.contains(blockHash) != true
         let strengthensGrind = contribution.work > (existing?.contribution.work ?? .zero)
         guard addsCoverage || strengthensGrind else { return .discarded() }
-        guard mutationGeneration < .max else { return .discarded() }
+        guard hasUnreservedMutationCapacity else { return .discarded() }
         applyLocalContribution(contribution, to: blockHash)
         applyForkChoiceContribution(contribution, to: blockHash)
         mutationGeneration += 1
@@ -1389,7 +1415,6 @@ public actor ChainState {
             addedBlock: false,
             addedContribution: true,
             extendsMainChain: false,
-            needsPredecessorBlock: false,
             commit: (canonicalChange ?? ChainCommit(tipHash: chainTip))
                 .atRevision(mutationGeneration)
         )
@@ -1399,39 +1424,34 @@ public actor ChainState {
         workByGrind[id]
     }
 
-    func submitBlockIfUnchanged(
-        expectedMutationGeneration: UInt64,
-        blockHeader: BlockHeader,
-        block: Block,
-        contribution: VerifiedWorkContribution
-    ) -> SubmissionResult? {
-        guard mutationGeneration == expectedMutationGeneration else { return nil }
-        return submitBlock(
-            blockHeader: blockHeader,
-            block: block,
-            contribution: contribution
-        )
-    }
-
-    /// Rebuild one already-durable, locally authenticated admission fact. This is
-    /// a recovery API: callers must authenticate and persist the fact before
-    /// invoking it, just as live admission does before mutating this actor.
-    public func replay(_ batch: ChainAdmissionBatch) throws -> ChainCommit? {
+    /// Apply one already-durable, locally authenticated admission batch. Live
+    /// admission and recovery share this reducer so staging is the only
+    /// linearization point.
+    func applyStaged(_ batch: ChainAdmissionBatch) throws -> SubmissionResult? {
         guard let trusted = TrustedAdmissionBatch(batch) else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
         if let input = trusted.block {
             if let existing = hashToBlock[input.blockHash] {
-                guard matches(existing, input: input),
-                      let existingSnapshot = tipSnapshotsByHash[input.blockHash],
-                      existingSnapshot == input.snapshot else {
+                guard matchesGraph(existing, input: input),
+                      blockTimestamps[input.blockHash].map({
+                          $0 == input.timestamp
+                      }) ?? true,
+                      tipSnapshotsByHash[input.blockHash].map({
+                          $0 == input.snapshot
+                      }) ?? true else {
                     throw ChainStateRestoreError.corruptConsensusGraph
                 }
                 if let existingRecord = workContribution(id: trusted.contribution.id),
                    existingRecord.blockHashes.contains(input.blockHash),
                    existingRecord.contribution.work >= trusted.contribution.work {
+                    hydrateMetadata(from: input)
                     return nil
                 }
+                guard hasUnreservedMutationCapacity else {
+                    throw ChainStateRestoreError.corruptConsensusGraph
+                }
+                hydrateMetadata(from: input)
                 let submission = addWorkContribution(
                     trusted.contribution,
                     to: input.blockHash
@@ -1439,13 +1459,13 @@ public actor ChainState {
                 guard submission.addedContribution else {
                     throw ChainStateRestoreError.corruptConsensusGraph
                 }
-                return submission.commit
+                return submission
             }
             let submission = submitBlock(input: input, contribution: trusted.contribution)
             guard submission.addedBlock, submission.addedContribution else {
                 throw ChainStateRestoreError.corruptConsensusGraph
             }
-            return submission.commit
+            return submission
         }
 
         let blockHash = trusted.workBlockHash
@@ -1462,14 +1482,55 @@ public actor ChainState {
         guard submission.addedContribution else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
-        return submission.commit
+        return submission
     }
 
-    private func matches(_ meta: BlockMeta, input: ConsensusBlockInput) -> Bool {
+    /// Rebuild one already-durable admission fact during recovery. Callers must
+    /// authenticate and persist the fact before invoking this public seam.
+    public func replay(_ batch: ChainAdmissionBatch) throws -> ChainCommit? {
+        try applyStaged(batch)?.commit
+    }
+
+    /// Reserve one distinct U64 commit revision before the node stages a batch.
+    /// Other actor mutations must leave this capacity available until the batch
+    /// either fails staging or consumes the reservation synchronously.
+    func reserveAdmissionRevision() -> Bool {
+        guard hasUnreservedMutationCapacity else { return false }
+        reservedAdmissionRevisions += 1
+        return true
+    }
+
+    func releaseAdmissionRevision() {
+        precondition(reservedAdmissionRevisions > 0)
+        reservedAdmissionRevisions -= 1
+    }
+
+    func applyReservedStaged(
+        _ batch: ChainAdmissionBatch
+    ) throws -> SubmissionResult? {
+        guard reservedAdmissionRevisions > 0 else {
+            throw ChainStateRestoreError.corruptConsensusGraph
+        }
+        reservedAdmissionRevisions -= 1
+        return try applyStaged(batch)
+    }
+
+    private var hasUnreservedMutationCapacity: Bool {
+        reservedAdmissionRevisions < UInt64.max - mutationGeneration
+    }
+
+    private func matchesGraph(_ meta: BlockMeta, input: ConsensusBlockInput) -> Bool {
         meta.blockHash == input.blockHash
             && meta.parentBlockHash == input.parentBlockHash
             && meta.blockHeight == input.blockHeight
-            && blockTimestamps[input.blockHash] == input.timestamp
+    }
+
+    private func hydrateMetadata(from input: ConsensusBlockInput) {
+        blockTimestamps[input.blockHash] = input.timestamp
+        tipSnapshotsByHash[input.blockHash] = input.snapshot
+        if chainTip == input.blockHash {
+            tipSnapshot = input.snapshot
+        }
     }
 
     // MARK: - Index Management
