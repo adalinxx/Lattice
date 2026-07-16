@@ -1,236 +1,176 @@
-# Cross-Chain Transfer Protocol: Formal Specification
+# Cross-Chain Transfer Guide
 
-## Overview
+This is a non-normative walkthrough of the parent-child value exchange. Exact
+types and consensus rules live in [specification sections 6-8](spec.md#6-state-transitions).
 
-This document specifies the protocol for trustless cross-chain value transfer between parent and child chains in the Lattice hierarchy. The protocol requires no trusted intermediaries -- all verification is performed via Sparse Merkle proofs against state roots committed in blocks.
+The protocol coordinates two independently validated chains without giving
+either process authority over the other's fork choice.
 
-Each chain process verifies those proofs locally. A parent or sibling peer may
-supply the bytes, but its current canonical tip is not authority over the
-receiving chain and a reorganization does not revoke an already verified proof
-fact.
+## Roles
 
-## Definitions
+For a child chain `C` and its direct parent `P`:
 
-- **N**: Nexus -- the first of the outermost chains (the merged-mining anchor; not a unique root -- other outermost chains may exist)
-- **P**: Parent chain (any chain in the hierarchy)
-- **C**: Child chain (direct descendant of P)
-- **B[i]**: Block at index `i` on a given chain
-- **prevState(B)**: The confirmed state entering block B (equals postState of B's parent block)
-- **postState(B)**: The state after applying B's transactions to prevState(B)
-- **parentState(B)**: For non-root blocks, a committed snapshot of the parent chain's state
-- **SMT**: Sparse Merkle Tree
+| Role | Action |
+|---|---|
+| demander | Authorizes the child deposit and receives the requested payment on `P` |
+| withdrawer | Pays the demander on `P`, then authorizes spending the locked value on `C` |
+| child process | Validates its deposit and the matching parent receipt |
+| parent process | Validates only the signed receipt payment in its own state |
 
-## Types
+A block may fund deposits with authorized debits across several transactions.
+The protocol requires the demander to sign the deposit, but does not bind that
+deposit to one account or to a transaction-local debit.
 
-### DepositAction
+## The Three Actions
 
-```
-DepositAction = {
-    nonce:           uint128,          // Unique identifier
-    demander:        CID(PublicKey),   // Recipient on the parent chain
-    amountDemanded:  uint64,           // Amount to transfer on the parent chain
-    amountDeposited: uint64            // Amount locked on the child chain
+```text
+DepositAction {
+    nonce, demander, amountDemanded, amountDeposited
+}
+
+ReceiptAction {
+    withdrawer, nonce, demander, amountDemanded, directory
+}
+
+WithdrawalAction {
+    withdrawer, nonce, demander, amountDemanded, amountWithdrawn
 }
 ```
 
-A deposit locks `amountDeposited` tokens on the child chain and declares that `demander` should receive `amountDemanded` tokens on the parent chain. The deposit supports variable-rate transfers: `amountDeposited` and `amountDemanded` may differ, enabling exchange rate adjustments between chains.
+`amountDeposited` is the child-chain amount locked. `amountDemanded` is the
+parent-chain payment. They may differ.
 
-### ReceiptAction
+The shared identities are:
 
-```
-ReceiptAction = {
-    withdrawer:     CID(PublicKey),   // Original depositor (will withdraw on child)
-    nonce:          uint128,          // Must match the deposit nonce
-    demander:       CID(PublicKey),   // Recipient (credited on parent)
-    amountDemanded: uint64,           // Amount transferred on parent
-    directory:      string            // Child chain where the deposit originated
-}
+```text
+DepositKey = demander / amountDemanded / nonce
+ReceiptKey = directory / demander / amountDemanded / nonce
 ```
 
-A receipt on the parent chain acknowledges a deposit on the child chain. It derives two account actions: debiting `withdrawer` by `amountDemanded` and crediting `demander` by `amountDemanded`.
+`directory` is the child's single separator-free edge label under this parent,
+not its absolute chain path.
 
-### WithdrawalAction
+The receipt value stores the withdrawer's public-key CID. The child uses that
+value to ensure only the party that paid on the parent can authorize withdrawal.
 
-```
-WithdrawalAction = {
-    withdrawer:     CID(PublicKey),   // Must match the receipt's withdrawer
-    nonce:          uint128,          // Must match the deposit nonce
-    demander:       CID(PublicKey),   // Must match the deposit's demander
-    amountDemanded: uint64,           // Must match the deposit's amountDemanded
-    amountWithdrawn: uint64           // Must exactly match the stored amountDeposited
-}
-```
+## The Exchange
 
-A withdrawal on the child chain releases the originally deposited tokens. The `amountWithdrawn` must exactly match the `amountDeposited` stored in the deposit state -- this is verified at consensus via state proof.
+```text
+child C                                      parent P
 
-### DepositKey
+1. signed deposit
+   insert DepositKey -> amountDeposited
+                         2. signed receipt
+                            debit withdrawer by amountDemanded
+                            credit demander by amountDemanded
+                            insert ReceiptKey -> withdrawer
 
-```
-DepositKey = demander || "/" || amountDemanded || "/" || nonce
+3. a later parent carrier commits a prevState containing the receipt
+   child block commits that state as parentState
 
-Serialization: "demander/amountDemanded/nonce"
-```
-
-### ReceiptKey
-
-```
-ReceiptKey = directory || "/" || demander || "/" || amountDemanded || "/" || nonce
-
-Serialization: "directory/demander/amountDemanded/nonce"
+4. signed withdrawal
+   prove DepositKey holds amountWithdrawn
+   prove ReceiptKey holds withdrawer in parentState
+   replace deposit value with permanent zero marker
+   add amountWithdrawn to C's block-wide credit budget
+   use explicit AccountAction credits for recipients
 ```
 
-## Invariants
+### 1. Deposit On The Child
 
-**INV-1: State continuity.** For all blocks B with parent block B':
-```
-prevState(B) == postState(B')
-```
+The deposit transaction must satisfy:
 
-**INV-2: Deposit uniqueness.** For any DepositKey K, at most one entry exists in depositState:
-```
-forall K: |{ entry in depositState | entry.key == K }| <= 1
-```
+- `demander` signed the transaction;
+- `amountDeposited > 0` and `amountDemanded > 0`;
+- the `DepositKey` is absent before insertion;
+- block-wide balance conservation funds aggregate deposits.
 
-**INV-3: Receipt uniqueness.** For any ReceiptKey K, at most one entry exists in receiptState:
-```
-forall K: |{ entry in receiptState | entry.key == K }| <= 1
-```
+The child inserts `amountDeposited` at the key. This reserves the identity and
+removes that amount from available child-chain value until a valid withdrawal.
+The base protocol has no timeout, cancellation, or refund action. Without a
+matching parent receipt and withdrawal, the deposit remains locked; applications
+must account for that liveness tradeoff before creating a deposit.
 
-**INV-4: Balance conservation.** For any block B at index i with spec S:
-```
-totalCredits + totalDeposited <= totalDebits + S.reward(i) + totalWithdrawn
-```
+### 2. Receipt On The Parent
 
-**INV-5: Withdrawal exactness.** The stored amountDeposited must exactly match the declared amountWithdrawn:
-```
-depositState[key] == withdrawalAction.amountWithdrawn
-```
+The receipt transaction must satisfy:
 
-## Protocol Steps
+- `withdrawer` signed the transaction;
+- `amountDemanded > 0`;
+- the `ReceiptKey` is absent before insertion;
+- the withdrawer can fund the derived debit.
 
-### Step 1: Deposit (on the child chain)
+The parent derives an equal debit and credit:
 
-**Preconditions:**
-- Transaction is included in a block on the child chain
-- Transaction body contains a `DepositAction`
-- `demander` is in `tx.body.signers` (authorization)
-- `amountDeposited > 0` and `amountDemanded > 0`
-
-**State transition on child chain C:**
-
-```
-// Deposit lock
-depositKey = DepositKey(demander, amountDemanded, nonce)
-C.depositState' = C.depositState.insert(depositKey, amountDeposited)
+```text
+withdrawer -= amountDemanded
+demander   += amountDemanded
 ```
 
-**Proof obligation:**
-- DepositKey insertion proof: key does NOT exist in depositState (prevents duplicate deposits)
+The parent does **not** verify the child deposit when admitting the receipt. It
+validates its own authorized transfer and records the claimant identity. A
+receipt without a deposit cannot authorize child value because withdrawal still
+requires the deposit proof. It is not free: it still performs the signed parent
+payment and consumes parent state.
 
-**Effect on balance conservation (INV-4):**
-- `totalDeposited` increases by `amountDeposited`
-- The depositor's account is not debited -- the tokens are "locked" by reducing the available balance pool in the conservation equation
+This separation is the chain boundary in action. The parent need not execute,
+trust, or choose the child chain.
 
-### Step 2: Receipt (on the parent chain)
+### 3. Withdrawal On The Child
 
-**Preconditions:**
-- Transaction is included in a block on the parent chain
-- Transaction body contains a `ReceiptAction`
-- `withdrawer` is in `tx.body.signers`
-- The deposit is verifiable via the child chain's state root committed in the child block embedded in the parent block
+The withdrawal transaction must satisfy:
 
-**State transition on parent chain P:**
+- `withdrawer` signed the transaction;
+- the child `prevState.depositState` contains the matching nonzero deposit;
+- `parentState.receiptState` contains the matching receipt and withdrawer;
+- `amountWithdrawn` exactly equals the stored `amountDeposited`.
 
-```
-// Receipt record
-receiptKey = ReceiptKey(directory, demander, amountDemanded, nonce)
-P.receiptState' = P.receiptState.insert(receiptKey, CID(withdrawer.publicKey))
+The child then replaces the deposit value with zero and adds the exact deposited
+amount to the block-wide credit budget. This does not credit the withdrawer
+automatically; an explicit `AccountAction` determines the recipient. The
+permanent zero marker prevents both a second withdrawal and recreation of the
+same deposit identity.
 
-// Derived account actions
-AccountAction(owner: withdrawer, delta: -amountDemanded)
-AccountAction(owner: demander, delta: +amountDemanded)
-```
+## Why `parentState` Matters
 
-**Proof obligation:**
-- ReceiptKey insertion proof: key does NOT exist in receiptState (prevents duplicate receipts)
+For a child block nested under a parent carrier:
 
-**Effect on balance conservation (INV-4):**
-- The derived account actions produce equal debits and credits, netting to zero
-
-### Step 3: Withdrawal (on the child chain)
-
-**Preconditions:**
-- Transaction is included in a block on the child chain
-- Transaction body contains a `WithdrawalAction`
-- `withdrawer` is in `tx.body.signers`
-- Corresponding deposit exists in `prevState.depositState`
-- Corresponding receipt exists in `parentState.receiptState`
-- Stored `amountDeposited` equals declared `amountWithdrawn`
-
-**State transition on child chain C:**
-
-```
-// Permanent deposit nullifier
-depositKey = DepositKey(demander, amountDemanded, nonce)
-C.depositState'[depositKey] = 0
+```text
+child.parentState == carrier.prevState
 ```
 
-**Proof obligations:**
-- Deposit mutation proof: key stores the original nonzero deposited amount
-- Receipt mutation proof: corresponding ReceiptKey EXISTS in parentState.receiptState (proves the parent acknowledged the deposit)
-- Receipt withdrawer verification: the `CID(PublicKey)` stored in the receipt must match the withdrawal's `withdrawer`
+The receipt must therefore already exist in the carrier's entering state. A
+withdrawal is normally committed by a parent block after the block that created
+the receipt.
 
-**Effect on balance conservation (INV-4):**
-- `totalWithdrawn` increases by `amountWithdrawn`
-- The tokens return to the available balance pool
+`parentState` is a state CID, not a parent-block CID. The child validates the
+state proof supplied for its own candidate. It does not query a canonical parent
+tip or infer a parent block from the state root.
 
 ## Variable-Rate Transfers
 
-The protocol supports variable-rate cross-chain transfers where `amountDeposited` on the child chain differs from `amountDemanded` on the parent chain. This enables:
+The parent payment and child withdrawal use different quantities:
 
-- **Exchange rate adjustments**: A child chain with different token economics can define its own exchange rate to the parent
-- **Over-collateralized transfers**: The depositor can lock more than is demanded. Because withdrawal returns exactly `amountDeposited` (INV-5), the surplus is *not* a miner fee and is not destroyed -- it is released back to the withdrawer on withdrawal; the demand/deposit spread is an exchange-rate artifact, distinct from the protocol `body.fee`
+- `amountDemanded`: parent value paid by the withdrawer;
+- `amountDeposited`: child value later returned to a block's credit budget.
 
-The withdrawal step verifies that `amountWithdrawn == amountDeposited` (the stored value), ensuring the exact deposited amount is returned regardless of the demanded amount.
+This permits an agreed exchange rate between the chains. Consensus does not
+calculate that rate; it only enforces the declared amounts, signatures, state
+proofs, and exact withdrawal.
 
 ## Security Properties
 
-### Property 1: No value creation
+- **No duplicate deposit or receipt.** Both identities enter their trees with
+  insertion proofs.
+- **No unauthorized parent payment.** The debited withdrawer signs the receipt.
+- **No withdrawal from a receipt alone.** The child requires both deposit and
+  receipt proofs.
+- **No unauthorized withdrawal.** The receipt proves the authorizing
+  withdrawer's key CID.
+- **No over-withdrawal.** The requested withdrawal must equal the stored deposit.
+- **No replay after withdrawal.** The deposit becomes a permanent spent marker.
+- **No cross-path replay.** The signed transaction envelope commits `chainPath`.
 
-The balance equation guarantees that credits cannot exceed debits plus block reward plus the net cross-chain flow. Deposits reduce available balance; withdrawals increase it. The net is always zero across the complete deposit-receipt-withdrawal lifecycle.
-
-### Property 2: No double-deposit
-
-DepositKey uniqueness is enforced by insertion proofs. A deposit with the same (demander, amountDemanded, nonce) tuple cannot be inserted twice.
-
-### Property 3: No double-withdrawal
-
-Withdrawals replace the deposit value with zero. Valid deposits are nonzero and
-use insertion proofs, so the same key can neither be withdrawn again nor
-recreated after it is spent.
-
-### Property 4: No over-withdrawal
-
-The stored `amountDeposited` must exactly match the declared `amountWithdrawn`. The state proof verifies this at consensus. An attacker cannot claim more than was deposited.
-
-### Property 5: No forged receipts
-
-Receipt verification checks `parentState.receiptState`. The `parentState` is committed in the child block's proof-of-work hash. Fabricating a receipt would require controlling the parent chain's hashrate to produce a block with a forged `parentState`.
-
-### Property 6: Replay protection
-
-Each step uses Sparse Merkle proofs:
-- Deposit: insertion proof (DepositKey must not exist) -- prevents duplicate deposits
-- Receipt: insertion proof (ReceiptKey must not exist) -- prevents duplicate receipts
-- Withdrawal: mutation proof (DepositKey must hold its original nonzero amount,
-  then becomes zero) -- prevents double-withdrawal and key recreation
-
-Cross-chain replay is further prevented by `chainPath` -- each transaction declares the exact chain hierarchy path it targets.
-
-### Property 7: Withdrawer verification
-
-The receipt stores `CID(withdrawer.publicKey)`. On withdrawal, the child chain verifies that the withdrawer matches the receipt. This prevents an unauthorized party from claiming the deposited tokens.
-
-## Miner Incentives
-
-Miners are incentivized to include cross-chain transfer transactions through the explicit `body.fee` on each transaction. Receipt transactions are particularly profitable because they require a signer (the withdrawer) who pays fees for the parent-chain account transfer.
+Parent and child canonical pointers are not proof inputs. A provider may supply
+the necessary bytes, but each chain process verifies its own state and consensus
+facts before they can affect acceptance.
