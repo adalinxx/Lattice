@@ -14,4 +14,40 @@ jobs:
       - uses: actions/checkout@v4
       - run: swift --version
       - run: swift build
-      - run: swift test
+      - run: swift test --enable-code-coverage
+      - name: Enforce source coverage
+        run: |
+          coverage=$(swift test --show-codecov-path)
+          percent=$(jq -r '
+            [.data[].files[]
+              | select(.filename | test("(^|/)Sources/Lattice/"))
+              | .summary.lines]
+            | (map(.covered) | add) * 100 / (map(.count) | add)
+          ' "$coverage")
+          critical_stats=$(jq -c '
+            ["Lattice/Chain.swift",
+             "Lattice/WorkSum.swift",
+             "State/ChainStatePersistence.swift",
+             "Lattice/ChainLocalAdmission.swift",
+             "Block/ChildBlockProof.swift"] as $critical
+            | [.data[].files[]
+                | .filename as $filename
+                | select(any($critical[]; . as $path
+                    | $filename | endswith("Sources/Lattice/" + $path)))
+                | .summary.lines]
+            | if length == ($critical | length)
+              then {
+                combined: ((map(.covered) | add) * 100 / (map(.count) | add)),
+                minimum: (map(.covered * 100 / .count) | min)
+              }
+              else error("missing consensus-critical coverage data")
+              end
+          ' "$coverage")
+          critical_percent=$(printf '%s' "$critical_stats" | jq -r .combined)
+          critical_floor=$(printf '%s' "$critical_stats" | jq -r .minimum)
+          echo "Lattice source line coverage: $percent%"
+          echo "Consensus-critical line coverage: $critical_percent%"
+          echo "Lowest consensus-critical file coverage: $critical_floor%"
+          awk -v percent="$percent" -v critical_percent="$critical_percent" \
+            -v critical_floor="$critical_floor" \
+            'BEGIN { exit percent < 90 || critical_percent < 90 || critical_floor < 85 }'

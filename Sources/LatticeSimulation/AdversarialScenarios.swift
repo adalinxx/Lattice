@@ -11,18 +11,10 @@ import UInt256
 // choice is never reimplemented here; we only build topologies, release blocks
 // into the real chain, and measure the resulting reorg/revenue/stall outcomes.
 //
-// Merged-mining economics: a miner targets the EASIEST subscribed-chain
-// target with opt-in, INDEPENDENT per-chain PoW validation. The attacker's effective
-// hashrate against any one chain is therefore the fraction of *that chain's*
-// subscribed hashrate it controls — there is no nexus-anchored amplification. This is
-// not asserted: `derivePerChainAttackerFraction` DERIVES it through the real per-chain
-// PoW gate (`powClears` == `Block.validateProofOfWork(nexusHash:)`), Monte-Carloing the
-// easiest-target shared-solution stream against each chain's own target and reading off
-// the attacker's share of the blocks that land on the target chain. That derivation
-// returns exactly the attacker's share of the target chain's OWN subscribers, regardless
-// of the other chains' targets (no amplification) — and that derived value is the `f` the
-// curves below are swept over. So `f` is the per-chain controlled-hashrate fraction, and
-// the curves are per-chain economic-security curves under independent validation.
+// These curves begin after admission: `f` is the attacker's share of the verified
+// root-grind contributions accepted by this chain. Exact path proofs, the setup-wide
+// root-work floor, and per-chain target classification happen before these local fork-
+// choice scenarios. Parent canonicity and sibling-chain state are never inputs.
 
 public struct DeepReorgPoint: Codable, Equatable, Sendable {
     public let hashrateFraction: Double
@@ -36,8 +28,8 @@ public struct DeepReorgPoint: Codable, Equatable, Sendable {
     public let meanReorgDepth: Double
     /// Deepest reorg observed across the trials (the worst-case achievable depth).
     public let maxReorgDepth: Int
-    /// Fraction of trials in which the released private branch out-worked the honest
-    /// segment and the real `checkForReorg` fired.
+    /// Fraction of trials in which the released private branch won fork choice and the
+    /// real canonical projection changed.
     public let reorgProbability: Double
     public let trials: Int
 }
@@ -112,88 +104,6 @@ extension LatticeConsensusSimulator {
         )
     }
 
-    // MARK: Merged-mining economics — derive the per-chain attacker fraction
-
-    /// A subscribed chain in the merged-mining tree: its own PoW `target` (a block clears it
-    /// iff `target >= sharedHash`, mirroring `Block.validateProofOfWork(nexusHash:)`) and the
-    /// hashrate that voluntarily subscribes to it, split into honest and attacker shares.
-    public struct SubscribedChain: Sendable {
-        public let name: String
-        /// This chain's PoW target as a 64-bit word; a shared solution clears it iff
-        /// `target >= hash` (`Block.validateProofOfWork(nexusHash:)`). Modelled in the 64-bit
-        /// range so the derivation drives the real gate without 256-bit overflow.
-        public let targetWord: UInt64
-        public let honestHashrate: Double
-        public let attackerHashrate: Double
-        /// The target as a `UInt256`, the type the real PoW gate compares.
-        public var target: UInt256 { UInt256(targetWord) }
-        public init(name: String, targetWord: UInt64, honestHashrate: Double, attackerHashrate: Double) {
-            self.name = name
-            self.targetWord = targetWord
-            self.honestHashrate = honestHashrate
-            self.attackerHashrate = attackerHashrate
-        }
-    }
-
-    /// A shared PoW solution clears a chain iff that chain's own target admits its hash —
-    /// `target >= hash`, the exact polarity of `Block.validateProofOfWork(nexusHash:)`. Reused
-    /// here so the derived merged-mining fraction is grounded in the real per-chain validation
-    /// gate, not a re-statement of it.
-    static func powClears(target: UInt256, hash: UInt256) -> Bool {
-        target >= hash
-    }
-
-    /// Derives the attacker's EFFECTIVE block-production fraction against `chain` under the
-    /// corrected merged-mining model, grounded in the real per-chain PoW-acceptance
-    /// primitive rather than asserted as the unit-work abstraction. The miner searches the
-    /// EASIEST target in the subscribed `tree`, so shared solutions arrive uniformly under the
-    /// easiest target; each solution is submitted to every chain and accepted INDEPENDENTLY iff
-    /// it clears that chain's OWN target (`powClears` == `validateProofOfWork(nexusHash:)`).
-    /// Participation is opt-in, so a chain only ever sees its own subscribers' solutions. We
-    /// Monte-Carlo the shared-hash stream (seeded, deterministic), attribute each solution to
-    /// honest/attacker by their share of `chain`'s subscribed hashrate, and count the ones that
-    /// independently clear `chain` via the real gate. The returned attacker fraction is the
-    /// attacker's share of the blocks that actually land on `chain` — and it comes out equal to
-    /// its share of `chain`'s OWN subscribed hashrate, INDEPENDENT of the other chains' targets:
-    /// there is no nexus-anchored amplification. That derived fraction is the `f` the per-chain
-    /// economic-security curves below are swept over.
-    public static func derivePerChainAttackerFraction(
-        chain: SubscribedChain,
-        tree: [SubscribedChain],
-        seed: UInt64 = defaultSeed,
-        samples: Int = 100_000
-    ) -> Double {
-        precondition(tree.contains { $0.name == chain.name }, "chain must be subscribed in its own tree")
-        let subscribed = chain.honestHashrate + chain.attackerHashrate
-        guard subscribed > 0 else { return 0 }
-        let attackerShareOfSubscribers = chain.attackerHashrate / subscribed
-        // The miner searches the EASIEST (largest) target in the tree, so shared-solution
-        // hashes arrive uniformly across `[0, easiest]`. We model that hash stream as uniform
-        // 64-bit draws and set chain targets in the same range; the per-chain gate is the real
-        // `target >= hash` test. A chain with a harder (smaller) target than the search floor
-        // only accepts the subset of solutions that also fall under its own target — the rest
-        // are valid for easier chains only and confer nothing here (independent validation).
-        let easiest = tree.map { $0.targetWord }.max() ?? chain.targetWord
-        var rng = AdversarialRNG(seed: seed ^ 0x6E_E207_2190_0000 ^ fractionSalt(attackerShareOfSubscribers))
-        var attackerAccepted = 0
-        var totalAccepted = 0
-        for _ in 0..<samples {
-            // Draw a shared solution under the easiest search floor (uniform in [0, easiest])
-            // and attribute it to the attacker with probability = its share of THIS chain's
-            // subscribers (opt-in: only this chain's subscribers submit to this chain).
-            let hashWord = easiest == UInt64.max ? rng.next() : rng.next() % (easiest &+ 1)
-            let fromAttacker = rng.bernoulli(attackerShareOfSubscribers)
-            // Independent per-chain validation: accept iff it clears THIS chain's own target
-            // via the real `validateProofOfWork` polarity (`target >= hash`).
-            if powClears(target: UInt256(chain.targetWord), hash: UInt256(hashWord)) {
-                totalAccepted += 1
-                if fromAttacker { attackerAccepted += 1 }
-            }
-        }
-        guard totalAccepted > 0 else { return 0 }
-        return Double(attackerAccepted) / Double(totalAccepted)
-    }
-
     // MARK: (a) Deep reorg
 
     /// Common fork root with an honest segment and a privately-withheld attacker branch.
@@ -228,8 +138,9 @@ extension LatticeConsensusSimulator {
 
             // Build the real topology: G -> M1..M_honest (honest main) and
             //                          G -> A1..A_attacker (attacker private branch).
-            // work=1/block ⇒ cumulative work == block count, so the real no-downgrade
-            // fork choice fires iff the private branch is strictly longer (attacker > honest).
+            // work=1/block ⇒ cumulative work == block count. Greater work wins; equal
+            // work falls through to independently ordered segment-base hashes.
+            let attackerPrefix = rng.bernoulli(0.5) ? "A" : "Z"
             var blocks: [ConsensusSimBlockSpec] = [ConsensusSimBlockSpec(hash: "G", height: 0)]
             var honestMain: [String] = ["G"]
             if honest > 0 {
@@ -242,8 +153,8 @@ extension LatticeConsensusSimulator {
             var releases: [ConsensusSimRelease] = []
             if attacker > 0 {
                 for i in 1...attacker {
-                    let a = "A\(i)"
-                    blocks.append(ConsensusSimBlockSpec(hash: a, parent: i == 1 ? "G" : "A\(i - 1)", height: UInt64(i)))
+                    let a = "\(attackerPrefix)\(i)"
+                    blocks.append(ConsensusSimBlockSpec(hash: a, parent: i == 1 ? "G" : "\(attackerPrefix)\(i - 1)", height: UInt64(i)))
                     releases.append(ConsensusSimRelease(atMillis: UInt64(i) * 10, blockHash: a))
                 }
             }
@@ -260,9 +171,8 @@ extension LatticeConsensusSimulator {
             // Read the achieved reorg depth off the REAL fork choice: the honest suffix it
             // displaced is exactly the honest ("M") blocks that no longer sit on the
             // canonical chain after the attacker branch was released. When the private
-            // branch failed to out-work the honest segment this is zero; otherwise it is
-            // the genuine honest depth that race overtook (a function of `f`, not a
-            // hardcoded `honestDepth`).
+            // branch lost fork choice this is zero; otherwise it is the genuine honest
+            // depth that race overtook (a function of `f`, not a hardcoded `honestDepth`).
             let survivingHonest = trace.finalMainChain.filter { $0.hasPrefix("M") }.count
             let achieved = honest - survivingHonest
             if achieved > 0 {
@@ -297,18 +207,12 @@ extension LatticeConsensusSimulator {
     /// only state where γ matters: the attacker has published a private block at the SAME
     /// height as the honest tip, and γ is the probability the network adopts the attacker's
     /// block. We build that exact equal-height race and drive it through the REAL fork choice
-    /// via `runDiscreteEventScenario`; the no-finality incumbent-holds rule keeps the honest
-    /// tip, i.e. the network measures γ = 0. So the curve is the spec Eyal–Sirer revenue
-    /// evaluated at the γ the node's own fork choice actually realises (the worst case for
-    /// the attacker), and its profitability threshold is the known γ = 0 value f = 1/3.
-    ///
-    /// Note on the threshold: for the basic Eyal–Sirer strategy the γ = 0 threshold is
-    /// exactly 1/3; the often-quoted ≈ 0.25 is the γ = ½ (random tie-break) value, NOT γ = 0.
-    /// The node's incumbent-holds rule is γ = 0, so 1/3 is the correct, tightest threshold.
+    /// via `runDiscreteEventScenario`. With equal work and independent block hashes,
+    /// the stable CID tie-break selects either miner with probability 1/2, so the network
+    /// measures γ = 1/2 and the profitability threshold is f = 1/4.
     static func selfishMiningPoint(seed: UInt64, fraction: Double, rounds: Int) async -> SelfishMiningPoint {
-        // Ground γ in the real fork choice: race the attacker's matched ("0′") block against
-        // the honest tip at equal height and read off whether the network adopts it. Under
-        // the no-finality incumbent-holds rule the honest tip holds ⇒ γ = 0.
+        // Ground γ in complementary real fork-choice races where the attacker's hash sorts
+        // once before and once after the honest hash.
         let gamma = await measuredTieAdoptionGamma(seed: seed, fraction: fraction)
         let share = eyalSirerRevenueShare(fraction: fraction, gamma: gamma)
         return SelfishMiningPoint(
@@ -333,26 +237,28 @@ extension LatticeConsensusSimulator {
     /// equal-work tie — by driving the exact equal-height "0′" race through the REAL fork
     /// choice. The attacker's private block `A1` is released against the honest tip `H1` at
     /// the same height off a shared root; γ is read straight off which branch the real fork
-    /// choice keeps canonical. Under no-finality incumbent-holds the honest incumbent always
-    /// wins the tie, so this returns 0. The `seed`/`fraction` keep the helper keyed to the
-    /// run without affecting the deterministic outcome.
+    /// choice keeps canonical. Complementary hash orderings model independent uniform block
+    /// hashes exactly: one attacker win in two races gives γ = 1/2.
     static func measuredTieAdoptionGamma(seed: UInt64, fraction: Double) async -> Double {
-        let spec = ConsensusSimScenarioSpec(
-            scenario: "selfish-tie-gamma-f\(Int(fraction * 100))",
-            seed: seed,
-            blocks: [
-                ConsensusSimBlockSpec(hash: "G", height: 0),
-                ConsensusSimBlockSpec(hash: "H1", parent: "G", height: 1),
-                ConsensusSimBlockSpec(hash: "A1", parent: "G", height: 1)
-            ],
-            initiallyVisible: ["G", "H1"],
-            initialMain: ["G", "H1"],
-            releases: [ConsensusSimRelease(atMillis: 10, blockHash: "A1")]
-        )
-        let trace = await runDiscreteEventScenario(spec)
-        // γ = 1 iff the real fork choice adopted the attacker's equal-height block; 0 iff the
-        // honest incumbent held the tie (the no-finality rule).
-        return trace.finalMainChain.contains("A1") ? 1.0 : 0.0
+        var wins = 0
+        for attackerHash in ["A1", "Z1"] {
+            let spec = ConsensusSimScenarioSpec(
+                scenario: "selfish-tie-gamma-f\(Int(fraction * 100))-\(attackerHash)",
+                seed: seed,
+                blocks: [
+                    ConsensusSimBlockSpec(hash: "G", height: 0),
+                    ConsensusSimBlockSpec(hash: "H1", parent: "G", height: 1),
+                    ConsensusSimBlockSpec(hash: attackerHash, parent: "G", height: 1)
+                ],
+                initiallyVisible: ["G", "H1"],
+                initialMain: ["G", "H1"],
+                releases: [ConsensusSimRelease(atMillis: 10, blockHash: attackerHash)]
+            )
+            if await runDiscreteEventScenario(spec).finalMainChain.contains(attackerHash) {
+                wins += 1
+            }
+        }
+        return Double(wins) / 2.0
     }
 
     // MARK: (c) Balancing attack
@@ -361,11 +267,10 @@ extension LatticeConsensusSimulator {
     /// tries to keep them balanced so neither converges. Each round a seeded race
     /// awards a block to one honest branch; the attacker must spend one of its own
     /// (seeded Bernoulli(`fraction`)) blocks on the *other* branch to restore the tie.
-    /// We release every block into the REAL fork choice and read the stall length and
-    /// survival straight off the resulting trace: as long as the incumbent-holds tie
-    /// rule keeps the two equal-work siblings tied no reorg fires, but the moment one
-    /// branch pulls strictly ahead the real fork choice reorgs onto it — that real
-    /// reorg event (not a pre-modeled flag) is what ends the stall.
+    /// We release every block into the REAL fork choice and read the balance duration and
+    /// survival straight off the resulting trace. Stable segment-base preference chooses
+    /// one branch at equality; the attack sustains equal competing work rather than making
+    /// nodes with the same DAG disagree about which branch is canonical.
     static func balancingPoint(seed: UInt64, fraction: Double, horizon: Int, trials: Int) async -> BalancingPoint {
         var rng = AdversarialRNG(seed: seed ^ 0xBA1A_4C00_0000_0003 ^ fractionSalt(fraction))
         var stallSum = 0
@@ -417,10 +322,8 @@ extension LatticeConsensusSimulator {
             }
 
             // Drive the REAL fork choice over the produced topology and derive the outcome
-            // from the resulting canonical main chain. While the two siblings stay
-            // equal-length the incumbent-holds rule keeps the canonical tip at the tied
-            // height; the moment one branch is strictly longer the real fork choice
-            // converges onto it, advancing the canonical tip past the tie.
+            // from the resulting canonical main chain. At equal work every node selects the
+            // same segment base; when one branch becomes heavier, true cumulative work wins.
             let initialMain = ["G", "L1"].filter { h in blocks.contains { $0.hash == h } }
             let spec = ConsensusSimScenarioSpec(
                 scenario: "balancing-f\(Int(fraction * 100))",
@@ -436,9 +339,8 @@ extension LatticeConsensusSimulator {
             // the local work counters. The canonical tip height the chain settled on is the
             // depth the network finally agreed (the convergence event); the tied height is
             // the matched depth both siblings reached and held while balanced. If the attacker
-            // re-balanced every round, both branches reach the same height, the incumbent tie
-            // rule never advances the canonical tip past that shared height, and the converged
-            // tip height equals the tied height — the balance survived. If a branch broke
+            // re-balanced every round, both branches reach the same height and the deterministic
+            // canonical tip is at that shared height — the balance survived. If a branch broke
             // strictly ahead, the fork choice converges onto it and the converged tip height
             // overshoots the tied height.
             let heightOf = Dictionary(uniqueKeysWithValues: blocks.map { ($0.hash, $0.height) })
@@ -489,16 +391,15 @@ extension LatticeConsensusSimulator {
         out += "checked-in artifact). `swift run LatticeSim --adversarial --seed \(r.seed)` renders the "
         out += "same report to stdout.\n\n"
         out += "Economic security of no-finality consensus as a function of the attacker's "
-        out += "per-chain hashrate fraction `f`. Under the corrected merged-mining model "
-        out += ": easiest-target, opt-in, INDEPENDENT per-chain PoW validation), `f` is "
-        out += "the fraction of a single chain's subscribed hashrate the attacker controls — there "
-        out += "is no nexus-anchored amplification. All scenarios drive the real `ChainState` fork "
-        out += "choice (no-finality, incumbent-holds ties).\n\n"
+        out += "share `f` of this chain's admitted root-grind contributions. Exact path proofs, "
+        out += "the setup-wide root-work floor, and per-chain target classification happen before "
+        out += "these scenarios. All scenarios drive the real chain-local `ChainState` fork choice: "
+        out += "true cumulative work first, then canonical segment-base CID bytes. Parent canonicity and sibling state are not inputs.\n\n"
 
         out += "## (a) Deep reorg — achievable reorg depth vs f\n\n"
         out += "Honest segment depth: \(r.honestSegmentDepth) blocks (work=1 each), \(r.deepReorg.first?.trials ?? 0) "
         out += "seeded race trials per f. The attacker privately races the honest segment and publishes; "
-        out += "the real no-downgrade fork choice reorgs only when the private branch carries strictly more work.\n\n"
+        out += "greater true cumulative work wins, while equal work uses the stable segment-base tie-break.\n\n"
         out += "| f | honest depth | mean reorg depth | max reorg depth | reorg probability |\n"
         out += "|---|---|---|---|---|\n"
         for p in r.deepReorg {
@@ -510,56 +411,49 @@ extension LatticeConsensusSimulator {
 
         out += "## (b) Selfish mining — revenue share vs f\n\n"
         out += "Eyal–Sirer closed-form revenue evaluated at the tie-break advantage γ the node's own "
-        out += "fork choice realises. The matched-tie (\"0′\") race is driven through the REAL fork choice; "
-        out += "under the no-finality incumbent-holds rule the honest tip always wins the tie, so the "
-        out += "network measures γ = 0 (the worst case for the attacker). `gain = share − f` is positive "
-        out += "only above the γ = 0 threshold f = 1/3 (the often-quoted ≈ 0.25 is the γ = ½ value, NOT γ = 0).\n\n"
+        out += "fork choice realises. The matched-tie (\"0′\") race is driven through the REAL fork choice. "
+        out += "With equal targets and independent block hashes, either miner's segment base wins half the "
+        out += "ties, so the network measures γ = 1/2. `gain = share − f` becomes positive above f = 1/4.\n\n"
         out += "| f | revenue share | gain (share − f) | profitable |\n"
         out += "|---|---|---|---|\n"
         for p in r.selfishMining {
             out += "| \(pct(p.hashrateFraction)) | \(pct(p.attackerRevenueShare)) | \(num(p.relativeGain)) | \(p.relativeGain > 0 ? "yes" : "no") |\n"
         }
-        out += "\nWith the fork-choice-measured γ = 0 the threshold sits at exactly f = 1/3: below it the "
-        out += "attacker earns strictly less than its fair share, removing the incentive to selfish-mine. "
-        out += "The sampled crossing falls between f = 33% (gain < 0) and f = 40% (gain > 0), bracketing the "
-        out += "analytic 1/3.\n\n"
+        out += "\nWith the fork-choice-measured γ = 1/2 the threshold is exactly f = 1/4: below it the "
+        out += "attacker earns less than its fair share; above it selfish mining is profitable.\n\n"
 
         out += "## (c) Balancing attack — feasibility/cost vs f\n\n"
         out += "Two equal-work honest branches; the attacker must win every re-balancing PoW race to "
-        out += "stall convergence. Horizon: \(r.balancingHorizon) rounds, \(r.balancing.first?.trials ?? 0) "
+        out += "sustain the competition. Horizon: \(r.balancingHorizon) rounds, \(r.balancing.first?.trials ?? 0) "
         out += "seeded trials per f.\n\n"
         out += "| f | mean stall (rounds) | max stall | survival prob | mean attacker blocks |\n"
         out += "|---|---|---|---|---|\n"
         for p in r.balancing {
             out += "| \(pct(p.hashrateFraction)) | \(num(p.meanStallRounds)) | \(p.maxStallRounds) | \(pct(p.survivalProbability)) | \(num(p.meanAttackerBlocksSpent)) |\n"
         }
-        out += "\nBalancing is infeasible below majority: each round the attacker must re-win a PoW race "
-        out += "it loses with probability 1 − f, so the stall collapses in expectation after ~1/(1−f) "
-        out += "rounds while burning one attacker block per sustained round. Survival probability stays "
-        out += "negligible until f approaches 50%.\n\n"
+        out += "\nEach round the attacker must re-win a PoW race it loses with probability 1 − f, so "
+        out += "full-horizon survival scales as f^horizon while each sustained round burns one attacker "
+        out += "block. This is a cost/probability curve, not a separate 50% threshold.\n\n"
 
         out += "## Feeds: 51%-attack-cost / security-budget model C5)\n\n"
-        // The two security thresholds are different and must not be conflated. Deep-reorg and
-        // balancing are *majority* attacks (they need f > 50% to out-work / out-stall the
-        // honest network). Selfish mining is an *economic* attack that becomes profitable far
-        // below majority, at the classic Eyal–Sirer threshold for the node's fork-choice-
-        // measured γ = 0, which is exactly f = 1/3 — the analytic crossing of R(f, 0) and f.
+        // Deep reorg safety and selfish-mining profitability have distinct thresholds.
+        // Balancing contributes a horizon-dependent cost/probability curve, not another
+        // fixed threshold.
         out += "Two distinct thresholds fall out of the curves and must be fed to C5 separately — "
         out += "conflating them silently over-states the security budget:\n\n"
-        out += "- **Majority threshold (safety/liveness — deep reorg & balancing): f > 50%.** "
-        out += "Out-working a `\(r.honestSegmentDepth)`-deep honest segment or stalling two equal-work "
-        out += "branches both require a strict hashrate majority; below 50% reorg probability and "
-        out += "balancing survival stay negligible.\n"
-        out += "- **Economic threshold (selfish-mining profitability): f = 1/3 ≈ 33.3%.** This is the "
+        out += "- **Majority threshold (deep-reorg safety): f > 50%.** Out-working a "
+        out += "`\(r.honestSegmentDepth)`-deep honest segment becomes likely above majority.\n"
+        out += "- **Balancing liveness cost:** full-horizon survival scales as f^horizon in this model; "
+        out += "it does not introduce a fixed 50% threshold.\n"
+        out += "- **Economic threshold (selfish-mining profitability): f = 1/4 = 25%.** This is the "
         out += "*lower* economic-security bound and the binding one for the security budget. It is the "
-        out += "analytic Eyal–Sirer crossing R(f, γ=0) = f at the γ = 0 the fork choice measures — well "
+        out += "analytic Eyal–Sirer crossing R(f, γ=1/2) = f at the γ = 1/2 the fork choice measures — well "
         out += "below majority — so a rational attacker has a revenue incentive to deviate at the classic "
         out += "threshold long before it can reorg or stall the chain.\n"
         out += "\nC5 must price the security budget against the **lower** of the two — the selfish-mining "
-        out += "economic threshold — not the 50% majority point. The budget is the per-chain honest "
-        out += "hashrate cost to deny an attacker that economically-profitable fraction of that chain's "
-        out += "subscribed PoW — independent per chain under, with no cross-chain (nexus) "
-        out += "amplification.\n"
+        out += "economic threshold — not the 50% majority point. The budget is the honest root-grind "
+        out += "cost required to keep an attacker below that fraction of this chain's verified work "
+        out += "stream; another chain's canonical history cannot change work already admitted here.\n"
         return out
     }
 }

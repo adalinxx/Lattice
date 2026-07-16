@@ -123,7 +123,14 @@ final class ChainSpecFuzzTests: XCTestCase {
 
     func testPairDifficultyTracksTargetRatio() {
         var rng = SeededRNG(seed: 303)
-        let spec = ChainSpec.development
+        let spec = ChainSpec(
+            maxNumberOfTransactionsPerBlock: 100,
+            maxStateGrowth: 1_000,
+            premine: 0,
+            targetBlockTime: 1_000,
+            initialReward: 1_024,
+            halvingInterval: 10_000
+        )
 
         for _ in 0..<500 {
             let prevDiff = UInt256(UInt64.random(in: 100...UInt64.max / 2, using: &rng))
@@ -255,7 +262,7 @@ final class ForkChoiceFuzzTests: XCTestCase {
                 }
             }
 
-            let mainHashes = Set((0..<chainLength).map { "main_\($0)" } + ["G"])
+            let mainHashes = Set((1..<chainLength).map { "main_\($0)" } + ["G"])
             let chain = makeChain(blocks: blocks, mainChainHashes: mainHashes)
 
             let chainTip = await chain.getMainChainTip()
@@ -296,10 +303,9 @@ final class ForkChoiceFuzzTests: XCTestCase {
 
             let mainHashes = Set(["G"] + (1...mainLen).map { "M\($0)" })
             let chain = makeChain(blocks: blocks, mainChainHashes: mainHashes)
-
             let forkTipHash = "F\(forkLen)"
-            let forkTip = await chain.getConsensusBlock(hash: forkTipHash)!
-            let reorg = await chain.checkForReorg(block: forkTip)
+
+            let reorg = await chain.reevaluateForkChoice()
 
             XCTAssertNotNil(reorg, "Longer fork should trigger reorg")
 
@@ -495,7 +501,7 @@ final class ActionFuzzTests: XCTestCase {
             let key = rng.randomString(length: Int.random(in: 1...50, using: &rng))
             let value = rng.randomString(length: Int.random(in: 1...100, using: &rng))
             let action = Action(key: key, oldValue: nil, newValue: value)
-            let delta = try! action.stateDelta()
+            let delta = action.stateDelta()
             XCTAssertGreaterThan(delta, 0)
         }
     }
@@ -506,7 +512,7 @@ final class ActionFuzzTests: XCTestCase {
             let key = rng.randomString(length: Int.random(in: 1...50, using: &rng))
             let value = rng.randomString(length: Int.random(in: 1...100, using: &rng))
             let action = Action(key: key, oldValue: value, newValue: nil)
-            let delta = try! action.stateDelta()
+            let delta = action.stateDelta()
             XCTAssertLessThan(delta, 0)
         }
     }
@@ -518,40 +524,12 @@ final class ActionFuzzTests: XCTestCase {
             let shortVal = rng.randomString(length: 5)
             let longVal = rng.randomString(length: 50)
             let growAction = Action(key: key, oldValue: shortVal, newValue: longVal)
-            let growDelta = try! growAction.stateDelta()
+            let growDelta = growAction.stateDelta()
             XCTAssertGreaterThan(growDelta, 0)
 
             let shrinkAction = Action(key: key, oldValue: longVal, newValue: shortVal)
-            let shrinkDelta = try! shrinkAction.stateDelta()
+            let shrinkDelta = shrinkAction.stateDelta()
             XCTAssertLessThan(shrinkDelta, 0)
-        }
-    }
-}
-
-// MARK: - BlockMeta Weights Fuzz Tests
-
-final class BlockMetaWeightsFuzzTests: XCTestCase {
-
-    func testParentIndexIsMinimumOfValues() {
-        var rng = SeededRNG(seed: 2929)
-        for _ in 0..<200 {
-            let count = Int.random(in: 1...10, using: &rng)
-            var parentBlocks: [String: UInt64?] = [:]
-            var minVal: UInt64? = nil
-            for _ in 0..<count {
-                let key = rng.randomHash()
-                let val: UInt64? = rng.randomBool() ? rng.randomUInt64(in: 0...1000) : nil
-                parentBlocks[key] = val
-                if let v = val {
-                    minVal = minVal.map { min($0, v) } ?? v
-                }
-            }
-            let meta = BlockMeta(
-                blockInfo: BlockInfoImpl(blockHash: "test", parentBlockHash: nil, blockHeight: 0, work: UInt256.zero),
-                parentChainBlocks: parentBlocks,
-                childHashes: []
-            )
-            XCTAssertEqual(meta.parentIndex, minVal)
         }
     }
 }

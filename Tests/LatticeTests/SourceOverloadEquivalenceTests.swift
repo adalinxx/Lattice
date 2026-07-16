@@ -6,7 +6,7 @@ import Foundation
 
 /// Equivalence tests for the additive `source:` overloads on Lattice's
 /// block-validation/resolution APIs (`resolveBlockContent`, `validateNexus`,
-/// `processBlockHeader`). Each test runs the same block through the existing
+/// `admitBlockHeaderChainLocal`). Each test runs the same block through the existing
 /// `fetcher:` API and the new `source:` API over the SAME backing CAS, and
 /// asserts the two paths produce identical results. The `source:` path wraps a
 /// batched cashew `ContentSource` in a single `CoalescingFetcher`; these tests
@@ -14,7 +14,7 @@ import Foundation
 @MainActor
 final class SourceOverloadEquivalenceTests: XCTestCase {
 
-    private func spec(_ dir: String = "Nexus") -> ChainSpec {
+    private func spec() -> ChainSpec {
         ChainSpec(
             maxNumberOfTransactionsPerBlock: 100,
             maxStateGrowth: 100_000,
@@ -57,7 +57,7 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         let premineSig = TransactionSigning.sign(bodyHeader: premineHeader, privateKeyHex: alice.privateKey)!
         let premineTx = Transaction(signatures: [alice.publicKey: premineSig], body: premineHeader)
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, transactions: [premineTx],
             timestamp: t - 20_000, target: UInt256.max, fetcher: fetcher
         )
@@ -77,16 +77,16 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         let transferTx = Transaction(signatures: [alice.publicKey: transferSig], body: transferHeader)
 
         // A child block so the content package exercises the child-link list path.
-        let child = try await BlockBuilder.buildGenesis(
-            spec: spec("Child"), timestamp: t - 20_000, target: UInt256.max, fetcher: fetcher
+        let child = try await buildAndStoreGenesis(
+            spec: spec(), timestamp: t - 20_000, target: UInt256.max, fetcher: fetcher
         )
 
-        let block = try await BlockBuilder.buildBlock(
+        let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [transferTx], children: ["Child": child],
             timestamp: t - 10_000, target: UInt256.max, nonce: 1, fetcher: fetcher
         )
         // Persist the full block volume so both paths can resolve it by CID.
-        try VolumeImpl<Block>(node: block).storeRecursively(storer: fetcher)
+        try await VolumeImpl<Block>(node: block).storeBlockContent(storer: fetcher)
 
         let genesisHeader = try! VolumeImpl<Block>(node: genesis)
         let blockHeader = VolumeImpl<Block>(rawCID: try! VolumeImpl<Block>(node: block).rawCID)
@@ -102,24 +102,24 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
 
         let viaFetcher = try await blockHeader.resolveBlockContent(fetcher: fetcher)
         // Fresh header (no node) so the source path resolves from scratch, not a cache.
-        let freshHeader = VolumeImpl<Block>(rawCID: try! blockHeader.rawCID)
+        let freshHeader = VolumeImpl<Block>(rawCID: blockHeader.rawCID)
         let viaSource = try await freshHeader.resolveBlockContent(source: source)
 
         // The resolved block must be byte-identical: same root CID, same resolved
         // children CIDs, and the same resolved/unresolved structure.
         let f = try XCTUnwrap(viaFetcher.node)
         let s = try XCTUnwrap(viaSource.node)
-        XCTAssertEqual(try! viaFetcher.rawCID, try! viaSource.rawCID)
+        XCTAssertEqual(viaFetcher.rawCID, viaSource.rawCID)
         XCTAssertEqual(f.spec.rawCID, s.spec.rawCID)
         XCTAssertEqual(f.transactions.rawCID, s.transactions.rawCID)
         XCTAssertEqual(f.children.rawCID, s.children.rawCID)
         XCTAssertEqual(f.toData(), s.toData())
 
-        // Same resolution policy applied: spec/transactions/children resolved,
-        // postState left external.
+        // Same resolution policy applied: spec/transactions resolved while
+        // child links and state remain external.
         XCTAssertNotNil(s.spec.node)
         XCTAssertNotNil(s.transactions.node)
-        XCTAssertNotNil(s.children.node)
+        XCTAssertNil(s.children.node)
         XCTAssertNil(s.postState.node)
 
         let fTxs = try XCTUnwrap(f.transactions.node?.allKeysAndValues())
@@ -152,24 +152,13 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         )
     }
 
-    func testValidateNexusSourceMatchesFetcherStructuralOnly() async throws {
-        let fetcher = StorableFetcher()
-        let (_, _, block) = try await buildRepresentativeBlock(fetcher: fetcher)
-        let source = FetcherContentSource(fetcher)
-
-        let viaFetcher = try await block.validateNexus(fetcher: fetcher, requirePostState: false)
-        let viaSource = try await block.validateNexus(source: source, requirePostState: false)
-        XCTAssertTrue(viaFetcher.0)
-        XCTAssertEqual(viaFetcher.0, viaSource.0)
-    }
-
     func testValidateNexusSourceMatchesFetcherOnInvalidBlock() async throws {
         let fetcher = StorableFetcher()
         let t = now()
         let miner = CryptoUtils.generateKeyPair()
         let minerAddr = addr(miner.publicKey)
-        let s = spec("Nexus")
-        let genesis = try await BlockBuilder.buildGenesis(
+        let s = spec()
+        let genesis = try await buildAndStoreGenesis(
             spec: ChainSpec(
                 maxNumberOfTransactionsPerBlock: 100,
                 maxStateGrowth: 100_000, maxBlockSize: 1_000_000, premine: 0,
@@ -189,11 +178,11 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         let bodyHeader = try! HeaderImpl<TransactionBody>(node: overclaimBody)
         let sig = TransactionSigning.sign(bodyHeader: bodyHeader, privateKeyHex: miner.privateKey)!
         let tx = Transaction(signatures: [miner.publicKey: sig], body: bodyHeader)
-        let block = try await BlockBuilder.buildBlock(
+        let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [tx],
             timestamp: t - 10_000, target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
-        try VolumeImpl<Block>(node: block).storeRecursively(storer: fetcher)
+        try await VolumeImpl<Block>(node: block).storeBlockContent(storer: fetcher)
         let source = FetcherContentSource(fetcher)
 
         let viaFetcher = try await block.validateNexus(fetcher: fetcher).0
@@ -202,9 +191,9 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         XCTAssertEqual(viaFetcher, viaSource, "rejection must match across fetcher/source")
     }
 
-    // MARK: - processBlockHeader
+    // MARK: - chain-local admission
 
-    func testProcessBlockHeaderSourceMatchesFetcher() async throws {
+    func testAdmissionSourceMatchesFetcher() async throws {
         // Build ONE block + CAS, then process that SAME block header against two
         // independent Lattice instances (fresh chains from the same genesis): one
         // via `fetcher:`, one via `source:`. Same inputs ⇒ the only difference is
@@ -213,25 +202,39 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         let (genesis, blockHeader, _) = try await buildRepresentativeBlock(fetcher: fetcher)
         let genesisBlock = try XCTUnwrap(genesis.node)
 
-        let latticeA = Lattice(nexus: ChainLevel(chain: ChainState.fromGenesis(block: genesisBlock), children: [:]))
-        let resultViaFetcher = await latticeA.processBlockHeader(
-            blockHeader, fetcher: fetcher
+        let levelA = ChainLevel(testChain: ChainState.fromGenesis(block: genesisBlock))
+        let resultViaFetcher = try await levelA.admitBlockHeaderChainLocal(
+            blockHeader,
+            fetcher: fetcher,
+            storer: fetcher,
+            stage: testAdmissionStage
         )
 
-        let latticeB = Lattice(nexus: ChainLevel(chain: ChainState.fromGenesis(block: genesisBlock), children: [:]))
-        let resultViaSource = await latticeB.processBlockHeader(
-            blockHeader, source: FetcherContentSource(fetcher)
+        let levelB = ChainLevel(testChain: ChainState.fromGenesis(block: genesisBlock))
+        let resultViaSource = try await levelB.admitBlockHeaderChainLocal(
+            blockHeader,
+            source: FetcherContentSource(fetcher),
+            storer: fetcher,
+            stage: testAdmissionStage
         )
 
-        XCTAssertTrue(resultViaFetcher.isAccepted, "control: the representative block must be accepted")
-        XCTAssertEqual(resultViaFetcher.isAccepted, resultViaSource.isAccepted)
-        XCTAssertEqual(resultViaFetcher.isRejected, resultViaSource.isRejected)
-        XCTAssertEqual(resultViaFetcher.isDeferred, resultViaSource.isDeferred)
-        XCTAssertEqual(resultViaFetcher.stateDiff.replaced, resultViaSource.stateDiff.replaced)
-        XCTAssertEqual(resultViaFetcher.stateDiff.created, resultViaSource.stateDiff.created)
+        guard case let .accepted(fetcherAcceptance) = resultViaFetcher,
+              let fetcherDiff = fetcherAcceptance.stateDiff else {
+            return XCTFail("control: the representative block must canonicalize")
+        }
+        guard case let .accepted(sourceAcceptance) = resultViaSource,
+              let sourceDiff = sourceAcceptance.stateDiff else {
+            return XCTFail("source admission must canonicalize like fetcher admission")
+        }
+        XCTAssertEqual(fetcherDiff.replaced, sourceDiff.replaced)
+        XCTAssertEqual(fetcherDiff.created, sourceDiff.created)
         XCTAssertEqual(
-            try resultViaFetcher.materializedPostState.map { try LatticeStateHeader(node: $0).rawCID },
-            try resultViaSource.materializedPostState.map { try LatticeStateHeader(node: $0).rawCID }
+            fetcherAcceptance.sameChainPredecessor,
+            sourceAcceptance.sameChainPredecessor
+        )
+        XCTAssertEqual(
+            try fetcherAcceptance.materializedPostState.map { try LatticeStateHeader(node: $0).rawCID },
+            try sourceAcceptance.materializedPostState.map { try LatticeStateHeader(node: $0).rawCID }
         )
     }
 }

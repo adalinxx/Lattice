@@ -10,14 +10,9 @@ swift run LatticeSim --seed 42
 ```
 
 The output is sorted JSON. The same seed must produce the same trace byte-for-byte.
-The default scenarios pin the load-bearing edges that exist in the current
-library:
+The three default scenarios pin the chain-local edges in the current library:
 
-- equal `trueCumWork` keeps the incumbent main fork;
-- a fork with precomputed inherited parent weight reorgs through the real
-  `checkForReorg` path;
-- a parent-chain reorg changes inherited weight and the child chain re-rides the
-  now-heavier parent fork through the existing fork-choice path;
+- equal subtree work chooses by canonical segment-base CID bytes only;
 - a seeded withhold/release schedule converges to the heavier GHOST subtree;
 - the 1h proportional retarget path uses `ChainSpec.calculateWindowedTarget`.
 
@@ -27,6 +22,7 @@ accepts a `ConsensusSimScenarioSpec` with block topology, release times
 `BlockMeta` fixtures and still evaluates them through `ChainState`.
 
 The simulator does not implement a second fork-choice rule. It constructs
-`BlockMeta` fixtures, installs the same inherited-weight provider shape used by
-nodes, and records `ChainState.forkChoiceSnapshot(startingAt:)`, which wraps the
-library's real `chainWithMostWork` / `effectiveWeight` decision.
+`BlockMeta` fixtures and records `ChainState.forkChoiceSnapshot(startingAt:)`,
+which wraps the library's real same-chain GHOST decision. Cross-chain proof and
+contribution derivation are tested at admission rather than simulated by a live
+parent-weight provider.

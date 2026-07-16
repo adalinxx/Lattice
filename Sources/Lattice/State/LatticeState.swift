@@ -65,17 +65,16 @@ public struct LatticeState: Node {
     }
 
     public func proveAndUpdateState(allAccountActions: [AccountAction], allActions: [Action], allDepositActions: [DepositAction], allGenesisActions: [GenesisAction], allReceiptActions: [ReceiptAction], allWithdrawalActions: [WithdrawalAction], transactionBodies: [TransactionBody], fetcher: Fetcher) async throws -> (LatticeState, StateDiff) {
-        // The receipt withdrawer/demander transfer is part of the consensus
-        // account-delta rule — one definition, shared with node admission.
-        let mergedAccountActions = try TransactionBody.netAccountDeltas(
-            accountActions: allAccountActions,
-            receiptActions: allReceiptActions
+        async let accountResult = accountState.proveAndUpdateState(
+            allAccountActions: allAccountActions,
+            allReceiptActions: allReceiptActions,
+            transactionBodies: transactionBodies,
+            fetcher: fetcher
         )
-        async let accountResult = accountState.proveAndUpdateState(allAccountActions: mergedAccountActions, transactionBodies: transactionBodies, fetcher: fetcher)
         async let generalResult = generalState.proveAndUpdateState(allActions: allActions, fetcher: fetcher)
         async let genesisResult = genesisState.proveAndUpdateState(allGenesisActions: allGenesisActions, fetcher: fetcher)
         async let receiptResult = receiptState.proveAndUpdateState(allReceiptActions: allReceiptActions, fetcher: fetcher)
-        let (afterWithdrawals, withdrawalDiff) = try await depositState.proveAndDeleteForWithdrawals(allWithdrawalActions: allWithdrawalActions, fetcher: fetcher)
+        let (afterWithdrawals, withdrawalDiff) = try await depositState.proveAndSpendForWithdrawals(allWithdrawalActions: allWithdrawalActions, fetcher: fetcher)
         async let depositResult = afterWithdrawals.proveAndUpdateState(allDepositActions: allDepositActions, fetcher: fetcher)
 
         let (finalAccountState, accountDiff) = try await accountResult
@@ -91,8 +90,67 @@ public struct LatticeState: Node {
         diff.merge(genesisDiff)
         diff.merge(receiptDiff)
 
-        return (Self(accountState: finalAccountState, generalState: finalGeneralState, depositState: finalDepositState, genesisState: finalGenesisState, receiptState: finalReceiptState), diff)
+        let updated = Self(
+            accountState: finalAccountState,
+            generalState: finalGeneralState,
+            depositState: finalDepositState,
+            genesisState: finalGenesisState,
+            receiptState: finalReceiptState
+        )
+        let previousRoot = try LatticeStateHeader(node: self).rawCID
+        let updatedRoot = try LatticeStateHeader(node: updated).rawCID
+        if previousRoot != updatedRoot {
+            diff.replaced[previousRoot, default: 0] += 1
+            diff.created[updatedRoot, default: 0] += 1
+        }
+        return (updated, diff)
     }
 }
 
 public typealias LatticeStateHeader = VolumeImpl<LatticeState>
+
+private func collectMaterializedVolumePaths(
+    from volume: any Volume,
+    selecting cids: Set<String>,
+    at path: [String] = [],
+    into paths: inout [[String]: StorageStrategy],
+    found: inout Set<String>
+) {
+    guard let node = volume.node else { return }
+    for property in node.properties() {
+        guard let child = node.get(property: property) as? any Volume,
+              child.node != nil else { continue }
+        let childPath = path + [property]
+        if cids.contains(child.rawCID) {
+            paths[childPath] = .targeted
+            found.insert(child.rawCID)
+        }
+        collectMaterializedVolumePaths(
+            from: child,
+            selecting: cids,
+            at: childPath,
+            into: &paths,
+            found: &found
+        )
+    }
+}
+
+extension VolumeImpl where NodeType == LatticeState {
+    func storeMaterialized(createdBy diff: StateDiff, storer: any VolumeStorer) async throws {
+        var created = Set(diff.created.compactMap { cid, count in
+            count > diff.replaced[cid, default: 0] ? cid : nil
+        })
+        created.remove(rawCID)
+
+        var paths: [[String]: StorageStrategy] = [:]
+        var found = Set<String>()
+        collectMaterializedVolumePaths(
+            from: self,
+            selecting: created,
+            into: &paths,
+            found: &found
+        )
+        guard found == created else { throw DataErrors.nodeNotAvailable }
+        try await store(paths: paths, storer: storer)
+    }
+}

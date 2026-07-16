@@ -15,16 +15,16 @@ final class NetDebitArithmeticTests: XCTestCase {
 
     func test_singleDebit() throws {
         let b = body(account: [AccountAction(owner: "A", delta: -100)])
-        XCTAssertEqual(try b.netBalanceDeltas(), ["A": -100])
-        XCTAssertEqual(b.netOutflows(), ["A": 100])
-        XCTAssertEqual(b.netOutflow(of: "A"), 100)
+        XCTAssertEqual(try b.netBalanceDeltas(), ["A": .debit(100)])
+        XCTAssertEqual(try b.netOutflows(), ["A": 100])
+        XCTAssertEqual(try b.netOutflow(of: "A"), 100)
     }
 
     func test_netCredit_isNoOutflow() throws {
         let b = body(account: [AccountAction(owner: "A", delta: 50)])
-        XCTAssertEqual(try b.netBalanceDeltas(), ["A": 50])
-        XCTAssertTrue(b.netOutflows().isEmpty)
-        XCTAssertEqual(b.netOutflow(of: "A"), 0)
+        XCTAssertEqual(try b.netBalanceDeltas(), ["A": .credit(50)])
+        XCTAssertTrue(try b.netOutflows().isEmpty)
+        XCTAssertEqual(try b.netOutflow(of: "A"), 0)
     }
 
     func test_perOwnerAggregation() throws {
@@ -33,10 +33,10 @@ final class NetDebitArithmeticTests: XCTestCase {
             AccountAction(owner: "A", delta: 30),
             AccountAction(owner: "B", delta: -10),
         ])
-        XCTAssertEqual(try b.netBalanceDeltas(), ["A": -70, "B": -10])
-        XCTAssertEqual(b.netOutflows(), ["A": 70, "B": 10])
-        XCTAssertEqual(b.netOutflow(of: "A"), 70)
-        XCTAssertEqual(b.netOutflow(of: "B"), 10)
+        XCTAssertEqual(try b.netBalanceDeltas(), ["A": .debit(70), "B": .debit(10)])
+        XCTAssertEqual(try b.netOutflows(), ["A": 70, "B": 10])
+        XCTAssertEqual(try b.netOutflow(of: "A"), 70)
+        XCTAssertEqual(try b.netOutflow(of: "B"), 10)
     }
 
     func test_receiptImpliedTransfer_debitsWithdrawer() throws {
@@ -45,19 +45,36 @@ final class NetDebitArithmeticTests: XCTestCase {
             ReceiptAction(withdrawer: "W", nonce: 0, demander: "D", amountDemanded: 250, directory: "Nexus")
         ])
         let deltas = try b.netBalanceDeltas()
-        XCTAssertEqual(deltas["W"], -250)
-        XCTAssertEqual(deltas["D"], 250)
-        XCTAssertEqual(b.netOutflow(of: "W"), 250)
-        XCTAssertEqual(b.netOutflow(of: "D"), 0, "the credited demander has no outflow")
+        XCTAssertEqual(deltas["W"], .debit(250))
+        XCTAssertEqual(deltas["D"], .credit(250))
+        XCTAssertEqual(try b.netOutflow(of: "W"), 250)
+        XCTAssertEqual(try b.netOutflow(of: "D"), 0, "the credited demander has no outflow")
     }
 
     func test_emptyOwner_andOverflowReject() throws {
-        XCTAssertEqual(body().netOutflow(of: ""), 0)
-        // A receipt amount of 0 is rejected by netAccountDeltas → empty outflows.
+        XCTAssertEqual(try body().netOutflow(of: ""), 0)
+        // A zero receipt is invalid, so it cannot create an outflow.
         let bad = body(receipts: [
             ReceiptAction(withdrawer: "W", nonce: 0, demander: "D", amountDemanded: 0, directory: "Nexus")
         ])
         XCTAssertThrowsError(try bad.netBalanceDeltas())
-        XCTAssertTrue(bad.netOutflows().isEmpty)
+        XCTAssertThrowsError(try bad.netOutflows())
     }
+
+    func test_aggregationIsOrderIndependentAcrossInt64Boundary() throws {
+        let actions = [
+            AccountAction(owner: "A", delta: Int64.max),
+            AccountAction(owner: "A", delta: Int64.max),
+            AccountAction(owner: "A", delta: Int64.max),
+            AccountAction(owner: "A", delta: -Int64.max),
+            AccountAction(owner: "A", delta: -Int64.max),
+        ]
+
+        XCTAssertEqual(
+            try body(account: actions).netBalanceDeltas(),
+            try body(account: Array(actions.reversed())).netBalanceDeltas()
+        )
+        XCTAssertEqual(try body(account: actions).netBalanceDeltas()["A"], .credit(UInt64(Int64.max)))
+    }
+
 }

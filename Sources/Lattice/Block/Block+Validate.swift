@@ -4,12 +4,35 @@ import cashew
 import UInt256
 import CollectionConcurrencyKit
 
+/// A validation result whose truth may change only as the supplied wall-clock
+/// context advances. It is deliberately separate from a permanent protocol
+/// violation and from unavailable evidence.
+public enum BlockValidationError: Error, Sendable, Equatable {
+    case notYetAdmissible
+}
+
+public struct ValidationContext: Sendable, Equatable {
+    public let nowMilliseconds: Int64
+
+    public init(nowMilliseconds: Int64) {
+        self.nowMilliseconds = nowMilliseconds
+    }
+
+    public static var current: ValidationContext {
+        ValidationContext(nowMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000))
+    }
+
+    func admits(timestamp: Int64) -> Bool {
+        let (latest, overflow) = nowMilliseconds.addingReportingOverflow(
+            Block.maxFutureDriftMilliseconds
+        )
+        return overflow || timestamp <= latest
+    }
+}
+
 public extension Block {
     private static let fieldSeparator: [UInt8] = [0x00]
-    /// R9 (wave-4): consensus timestamp constants, hoisted to internal so the
-    /// header-path validator (`ChainSyncer.validateHeaderConsensus`) references
-    /// the SAME definitions instead of re-hardcoding them. One definition,
-    /// byte-identical values.
+    /// Shared consensus timestamp limits.
     /// Bounded future drift: a block timestamp may lead wall-clock by at most 2h.
     internal static let maxFutureDriftMilliseconds: Int64 = 2 * 60 * 60 * 1000
     /// MedianTimePast window depth (Bitcoin's MTP-11).
@@ -21,7 +44,7 @@ public extension Block {
     /// so optimized miners can hash it once into a midstate and append only the
     /// nonce per attempt (see / #135, where a hand-copy drifted by
     /// omitting `version`). Any change here is consensus-breaking.
-    public static func makeProofOfWorkPreimagePrefix(block: Block) -> Data {
+    static func makeProofOfWorkPreimagePrefix(block: Block) -> Data {
         var data = Data()
         data.reserveCapacity(512)
         data.append(contentsOf: String(block.version).utf8)
@@ -60,7 +83,7 @@ public extension Block {
     /// the per-nonce work divergence-free on a GPU and lets miners reuse a single
     /// prefix midstate (a variable-length ASCII-decimal nonce broke both). External
     /// miners MUST encode the nonce with this exact function. Consensus-breaking.
-    public static func proofOfWorkNonceBytes(_ nonce: UInt64) -> [UInt8] {
+    static func proofOfWorkNonceBytes(_ nonce: UInt64) -> [UInt8] {
         withUnsafeBytes(of: nonce.bigEndian) { Array($0) }
     }
 
@@ -68,7 +91,7 @@ public extension Block {
     /// bytes hashed during mining and PoW validation; downstream nodes/miners must
     /// reuse this rather than re-deriving it (see / #135, where a hand-copy
     /// drifted by omitting `version`). Any change here is consensus-breaking.
-    public static func makeProofOfWorkPreimage(block: Block, nonce: UInt64) -> Data {
+    static func makeProofOfWorkPreimage(block: Block, nonce: UInt64) -> Data {
         var data = makeProofOfWorkPreimagePrefix(block: block)
         data.append(contentsOf: proofOfWorkNonceBytes(nonce))
         return data
@@ -79,107 +102,167 @@ public extension Block {
         return UInt256.hash(data)
     }
 
-    func validateGenesis(fetcher: Fetcher, directory: String?, chainPath: [String]? = nil) async throws -> (Bool, StateDiff) {
-        if version != Block.currentVersion { return (false, .empty) }
-        if parent != nil { return (false, .empty) }
-        let now = Int64(Date().timeIntervalSince1970 * 1000)
-        if timestamp > now + Block.maxFutureDriftMilliseconds { return (false, .empty) }
-        if height != 0 { return (false, .empty) }
-        if prevState.rawCID != LatticeState.emptyHeader.rawCID { return (false, .empty) }
+    func validateGenesis(
+        fetcher: Fetcher,
+        directory: String?,
+        chainPath: [String]? = nil,
+        reportTemporalFailure: Bool = false,
+        validationContext: ValidationContext = .current
+    ) async throws -> (Bool, StateDiff) {
+        let transition = try await validateGenesisTransition(
+            fetcher: fetcher,
+            directory: directory,
+            chainPath: chainPath,
+            reportTemporalFailure: reportTemporalFailure,
+            validationContext: validationContext
+        )
+        return (transition.0, transition.1)
+    }
+
+    /// Internal genesis validation result for admission paths that must retain
+    /// the verified post-state before exposing a consensus mutation.
+    internal func validateGenesisTransition(
+        fetcher: Fetcher,
+        directory: String?,
+        chainPath: [String]? = nil,
+        reportTemporalFailure: Bool = false,
+        validationContext: ValidationContext
+    ) async throws -> (Bool, StateDiff, LatticeState?) {
+        if !hasGenesisAdmissionShape() { return (false, .empty, nil) }
+        if !validationContext.admits(timestamp: timestamp) {
+            if reportTemporalFailure { throw BlockValidationError.notYetAdmissible }
+            return (false, .empty, nil)
+        }
         guard let transactionBodies = try await resolveTransactionBodies(fetcher: fetcher, validator: { tx in
             try await tx.validateTransactionForGenesis(fetcher: fetcher)
-        }) else { return (false, .empty) }
-        guard let specNode = try await spec.resolve(fetcher: fetcher).node else { return (false, .empty) }
+        }) else { return (false, .empty, nil) }
+        guard let specNode = try await spec.resolve(fetcher: fetcher).node else { return (false, .empty, nil) }
+        guard specNode.isValid else { return (false, .empty, nil) }
         // Directory is positional: it comes from the anchor context (the name the
         // genesis is registered under), not from the spec. `directory` nil ⇒ root.
         // An explicitly-empty chainPath has no root and is rejected (fail closed)
         // rather than silently degrading to root semantics.
         let expectedChainPath = chainPath ?? [directory ?? DEFAULT_ROOT_DIRECTORY]
-        if expectedChainPath.isEmpty { return (false, .empty) }
-        if !(await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, fetcher: fetcher)) { return (false, .empty) }
-        if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty) }
-        if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty) }
-        if !validateBlockSize(spec: specNode) { return (false, .empty) }
+        if expectedChainPath.isEmpty { return (false, .empty, nil) }
+        if !validateChainPaths(transactionBodies: transactionBodies, expectedPath: expectedChainPath) {
+            return (false, .empty, nil)
+        }
+        if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, fetcher: fetcher)) { return (false, .empty, nil) }
+        if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
+        if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
+        if !validateBlockSize(spec: specNode) { return (false, .empty, nil) }
         let allAccountActions = transactionBodies.flatMap { $0.accountActions }
         // R4: the per-transaction gate above (validateTransactionForGenesis)
         // rejects any genesis transaction carrying deposit, withdrawal, or
         // receipt actions, so those lists are provably empty for every body
         // that reaches this point — pass empty literals instead of collecting.
         assert(transactionBodies.allSatisfy { $0.depositActions.isEmpty && $0.withdrawalActions.isEmpty && $0.receiptActions.isEmpty })
-        if try !validateBalanceChangesForGenesis(spec: specNode, allAccountActions: allAccountActions) { return (false, .empty) }
-        if !validateGenesisTransactions(transactionBodies: transactionBodies) { return (false, .empty) }
-        let (postStateValid, diff, _) = try await validatePostState(transactionBodies: transactionBodies, allAccountActions: allAccountActions, allActions: transactionBodies.flatMap { $0.actions }, allDepositActions: [], allGenesisActions: transactionBodies.flatMap { $0.genesisActions }, allReceiptActions: [], allWithdrawalActions: [], fetcher: fetcher)
-        if !postStateValid { return (false, .empty) }
-        return (true, diff)
+        if try !validateBalanceChangesForGenesis(spec: specNode, allAccountActions: allAccountActions) { return (false, .empty, nil) }
+        if !validateGenesisTransactions(transactionBodies: transactionBodies) { return (false, .empty, nil) }
+        let (postStateValid, diff, materializedPostState) = try await validatePostState(transactionBodies: transactionBodies, allAccountActions: allAccountActions, allActions: transactionBodies.flatMap { $0.actions }, allDepositActions: [], allGenesisActions: transactionBodies.flatMap { $0.genesisActions }, allReceiptActions: [], allWithdrawalActions: [], fetcher: fetcher)
+        if !postStateValid { return (false, .empty, nil) }
+        return (true, diff, materializedPostState)
     }
 
-    func collectAncestorTimestamps(parent: Block, count: UInt64, fetcher: Fetcher) async -> [Int64]? {
+    func collectAncestorTimestamps(
+        parent: Block,
+        count: UInt64,
+        fetcher: Fetcher
+    ) async throws -> [Int64]? {
         var timestamps: [Int64] = [parent.timestamp]
         var current = parent
         for _ in 1..<count {
             guard let parentRef = current.parent else { break }
-            guard let prev = try? await parentRef.resolve(fetcher: fetcher) else { return nil }
+            guard let prev = try await parentRef.resolve(fetcher: fetcher).node else { return nil }
             timestamps.append(prev.timestamp)
             current = prev
         }
         return timestamps
     }
 
-    func validateTimestampAndNextTarget(spec: ChainSpec, parent: Block, fetcher: Fetcher, chain: ChainState? = nil) async -> Bool {
+    func validateTimestampAndNextTarget(
+        spec: ChainSpec,
+        parent: Block,
+        fetcher: Fetcher,
+        chain: ChainState? = nil,
+        reportTemporalFailure: Bool = false,
+        validationContext: ValidationContext
+    ) async throws -> Bool {
         let walkDepth = max(spec.retargetWindow, Block.mtpDepth)
-        let requiredWalkDepth = min(walkDepth, parent.height + 1)
+        let (parentDepth, overflow) = parent.height.addingReportingOverflow(1)
+        guard !overflow else { return false }
+        let requiredWalkDepth = min(walkDepth, parentDepth)
         let ancestorTimestamps: [Int64]
         if let chain,
            let parentHash = self.parent?.rawCID,
            let fast = await chain.getMainChainTimestamps(forParentHash: parentHash, count: walkDepth),
-           fast.count >= Int(requiredWalkDepth) {
+           requiredWalkDepth <= UInt64(fast.count) {
             ancestorTimestamps = fast
         } else {
-            guard let walked = await collectAncestorTimestamps(parent: parent, count: walkDepth, fetcher: fetcher),
-                  walked.count >= Int(requiredWalkDepth) else {
+            guard let walked = try await collectAncestorTimestamps(parent: parent, count: walkDepth, fetcher: fetcher),
+                  requiredWalkDepth <= UInt64(walked.count) else {
                 return false
             }
             ancestorTimestamps = walked
         }
-        if !validateTimestamp(parent: parent, ancestorTimestamps: ancestorTimestamps) { return false }
+        if !validationContext.admits(timestamp: timestamp) {
+            if reportTemporalFailure { throw BlockValidationError.notYetAdmissible }
+            return false
+        }
+        if !validateTimestamp(
+            parent: parent,
+            ancestorTimestamps: ancestorTimestamps,
+            validationContext: validationContext
+        ) { return false }
         if !validateNextTarget(spec: spec, parent: parent, ancestorTimestamps: ancestorTimestamps) { return false }
         return true
     }
 
-    /// `source:` overload of ``validateNexus(fetcher:chain:chainPath:requirePostState:)``.
+    /// `source:` overload of ``validateNexus(fetcher:chain:chainPath:reportTemporalFailure:)``.
     /// Wraps the batched cashew ``ContentSource`` in a single
     /// ``CoalescingFetcher`` and delegates to the `fetcher:` version unchanged,
     /// so validation is byte-identical to the per-CID path. Threading one
     /// coalescer through the whole call collapses each concurrent wave of
     /// content fetches (transaction bodies, ancestor walk, state resolution)
     /// into batched requests without altering the validation logic.
-    func validateNexus(source: any ContentSource, chain: ChainState? = nil, chainPath: [String]? = nil, requirePostState: Bool = true) async throws -> (Bool, StateDiff, LatticeState?) {
-        try await validateNexus(fetcher: CoalescingFetcher(source), chain: chain, chainPath: chainPath, requirePostState: requirePostState)
+    func validateNexus(
+        source: any ContentSource,
+        chain: ChainState? = nil,
+        chainPath: [String]? = nil,
+        reportTemporalFailure: Bool = false,
+        validationContext: ValidationContext = .current
+    ) async throws -> (Bool, StateDiff, LatticeState?) {
+        try await validateNexus(
+            fetcher: CoalescingFetcher(source),
+            chain: chain,
+            chainPath: chainPath,
+            reportTemporalFailure: reportTemporalFailure,
+            validationContext: validationContext
+        )
     }
 
     /// Validate block structure: parent linkage, spec, height, timestamp,
     /// target, transaction signatures, balance changes, and genesis
     /// transactions, and post-state root. Returns the state diff and the
     /// materialized post-state produced by the validated transition.
-    /// - Parameter requirePostState: when false, validate only the structural /
-    ///   transaction / withdrawal-correspondence rules and STOP before the
-    ///   post-state transition (which requires the prev-state trie). Snapshot
-    ///   sync, which validates the header chain without a materialized state
-    ///   trie, passes false; full block processing keeps the default so it
-    ///   receives the materialized post-state. Restores the pre-11.1.0
-    ///   structural-only behavior for the sync path.
-    func validateNexus(fetcher: Fetcher, chain: ChainState? = nil, chainPath: [String]? = nil, requirePostState: Bool = true) async throws -> (Bool, StateDiff, LatticeState?) {
+    func validateNexus(
+        fetcher: Fetcher,
+        chain: ChainState? = nil,
+        chainPath: [String]? = nil,
+        reportTemporalFailure: Bool = false,
+        validationContext: ValidationContext = .current
+    ) async throws -> (Bool, StateDiff, LatticeState?) {
         if version != Block.currentVersion { return (false, .empty, nil) }
         async let parentFuture = parent?.resolve(fetcher: fetcher)
         async let specFuture = spec.resolve(fetcher: fetcher)
-        guard let previousBlockNode = try await parentFuture else { return (false, .empty, nil) }
+        guard let previousBlockNode = try await parentFuture?.node else { return (false, .empty, nil) }
         if !validateSpec(parent: previousBlockNode) { return (false, .empty, nil) }
         if !validateState(parent: previousBlockNode) { return (false, .empty, nil) }
         if !validateHeight(parent: previousBlockNode) { return (false, .empty, nil) }
 
         guard let specNode = try await specFuture.node else { return (false, .empty, nil) }
 
-        // P1c (pipeline validation): start transaction body resolution concurrently
+        // Start transaction body resolution concurrently
         // with the ancestor-timestamp walk. The transaction CAS fetches and the
         // ancestor CAS walk are completely independent — overlapping them eliminates
         // one sequential wait from the block validation critical path.
@@ -191,7 +274,14 @@ public extension Block {
             return try await resolveTransactionBodies(fetcher: txResolveFetcher, validator: validator)
         }()
 
-        if !(await validateTimestampAndNextTarget(spec: specNode, parent: previousBlockNode, fetcher: fetcher, chain: chain)) { return (false, .empty, nil) }
+        if !(try await validateTimestampAndNextTarget(
+            spec: specNode,
+            parent: previousBlockNode,
+            fetcher: fetcher,
+            chain: chain,
+            reportTemporalFailure: reportTemporalFailure,
+            validationContext: validationContext
+        )) { return (false, .empty, nil) }
 
         guard let transactionBodies = try await txBodiesFuture else { return (false, .empty, nil) }
 
@@ -200,7 +290,7 @@ public extension Block {
         // and is rejected (fail closed) rather than silently degrading to root.
         let expectedChainPath = chainPath ?? [DEFAULT_ROOT_DIRECTORY]
         if expectedChainPath.isEmpty { return (false, .empty, nil) }
-        if !(await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, fetcher: fetcher)) { return (false, .empty, nil) }
+        if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, fetcher: fetcher)) { return (false, .empty, nil) }
         if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if !validateBlockSize(spec: specNode) { return (false, .empty, nil) }
@@ -214,7 +304,11 @@ public extension Block {
         if !withdrawalBodies.isEmpty {
             async let prevStateFuture = prevState.resolve(fetcher: fetcher)
             async let parentStateFuture = parentState.resolve(fetcher: fetcher)
-            let (prevStateNode, parentStateNode) = try await (prevStateFuture, parentStateFuture)
+            let (resolvedPrevState, resolvedParentState) = try await (prevStateFuture, parentStateFuture)
+            guard let prevStateNode = resolvedPrevState.node,
+                  let parentStateNode = resolvedParentState.node else {
+                return (false, .empty, nil)
+            }
             let ownDirectory = expectedChainPath.last ?? DEFAULT_ROOT_DIRECTORY
             if try await withdrawalBodies.concurrentMap({ try await $0.withdrawalsAreValid(directory: ownDirectory, prevState: prevStateNode, parentState: parentStateNode, fetcher: fetcher) }).contains(false) { return (false, .empty, nil) }
         }
@@ -231,11 +325,6 @@ public extension Block {
         ) { return (false, .empty, nil) }
         if !validateGenesisTransactions(transactionBodies: transactionBodies) { return (false, .empty, nil) }
 
-        // Structural/transaction validation is complete. Snapshot sync stops here
-        // (no state trie to run the post-state transition against), matching the
-        // pre-11.1.0 `return (true, transactionBodies)` structural-only contract.
-        guard requirePostState else { return (true, .empty, nil) }
-
         let (postStateValid, diff, materializedPostState) = try await validatePostState(transactionBodies: transactionBodies, allAccountActions: allAccountActions, allActions: transactionBodies.flatMap { $0.actions }, allDepositActions: allDepositActions, allGenesisActions: transactionBodies.flatMap { $0.genesisActions }, allReceiptActions: allReceiptActions, allWithdrawalActions: allWithdrawalActions, fetcher: fetcher)
         if !postStateValid { return (false, .empty, nil) }
         return (true, diff, materializedPostState)
@@ -246,7 +335,7 @@ public extension Block {
     }
 
     func validatePostState(transactionBodies: [TransactionBody], fetcher: Fetcher) async throws -> (Bool, StateDiff, LatticeState?) {
-        // P-1102: single pass instead of 6 separate flatMap calls.
+        // Collect each action family in one pass.
         var allAccountActions: [AccountAction] = []
         var allActions: [Action] = []
         var allDepositActions: [DepositAction] = []
@@ -265,7 +354,9 @@ public extension Block {
     }
 
     func validatePostState(transactionBodies: [TransactionBody], allAccountActions: [AccountAction], allActions: [Action], allDepositActions: [DepositAction], allGenesisActions: [GenesisAction], allReceiptActions: [ReceiptAction], allWithdrawalActions: [WithdrawalAction], fetcher: Fetcher) async throws -> (Bool, StateDiff, LatticeState?) {
-        let prevStateNode = try await prevState.resolve(fetcher: fetcher)
+        guard let prevStateNode = try await prevState.resolve(fetcher: fetcher).node else {
+            return (false, .empty, nil)
+        }
         let (updatedState, diff) = try await prevStateNode.proveAndUpdateState(allAccountActions: allAccountActions, allActions: allActions, allDepositActions: allDepositActions, allGenesisActions: allGenesisActions, allReceiptActions: allReceiptActions, allWithdrawalActions: allWithdrawalActions, transactionBodies: transactionBodies, fetcher: fetcher)
         // Compare the expected postState CID (computed from prev state + TXs) against the
         // block's declared postState CID. Avoids a CAS fetch for the new postState — the
@@ -277,61 +368,41 @@ public extension Block {
 
     func validateBalanceChanges(spec: ChainSpec, allDepositActions: [DepositAction], allWithdrawalActions: [WithdrawalAction], allAccountActions: [AccountAction]) throws -> Bool {
         let reward = spec.rewardAtBlock(height)
-        let (totalDeposited, depOverflow) = Block.getTotalDeposited(allDepositActions)
-        if depOverflow { return false }
-        let (totalWithdrawn, wdOverflow) = Block.getTotalWithdrawn(allWithdrawalActions)
-        if wdOverflow { return false }
+        let totalDeposited = allDepositActions.reduce(WorkSum.zero) {
+            $0 + UInt256($1.amountDeposited)
+        }
+        let totalWithdrawn = allWithdrawalActions.reduce(WorkSum.zero) {
+            $0 + UInt256($1.amountWithdrawn)
+        }
         // Fees are not independent income: transaction validation requires
         // sender debits to include the fee, so block validation only gives
         // miners credit for fees when those debits are present in the same
         // action set.
         // totalCredits <= totalDebits + totalWithdrawn + reward - totalDeposited
-        var totalCredits: UInt64 = 0
-        var totalDebits: UInt64 = 0
+        var totalCredits = WorkSum.zero
+        var totalDebits = WorkSum.zero
         for action in allAccountActions {
-            if action.delta == Int64.min { return false }
-            if action.delta > 0 {
-                let (newCredits, overflow) = totalCredits.addingReportingOverflow(UInt64(action.delta))
-                if overflow { return false }
-                totalCredits = newCredits
-            } else if action.delta < 0 {
-                let (newDebits, overflow) = totalDebits.addingReportingOverflow(UInt64(-action.delta))
-                if overflow { return false }
-                totalDebits = newDebits
-            }
+            guard action.verify() else { return false }
+            if action.isCredit { totalCredits = totalCredits + UInt256(action.absoluteAmount) }
+            if action.isDebit { totalDebits = totalDebits + UInt256(action.absoluteAmount) }
         }
-        let (withReward, r1) = totalDebits.addingReportingOverflow(reward)
-        let (withWithdrawn, r2) = withReward.addingReportingOverflow(totalWithdrawn)
-        if r1 || r2 { return false }
-        guard withWithdrawn >= totalDeposited else { return false }
-        let available = withWithdrawn - totalDeposited
+        let grossAvailable = totalDebits + UInt256(reward) + totalWithdrawn
+        guard let available = grossAvailable.subtracting(totalDeposited) else { return false }
         return totalCredits <= available
     }
 
     func validateBalanceChangesForGenesis(spec: ChainSpec, allAccountActions: [AccountAction]) throws -> Bool {
         let premineAmount = spec.premineAmount()
-        var totalCredits: UInt64 = 0
+        var totalCredits = WorkSum.zero
         for action in allAccountActions {
-            // SEC-601: guard Int64.min — UInt64(-Int64.min) traps at runtime because
-            // -Int64.min overflows. validateBalanceChanges has the same guard (line 225);
-            // this function was missing it, allowing a malicious genesis block to crash
-            // any validator node calling validateGenesis.
-            if action.delta == Int64.min { return false }
-            if action.delta > 0 {
-                let (newCredits, overflow) = totalCredits.addingReportingOverflow(UInt64(action.delta))
-                if overflow { return false }
-                totalCredits = newCredits
-            }
+            guard action.verify() else { return false }
+            if action.isCredit { totalCredits = totalCredits + UInt256(action.absoluteAmount) }
         }
-        return totalCredits <= premineAmount
+        return totalCredits <= WorkSum(UInt256(premineAmount))
     }
 
     func validateSpec(parent: Block) -> Bool {
         return parent.spec.rawCID == spec.rawCID
-    }
-
-    func validateParentState(parentBlock: Block) -> Bool {
-        return parentBlock.prevState.rawCID == parentState.rawCID
     }
 
     func validateNextTarget(spec: ChainSpec, parent: Block, ancestorTimestamps: [Int64] = []) -> Bool {
@@ -344,12 +415,12 @@ public extension Block {
         if ChainSpec.isMinimumTargetRecovery(target: target, parentNextTarget: parent.nextTarget) {
             return nextTarget == target
         }
-        let requiredRetargetDepth = min(spec.retargetWindow, parent.height + 1)
-        guard ancestorTimestamps.count >= Int(requiredRetargetDepth) else { return false }
+        let (parentDepth, overflow) = parent.height.addingReportingOverflow(1)
+        guard !overflow else { return false }
+        let requiredRetargetDepth = min(spec.retargetWindow, parentDepth)
+        guard requiredRetargetDepth <= UInt64(ancestorTimestamps.count) else { return false }
         let windowTimestamps = [timestamp] + Array(ancestorTimestamps.prefix(Int(requiredRetargetDepth)))
         let expected = spec.calculateWindowedTarget(previousTarget: target, ancestorTimestamps: windowTimestamps)
-        if nextTarget != expected && height == 34 {
-        }
         return nextTarget == expected
     }
 
@@ -358,7 +429,41 @@ public extension Block {
     }
 
     func validateHeight(parent: Block) -> Bool {
-        return parent.height + 1 == height
+        let (expected, overflow) = parent.height.addingReportingOverflow(1)
+        return !overflow && expected == height
+    }
+
+    /// Header-local rules shared by every path that can accept a genesis.
+    func hasGenesisAdmissionShape() -> Bool {
+        version == Block.currentVersion
+            && parent == nil
+            && height == 0
+            && prevState.rawCID == LatticeState.emptyHeader.rawCID
+            && target >= ChainSpec.minimumTarget
+            && nextTarget == target
+    }
+
+    /// Header-only continuity needed to carry a root grind to a descendant.
+    /// Admission-only rules (execution, MTP/future drift, and this block's proposed
+    /// next target) remain local to chains whose target accepts the grind.
+    func hasCarrierContinuity(parent: Block?) -> Bool {
+        guard version == Block.currentVersion else { return false }
+        guard let parent else {
+            return self.parent == nil
+                && height == 0
+                && prevState.rawCID == LatticeState.emptyHeader.rawCID
+        }
+        return self.parent != nil
+            && parent.version == Block.currentVersion
+            && validateSpec(parent: parent)
+            && validateState(parent: parent)
+            && validateHeight(parent: parent)
+            && (target == parent.nextTarget
+                || ChainSpec.isMinimumTargetRecovery(
+                    target: target,
+                    parentNextTarget: parent.nextTarget
+                ))
+            && timestamp > parent.timestamp
     }
 
     /// Bitcoin-style consensus rules:
@@ -368,10 +473,13 @@ public extension Block {
     ///   (3) timestamp > MedianTimePast(11) (prevents grinding by predating)
     /// No lower-bound against wall-clock: old blocks must still validate for
     /// cold sync, so we only gate the future side against clock drift.
-    func validateTimestamp(parent: Block, ancestorTimestamps: [Int64] = []) -> Bool {
+    func validateTimestamp(
+        parent: Block,
+        ancestorTimestamps: [Int64] = [],
+        validationContext: ValidationContext = .current
+    ) -> Bool {
         if parent.timestamp >= timestamp { return false }
-        let now = Int64(Date().timeIntervalSince1970 * 1000)
-        if timestamp > now + Block.maxFutureDriftMilliseconds { return false }
+        if !validationContext.admits(timestamp: timestamp) { return false }
         if !ancestorTimestamps.isEmpty {
             let sorted = ancestorTimestamps.prefix(Int(Block.mtpDepth)).sorted()
             let medianIndex = (sorted.count - 1) / 2
@@ -394,7 +502,7 @@ public extension Block {
         return blockData.count <= spec.maxBlockSize
     }
 
-    ///: deposits and withdrawals are cross-chain constructs — a deposit
+    /// Deposits and withdrawals are cross-chain constructs: a deposit
     /// escrows value for withdrawal on the PARENT chain, and a withdrawal
     /// requires a receipt in the parent chain's state. The root chain
     /// (chainPath length 1) has no parent, so a deposit there burns value with

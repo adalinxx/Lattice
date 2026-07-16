@@ -28,13 +28,13 @@ private func spec() -> ChainSpec {
 }
 
 private func genesis(timestamp: Int64 = 1_000_000, nonce: UInt64 = 0) async throws -> Block {
-    try await BlockBuilder.buildGenesis(
+    try await buildAndStoreGenesis(
         spec: spec(), timestamp: timestamp, target: UInt256(1000), nonce: nonce, fetcher: fetcher
     )
 }
 
 private func next(_ previous: Block, ts: Int64, nonce: UInt64 = 0) async throws -> Block {
-    try await BlockBuilder.buildBlock(
+    try await buildAndStoreBlock(
         previous: previous, timestamp: ts, target: UInt256(1000), nonce: nonce, fetcher: fetcher
     )
 }
@@ -51,8 +51,8 @@ private func buildChain(length: Int, startTimestamp: Int64 = 1_000_000) async th
 
 private func submitChain(_ chain: ChainState, blocks: [Block]) async {
     for block in blocks.dropFirst() {
-        let _ = await chain.submitBlock(
-            parentBlockHeaderAndIndex: nil, blockHeader: header(block), block: block
+        let _ = await chain.submitTestBlock(
+            blockHeader: header(block), block: block
         )
     }
 }
@@ -67,10 +67,10 @@ final class DoubleSpendTests: XCTestCase {
         let chain = ChainState.fromGenesis(block: g)
         let b1 = try await next(g, ts: 2_000_000, nonce: 1)
 
-        let first = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(b1), block: b1)
+        let first = await chain.submitTestBlock(blockHeader: header(b1), block: b1)
         XCTAssertTrue(first.addedBlock)
 
-        let second = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(b1), block: b1)
+        let second = await chain.submitTestBlock(blockHeader: header(b1), block: b1)
         XCTAssertFalse(second.addedBlock, "Duplicate block must be rejected")
     }
 
@@ -118,7 +118,7 @@ final class StateModelHardeningTests: XCTestCase {
     func testPerAccountNonceIgnoresCosignerSet() async throws {
         let stateFetcher = StorableFetcher()
         let empty = try! AccountStateHeader(node: AccountState())
-        try empty.storeRecursively(storer: stateFetcher)
+        try await empty.storeRecursively(storer: stateFetcher)
 
         let solo = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
@@ -130,7 +130,7 @@ final class StateModelHardeningTests: XCTestCase {
             transactionBodies: [solo],
             fetcher: stateFetcher
         )
-        try afterSolo.storeRecursively(storer: stateFetcher)
+        try await afterSolo.storeRecursively(storer: stateFetcher)
 
         let cosignedReplay = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
@@ -163,7 +163,7 @@ final class StateModelHardeningTests: XCTestCase {
     func testWithdrawalWithoutDepositRejectsInAccounting() async throws {
         let stateFetcher = StorableFetcher()
         let empty = try! DepositStateHeader(node: DepositState())
-        try empty.storeRecursively(storer: stateFetcher)
+        try await empty.storeRecursively(storer: stateFetcher)
 
         let missing = WithdrawalAction(
             withdrawer: "bob",
@@ -173,7 +173,7 @@ final class StateModelHardeningTests: XCTestCase {
             amountWithdrawn: 100
         )
         do {
-            _ = try await empty.proveAndDeleteForWithdrawals(
+            _ = try await empty.proveAndSpendForWithdrawals(
                 allWithdrawalActions: [missing],
                 fetcher: stateFetcher
             )
@@ -192,7 +192,7 @@ final class StateModelHardeningTests: XCTestCase {
             allDepositActions: [deposit],
             fetcher: stateFetcher
         )
-        try afterDeposit.storeRecursively(storer: stateFetcher)
+        try await afterDeposit.storeRecursively(storer: stateFetcher)
 
         let overClaim = WithdrawalAction(
             withdrawer: "bob",
@@ -202,7 +202,7 @@ final class StateModelHardeningTests: XCTestCase {
             amountWithdrawn: 100
         )
         do {
-            _ = try await afterDeposit.proveAndDeleteForWithdrawals(
+            _ = try await afterDeposit.proveAndSpendForWithdrawals(
                 allWithdrawalActions: [overClaim],
                 fetcher: stateFetcher
             )
@@ -240,7 +240,7 @@ final class StateModelHardeningTests: XCTestCase {
 
         let stateFetcher = StorableFetcher()
         let empty = try! AccountStateHeader(node: AccountState())
-        try empty.storeRecursively(storer: stateFetcher)
+        try await empty.storeRecursively(storer: stateFetcher)
 
         do {
             _ = try await empty.proveAndUpdateState(
@@ -403,8 +403,8 @@ final class BalanceConservationTests: XCTestCase {
             receiptActions: [], withdrawalActions: [],
             signers: ["sender"], fee: 1, nonce: 0
         ).valueConservation()
-        XCTAssertEqual(valid.totalDebits, 101)
-        XCTAssertEqual(valid.totalCredits, 100)
+        XCTAssertEqual(valid.totalDebits, WorkSum(UInt256(101)))
+        XCTAssertEqual(valid.totalCredits, WorkSum(UInt256(100)))
         XCTAssertFalse(valid.overflow)
         XCTAssertTrue(valid.conserved)
 
@@ -430,19 +430,41 @@ final class BalanceConservationTests: XCTestCase {
             withdrawalActions: [WithdrawalAction(withdrawer: "sender", nonce: 1, demander: "recipient", amountDemanded: 20, amountWithdrawn: 20)],
             signers: ["sender"], fee: 40, nonce: 0
         ).valueConservation()
-        XCTAssertEqual(bridged.totalDebits, 150)
-        XCTAssertEqual(bridged.totalCredits, 100)
+        XCTAssertEqual(bridged.totalDebits, WorkSum(UInt256(150)))
+        XCTAssertEqual(bridged.totalCredits, WorkSum(UInt256(100)))
         XCTAssertFalse(bridged.overflow)
         XCTAssertTrue(bridged.conserved)
 
-        let overflow = TransactionBody(
+        let invalidExtremeDebit = TransactionBody(
             accountActions: [AccountAction(owner: "sender", delta: Int64.min)],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
             signers: ["sender"], fee: 0, nonce: 0
         ).valueConservation()
-        XCTAssertTrue(overflow.overflow)
-        XCTAssertFalse(overflow.conserved)
+        XCTAssertEqual(invalidExtremeDebit.totalDebits, .zero)
+        XCTAssertTrue(invalidExtremeDebit.overflow)
+        XCTAssertFalse(invalidExtremeDebit.conserved)
+
+        let beyondUInt64 = TransactionBody(
+            accountActions: [
+                AccountAction(owner: "sender", delta: -Int64.max),
+                AccountAction(owner: "sender", delta: -Int64.max),
+                AccountAction(owner: "sender", delta: -Int64.max),
+                AccountAction(owner: "recipient", delta: Int64.max),
+                AccountAction(owner: "recipient", delta: Int64.max),
+                AccountAction(owner: "recipient", delta: Int64.max),
+            ],
+            actions: [], depositActions: [], genesisActions: [],
+            receiptActions: [], withdrawalActions: [],
+            signers: ["sender"], fee: 0, nonce: 0
+        ).valueConservation()
+        let amount = UInt256(UInt64(Int64.max))
+        let expected = WorkSum(amount) + amount + amount
+        XCTAssertGreaterThan(expected, WorkSum(UInt256(UInt64.max)))
+        XCTAssertEqual(beyondUInt64.totalDebits, expected)
+        XCTAssertEqual(beyondUInt64.totalCredits, expected)
+        XCTAssertFalse(beyondUInt64.overflow)
+        XCTAssertTrue(beyondUInt64.conserved)
     }
 
     func testCannotCreateMoneyFromNothing() throws {
@@ -451,8 +473,8 @@ final class BalanceConservationTests: XCTestCase {
             transactions: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Transaction>>()),
             target: UInt256(1000), nextTarget: UInt256(1000),
             spec: try! VolumeImpl<ChainSpec>(node: spec()),
-            parentState: Reference(try! LatticeStateHeader(node: LatticeState.emptyState())),
-            prevState: Reference(try! LatticeStateHeader(node: LatticeState.emptyState())),
+            parentState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
+            prevState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             postState: try! LatticeStateHeader(node: LatticeState.emptyState()),
             children: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Block>>()),
             height: 0, timestamp: 1_000_000, nonce: 0
@@ -470,8 +492,8 @@ final class BalanceConservationTests: XCTestCase {
             transactions: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Transaction>>()),
             target: UInt256(1000), nextTarget: UInt256(1000),
             spec: try! VolumeImpl<ChainSpec>(node: spec()),
-            parentState: Reference(try! LatticeStateHeader(node: LatticeState.emptyState())),
-            prevState: Reference(try! LatticeStateHeader(node: LatticeState.emptyState())),
+            parentState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
+            prevState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             postState: try! LatticeStateHeader(node: LatticeState.emptyState()),
             children: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Block>>()),
             height: 1, timestamp: 2_000_000, nonce: 0
@@ -505,8 +527,8 @@ final class BalanceConservationTests: XCTestCase {
             transactions: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Transaction>>()),
             target: UInt256(1000), nextTarget: UInt256(1000),
             spec: try! VolumeImpl<ChainSpec>(node: spec()),
-            parentState: Reference(try! LatticeStateHeader(node: LatticeState.emptyState())),
-            prevState: Reference(try! LatticeStateHeader(node: LatticeState.emptyState())),
+            parentState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
+            prevState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             postState: try! LatticeStateHeader(node: LatticeState.emptyState()),
             children: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Block>>()),
             height: 0, timestamp: 1_000_000, nonce: 0
@@ -567,7 +589,7 @@ final class ModelAFeeKeystoneTests: XCTestCase {
         let fee: UInt64 = 50
         let reward = s.rewardAtBlock(1)
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: s, timestamp: base, target: UInt256(1000), fetcher: f
         )
         // fee = 50 declared, but the signer is never debited; the only account
@@ -578,7 +600,7 @@ final class ModelAFeeKeystoneTests: XCTestCase {
             receiptActions: [], withdrawalActions: [],
             signers: [minerAddr], fee: fee, nonce: 0, chainPath: ["Nexus"]
         )
-        let block = try await BlockBuilder.buildBlock(
+        let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [signNexus(maliciousBody, miner)],
             timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: f
         )
@@ -611,7 +633,7 @@ final class ModelAFeeKeystoneTests: XCTestCase {
             receiptActions: [], withdrawalActions: [],
             signers: [payerAddr], fee: fee, nonce: 1, chainPath: ["Nexus"]
         )
-        let block = try await BlockBuilder.buildBlock(
+        let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [signNexus(fundedBody, payer)],
             timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: f
         )
@@ -629,12 +651,12 @@ final class BlockValidationAdversarialTests: XCTestCase {
     func testBlockWithWrongIndexRejected() async throws {
         let g = try await genesis()
         let wrongIndex = Block(
-            parent: Reference(try! VolumeImpl(node: g)),
+            parent: try! VolumeImpl(node: g).removingNode(),
             transactions: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Transaction>>()),
             target: UInt256(1000), nextTarget: UInt256(1000),
             spec: g.spec,
-            parentState: Reference(try! LatticeStateHeader(node: LatticeState.emptyState())),
-            prevState: Reference(g.postState),
+            parentState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
+            prevState: g.postState.removingNode(),
             postState: g.postState,
             children: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Block>>()),
             height: 5, timestamp: 2_000_000, nonce: 0
@@ -645,12 +667,12 @@ final class BlockValidationAdversarialTests: XCTestCase {
     func testBlockWithPastTimestampRejected() async throws {
         let g = try await genesis(timestamp: 5_000_000)
         let pastBlock = Block(
-            parent: Reference(try! VolumeImpl(node: g)),
+            parent: try! VolumeImpl(node: g).removingNode(),
             transactions: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Transaction>>()),
             target: UInt256(1000), nextTarget: UInt256(1000),
             spec: g.spec,
-            parentState: Reference(try! LatticeStateHeader(node: LatticeState.emptyState())),
-            prevState: Reference(g.postState),
+            parentState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
+            prevState: g.postState.removingNode(),
             postState: g.postState,
             children: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Block>>()),
             height: 1, timestamp: 4_000_000, nonce: 0
@@ -668,12 +690,12 @@ final class BlockValidationAdversarialTests: XCTestCase {
             initialReward: 32, halvingInterval: 10_000
         )
         let wrongSpec = Block(
-            parent: Reference(try! VolumeImpl(node: g)),
+            parent: try! VolumeImpl(node: g).removingNode(),
             transactions: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Transaction>>()),
             target: UInt256(1000), nextTarget: UInt256(1000),
             spec: try! VolumeImpl<ChainSpec>(node: differentSpec),
-            parentState: Reference(try! LatticeStateHeader(node: LatticeState.emptyState())),
-            prevState: Reference(g.postState),
+            parentState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
+            prevState: g.postState.removingNode(),
             postState: g.postState,
             children: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Block>>()),
             height: 1, timestamp: 2_000_000, nonce: 0
@@ -685,12 +707,12 @@ final class BlockValidationAdversarialTests: XCTestCase {
         let g = try await genesis()
         let wrongState = try! LatticeStateHeader(node: LatticeState.emptyState())
         let b = Block(
-            parent: Reference(try! VolumeImpl(node: g)),
+            parent: try! VolumeImpl(node: g).removingNode(),
             transactions: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Transaction>>()),
             target: UInt256(1000), nextTarget: UInt256(1000),
             spec: g.spec,
-            parentState: Reference(wrongState),
-            prevState: Reference(wrongState),
+            parentState: wrongState.removingNode(),
+            prevState: wrongState.removingNode(),
             postState: wrongState,
             children: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Block>>()),
             height: 1, timestamp: 2_000_000, nonce: 0
@@ -709,7 +731,7 @@ final class BlockValidationAdversarialTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024, halvingInterval: 10_000
         )
-        let g = try await BlockBuilder.buildGenesis(
+        let g = try await buildAndStoreGenesis(
             spec: tinySpec, timestamp: 1_000_000, target: UInt256(1000), fetcher: fetcher
         )
         XCTAssertFalse(g.validateBlockSize(spec: tinySpec),
@@ -724,7 +746,7 @@ final class FilterBypassTests: XCTestCase {
 
     func testTransactionPolicyEnforced() async throws {
         let fetcher = StorableFetcher()
-        let policy = try storeWasmPolicy(accepts: false, scope: .transaction, fetcher: fetcher)
+        let policy = try await storeWasmPolicy(accepts: false, scope: .transaction, fetcher: fetcher)
         let feeSpec = ChainSpec(
             maxNumberOfTransactionsPerBlock: 100,
             maxStateGrowth: 100_000,
@@ -738,13 +760,13 @@ final class FilterBypassTests: XCTestCase {
             genesisActions: [], receiptActions: [], withdrawalActions: [],
             signers: [], fee: 50, nonce: 1
         )
-        let accepted = await TransactionBody.batchVerifyPolicies(bodies: [cheapTx], spec: feeSpec, chainPath: ["Nexus"], fetcher: fetcher)
+        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [cheapTx], spec: feeSpec, chainPath: ["Nexus"], fetcher: fetcher)
         XCTAssertFalse(accepted)
     }
 
     func testActionPolicyEnforced() async throws {
         let fetcher = StorableFetcher()
-        let policy = try storeWasmPolicy(accepts: false, scope: .action, fetcher: fetcher)
+        let policy = try await storeWasmPolicy(accepts: false, scope: .action, fetcher: fetcher)
         let nsSpec = ChainSpec(
             maxNumberOfTransactionsPerBlock: 100,
             maxStateGrowth: 100_000,
@@ -755,13 +777,13 @@ final class FilterBypassTests: XCTestCase {
         )
         let badAction = Action(key: "system/hack", oldValue: nil, newValue: "data")
         let body = TransactionBody(accountActions: [], actions: [badAction], depositActions: [], genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 1, nonce: 0)
-        let accepted = await TransactionBody.batchVerifyPolicies(bodies: [body], spec: nsSpec, chainPath: ["Nexus"], fetcher: fetcher)
+        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: nsSpec, chainPath: ["Nexus"], fetcher: fetcher)
         XCTAssertFalse(accepted)
     }
 
     func testChildPoliciesDoNotImplicitlyInheritParentPolicies() async throws {
         let fetcher = StorableFetcher()
-        let rejectingParentPolicy = try storeWasmPolicy(accepts: false, scope: .transaction, fetcher: fetcher)
+        let rejectingParentPolicy = try await storeWasmPolicy(accepts: false, scope: .transaction, fetcher: fetcher)
         let parentSpec = ChainSpec(
             maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
             premine: 0, targetBlockTime: 1_000, initialReward: 1024, halvingInterval: 10_000,
@@ -776,8 +798,8 @@ final class FilterBypassTests: XCTestCase {
             genesisActions: [], receiptActions: [], withdrawalActions: [],
             signers: [], fee: 10, nonce: 1
         )
-        let childAccepted = await TransactionBody.batchVerifyPolicies(bodies: [cheapTx], spec: childSpec, chainPath: ["Nexus", "Child"], fetcher: fetcher)
-        let parentAccepted = await TransactionBody.batchVerifyPolicies(bodies: [cheapTx], spec: parentSpec, chainPath: ["Nexus", "Child"], fetcher: fetcher)
+        let childAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [cheapTx], spec: childSpec, chainPath: ["Nexus", "Child"], fetcher: fetcher)
+        let parentAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [cheapTx], spec: parentSpec, chainPath: ["Nexus", "Child"], fetcher: fetcher)
         XCTAssertTrue(childAccepted, "Child spec has no policy, so it should not inherit the parent's rejecting policy by consensus")
         XCTAssertFalse(parentAccepted, "Parent policy still rejects when evaluated as the parent's own policy")
     }
@@ -809,15 +831,18 @@ final class ConsensusStressTests: XCTestCase {
         let chain = ChainState.fromGenesis(block: g)
 
         let b1 = try await next(g, ts: 2_000_000, nonce: 1)
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(b1), block: b1)
+        let _ = await chain.submitTestBlock(blockHeader: header(b1), block: b1)
 
+        var candidates = [b1]
         for i in 0..<20 {
             let fork = try await next(g, ts: 2_000_000, nonce: UInt64(100 + i))
-            let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(fork), block: fork)
+            let _ = await chain.submitTestBlock(blockHeader: header(fork), block: fork)
+            candidates.append(fork)
         }
 
+        let expected = candidates.map { header($0).rawCID }.min()
         let tip = await chain.getMainChainTip()
-        XCTAssertEqual(tip, header(b1).rawCID, "Original chain should hold against equal-length forks")
+        XCTAssertEqual(tip, expected, "Equal-work bases should converge on the stable CID tie-break")
     }
 
     func testDeepReorgPreservesCommonAncestor() async throws {
@@ -832,7 +857,7 @@ final class ConsensusStressTests: XCTestCase {
             forkBlocks.append(b)
         }
         for b in forkBlocks.dropFirst() {
-            let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(b), block: b)
+            let _ = await chain.submitTestBlock(blockHeader: header(b), block: b)
         }
 
         let newTip = await chain.getMainChainTip()
@@ -853,16 +878,23 @@ final class ConsensusStressTests: XCTestCase {
         let blocks = try await buildChain(length: 5)
         let chain = ChainState.fromGenesis(block: blocks[0])
 
-        let r3 = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(blocks[3]), block: blocks[3])
-        XCTAssertTrue(r3.needsChildBlock, "Block 3 submitted before 1,2 should need parent")
+        _ = await chain.submitTestBlock(blockHeader: header(blocks[3]), block: blocks[3])
+        let requirements = await chain.missingSameChainPredecessors()
+        XCTAssertEqual(
+            requirements,
+            [SameChainPredecessorRequirement(
+                descendantCID: header(blocks[3]).rawCID,
+                predecessorCID: header(blocks[2]).rawCID
+            )]
+        )
 
-        let r1 = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(blocks[1]), block: blocks[1])
+        let r1 = await chain.submitTestBlock(blockHeader: header(blocks[1]), block: blocks[1])
         XCTAssertTrue(r1.extendsMainChain)
 
-        let r2 = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(blocks[2]), block: blocks[2])
+        let r2 = await chain.submitTestBlock(blockHeader: header(blocks[2]), block: blocks[2])
         XCTAssertTrue(r2.extendsMainChain)
 
-        let r4 = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(blocks[4]), block: blocks[4])
+        let r4 = await chain.submitTestBlock(blockHeader: header(blocks[4]), block: blocks[4])
         XCTAssertTrue(r4.addedBlock)
 
         let tipHash = await chain.getMainChainTip()
@@ -871,20 +903,6 @@ final class ConsensusStressTests: XCTestCase {
         XCTAssertEqual(tipHash, header(blocks[4]).rawCID)
     }
 
-    func testMissingBlockTracking() async throws {
-        let blocks = try await buildChain(length: 4)
-        let chain = ChainState.fromGenesis(block: blocks[0])
-
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(blocks[3]), block: blocks[3])
-
-        let missing = await chain.getMissingBlockHashes()
-        XCTAssertTrue(missing.contains(header(blocks[2]).rawCID), "Block 2 should be missing")
-
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(blocks[2]), block: blocks[2])
-        let stillMissing = await chain.getMissingBlockHashes()
-        XCTAssertFalse(stillMissing.contains(header(blocks[2]).rawCID), "Block 2 no longer missing")
-        XCTAssertTrue(stillMissing.contains(header(blocks[1]).rawCID), "Block 1 should now be missing")
-    }
 }
 
 // MARK: - Economic Invariant Tests
@@ -1041,7 +1059,7 @@ final class BugRegressionTests: XCTestCase {
         for i in 3..<8 {
             let b = try await next(forkBlocks.last!, ts: 1_000_000 + Int64(i) * 1000, nonce: UInt64(300 + i))
             forkBlocks.append(b)
-            let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(b), block: b)
+            let _ = await chain.submitTestBlock(blockHeader: header(b), block: b)
         }
 
         let tipAfter = await chain.getMainChainTip()
@@ -1050,78 +1068,18 @@ final class BugRegressionTests: XCTestCase {
     }
 
     func testOrphanDetectionFindsCorrectForkPoint() async throws {
-        let blocks = try await buildChain(length: 5)
+        let blocks = try await buildChain(length: 10)
         let chain = ChainState.fromGenesis(block: blocks[0])
         await submitChain(chain, blocks: blocks)
 
         let fork1 = try await next(blocks[2], ts: 4_000_000, nonce: 99)
         let fork2 = try await next(fork1, ts: 5_000_000, nonce: 99)
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(fork1), block: fork1)
-        let _ = await chain.submitBlock(parentBlockHeaderAndIndex: nil, blockHeader: header(fork2), block: fork2)
+        let _ = await chain.submitTestBlock(blockHeader: header(fork1), block: fork1)
+        let _ = await chain.submitTestBlock(blockHeader: header(fork2), block: fork2)
 
         let earliest = await chain.findEarliestOrphanConnectedToMainChain(blockHeader: header(fork2).rawCID)
         XCTAssertEqual(earliest, header(fork1).rawCID,
             "Should trace back to fork1, whose parent (blocks[2]) is on main chain")
-    }
-}
-
-// MARK: - Dynamic Chain Discovery Tests
-
-@MainActor
-final class DynamicChainDiscoveryTests: XCTestCase {
-
-    func testRegisterChildChain() async throws {
-        let g = try await genesis()
-        let nexusChain = ChainState.fromGenesis(block: g)
-        let level = ChainLevel(chain: nexusChain, children: [:])
-
-        let childGenesis = try await BlockBuilder.buildGenesis(
-            spec: ChainSpec(
-                maxNumberOfTransactionsPerBlock: 50,
-                maxStateGrowth: 50_000,
-                premine: 0,
-                targetBlockTime: 2_000,
-                initialReward: 256, halvingInterval: 10_000
-            ),
-            timestamp: 1_000_000,
-            target: UInt256(500),
-            fetcher: fetcher
-        )
-
-        let childrenBefore = await level.children
-        XCTAssertTrue(childrenBefore.isEmpty)
-
-        await level.subscribe(to: "child1", genesisBlock: childGenesis)
-
-        let childrenAfter = await level.children
-        XCTAssertEqual(childrenAfter.count, 1)
-        XCTAssertNotNil(childrenAfter["child1"])
-
-        let childTip = await childrenAfter["child1"]!.chain.getHighestBlockHeight()
-        XCTAssertEqual(childTip, 0)
-    }
-
-    func testDuplicateRegistrationIgnored() async throws {
-        let g = try await genesis()
-        let level = ChainLevel(chain: ChainState.fromGenesis(block: g), children: [:])
-        let childG = try await BlockBuilder.buildGenesis(
-            spec: ChainSpec(maxNumberOfTransactionsPerBlock: 10, maxStateGrowth: 10_000,
-                           premine: 0, targetBlockTime: 1_000, initialReward: 32, halvingInterval: 10_000),
-            timestamp: 1_000_000, target: UInt256(100), fetcher: fetcher
-        )
-
-        await level.subscribe(to: "x", genesisBlock: childG)
-        let tipAfterFirst = await level.children["x"]!.chain.getMainChainTip()
-
-        let differentChildG = try await BlockBuilder.buildGenesis(
-            spec: ChainSpec(maxNumberOfTransactionsPerBlock: 99, maxStateGrowth: 99_000,
-                           premine: 0, targetBlockTime: 999, initialReward: 512, halvingInterval: 10_000),
-            timestamp: 2_000_000, target: UInt256(200), fetcher: fetcher
-        )
-        await level.subscribe(to: "x", genesisBlock: differentChildG)
-        let tipAfterSecond = await level.children["x"]!.chain.getMainChainTip()
-
-        XCTAssertEqual(tipAfterFirst, tipAfterSecond, "Second registration should be ignored")
     }
 }
 
@@ -1178,23 +1136,24 @@ final class StateChainInvariantTests: XCTestCase {
 /// Verifies that blocks with valid PoW + valid structure but a tampered/wrong
 /// state root are rejected before being submitted to ChainState.
 /// This is the critical invariant for the header-first gossip design:
-/// gossip relay happens before state validation, so processBlockHeader MUST
+/// gossip relay happens before state validation, so chain-local admission MUST
 /// reject invalid state roots synchronously before submitBlock is called.
 @MainActor
 final class StateRootValidationTests: XCTestCase {
 
     /// A block with valid PoW and valid structure but a tampered postState CID
-    /// must be rejected by processBlockHeader before submitBlock is called.
+    /// must be rejected by chain-local admission before submitBlock is called.
     func testNexusBlockWithTamperedPostStateIsRejected() async throws {
         let f = StorableFetcher()
         let t = Int64(Date().timeIntervalSince1970 * 1000)
         // UInt256.max as target: any hash qualifies, so nonce 0 always works.
         let easyDifficulty = UInt256.max
 
-        let g = try await BlockBuilder.buildGenesis(
+        let g = try await buildAndStoreGenesis(
             spec: spec(), timestamp: t - 20_000, target: easyDifficulty, nonce: 0, fetcher: f
         )
-        let validBlock = try await BlockBuilder.buildBlock(
+        try await storeBuiltBlock(g, in: f)
+        let validBlock = try await buildAndStoreBlock(
             previous: g, timestamp: t - 10_000, target: easyDifficulty, nonce: 0, fetcher: f
         )
         try await storeBlockToFetcher(validBlock, fetcher: f)
@@ -1211,11 +1170,17 @@ final class StateRootValidationTests: XCTestCase {
         }
         try await storeBlockToFetcher(minedTampered, fetcher: f)
 
-        let level = ChainLevel(chain: ChainState.fromGenesis(block: g), children: [:])
-        let lattice = Lattice(nexus: level)
-        let result = await lattice.processBlockHeader(header(minedTampered), fetcher: f)
+        let level = ChainLevel(testChain: ChainState.fromGenesis(block: g))
+        let result = try await level.admitBlockHeaderChainLocal(
+            header(minedTampered),
+            fetcher: f,
+            storer: f,
+            stage: testAdmissionStage
+        )
 
-        XCTAssertTrue(result.isRejected, "Block with tampered postState must be rejected")
+        guard case .rejected(.protocolInvalid) = result else {
+            return XCTFail("block with tampered postState must be rejected")
+        }
         let tip = await level.chain.getHighestBlockHeight()
         XCTAssertEqual(tip, 0, "submitBlock must not have been called for a block with bad state root")
     }
@@ -1225,22 +1190,26 @@ final class StateRootValidationTests: XCTestCase {
         let t = Int64(Date().timeIntervalSince1970 * 1000)
         let easyDifficulty = UInt256.max
 
-        let g = try await BlockBuilder.buildGenesis(
+        let g = try await buildAndStoreGenesis(
             spec: spec(), timestamp: t - 20_000, target: easyDifficulty, nonce: 0, fetcher: f
         )
-        let validBlock = try await BlockBuilder.buildBlock(
+        try await storeBuiltBlock(g, in: f)
+        let validBlock = try await buildAndStoreBlock(
             previous: g, timestamp: t - 10_000, target: easyDifficulty, nonce: 0, fetcher: f
         )
         try await storeBlockToFetcher(validBlock, fetcher: f)
 
-        let acceptingLevel = ChainLevel(chain: ChainState.fromGenesis(block: g), children: [:])
-        let acceptingLattice = Lattice(nexus: acceptingLevel)
-        let accepted = await acceptingLattice.processBlockHeader(header(validBlock), fetcher: f)
+        let acceptingLevel = ChainLevel(testChain: ChainState.fromGenesis(block: g))
+        let accepted = try await acceptingLevel.admitBlockHeaderChainLocal(
+            header(validBlock),
+            fetcher: f,
+            storer: f,
+            stage: testAdmissionStage
+        )
 
-        XCTAssertTrue(accepted.isAccepted)
-        guard let materializedPostState = accepted.materializedPostState else {
-            XCTFail("Accepted block should return the materialized post-state")
-            return
+        guard case let .accepted(acceptance) = accepted,
+              let materializedPostState = acceptance.materializedPostState else {
+            return XCTFail("accepted block should canonicalize with its materialized post-state")
         }
         XCTAssertEqual(
             try LatticeStateHeader(node: materializedPostState).rawCID,
@@ -1258,41 +1227,64 @@ final class StateRootValidationTests: XCTestCase {
         }
         try await storeBlockToFetcher(minedTampered, fetcher: f)
 
-        let rejectingLevel = ChainLevel(chain: ChainState.fromGenesis(block: g), children: [:])
-        let rejectingLattice = Lattice(nexus: rejectingLevel)
-        let rejected = await rejectingLattice.processBlockHeader(header(minedTampered), fetcher: f)
+        let rejectingLevel = ChainLevel(testChain: ChainState.fromGenesis(block: g))
+        let rejected = try await rejectingLevel.admitBlockHeaderChainLocal(
+            header(minedTampered),
+            fetcher: f,
+            storer: f,
+            stage: testAdmissionStage
+        )
 
-        XCTAssertTrue(rejected.isRejected)
-        XCTAssertNil(rejected.materializedPostState)
+        guard case .rejected(.protocolInvalid) = rejected else {
+            return XCTFail("tampered block must be rejected")
+        }
     }
 
-    func testWithheldParentDefersNotRejects() async throws {
+    func testWithheldParentReportsUnavailableThenAccepts() async throws {
+        let producerFetcher = StorableFetcher()
         let incompleteFetcher = StorableFetcher()
         let completeFetcher = StorableFetcher()
         let t = Int64(Date().timeIntervalSince1970 * 1000)
         let easyDifficulty = UInt256.max
 
-        let g = try await BlockBuilder.buildGenesis(
-            spec: spec(), timestamp: t - 20_000, target: easyDifficulty, nonce: 0, fetcher: fetcher
+        let g = try await buildAndStoreGenesis(
+            spec: spec(), timestamp: t - 20_000, target: easyDifficulty, nonce: 0, fetcher: producerFetcher
         )
-        let block = try await BlockBuilder.buildBlock(
-            previous: g, timestamp: t - 10_000, target: easyDifficulty, nonce: 0, fetcher: fetcher
+        try await storeBuiltBlock(g, in: producerFetcher)
+        let block = try await buildAndStoreBlock(
+            previous: g, timestamp: t - 10_000, target: easyDifficulty, nonce: 0, fetcher: producerFetcher
         )
-        try await storeBlockToFetcher(block, fetcher: incompleteFetcher)
+        try await VolumeImpl<Block>(node: block).storeBlock(
+            fetcher: producerFetcher,
+            storer: incompleteFetcher
+        )
 
-        let level = ChainLevel(chain: ChainState.fromGenesis(block: g), children: [:])
-        let lattice = Lattice(nexus: level)
-        let deferred = await lattice.processBlockHeader(header(block), fetcher: incompleteFetcher)
+        let level = ChainLevel(testChain: ChainState.fromGenesis(block: g))
+        let unavailable = try await level.admitBlockHeaderChainLocal(
+            header(block),
+            fetcher: incompleteFetcher,
+            storer: incompleteFetcher,
+            stage: testAdmissionStage
+        )
 
-        XCTAssertTrue(deferred.isDeferred, "A block whose parent data is unavailable must defer, not reject")
-        let deferredHeight = await level.chain.getHighestBlockHeight()
-        XCTAssertEqual(deferredHeight, 0, "Deferred blocks must not be submitted")
+        guard case .rejected(.unavailableEvidence) = unavailable else {
+            return XCTFail("a block whose parent data is unavailable must not be admitted")
+        }
+        let unavailableHeight = await level.chain.getHighestBlockHeight()
+        XCTAssertEqual(unavailableHeight, 0, "Unavailable blocks must not be submitted")
 
-        try await storeBlockToFetcher(g, fetcher: completeFetcher)
-        try await storeBlockToFetcher(block, fetcher: completeFetcher)
-        let accepted = await lattice.processBlockHeader(header(block), fetcher: completeFetcher)
+        try await VolumeImpl<Block>(node: g).storeBlock(fetcher: producerFetcher, storer: completeFetcher)
+        try await VolumeImpl<Block>(node: block).storeBlock(fetcher: producerFetcher, storer: completeFetcher)
+        let accepted = try await level.admitBlockHeaderChainLocal(
+            header(block),
+            fetcher: completeFetcher,
+            storer: completeFetcher,
+            stage: testAdmissionStage
+        )
 
-        XCTAssertTrue(accepted.isAccepted, "A deferred block must remain acceptable once its parent is available")
+        guard case .accepted = accepted else {
+            return XCTFail("an unavailable block must canonicalize once evidence arrives")
+        }
         let acceptedHeight = await level.chain.getHighestBlockHeight()
         XCTAssertEqual(acceptedHeight, 1)
     }
@@ -1302,10 +1294,11 @@ final class StateRootValidationTests: XCTestCase {
         let t = Int64(Date().timeIntervalSince1970 * 1000)
         let easyDifficulty = UInt256.max
 
-        let g = try await BlockBuilder.buildGenesis(
+        let g = try await buildAndStoreGenesis(
             spec: spec(), timestamp: t - 20_000, target: easyDifficulty, nonce: 0, fetcher: f
         )
-        let validBlock = try await BlockBuilder.buildBlock(
+        try await storeBuiltBlock(g, in: f)
+        let validBlock = try await buildAndStoreBlock(
             previous: g, timestamp: t - 10_000, target: easyDifficulty, nonce: 0, fetcher: f
         )
 
@@ -1319,14 +1312,26 @@ final class StateRootValidationTests: XCTestCase {
         }
         try await storeBlockToFetcher(minedTampered, fetcher: f)
 
-        let level = ChainLevel(chain: ChainState.fromGenesis(block: g), children: [:])
-        let lattice = Lattice(nexus: level)
-        let rejected = await lattice.processBlockHeader(header(minedTampered), fetcher: f)
-        let rejectedAgain = await lattice.processBlockHeader(header(minedTampered), fetcher: f)
+        let level = ChainLevel(testChain: ChainState.fromGenesis(block: g))
+        let rejected = try await level.admitBlockHeaderChainLocal(
+            header(minedTampered),
+            fetcher: f,
+            storer: f,
+            stage: testAdmissionStage
+        )
+        let rejectedAgain = try await level.admitBlockHeaderChainLocal(
+            header(minedTampered),
+            fetcher: f,
+            storer: f,
+            stage: testAdmissionStage
+        )
 
-        XCTAssertTrue(rejected.isRejected, "Fully-resolvable invalid blocks must reject")
-        XCTAssertFalse(rejected.isDeferred, "Invalid blocks must not be reported as deferred")
-        XCTAssertTrue(rejectedAgain.isRejected, "Reprocessing complete invalid data must not become accepted")
+        guard case .rejected(.protocolInvalid) = rejected else {
+            return XCTFail("fully-resolvable invalid blocks must reject")
+        }
+        guard case .rejected(.protocolInvalid) = rejectedAgain else {
+            return XCTFail("reprocessing complete invalid data must not become accepted")
+        }
         let rejectedHeight = await level.chain.getHighestBlockHeight()
         XCTAssertEqual(rejectedHeight, 0)
     }
@@ -1348,14 +1353,16 @@ final class StateRootValidationTests: XCTestCase {
                                   initialReward: 512, halvingInterval: 10_000,
                                   retargetWindow: 5)
 
-        let childGenesis = try await BlockBuilder.buildGenesis(
+        let childGenesis = try await buildAndStoreGenesis(
             spec: childSpec, timestamp: t - 20_000, target: easyDifficulty, nonce: 0, fetcher: f
         )
-        let nexusGenesis = try await BlockBuilder.buildGenesis(
+        let nexusGenesis = try await buildAndStoreGenesis(
             spec: nexusSpec, timestamp: t - 20_000, target: easyDifficulty, nonce: 0, fetcher: f
         )
+        try await storeBuiltBlock(childGenesis, in: f)
+        try await storeBuiltBlock(nexusGenesis, in: f)
 
-        let validChildBlock = try await BlockBuilder.buildBlock(
+        let validChildBlock = try await buildAndStoreBlock(
             previous: childGenesis, parentChainBlock: nexusGenesis,
             timestamp: t - 10_000, target: easyDifficulty, nonce: 0, fetcher: f
         )
@@ -1371,25 +1378,38 @@ final class StateRootValidationTests: XCTestCase {
         }
         try await storeBlockToFetcher(minedTamperedChild, fetcher: f)
 
-        // Build a nexus block that embeds the tampered child.
-        let nexusBlock = try await BlockBuilder.buildBlock(
-            previous: nexusGenesis, children: ["Child": minedTamperedChild],
+        // The child process receives the complete root-to-child proof package;
+        // it does not depend on an in-process parent-chain runtime.
+        let nexusCarrier = try await buildAndStoreGenesis(
+            spec: nexusSpec, children: ["Child": minedTamperedChild],
             timestamp: t - 10_000, target: easyDifficulty, nonce: 0, fetcher: f
         )
-        try await storeBlockToFetcher(nexusBlock, fetcher: f)
+        let proof = try await ChildBlockProof.generate(
+            rootHeader: header(nexusCarrier),
+            childDirectory: "Child",
+            fetcher: f,
+        )
+        let package = try await childValidationPackage(proof: proof, fetcher: f)
+        let childLevel = ChainLevel(
+            chain: ChainState.fromGenesis(block: childGenesis),
+            context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
+        )
+        let result = try await childLevel.admitBlockHeaderChainLocal(
+            header(minedTamperedChild),
+            fetcher: f,
+            childPackage: package,
+            storer: f,
+            stage: testAdmissionStage
+        )
 
-        let nexusLevel = ChainLevel(chain: ChainState.fromGenesis(block: nexusGenesis), children: [:])
-        await nexusLevel.subscribe(to: "Child", genesisBlock: childGenesis)
-        let lattice = Lattice(nexus: nexusLevel)
-        _ = await lattice.processBlockHeader(header(nexusBlock), fetcher: f)
-
-        let childTip = await nexusLevel.children["Child"]!.chain.getHighestBlockHeight()
+        guard case .rejected(.protocolInvalid) = result else {
+            return XCTFail("tampered child block must be rejected")
+        }
+        let childTip = await childLevel.chain.getHighestBlockHeight()
         XCTAssertEqual(childTip, 0, "Tampered child block must not be submitted to child chain")
     }
 }
 
 private func storeBlockToFetcher(_ block: Block, fetcher: StorableFetcher) async throws {
-    let storer = CollectingStorer()
-    try VolumeImpl<Block>(node: block).storeRecursively(storer: storer)
-    await storer.flush(to: fetcher)
+    try await VolumeImpl<Block>(node: block).storeBlock(storer: fetcher)
 }

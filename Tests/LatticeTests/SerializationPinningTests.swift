@@ -22,12 +22,11 @@ final class SerializationPinningTests: XCTestCase {
     private func deterministicGenesis() async throws -> (block: Block, cid: String) {
         let fetcher = StorableFetcher()
         let spec = deterministicSpec()
-        let block = try await BlockBuilder.buildGenesis(
+        let block = try await buildAndStoreGenesis(
             spec: spec,
             timestamp: 1_000_000_000_000,
             target: UInt256.max,
             nonce: 0,
-            version: 1,
             fetcher: fetcher
         )
         let cid = try! VolumeImpl<Block>(node: block).rawCID
@@ -122,7 +121,7 @@ final class SerializationPinningTests: XCTestCase {
             initialReward: 512,
             halvingInterval: 100_000
         )
-        let child = try await BlockBuilder.buildGenesis(
+        let child = try await buildAndStoreGenesis(
             spec: childSpec,
             timestamp: 1_000_000_000_000,
             target: UInt256.max,
@@ -150,22 +149,22 @@ final class SerializationPinningTests: XCTestCase {
             halvingInterval: 100_000
         )
 
-        let genesis = try await BlockBuilder.buildGenesis(
+        let genesis = try await buildAndStoreGenesis(
             spec: spec, timestamp: 1_000_000_000_000,
             target: UInt256.max, nonce: 0, fetcher: fetcher
         )
-        let childGenesis = try await BlockBuilder.buildGenesis(
+        let childGenesis = try await buildAndStoreGenesis(
             spec: childSpec, timestamp: 1_000_000_000_000,
             target: UInt256.max, nonce: 0, fetcher: fetcher
         )
 
-        let block1 = try await BlockBuilder.buildBlock(
+        let block1 = try await buildAndStoreBlock(
             previous: genesis,
             children: ["Child": childGenesis],
             timestamp: 1_000_000_001_000,
             fetcher: fetcher
         )
-        let block2 = try await BlockBuilder.buildBlock(
+        let block2 = try await buildAndStoreBlock(
             previous: genesis,
             children: ["Child": childGenesis],
             timestamp: 1_000_000_001_000,
@@ -193,12 +192,12 @@ final class SerializationPinningTests: XCTestCase {
 
     func testVersionFieldPreserved() async throws {
         let (block, _) = try await deterministicGenesis()
-        XCTAssertEqual(block.version, 1)
+        XCTAssertEqual(block.version, Block.currentVersion)
 
         guard let data = block.toData(), let restored = Block(data: data) else {
             return XCTFail("round-trip failed")
         }
-        XCTAssertEqual(restored.version, 1,
+        XCTAssertEqual(restored.version, Block.currentVersion,
             "version field must survive serialization round-trip")
     }
 }
