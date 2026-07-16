@@ -30,8 +30,7 @@ final class GhostReorgEdgeCaseTests: XCTestCase {
             mainChainHashes: Set(["G", "M1", "M2", "M3"])
         )
         // subtreeWeight(F1) = {F1,F2a,F2b,F3a} = 4 > subtreeWeight(M1) = {M1,M2,M3} = 3.
-        let f1block = await chain.getConsensusBlock(hash: "F1")!
-        let reorg = await chain.checkForReorg(block: f1block)
+        let reorg = await chain.reevaluateForkChoice()
         XCTAssertNotNil(reorg, "fork's branching subtree (4) outweighs main's single path (3)")
         // GHOST descent picks the heaviest leaf under F1 — the F2a→F3a branch.
         let tip = await chain.getMainChainTip()
@@ -47,8 +46,7 @@ final class GhostReorgEdgeCaseTests: XCTestCase {
         let f2 = makeBlockMeta(hash: "F2", previousHash: "F1", height: 2)
 
         let chain = makeChain(blocks: [g, m1, m2, f1, f2], mainChainHashes: Set(["G", "M1", "M2"]))
-        let f1block = await chain.getConsensusBlock(hash: "F1")!
-        let reorg = await chain.checkForReorg(block: f1block)
+        let reorg = await chain.reevaluateForkChoice()
         XCTAssertNotNil(reorg, "equal work and target choose the smaller segment-base hash")
         let tip = await chain.getMainChainTip()
         XCTAssertEqual(tip, "F2")
@@ -65,8 +63,7 @@ final class GhostReorgEdgeCaseTests: XCTestCase {
         let f3 = makeBlockMeta(hash: "F3", previousHash: "F2", height: 3)
 
         let chain = makeChain(blocks: [g, m1, m2, f1, f2, f3], mainChainHashes: Set(["G", "M1", "M2"]))
-        let f1block = await chain.getConsensusBlock(hash: "F1")!
-        let reorg = await chain.checkForReorg(block: f1block)
+        let reorg = await chain.reevaluateForkChoice()
         XCTAssertNotNil(reorg)
         XCTAssertEqual(reorg?.mainChainBlocksRemoved, Set(["M1", "M2"]), "entire old suffix removed")
         XCTAssertEqual(Set(reorg!.mainChainBlocksAdded.keys), Set(["F1", "F2", "F3"]), "winning path installed")

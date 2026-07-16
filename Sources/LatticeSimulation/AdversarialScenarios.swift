@@ -29,7 +29,7 @@ public struct DeepReorgPoint: Codable, Equatable, Sendable {
     /// Deepest reorg observed across the trials (the worst-case achievable depth).
     public let maxReorgDepth: Int
     /// Fraction of trials in which the released private branch won fork choice and the
-    /// real `checkForReorg` fired.
+    /// real canonical projection changed.
     public let reorgProbability: Double
     public let trials: Int
 }

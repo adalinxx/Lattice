@@ -45,7 +45,7 @@ This is a recursive generalization of merged mining (as pioneered by Namecoin wi
 
 This three-phase state model is what makes bridgeless cross-chain transfers possible. A deposit on a child chain creates an entry in the child's deposit state. The parent chain can verify that deposit by checking the child's state root (committed in the child block embedded in the parent block). A withdrawal on the child requires proving that a corresponding receipt exists in the parent's state — which the child can verify against `parentState`. No external attestation needed. The chain hierarchy itself is the bridge.
 
-**Permissionless chain creation.** Any chain can spawn children via a `GenesisAction` in a transaction. No slot auctions, no governance votes, no staking requirements. The child chain defines its own `ChainSpec` — block time, reward schedule, transaction throughput, custom validation policies — and inherits each verified grind accepted first at an ancestor boundary. It does not need a separate miner set, and it does not depend on the ancestor's current canonical tip.
+**Permissionless chain creation.** Any chain can spawn children via a `GenesisAction` in a transaction. No slot auctions, no governance votes, no staking requirements. The child chain defines its own `ChainSpec` — block time, reward schedule, transaction throughput, custom validation policies — and inherits root-CID-deduplicated work from accepted ancestor graphs. It does not need a separate miner set, and it does not depend on the ancestor's current canonical tip.
 
 Operations are per-chain and heterogeneous: each chain defines its own `ChainSpec` and chain policies, so two sibling chains can enforce entirely different policy. Only the organizing protocol — merged mining, proof paths, addressing — is fractal and self-similar. The chains it secures are not required to resemble one another.
 
@@ -55,7 +55,7 @@ The hierarchy is not only a security construction — it is what lets the protoc
 
 Decentralization is bounded by a simple fact: a network is only as decentralized as the number of independent parties who can *afford to run and mine the root*. A heavyweight base chain — fast blocks, large blocks, unbounded state — quietly prices ordinary operators out and concentrates the network among the few who can run a multi-terabyte full node. So the nexus is deliberately kept **light**: a slow block interval, a small block size, and a bounded per-block state growth mean its data and state grow slowly enough that almost anyone can keep up. Because all data is content-addressed and refetchable, a node runs to a small, configurable storage budget — evicting and refetching from peers rather than retaining everything — and a *stateless* node holding no local chain data at all can still **both validate and produce blocks**, fetching the subtrees it needs on demand. Mining is external to the node, so participating as a miner needs no specialized hardware. The barrier to running and mining the root is kept as low as the protocol can make it, and that low barrier *is* the decentralization.
 
-The cost of throughput is then paid where it belongs. An application that needs many fast, large blocks does not impose that cost on everyone running the base chain; it spawns a **child chain** whose own `ChainSpec` selects a faster block time and larger limits. Only that child's participants store and validate its heavier data, while qualifying nexus-root grinds still become immutable inherited contributions through merged mining. The result is **a decentralized base with high-throughput edges** — the opposite of a single chain that everyone must keep up with as it grows.
+The cost of throughput is then paid where it belongs. An application that needs many fast, large blocks does not impose that cost on everyone running the base chain; it spawns a **child chain** whose own `ChainSpec` selects a faster block time and larger limits. Only that child's participants store and validate its heavier data, while qualifying nexus-root grinds still become deduplicated inherited work through merged mining. The result is **a decentralized base with high-throughput edges** — the opposite of a single chain that everyone must keep up with as it grows.
 
 The economic parameters follow the same logic. The nexus's emission schedule is stretched over a very long horizon (its first halving is roughly a century out at the nexus block interval) so that the block subsidy stays meaningful for a long time, sustaining the broad, low-barrier miner base economically rather than front-loading emission and letting the network centralize as the subsidy fades and fee pressure dominates. A slow base chain is paired with slow money. See [`docs/economics/nexus-tokenomics.md`](economics/nexus-tokenomics.md) for the concrete schedule.
 
@@ -133,25 +133,14 @@ routing remain node responsibilities.
 
 ## Fork Choice: Chain-Local GHOST with Inherited Facts
 
-Proof verification turns a physical root grind into one immutable contribution.
-Walking root-to-leaf, the first level whose target accepts the root hash is the
-credited boundary. Deeper levels carry the same contribution as an inherited
-fact. The root CID identifies the grind, so replay cannot count it twice.
+A root grind behaves like one reusable security receipt: it may cover arbitrary
+content, but its root CID makes it count once. Each chain receives a rolled-up set
+of those identities from its immediate parent, combines it with local work, and
+runs GHOST over its own accepted forest. Parent accepted work can add security;
+the parent's preferred tip cannot dictate the child's.
 
-Within one chain:
-
-```text
-blockWork(B) = sum(verified contributions attached to B)
-subtreeWeight(B) = blockWork(B)
-                 + sum(subtreeWeight(C) for same-chain child C)
-```
-
-GHOST follows the greatest same-chain subtree. Equal-work segments prefer the
-lexicographically smaller canonical CID of their segment bases. Targets and
-segment tips do not break ties. There is no live parent weight lookup, parent
-block map, or parent-canonicality tiebreak. Security crosses
-the hierarchy as verified proof facts, not as authority delegated to another
-runtime.
+The exact work algebra and tie-break rule are described in
+[Hierarchical Work And Fork Choice](consensus-fork-choice.md).
 
 ## Cross-Chain Value Transfer Without Bridges
 
@@ -195,12 +184,13 @@ Lattice restructures where the blockchain trilemma's tradeoffs land, but it does
 **The nexus is still a single chain.** It is bounded by the same throughput constraints as any single-chain PoW system. Horizontal scaling happens through child chains, not through making the nexus faster.
 
 **Settlement remains probabilistic.** Lattice has no explicit finality. A block
-hardens as more verified root grinds contribute to its same-chain subtree, and a
-strictly heavier competing subtree can still reorganize it at any depth. Parent
-canonical confirmations are not a prerequisite and a parent reorganization does
-not revoke already verified child work. Greater hierarchy depth instead costs
-larger proof packages and more availability coordination between independently
-run chain processes.
+hardens as more verified root grinds contribute to its effective subtree,
+including both local and inherited work, and a strictly heavier competing
+subtree can still reorganize it at any depth. Parent canonical confirmations
+are not a prerequisite, and a parent reorganization does not revoke already
+verified child work. Greater
+hierarchy depth instead costs larger proof packages and more availability
+coordination between independently run chain processes.
 
 **Cross-chain MEV is structurally easier for merged miners.** A miner that mines both the nexus and a child chain sees pending transactions on both chains simultaneously. This is the same miner-extractable value problem that exists in single-chain systems, amplified across the hierarchy. Lattice does not attempt to solve MEV — it acknowledges it as an inherent property of the hierarchical mining structure.
 
@@ -226,7 +216,7 @@ Several principles guided the design decisions throughout Lattice:
 
 **Derive, don't declare.** Receipt actions automatically derive the account actions they imply (debit withdrawer, credit demander). The transaction doesn't redundantly declare what the protocol can compute. This reduces the surface for inconsistency and simplifies validation.
 
-**Make the common case fast.** Five independent sub-state trees update concurrently. Fork choice results are cached and invalidated incrementally. Main chain timestamps are indexed for fast target calculation without fetcher round-trips.
+**Make the common case fast.** Five independent sub-state trees update concurrently. Local-only fork choice uses cached exact subtree totals when no inherited identities need to be joined. Branch timestamps are indexed for target calculation without fetcher round-trips.
 
 **Fail early, fail cheaply.** Validation checks are ordered from cheapest to most expensive. Structural checks (timestamps, height continuity, difficulty) happen before signature verification, which happens before state proof generation. A malformed block is rejected in microseconds, not milliseconds.
 

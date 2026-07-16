@@ -21,7 +21,7 @@
 
 ## What is Lattice?
 
-Lattice is a proof-of-work protocol in which every chain is both a chain and a *tree of chains* rooted at it. Any chain can spawn child chains, and one nonce search secures an entire subtree through **nested merged mining**. The **nexus** is the first outermost chain — the entry from outside (other outermost chains may exist). Each chain defines its own operations, while descendants inherit immutable work facts from the first ancestor boundary that accepts each root grind. Value flows between chains through a cryptographic deposit/receipt/withdrawal protocol verified entirely by Merkle proofs. No bridges. No federations. No relayers.
+Lattice is a proof-of-work protocol in which every chain is both a chain and a *tree of chains* rooted at it. Any chain can spawn child chains, and one nonce search secures an entire subtree through **nested merged mining**. The **nexus** is the first outermost chain — the entry from outside (other outermost chains may exist). Each chain defines its own operations, while descendants inherit root-CID-deduplicated work from accepted ancestor graphs. Value flows between chains through a cryptographic deposit/receipt/withdrawal protocol verified entirely by Merkle proofs. No bridges. No federations. No relayers.
 
 **This is not a testnet, a token, or a whitepaper.** This is a working implementation in Swift with full block validation, consensus, state management, and cross-chain transfers. (Networking is not part of the library — Lattice defines the `Fetcher` abstraction; the node, e.g. `lattice-node`, provides the actual P2P/networking.)
 
@@ -31,7 +31,7 @@ Every multi-chain system before Lattice forces the same tradeoff: either chains 
 
 Lattice eliminates both problems:
 
-- **Nested merged mining** — One root hash commits the nested block tree. Every level evaluates that same hash against its own target, and descendants inherit the contribution from the first accepting boundary. This extends [RSK's merged mining with Bitcoin](https://medium.com/iovlabs-innovation-stories/modern-merge-mining-f294e45101a0) across an entire tree of chains without fragmenting the nonce search.
+- **Nested merged mining** — One root hash commits the nested block tree. Every level evaluates that same hash against its own target, and descendants inherit a deduplicated measure of accepted work. This extends [RSK's merged mining with Bitcoin](https://medium.com/iovlabs-innovation-stories/modern-merge-mining-f294e45101a0) across an entire tree of chains without fragmenting the nonce search.
 
 - **Trustless cross-chain transfers** — Value moves between chains via Merkle proof verification against state roots already committed in blocks. No multisig. No federation. No relayer. Compare this to RSK, which despite merged mining still relies on a [federated bridge](https://web3.gate.com/en/crypto-wiki/article/exploring-rootstock-an-in-depth-overview-of-bitcoin-s-sidechain-solution-20251208) for BTC transfers.
 
@@ -111,21 +111,21 @@ routes evidence between those processes. A parent process may issue immutable
 facts about its own validated chain; it never decides child validity or fork
 choice. The node authenticates the process that supplied each fact.
 
-### Core design
+### Core ideas
 
-**Content-addressed everything.** All data — blocks, transactions, state — is wrapped in content-addressed headers (IPLD/CID). Cashew uses matching targeted resolve and store paths, so admission materializes only the data it proves and keeps. A `Volume` is one complete storage boundary. Nested Volumes are independent content-addressed units: storing an outer Volume neither owns nor implicitly stores a referenced nested Volume.
+- **Content-addressed data.** Blocks, transactions, and state use IPLD/CIDs;
+  targeted Cashew traversal resolves and stores only the proven paths.
+- **One grind, arbitrary coverage.** The root CID identifies physical work, so
+  securing more blocks or data does not multiply its quantity.
+- **Independent chain processes.** Each process validates one sparse root-to-block
+  path and runs fork choice only for its own absolute chain path.
+- **Three-phase state.** `parentState`, `prevState`, and `postState` make
+  cross-chain verification possible from committed proofs.
+- **Node-owned operations.** The node owns routing, durability, retention, pins,
+  and projections; Lattice owns validation, accepted consensus facts, and fork
+  choice.
 
-**One grind, one proof path.** A mined root commits a nested block tree. A child process receives an exact sparse proof from that root to its candidate plus immutable continuity facts issued by the processes responsible for ancestor paths. It first checks the setup-wide minimum root-work floor, then binds each fact to the exact carrier. Every chain level compares the same root hash with its own target. A target miss makes that level a carrier only; it does not prevent a descendant process from accepting the grind.
-
-**Three-phase state model.** Each block carries `parentState` (parent chain's state), `prevState` (confirmed state entering the block), and `postState` (state after applying transactions). This is what makes trustless cross-chain verification possible without querying another chain at validation time.
-
-**Five partitioned sub-states.** World state is split into five independent Sparse Merkle Trees: accounts, general key-value, deposits, receipts, and genesis blocks. Account state also tracks per-signer nonces via `_nonce_<prefix>` keys in the same trie. All five are proved and updated concurrently via Swift `async let`. Light clients only need proofs for the sub-state they care about.
-
-**Node-owned state retention.** Validation derives a `StateDiff` for the materialized transition and includes it in the immutable block admission fact; it is not committed in `Block` or retained in Lattice's consensus graph. The node owns durable fact storage, CID reference counts, pinning, projections, and state-retention policy. If a crash occurs after staging but before the actor commit, the node gives the staged local facts back to `ChainState.restore(..., replaying:)`; Lattice rebuilds its own graph and fork choice. Lattice retains the complete accepted consensus graph and never prunes it based on node storage policy. `diffCIDs(old:new:)` walks only materialized nodes on modified paths — O(log n) per modified key.
-
-**Actor-based concurrency.** Within each Lattice process, `ChainLevel` and `ChainState` actors isolate one chain's admission and fork choice. Reorganizations remain local to that process, and Swift 6's strict sendability checking catches data races at compile time.
-
-### Block processing flow
+### Admission boundary
 
 ```
 Block arrives
@@ -141,43 +141,11 @@ Block arrives
   └── Commit to ChainState and return a revisioned ChainCommit
 ```
 
-Gossip, sync, mining, and peer recovery all use this same admission path. The
-library has no separate `ChainSyncer` or snapshot replacement rule.
-
-### Fork choice rule — Hierarchical GHOST
-
-Each accepted proof produces an immutable work contribution. The root CID is the
-physical grind identity, so replaying the same grind cannot count it twice. The
-first level whose target accepts the root hash is the credited boundary; deeper
-levels carry that verified contribution as an inherited fact without consulting
-a live parent chain.
-
-```
-work(B)          = sum(verified contributions attached to B)
-subtreeWeight(B) = work(B) + Σ subtreeWeight(same-chain children(B))
-```
-
-GHOST descends through the greatest same-chain subtree weight. At a fork it
-compares the competing segment bases by `trueCumWork`, then by canonical CID
-bytes only; the lexicographically smaller CID wins an exact work tie. Tips and
-`nextTarget` are not tie-break inputs. There is no live parent-weight provider,
-parent-canonicality coupling, or consensus finality threshold. The node's
-retention policy does not change validity or fork choice.
-(Normative spec: `docs/spec.md` §9.)
-
-### Cross-chain value transfer
-
-Value moves between parent and child chains through a three-phase **deposit/receipt/withdrawal** protocol verified entirely by Merkle proofs:
-
-1. **Deposit** (child chain): A user locks tokens on the child chain via a `DepositAction`, declaring a demand (recipient and amount on the parent). The deposit is recorded in the child's `depositState`.
-
-2. **Receipt** (parent chain): The parent verifies the deposit exists by checking the child's state root (committed in the child block embedded in the parent block). A `ReceiptAction` records the receipt in the parent's `receiptState` and transfers the demanded amount between accounts on the parent.
-
-3. **Withdrawal** (child chain): The child verifies a receipt exists on the parent by checking `parentState.receiptState`. A `WithdrawalAction` releases the original deposited tokens to the withdrawer and replaces the deposit value with a permanent zero-valued spent marker. Since valid deposits are nonzero, the marker prevents both a second withdrawal and recreation of the same deposit identity.
-
-At no point does any trusted third party hold custody of tokens. The verification is purely cryptographic: Sparse Merkle proofs against state roots committed in proof-of-work hashes.
-
-Cross-chain replay protection is enforced via `chainPath` — each transaction declares the exact chain hierarchy path it targets (e.g., `["Nexus", "Payments"]`). Transactions are rejected if the `chainPath` doesn't match the validating chain.
+Gossip, sync, and mining use this boundary. Recovery replays authenticated durable
+facts through the same graph and projection code. For the exact work algebra,
+read [Hierarchical Work And Fork Choice](docs/consensus-fork-choice.md); for
+component ownership, read [Lattice Architecture](docs/foundational-architecture.md);
+for transfers, read [Cross-chain Protocol](docs/cross-chain.md).
 
 ---
 
@@ -267,7 +235,7 @@ Sources/Lattice/
 - [x] Three-phase state model (parentState / prevState / postState)
 - [x] Five partitioned Sparse Merkle Tree sub-states (accounts, general, deposits, receipts, genesis) with concurrent updates
 - [x] Cross-chain deposit/receipt/withdrawal protocol (trustless parent-child transfers)
-- [x] Hierarchical GHOST fork choice over immutable, root-CID-deduplicated work contributions
+- [x] Hierarchical GHOST over live, root-CID-deduplicated work measures
 - [x] One independent Lattice process per chain; no recursive child runtime tree
 - [x] Configurable ChainSpec with halving schedule and windowed target adjustment (clamped per-step band)
 - [x] Ed25519 transaction signing and verification

@@ -40,7 +40,7 @@ public struct ChainWorkFact: Codable, Sendable, Equatable {
 
 public enum ChainFactID: Codable, Hashable, Sendable {
     case block(String)
-    case work(String)
+    case work(blockHash: String, grindID: String, work: String)
 }
 
 public enum ChainAdmissionFact: Codable, Sendable, Equatable {
@@ -50,13 +50,18 @@ public enum ChainAdmissionFact: Codable, Sendable, Equatable {
     public var id: ChainFactID {
         switch self {
         case .block(let fact): .block(fact.blockHash)
-        case .work(let fact): .work(fact.contribution.id)
+        case .work(let fact): .work(
+            blockHash: fact.blockHash,
+            grindID: fact.contribution.id,
+            work: fact.contribution.work.toHexString()
+        )
         }
     }
 }
 
 /// One node-atomic durability unit. New blocks stage their block and first work
-/// facts together; later grinds append only another independently keyed work fact.
+/// observations together; later coverage or stronger work appends another
+/// immutable fact.
 public struct ChainAdmissionBatch: Codable, Sendable, Equatable {
     public let facts: [ChainAdmissionFact]
 
@@ -292,11 +297,9 @@ private enum ChainLocalAdmission {
         }
 
         let knownBlock = await level.chain.contains(blockHash: blockHash)
-        if let existing = await level.chain.workContribution(id: contribution.id) {
-            guard existing.blockHash == blockHash,
-                  existing.contribution == contribution else {
-                return .result(.rejected(.providerMalformedEvidence))
-            }
+        if let existing = await level.chain.workContribution(id: contribution.id),
+           existing.blockHashes.contains(blockHash),
+           existing.contribution.work >= contribution.work {
             return .result(.duplicate)
         }
 

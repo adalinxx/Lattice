@@ -1,203 +1,141 @@
-# Chain-Local Fork Choice and Hierarchical Work
+# Hierarchical Work And Fork Choice
 
-This document explains the work model implemented by Lattice. The normative
-rules are in [the protocol specification](spec.md#9-consensus).
+This document explains the model. [Specification section 9](spec.md#9-consensus)
+is normative; [foundational-architecture.md](foundational-architecture.md) defines
+the Lattice/node boundary.
 
-## 1. Two Different Trees
+## Three Structures
 
-Lattice uses two structures that must not be confused.
+Lattice keeps three ideas separate:
 
-1. A **nested block tree** is committed by one mined root. Following
-   `children[directory]` from the root reaches blocks for deeper chains. One root
-   hash therefore supplies proof-of-work evidence to every block on that path.
-2. A **same-chain block graph** contains competing blocks and roots for one chain
-   path. `ChainState` applies GHOST to this graph.
+1. The **content DAG** under one mined root commits blocks and data across chain
+   paths.
+2. The **same-chain forest** contains every accepted root, block, and fork for one
+   absolute path.
+3. The **process graph** is node-owned. One Lattice process handles one path and
+   talks only to an authenticated immediate-parent provider.
 
-The first is content-addressed protocol data. The second is consensus state for
-one chain. Neither implies a recursive in-process runtime tree: one Lattice
-process owns one `ChainLevel`, one `ChainState`, and one absolute chain path.
+The content DAG may be recursive. The Lattice runtime is not.
 
-## 2. Verifying One Root Grind
+## Verifying A Root Grind
 
-Let `R` be the outer root block, `h = proofOfWorkHash(R)`, and `C` the candidate
-for the chain handled by this process. A `ChildBlockProof` contains the exact
-sparse content-addressed path:
+Let `R` be the outer root, `h = proofOfWorkHash(R)`, and `C` the candidate for
+this process. A `ChildBlockProof` supplies the exact sparse path from `R` to `C`.
+Verification proceeds in this order:
 
-```text
-R -> children[d0] -> children[d1] -> ... -> C
-```
+1. Recompute the root CID and hash.
+2. Require `workForHash(h) >= minimumRootWork` before resolving child content.
+3. Resolve the targeted path and require its terminal CID to be `C`.
+4. Verify same-chain continuity for every carrier above `C`.
+5. Verify every vertical `parentState` binding.
+6. Compare the same root hash `h` with each level's target.
 
-Admission verifies the package in this order:
-
-1. Recompute the root CID and hash from the supplied root bytes.
-2. Require `workForHash(h) >= minimumRootWork`, where `minimumRootWork` is the
-   setup-wide traversal floor in `ChainRuntimeContext`.
-3. Only after the floor passes, resolve the targeted child content.
-4. Require the proof's directory path and terminal CID to match this process's
-   absolute path and candidate.
-5. For every carrier above `C`, require a `ParentContinuityLink` issued by the
-   process responsible for that carrier's path after validating `prevState`,
-   spec, height, target succession, and strictly increasing timestamp
-   continuity. Bind the fact to the exact path and carrier CID; that CID already
-   commits the predecessor, spec, and state references.
-6. At every vertical edge, require the nested child's `parentState` to match the
-   carrier state committed by the protocol.
-7. Compare the **same** root hash `h` with each level's target.
-
-The setup floor is checked first and is independent of every chain target. If it
-fails, the entire nested tree rooted at `R` is rejected. It cannot be rescued by
-an easier descendant target.
-
-A chain target has narrower meaning:
+Failure of the setup-wide floor rejects the whole nested tree. A target miss has
+narrower meaning:
 
 ```text
 h <= target(level)  -> this level accepts the grind
-h >  target(level)  -> carrier only; descendants may continue
+h >  target(level)  -> carrier only; descendants may still accept
 ```
 
-A target miss at an ancestor is therefore not proof failure. The block remains a
-validated carrier in the sparse path, and a deeper chain process may accept the
-same root hash against its own target. The carrier's same-chain continuity is
-still mandatory; otherwise an attacker could fabricate intermediate state.
-Rules that only govern acceptance on the carrier's chain -- state execution,
-MTP/future drift, and the carrier's proposed `nextTarget` -- are intentionally
-not imported into descendant validity.
+Carrier continuity remains mandatory. Acceptance-only execution, time, and
+retarget rules do not leak from one chain process into descendant validity.
 
-## 3. Credit the Grind Once
+## Work Is A Set, Not A Scalar
 
-Walk root-to-leaf and find the first level whose target accepts `h`. That level is
-the highest accepted boundary for this physical grind.
+One physical grind has:
 
 ```text
-acceptedBoundary = first B_i where h <= target(B_i)
-creditedWork      = floor(U256_MAX / target(B_i))
-grindID           = CID(R)
+identity = CID(R)
+quantity = max(workForTarget(B) for every verified accepting level B)
+coverage = every block proven secured by R
 ```
 
-That boundary fixes the contribution amount. A deeper accepted level carries the
-same immutable fact; no separate relationship or origin label is needed.
+Identity is immutable. Quantity only strengthens. Coverage only grows. One grind
+may cover any amount of content or any number of blocks, while several distinct
+grinds may cover the same route. The latter is valid but usually wasteful.
 
-The contribution is immutable and identified by the root CID. A chain counts a
-given `grindID` at most once. Replaying the proof is a duplicate; presenting the
-same ID with a different block or work fact is conflicting evidence and must not
-change consensus state.
-
-This gives security inheritance without a live parent-weight provider:
-
-- no parent block map is consulted during fork choice;
-- no parent extension retroactively increases a child block's weight;
-- no parent reorganization revokes verified child evidence; and
-- restart restores the same contribution facts used before shutdown.
-
-New proof evidence may attach a previously unseen contribution to an already
-known block. Every distinct grind is staged and persisted as an immutable
-`ChainWorkFact`. Lattice updates that block's weight and reevaluates fork choice,
-but does not replay the block's state transition or emit a second `StateDiff`.
-
-Individual contributions remain `UInt256`, while cumulative and subtree work
-use an exact growable sum. Saturating at `UInt256.max` would make different
-amounts of work compare equal and is therefore not a valid fork-choice rule.
-
-## 4. Chain-Local GHOST
-
-For a block `B` in one chain's graph:
+`WorkMeasure` is a map from grind ID to quantity:
 
 ```text
-blockWork(B) = sum(contribution.work for contribution in B)
-
-subtreeWeight(B) =
-    blockWork(B) + sum(subtreeWeight(X) for X in sameChainChildren(B))
+(A union B)[id] = max(A[id], B[id])
+total(A)        = exactSum(A.values)
 ```
 
-Each verified contribution is counted once at its block. `subtreeWeight` is then
-maintained upward through the same-chain graph. Fork choice descends through the
-child with greatest subtree weight.
+Union is associative, commutative, and idempotent. Consequently:
 
-At each fork, the competing same-chain children are the segment bases. Their
-`subtreeWeight` is their `trueCumWork` and remains the first comparator. Equal
-work compares the segment bases' canonical CID bytes; the lexicographically
-smaller CID wins. Neither `nextTarget` nor either segment's tip participates.
-The same rule applies to competing genesis roots and is independent of arrival
-or replay order.
+- repeated coverage never multiplies work;
+- a shared grind on both sides of a fork is neutral;
+- local and inherited observations of one grind count once;
+- independent grinds sum exactly, without `UInt256` saturation.
 
-`cumulativeWork(B)` is also retained as the same-chain prefix sum from genesis to
-`B`. It supports exact queries, out-of-order repair, and restart. It does not
-import live work from another chain or override the GHOST result.
+Admission stages immutable `ChainWorkFact(blockHash, contribution)` observations
+identified by `(blockHash, grindID, work)`. Their logical coverage key omits the
+work value. A weaker or equal replay is a no-op; a stronger observation remains
+separately durable and updates that grind across every covered block without
+re-executing a state transition.
 
-Lattice retains the complete accepted consensus graph and verified contribution
-set. Node state retention and body availability are not fork-choice inputs.
+## Live Inherited Work
 
-## 5. One Admission Path
+The immediate parent exports securing measures from its complete accepted graph,
+including noncanonical branches. The node authenticates and routes that process,
+derives child-block bindings from validated content-addressed paths, and supplies
+a coherent revisioned `InheritedWorkSnapshot`. An export naming an unknown parent
+block is unavailable, not zero work.
 
-Gossip, sync, mining output, parent extraction, sibling relays, and recovery may
-obtain bytes differently. They all submit candidates through
-`ChainLevel.admitBlockHeaderChainLocal` and receive the same decision for the same
-candidate, evidence, runtime context, and captured `ValidationContext`. The library has no
-separate `ChainSyncer`, trusted snapshot replacement, or transport-triggered
-consensus path.
+Lattice captures one snapshot per decision and unions it with the retained view.
+Revision combines by maximum. An older or equal revision may still add previously
+unseen valid coverage, but no stale, partial, or missing snapshot can delete or
+weaken work. Each snapshot is already rolled up by the immediate parent, so the
+child does not retain every ancestor graph.
 
-Admission follows one durability boundary:
+Revision is a source-progress watermark rather than a hash of snapshot contents:
+the node may discover another valid content binding without a parent mutation.
+
+Before comparing branches, Lattice finds the strongest known quantity for every
+grind across both local and inherited inputs and applies it to all coverage of
+that identity. A harder observation on one branch therefore cannot make shared
+work favor that branch.
+
+Parent work and parent canonicity are orthogonal. More accepted parent work may
+change child fork choice. Changing only the parent's canonical pointer may not.
+
+## GHOST Projection
+
+For a block `B`:
 
 ```text
-targeted resolve
-  -> deterministic verification and execution
-  -> targeted store of verified content and materialized state
-  -> node-owned atomic staging of typed block/work facts
-  -> revisioned chain-local ChainCommit
+prefix(B) = own(B) union prefix(parent(B))
+
+effectiveSubtree(B) = own(B)
+                      union inherited(B)
+                      union each effectiveSubtree(C)
+                            for C in sameChainChildren(B)
+
+cumulativeWork(B) = total(prefix(B))
+trueCumWork(B)     = total(effectiveSubtree(B))
 ```
 
-`ChainLevel.bootstrap` uses this same boundary for a standalone chain runtime.
-There is no `bootstrapChild`; process topology is a node concern.
+`BlockMeta` caches local-only prefix and subtree totals. Fork choice captures one
+inherited snapshot, constructs effective measures, then performs GHOST descent:
 
-## 6. Ownership Boundaries
+1. choose the root with greatest `trueCumWork`;
+2. at each fork choose the child segment base with greatest `trueCumWork`;
+3. on an exact tie choose the lexicographically smaller canonical CID of the two
+   segment bases.
 
-Lattice owns:
+`nextTarget` and segment tips are not tie-break inputs. Comparing segment bases,
+not tips, makes the result independent of arrival, staging, and replay order.
 
-- proof and continuity validation;
-- state-transition execution;
-- derivation and deduplication of work contributions;
-- the complete accepted same-chain graph, GHOST fork choice, and chain-local
-  reorganization decision.
+## Persistence
 
-The node owns:
+External candidates use `ChainLevel.admitBlockHeaderChainLocal`. Recovery replays
+only previously authenticated durable facts through the same graph mutation and
+fork-choice code.
 
-- acquisition and peer selection;
-- filesystem persistence and restart orchestration;
-- process topology, including which parent or sibling peers to contact;
-- CAS pin counts, retention policy, archival, and garbage collection; and
-- projections such as mempool, history, notifications, and RPC state.
-
-Parent and sibling processes are never consensus authorities for another chain.
-A parent process may issue continuity and genesis facts about its own validated
-state; the node authenticates and transports those facts. Commands such as "set
-child tip" or "invalidate because the parent reorged" do not cross the boundary.
-
-`StateDiff` follows the same boundary. It is carried once by the immutable
-`ChainBlockFact`, not committed in `Block` or retained in `BlockMeta`. The node
-uses it to update CID reference counts and choose which materialized state
-Volumes to pin. A `ChainAdmissionBatch` atomically stages the block fact and its
-initial work fact; later distinct grinds stage separate work facts.
-
-Every successful consensus mutation returns a monotonically revisioned
-`ChainCommit`. Its canonical delta describes a chain-local reorganization when
-the selected branch changes; the node uses the revision to serialize durable
-state and projections even when admissions finish concurrently.
-
-## 7. Required Properties
-
-An implementation must preserve all of the following:
-
-1. A root below the setup-wide work floor is rejected at every depth.
-2. Every proof is bound to one exact root-to-candidate path and leaf CID.
-3. Every carrier proves same-chain predecessor continuity even when its target
-   misses.
-4. Every level evaluates the same root hash against its own target.
-5. One physical grind is credited at the first accepted boundary and deduplicated
-   by root CID.
-6. Parent canonicity cannot change child validity, work facts, or fork choice.
-7. Exact work ties prefer the smaller canonical segment-base CID; targets and
-   tips are not tie-break inputs.
-8. Lattice does not prune its accepted consensus graph.
-9. Every distinct grind is durable and restart restores all of them.
-10. One captured validation-time context governs an admission and its retries.
-11. Every ingress source reaches the same admission API.
+Persistence stores the accepted local graph, all grind coverage, and the retained
+inherited snapshot used by the decision. A node may omit that cache only if it can
+provide a complete live view at least as new during restore; absence is not zero
+work. The canonical tip remains a derived cache. Restore validates and rebuilds
+the graph, unions cached and live inherited facts, and reprojects the preferred
+branch. The node rebuilds its retained projections from that result.

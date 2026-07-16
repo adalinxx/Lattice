@@ -251,9 +251,10 @@ public struct ChildBlockProof: Sendable {
                     return .failure(failure)
                 }
 
-                let ancestorWork = carriers.first {
-                    $0.validateProofOfWork(nexusHash: rootHash)
-                }.map { workForTarget($0.target) } ?? .zero
+                let strongestAncestorWork = carriers.reduce(UInt256.zero) {
+                    guard $1.validateProofOfWork(nexusHash: rootHash) else { return $0 }
+                    return max($0, workForTarget($1.target))
+                }
                 let consumed = await fetcher.consumed().union(directlyConsumed)
                 guard consumed == Set(proofEntries.keys),
                       consumedLinks == Set(linksBySuccessor.keys),
@@ -263,7 +264,7 @@ public struct ChildBlockProof: Sendable {
                 return .success(VerifiedChildEvidence(
                     grindID: rootCID,
                     rootHash: rootHash,
-                    acceptedAncestorWork: ancestorWork
+                    strongestAncestorWork: strongestAncestorWork
                 ))
             }
 

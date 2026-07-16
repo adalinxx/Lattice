@@ -93,32 +93,25 @@ public enum ChildProofVerificationFailure: Error, Sendable, Equatable {
 public struct VerifiedChildEvidence: Sendable {
     public let grindID: String
     public let rootHash: UInt256
-    public let acceptedAncestorWork: UInt256
+    public let strongestAncestorWork: UInt256
 
     init(
         grindID: String,
         rootHash: UInt256,
-        acceptedAncestorWork: UInt256
+        strongestAncestorWork: UInt256
     ) {
         self.grindID = grindID
         self.rootHash = rootHash
-        self.acceptedAncestorWork = acceptedAncestorWork
+        self.strongestAncestorWork = strongestAncestorWork
     }
 
-    /// Credit this physical grind exactly once at the highest accepted boundary.
-    /// An accepted ancestor makes the contribution inherited; otherwise the child
-    /// is the first accepting boundary and receives it as own work.
+    /// Credit this physical grind at its strongest accepted difficulty while
+    /// keeping its coverage of this child as a separate fact.
     public func contribution(for child: Block) -> VerifiedWorkContribution? {
         guard child.validateProofOfWork(nexusHash: rootHash) else { return nil }
-        if acceptedAncestorWork > .zero {
-            return VerifiedWorkContribution(
-                id: grindID,
-                work: acceptedAncestorWork
-            )
-        }
         return VerifiedWorkContribution(
             id: grindID,
-            work: workForTarget(child.target)
+            work: max(strongestAncestorWork, workForTarget(child.target))
         )
     }
 }
