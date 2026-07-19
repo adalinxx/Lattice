@@ -61,7 +61,7 @@ final class TransactionSigningEnvelopeTests: XCTestCase {
         XCTAssertFalse(TransactionSigning.verify(bodyHeader: try! HeaderImpl<TransactionBody>(node: wrongNonceBody), signature: signature, publicKeyHex: key.publicKey))
     }
 
-    func testTransactionSignaturesAreValidUsesEnvelope() throws {
+    func testTransactionSignaturesAcceptEnvelopeAndLegacyBodyCID() throws {
         let key = CryptoUtils.generateKeyPair()
         let signer = CryptoUtils.createAddress(from: key.publicKey)
         let body = TransactionBody(
@@ -81,7 +81,78 @@ final class TransactionSigningEnvelopeTests: XCTestCase {
         let legacySignature = try XCTUnwrap(CryptoUtils.sign(message: header.rawCID, privateKeyHex: key.privateKey))
 
         XCTAssertTrue(Transaction(signatures: [key.publicKey: envelopeSignature], body: header).signaturesAreValid())
-        XCTAssertFalse(Transaction(signatures: [key.publicKey: legacySignature], body: header).signaturesAreValid())
+        XCTAssertTrue(Transaction(signatures: [key.publicKey: legacySignature], body: header).signaturesAreValid())
+
+        let changed = TransactionBody(
+            accountActions: body.accountActions,
+            actions: body.actions,
+            depositActions: body.depositActions,
+            genesisActions: body.genesisActions,
+            receiptActions: body.receiptActions,
+            withdrawalActions: body.withdrawalActions,
+            signers: body.signers,
+            fee: body.fee,
+            nonce: body.nonce,
+            chainPath: ["Nexus", "Child"]
+        )
+        XCTAssertFalse(TransactionSigning.verify(
+            bodyHeader: try HeaderImpl(node: changed),
+            signature: legacySignature,
+            publicKeyHex: key.publicKey
+        ))
+        let changedNonce = TransactionBody(
+            accountActions: body.accountActions,
+            actions: body.actions,
+            depositActions: body.depositActions,
+            genesisActions: body.genesisActions,
+            receiptActions: body.receiptActions,
+            withdrawalActions: body.withdrawalActions,
+            signers: body.signers,
+            fee: body.fee,
+            nonce: body.nonce + 1,
+            chainPath: body.chainPath
+        )
+        XCTAssertFalse(TransactionSigning.verify(
+            bodyHeader: try HeaderImpl(node: changedNonce),
+            signature: legacySignature,
+            publicKeyHex: key.publicKey
+        ))
+    }
+
+    func testMixedEnvelopeAndLegacyMultisignatureIsValid() throws {
+        let first = CryptoUtils.generateKeyPair()
+        let second = CryptoUtils.generateKeyPair()
+        let body = TransactionBody(
+            accountActions: [],
+            actions: [],
+            depositActions: [],
+            genesisActions: [],
+            receiptActions: [],
+            withdrawalActions: [],
+            signers: [
+                CryptoUtils.createAddress(from: first.publicKey),
+                CryptoUtils.createAddress(from: second.publicKey),
+            ],
+            fee: 0,
+            nonce: 9,
+            chainPath: ["Nexus"]
+        )
+        let header = try HeaderImpl(node: body)
+        let envelope = try XCTUnwrap(TransactionSigning.sign(
+            bodyHeader: header,
+            privateKeyHex: first.privateKey
+        ))
+        let legacy = try XCTUnwrap(CryptoUtils.sign(
+            message: header.rawCID,
+            privateKeyHex: second.privateKey
+        ))
+        let transaction = Transaction(
+            signatures: [first.publicKey: envelope, second.publicKey: legacy],
+            body: header
+        )
+
+        XCTAssertTrue(transaction.signaturesAreValid())
+        XCTAssertTrue(transaction.signaturesMatchSigners())
     }
 
     func testDuplicateSignatureKeysAreRejectedNotCrashed() throws {

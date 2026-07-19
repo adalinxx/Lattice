@@ -9,7 +9,7 @@ order, start with the [documentation index](index.md),
 
 ## 1. Overview
 
-Lattice is a hierarchical proof-of-work protocol, not a single blockchain. Every chain may commit child blocks, and each child may do the same. One mined root therefore commits a nested block tree. The **nexus** is the first outermost chain -- the entry point from outside the hierarchy; other outermost chains may also exist. Descendants inherit identity-bearing work from accepted ancestor graphs: the root CID identifies one grind, its strongest verified accepted-target bound fixes its quantity, and arbitrary coverage never multiplies it. Value moves across chains through a three-phase **deposit/receipt/withdrawal** protocol.
+Lattice is a hierarchical proof-of-work protocol, not a single blockchain. Every chain may commit child blocks, and each child may do the same. One mined root therefore commits a nested block tree. **Nexus** is the single outermost chain and the entry point from outside the hierarchy; every absolute chain path begins with `Nexus`. Descendants inherit identity-bearing work from accepted ancestor graphs: the root CID identifies one grind, its strongest verified accepted-target bound fixes its quantity, and arbitrary coverage never multiplies it. Value moves across chains through a three-phase **deposit/receipt/withdrawal** protocol.
 
 Each chain defines its own operations, `ChainSpec`, and chain policies, so chains are heterogeneous; only the organizing protocol -- block structure, proof-of-work, fork choice, and the cross-chain transfer rules -- is shared across the hierarchy.
 
@@ -192,8 +192,8 @@ A1  A2
 
 A `directory` in a parent's `GenesisAction` is a **relative edge label** -- it
 names the child only with respect to that parent and is not stored in
-`ChainSpec`. A chain's canonical identity is its full **path** from the outermost
-chain, e.g. `Nexus/Payments`. Siblings under different parents may reuse a
+`ChainSpec`. A chain's canonical identity is its full **path** from Nexus, e.g.
+`Nexus/Payments`. Siblings under different parents may reuse a
 directory because their full paths differ.
 
 ### 4.2 Process Boundary
@@ -217,8 +217,7 @@ A genesis block `B` is valid if and only if ALL of the following hold:
 5. `B.target >= minimumTarget` and `B.nextTarget == B.target`
 6. All transactions in `B.transactions` are fully resolvable
 7. For each transaction `tx`: `tx.validateTransactionForGenesis()` returns true
-   - Signatures are valid Ed25519 signatures over the `lattice-tx-v1` envelope
-     defined in section 7.1
+   - Signatures are valid Ed25519 signatures under section 7.1
    - Signers match signature public keys
    - Account debits are authorized by signers
    - No deposit, receipt, or withdrawal actions are present
@@ -237,6 +236,13 @@ A genesis block `B` is valid if and only if ALL of the following hold:
     ```
     proveAndUpdateState(prevState, allActions) == postState
     ```
+
+Nexus bootstrap has one exact exception to the signature requirement above. An
+implementation may configure one pinned Nexus genesis CID; only when the
+candidate header equals that exact CID may its transactions have both empty
+signature maps and empty signer lists. The exception does not apply to another
+CID, an ordinary child genesis, or any later transaction. The reference node
+pins `bafyreiayw4z5qz4lt2sljf2enzn7uol3qa6bebadav7qwnqz7agxkiuwhq`.
 
 ### 5.2 Nexus Block Validation
 
@@ -280,16 +286,27 @@ affect the root candidate or a sibling.
 A child candidate `B` is admitted with a `ChildValidationPackage` containing:
 
 - a `ChildBlockProof` for the exact sparse path from the mined root to `B`; and
-- a `ParentContinuityLink` for each non-genesis carrier on that path; and
-- a `ParentGenesisLink` for every parentless child-chain genesis encountered on
-  that path, proving that validated parent state anchored that exact genesis CID.
+- one `ParentCarrierLink(rootCID, parentPath, carrierCID)` from `B`'s immediate
+  parent, bound to the proof root and the deepest carrier above `B`; and
+- when `B` is parentless, one immediate-parent `ParentGenesisLink` proving that
+  validated parent state anchored that exact genesis CID.
 
-The Lattice process responsible for a parent path issues these immutable facts
-after validating its own chain. The node authenticates that process and
-transports or caches the facts. The child process binds each fact to the exact
-path and content-addressed successor or genesis CID. The successor CID already
-commits its predecessor, spec, and state references. The fact grants no
-authority over child validity or fork choice.
+The Lattice process responsible for the immediate parent path issues the carrier
+link only after verifying that exact root-to-carrier package under its own path
+and setup floor. Its own immediate-parent link makes this check inductive; the
+Nexus process is the base case and requires `rootCID == carrierCID`. A previously
+accepted carrier qualifies through connected validated ancestry. Any new
+non-genesis carrier, whether its target hits or misses, must have header
+continuity from a connected validated predecessor. A parentless child genesis
+may relay only after its immediate parent authorized that exact genesis CID. A
+target miss then returns a carrier link, while a target hit that fails the local
+transition returns both that rejection and the link; neither creates a runtime
+or local consensus fact. An arbitrary parentless outer root cannot issue a link.
+
+The node authenticates only the immediate-parent process and transports or
+caches the immutable facts. The child process binds each fact to the exact root,
+path, deepest carrier, or genesis CID. The facts grant no authority over child
+validity or fork choice.
 
 The vertical relationship is directional: a parent carrier commits the child in
 its `children` trie, while the child commits only the carrier's `prevState` as
@@ -308,15 +325,15 @@ this order:
    Reject any locally impossible parentless carrier shape before requesting
    parent-issued evidence. If that level accepts the grind, also enforce the
    complete genesis shape, including `nextTarget == target`.
-3. For every non-genesis carrier `Q` above `B`, require its parent-issued
-   continuity link. For every parentless carrier below the setup root, and for
-   `B` itself when it is a genesis block, require its exact parent-issued genesis
-   link. Every supplied link must be consumed exactly once.
-   The issuing process validates version, spec, `prevState`, height, target
-   succession, and a strictly increasing timestamp against `Q`'s own same-chain
-   predecessor. MTP/future drift, state execution, and `Q`'s proposed
-   `nextTarget` are admission rules only if `Q`'s chain accepts the grind; they
-   do not become dependencies of descendant validity.
+3. Require exactly one immediate-parent carrier link whose `rootCID` equals
+   `CID(R)`, whose `parentPath` is `B`'s path without its final component, and
+   whose `carrierCID` is the deepest carrier above `B`. When `B` is a genesis,
+   also require its exact immediate-parent genesis link; otherwise reject any
+   supplied genesis link. The root-bound carrier link inductively attests every
+   upstream carrier's version, spec, `prevState`, height, target succession, and
+   strictly increasing timestamp. MTP/future drift, state execution, and a
+   target-miss carrier's proposed `nextTarget` do not become dependencies of
+   descendant validity.
 4. At every vertical edge, require the nested child's `parentState` to equal the
    carrier's committed `prevState`.
 5. Compare the same hash `h` with each level's target. A miss makes that level a
@@ -325,7 +342,8 @@ this order:
 7. Apply the ordinary genesis or non-genesis transition rules to `B`, including
    withdrawal proofs against `B.parentState`.
 
-Parent or sibling canonicity is not part of these checks. Once this package
+Parent or sibling canonicity is not part of these checks. A carrier link may be
+reused only with its exact root, parent path, and carrier CID. Once this package
 derives a valid work fact, a later reorganization or unavailability in another
 process cannot revoke it.
 
@@ -528,9 +546,17 @@ signaturePayload = UTF8("lattice-tx-v1:" || envelope)
 Both domain markers are consensus bytes; there is no newline between the outer
 prefix and the first envelope line.
 
-For each `(publicKeyHex, signatureHex)` in `tx.signatures`, Ed25519 verification
-over this exact preimage MUST succeed. At least one signature is required. The
-set of addresses derived from the signing public keys MUST equal the set in
+Writers MUST sign this exact preimage. For compatibility, validators accept
+either that signature or the historical bare preimage `UTF8(CID(tx.body))`.
+The body CID commits the complete
+transaction body, including its absolute `chainPath` and nonce, so mutation or
+cross-path replay still fails. This fallback does not accept bare public-key
+encodings; signing keys remain canonical Multikey values.
+
+For each `(publicKeyHex, signatureHex)` in `tx.signatures`, one accepted
+Ed25519 verification MUST succeed. At least one signature is required, except
+for the exact pinned Nexus bootstrap exception in section 5.1. The set
+of addresses derived from the signing public keys MUST equal the set in
 `tx.body.signers`; extra and missing signers are both invalid.
 
 ### 7.2 Authorization
@@ -577,7 +603,7 @@ The policy context byte layout is:
 | Context | Deposits | Receipts | Withdrawals |
 |---|---|---|---|
 | Genesis block | No | No | No |
-| Non-genesis outermost chain | No | Yes | No |
+| Non-genesis Nexus block | No | Yes | No |
 | Non-genesis child chain | Yes | Yes | Yes (requires parent receipt proof) |
 
 A non-root chain may be both a child of one chain and a parent of another. Its
@@ -762,11 +788,16 @@ transition, inserting it, or implicitly retaining it for this chain. A node may
 explicitly retain a carrier or an exact child-link path as availability policy;
 Lattice does not enumerate an attacker-sized child trie. Missing same-chain
 predecessors are derived from the accepted graph, including after recovery, and
-must enter this same admission boundary. This does not claim a predecessor body
-is unavailable. Missing cross-chain input instead identifies the child proof,
-parent continuity fact, or parent genesis fact that the node must obtain from
-the authenticated parent process. `parentState` is a state CID, not a
-parent-block lookup key. Consensus derives neither relationship by inversion.
+must enter this same admission boundary. A carrier, duplicate, or rejected
+candidate that cannot yet issue its link exposes the exact typed predecessor
+requirement so the node can backfill and retry. This does not claim a predecessor
+body is unavailable. Missing cross-chain input instead identifies the child proof,
+root-bound immediate-parent carrier fact, or immediate-parent genesis fact that
+the node must obtain from the authenticated parent process. `parentState` is a
+state CID, not a parent-block lookup key. Consensus derives neither relationship
+by inversion. A target-hit candidate can likewise be rejected by its local
+admission rules while returning a valid header-only carrier link for descendants;
+the rejection and carrier fact are orthogonal.
 
 ### 9.4 Fork Choice and Reorganization
 
@@ -790,9 +821,9 @@ this same reorganization procedure. None replays the block's state transition.
 
 ### 9.5 Cross-Chain Evidence Independence
 
-The sparse proof and authenticated parent-issued continuity/genesis facts derive
-local child coverage. In addition, each chain may consume one live rolled-up view
-from its immediate parent. For each child block, the parent exports only
+The sparse proof and authenticated immediate-parent carrier/genesis facts derive
+local child coverage. In addition, each chain may consume one live rolled-up
+view from its immediate parent. For each child block, the parent exports only
 connected, accepted work whose validated content binding covers that child.
 Eligible work may come from noncanonical parent branches; unrelated parent work
 is excluded. The node authenticates and routes that process, derives the

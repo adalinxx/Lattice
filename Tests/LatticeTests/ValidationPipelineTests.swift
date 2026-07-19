@@ -104,7 +104,7 @@ final class BlockBuilderTests: XCTestCase {
 
         let valid = try await tampered.validateGenesis(
             fetcher: fetcher,
-            directory: nil
+            chainPath: [DEFAULT_ROOT_DIRECTORY]
         ).0
 
         XCTAssertFalse(valid)
@@ -281,7 +281,8 @@ final class SignatureVerificationTests: XCTestCase {
             withdrawalActions: [],
             signers: [publicKeyCID],
             fee: 0,
-            nonce: 1
+            nonce: 1,
+            chainPath: ["Nexus"]
         )
         let tx = signedTransaction(body: body, privateKeyHex: keyPair.privateKey, publicKeyHex: keyPair.publicKey)
         XCTAssertTrue(tx.signaturesAreValid())
@@ -302,7 +303,8 @@ final class SignatureVerificationTests: XCTestCase {
             withdrawalActions: [],
             signers: [wrongSignerCID],
             fee: 0,
-            nonce: 1
+            nonce: 1,
+            chainPath: ["Nexus"]
         )
         let tx = signedTransaction(body: body, privateKeyHex: keyPair1.privateKey, publicKeyHex: keyPair1.publicKey)
         XCTAssertTrue(tx.signaturesAreValid(), "Signature itself is valid")
@@ -319,12 +321,14 @@ final class TransactionNonceScopingTests: XCTestCase {
         let body1 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["alice"], fee: 0, nonce: 42
+            receiptActions: [], withdrawalActions: [], signers: ["alice"], fee: 0, nonce: 42,
+            chainPath: ["Nexus"]
         )
         let body2 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["bob"], fee: 0, nonce: 42
+            receiptActions: [], withdrawalActions: [], signers: ["bob"], fee: 0, nonce: 42,
+            chainPath: ["Nexus"]
         )
 
         let key1 = AccountStateHeader.nonceTrackingKey(body1.signers[0])
@@ -336,12 +340,14 @@ final class TransactionNonceScopingTests: XCTestCase {
         let body1 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["alice"], fee: 0, nonce: 42
+            receiptActions: [], withdrawalActions: [], signers: ["alice"], fee: 0, nonce: 42,
+            chainPath: ["Nexus"]
         )
         let body2 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["alice"], fee: 0, nonce: 42
+            receiptActions: [], withdrawalActions: [], signers: ["alice"], fee: 0, nonce: 42,
+            chainPath: ["Nexus"]
         )
 
         let key1 = AccountStateHeader.nonceTrackingKey(body1.signers[0])
@@ -353,12 +359,14 @@ final class TransactionNonceScopingTests: XCTestCase {
         let body1 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["alice", "bob"], fee: 0, nonce: 1
+            receiptActions: [], withdrawalActions: [], signers: ["alice", "bob"], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let body2 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["bob", "alice"], fee: 0, nonce: 1
+            receiptActions: [], withdrawalActions: [], signers: ["bob", "alice"], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
 
         let keys1 = Set(body1.signers.map { AccountStateHeader.nonceTrackingKey($0) })
@@ -570,7 +578,8 @@ final class WasmPolicyTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1
+            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let spec = ChainSpec(
             maxNumberOfTransactionsPerBlock: 100,
@@ -591,7 +600,8 @@ final class WasmPolicyTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1
+            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let spec = ChainSpec(
             maxNumberOfTransactionsPerBlock: 100,
@@ -612,12 +622,14 @@ final class WasmPolicyTests: XCTestCase {
         let lowFee = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["low-signer"], fee: 5, nonce: 1
+            receiptActions: [], withdrawalActions: [], signers: ["low-signer"], fee: 5, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let highFee = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["high-signer"], fee: 100, nonce: 1
+            receiptActions: [], withdrawalActions: [], signers: ["high-signer"], fee: 100, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let spec = ChainSpec(
             maxNumberOfTransactionsPerBlock: 100,
@@ -640,7 +652,8 @@ final class WasmPolicyTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1
+            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let spec = ChainSpec(
             maxNumberOfTransactionsPerBlock: 100,
@@ -668,7 +681,8 @@ final class WasmPolicyTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1
+            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let spec = ChainSpec(
             maxNumberOfTransactionsPerBlock: 100,
@@ -736,7 +750,8 @@ final class WasmPolicyTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [action], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], fee: 0, nonce: 1
+            receiptActions: [], withdrawalActions: [], signers: [], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let spec = ChainSpec(
             maxNumberOfTransactionsPerBlock: 100,
@@ -765,8 +780,8 @@ final class WasmPolicyTests: XCTestCase {
             halvingInterval: 10_000,
             wasmPolicies: [policy]
         )
-        let goodBody = TransactionBody(accountActions: [], actions: [goodAction], depositActions: [], genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 1, nonce: 1)
-        let badBody = TransactionBody(accountActions: [], actions: [badAction], depositActions: [], genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 1, nonce: 1)
+        let goodBody = TransactionBody(accountActions: [], actions: [goodAction], depositActions: [], genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 1, nonce: 1, chainPath: ["Nexus"])
+        let badBody = TransactionBody(accountActions: [], actions: [badAction], depositActions: [], genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 1, nonce: 1, chainPath: ["Nexus"])
         let goodAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [goodBody], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
         let badAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [badBody], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
         XCTAssertTrue(goodAccepted)
@@ -784,7 +799,8 @@ final class WasmPolicyTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1
+            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let spec = ChainSpec(
             maxNumberOfTransactionsPerBlock: 100,
@@ -838,7 +854,8 @@ final class WasmPolicyTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1
+            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let spec = ChainSpec(
             maxNumberOfTransactionsPerBlock: 100,
@@ -867,7 +884,8 @@ final class WasmPolicyTests: XCTestCase {
         )
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 5, nonce: 1
+            genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 5, nonce: 1,
+            chainPath: ["Nexus"]
         )
         do {
             _ = try await TransactionBody.batchVerifyPolicies(
@@ -1090,7 +1108,8 @@ final class WasmPolicyTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1
+            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
+            chainPath: ["Nexus"]
         )
         return WasmPolicyContext(
             scope: .transaction,

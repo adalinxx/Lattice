@@ -51,7 +51,8 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         let premineBody = TransactionBody(
             accountActions: [AccountAction(owner: aliceAddr, delta: Int64(premineAmount))],
             actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [aliceAddr], fee: 0, nonce: 0
+            receiptActions: [], withdrawalActions: [], signers: [aliceAddr], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
         let premineHeader = try! HeaderImpl<TransactionBody>(node: premineBody)
         let premineSig = TransactionSigning.sign(bodyHeader: premineHeader, privateKeyHex: alice.privateKey)!
@@ -206,7 +207,8 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         let resultViaFetcher = try await levelA.admitBlockHeaderChainLocal(
             blockHeader,
             fetcher: fetcher,
-            storer: fetcher,
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
         )
 
@@ -214,7 +216,8 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         let resultViaSource = try await levelB.admitBlockHeaderChainLocal(
             blockHeader,
             source: FetcherContentSource(fetcher),
-            storer: fetcher,
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
         )
 

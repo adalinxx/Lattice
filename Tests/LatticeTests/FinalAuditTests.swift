@@ -32,7 +32,8 @@ private func premineGenesis(
     let body = TransactionBody(
         accountActions: [AccountAction(owner: addr, delta: Int64(spec.premineAmount()))],
         actions: [], depositActions: [], genesisActions: [],
-        receiptActions: [], withdrawalActions: [], signers: [addr], fee: 0, nonce: 0
+        receiptActions: [], withdrawalActions: [], signers: [addr], fee: 0, nonce: 0,
+        chainPath: ["Nexus"]
     )
     return try await buildAndStoreGenesis(
         spec: spec, transactions: [tx(body, kp)],
@@ -72,7 +73,8 @@ final class DoubleClaimTests: XCTestCase {
             actions: [],
             depositActions: [childSwap],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 1
+            signers: [kpAddr], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let childBlock1 = try await buildAndStoreBlock(
             previous: childGenesis, transactions: [tx(swapBody, kp)],
@@ -85,7 +87,8 @@ final class DoubleClaimTests: XCTestCase {
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: amount, directory: "Child")],
             withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 0
+            signers: [kpAddr], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
         let nexusBlock1 = try await buildAndStoreBlock(
             previous: nexusGenesis, transactions: [tx(settleBody, kp)],
@@ -97,7 +100,8 @@ final class DoubleClaimTests: XCTestCase {
             actions: [], depositActions: [],
             genesisActions: [], receiptActions: [],
             withdrawalActions: [WithdrawalAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: amount, amountWithdrawn: amount)],
-            signers: [kpAddr], fee: 0, nonce: 2
+            signers: [kpAddr], fee: 0, nonce: 2,
+            chainPath: ["Nexus"]
         )
         let childBlock2 = try await buildAndStoreBlock(
             previous: childBlock1,
@@ -112,7 +116,8 @@ final class DoubleClaimTests: XCTestCase {
             actions: [], depositActions: [],
             genesisActions: [], receiptActions: [],
             withdrawalActions: [WithdrawalAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: amount, amountWithdrawn: amount)],
-            signers: [kpAddr], fee: 0, nonce: 3
+            signers: [kpAddr], fee: 0, nonce: 3,
+            chainPath: ["Nexus"]
         )
 
         do {
@@ -173,7 +178,8 @@ final class PhantomSettleTests: XCTestCase {
             actions: [], depositActions: [],
             genesisActions: [], receiptActions: [],
             withdrawalActions: [WithdrawalAction(withdrawer: kpAddr, nonce: 99, demander: kpAddr, amountDemanded: 1000, amountWithdrawn: 1000)],
-            signers: [kpAddr], fee: 0, nonce: 1
+            signers: [kpAddr], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
 
         let childBlock1 = try await buildAndStoreBlock(
@@ -232,7 +238,8 @@ final class CrossChainReplayTests: XCTestCase {
             actions: [],
             depositActions: [childASwap],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 1
+            signers: [kpAddr], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let _ = try await buildAndStoreBlock(
             previous: childAGenesis, transactions: [tx(swapBody, kp)],
@@ -244,7 +251,8 @@ final class CrossChainReplayTests: XCTestCase {
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: amount, directory: "ChildA")],
             withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 0
+            signers: [kpAddr], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
         let nexusBlock1 = try await buildAndStoreBlock(
             previous: nexusGenesis, transactions: [tx(settleBody, kp)],
@@ -257,7 +265,8 @@ final class CrossChainReplayTests: XCTestCase {
             actions: [], depositActions: [],
             genesisActions: [], receiptActions: [],
             withdrawalActions: [WithdrawalAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: amount, amountWithdrawn: amount)],
-            signers: [kpAddr], fee: 0, nonce: 1
+            signers: [kpAddr], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
 
         do {
@@ -573,7 +582,8 @@ final class GeneralStateBlockTests: XCTestCase {
             actions: [Action(key: "key1", oldValue: nil, newValue: "value1")],
             depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 0
+            signers: [kpAddr], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
         let block1 = try await buildAndStoreBlock(
             previous: genesis, transactions: [tx(insertBody, kp)],
@@ -586,7 +596,8 @@ final class GeneralStateBlockTests: XCTestCase {
             actions: [Action(key: "key1", oldValue: "WRONG", newValue: "value2")],
             depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 1
+            signers: [kpAddr], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
 
         do {

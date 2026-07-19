@@ -126,10 +126,11 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
         let unavailable = try await level.admitBlockHeaderChainLocal(
             gapHeader(block),
             fetcher: fetcher,
-            storer: backing,
+            validationContentStorer: backing,
+            materializedVolumeStorer: backing,
             stage: testAdmissionStage
         )
-        guard case .rejected(.unavailableEvidence) = unavailable else {
+        guard case .rejected(.unavailableEvidence, _, _) = unavailable else {
             return XCTFail("transient ancestor-resolution failure must be unavailable")
         }
         let heightWhileUnavailable = await level.chain.getHighestBlockHeight()
@@ -141,7 +142,8 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
         let accepted = try await level.admitBlockHeaderChainLocal(
             gapHeader(block),
             fetcher: fetcher,
-            storer: backing,
+            validationContentStorer: backing,
+            materializedVolumeStorer: backing,
             stage: testAdmissionStage
         )
         guard case .accepted = accepted else {
@@ -180,20 +182,22 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
         let rejected = try await level.admitBlockHeaderChainLocal(
             gapHeader(minedTampered),
             fetcher: f,
-            storer: f,
+            validationContentStorer: f,
+            materializedVolumeStorer: f,
             stage: testAdmissionStage
         )
-        guard case .rejected(.protocolInvalid) = rejected else {
+        guard case .rejected(.protocolInvalid, _, _) = rejected else {
             return XCTFail("a fully-resolvable invalid block must be rejected")
         }
 
         let rejectedAgain = try await level.admitBlockHeaderChainLocal(
             gapHeader(minedTampered),
             fetcher: f,
-            storer: f,
+            validationContentStorer: f,
+            materializedVolumeStorer: f,
             stage: testAdmissionStage
         )
-        guard case .rejected(.protocolInvalid) = rejectedAgain else {
+        guard case .rejected(.protocolInvalid, _, _) = rejectedAgain else {
             return XCTFail("reprocessing a fully-resolvable invalid block must stay rejected")
         }
         let finalHeight = await level.chain.getHighestBlockHeight()

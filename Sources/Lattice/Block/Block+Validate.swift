@@ -104,15 +104,14 @@ public extension Block {
 
     func validateGenesis(
         fetcher: Fetcher,
-        directory: String?,
-        chainPath: [String]? = nil,
+        chainPath: [String],
         reportTemporalFailure: Bool = false,
         validationContext: ValidationContext = .current
     ) async throws -> (Bool, StateDiff) {
         let transition = try await validateGenesisTransition(
             fetcher: fetcher,
-            directory: directory,
             chainPath: chainPath,
+            allowUnsignedTransactions: false,
             reportTemporalFailure: reportTemporalFailure,
             validationContext: validationContext
         )
@@ -123,8 +122,8 @@ public extension Block {
     /// the verified post-state before exposing a consensus mutation.
     internal func validateGenesisTransition(
         fetcher: Fetcher,
-        directory: String?,
-        chainPath: [String]? = nil,
+        chainPath: [String],
+        allowUnsignedTransactions: Bool,
         reportTemporalFailure: Bool = false,
         validationContext: ValidationContext
     ) async throws -> (Bool, StateDiff, LatticeState?) {
@@ -134,20 +133,20 @@ public extension Block {
             return (false, .empty, nil)
         }
         guard let transactionBodies = try await resolveTransactionBodies(fetcher: fetcher, validator: { tx in
-            try await tx.validateTransactionForGenesis(fetcher: fetcher)
+            try await tx.validateTransactionForGenesis(
+                fetcher: fetcher,
+                allowUnsigned: allowUnsignedTransactions
+            )
         }) else { return (false, .empty, nil) }
         guard let specNode = try await spec.resolve(fetcher: fetcher).node else { return (false, .empty, nil) }
         guard specNode.isValid else { return (false, .empty, nil) }
-        // Directory is positional: it comes from the anchor context (the name the
-        // genesis is registered under), not from the spec. `directory` nil ⇒ root.
-        // An explicitly-empty chainPath has no root and is rejected (fail closed)
-        // rather than silently degrading to root semantics.
-        let expectedChainPath = chainPath ?? [directory ?? DEFAULT_ROOT_DIRECTORY]
-        if expectedChainPath.isEmpty { return (false, .empty, nil) }
-        if !validateChainPaths(transactionBodies: transactionBodies, expectedPath: expectedChainPath) {
+        guard chainPath.first == DEFAULT_ROOT_DIRECTORY else {
             return (false, .empty, nil)
         }
-        if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, fetcher: fetcher)) { return (false, .empty, nil) }
+        if !validateChainPaths(transactionBodies: transactionBodies, expectedPath: chainPath) {
+            return (false, .empty, nil)
+        }
+        if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: chainPath, fetcher: fetcher)) { return (false, .empty, nil) }
         if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if !validateBlockSize(spec: specNode) { return (false, .empty, nil) }
@@ -507,10 +506,8 @@ public extension Block {
     /// requires a receipt in the parent chain's state. The root chain
     /// (chainPath length 1) has no parent, so a deposit there burns value with
     /// no withdrawal path and a withdrawal there has no receipt to settle
-    /// against. The mempool already rejects both
-    /// (TransactionValidator.depositOrWithdrawalOnNexus); this mirrors that
-    /// rule at consensus so a malicious miner cannot place such actions
-    /// directly in a root-chain block.
+    /// against. Consensus rejects both so a producer cannot place them directly
+    /// in a root-chain block.
     func validateNoDepositsOrWithdrawalsOnRoot(transactionBodies: [TransactionBody], expectedPath: [String]) -> Bool {
         guard expectedPath.count == 1 else { return true }
         for body in transactionBodies {

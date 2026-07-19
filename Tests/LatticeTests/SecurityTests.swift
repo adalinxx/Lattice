@@ -78,12 +78,14 @@ final class DoubleSpendTests: XCTestCase {
         let body1 = TransactionBody(
             accountActions: [AccountAction(owner: "alice", delta: Int64(50) - Int64(100))],
             actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["alice"], fee: 1, nonce: 42
+            receiptActions: [], withdrawalActions: [], signers: ["alice"], fee: 1, nonce: 42,
+            chainPath: ["Nexus"]
         )
         let body2 = TransactionBody(
             accountActions: [AccountAction(owner: "alice", delta: -Int64(50))],
             actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["alice"], fee: 1, nonce: 42
+            receiptActions: [], withdrawalActions: [], signers: ["alice"], fee: 1, nonce: 42,
+            chainPath: ["Nexus"]
         )
         let key1 = AccountStateHeader.nonceTrackingKey(body1.signers[0])
         let key2 = AccountStateHeader.nonceTrackingKey(body2.signers[0])
@@ -95,12 +97,14 @@ final class DoubleSpendTests: XCTestCase {
         let body1 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: ["alice"], fee: 0, nonce: 1
+            signers: ["alice"], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let body2 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: ["bob"], fee: 0, nonce: 1
+            signers: ["bob"], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         XCTAssertNotEqual(
             AccountStateHeader.nonceTrackingKey(body1.signers[0]),
@@ -123,7 +127,8 @@ final class StateModelHardeningTests: XCTestCase {
         let solo = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: ["alice"], fee: 0, nonce: 0
+            signers: ["alice"], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
         let (afterSolo, _) = try await empty.proveAndUpdateState(
             allAccountActions: [],
@@ -135,7 +140,8 @@ final class StateModelHardeningTests: XCTestCase {
         let cosignedReplay = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: ["alice", "bob"], fee: 0, nonce: 0
+            signers: ["alice", "bob"], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
         do {
             _ = try await afterSolo.proveAndUpdateState(
@@ -151,7 +157,8 @@ final class StateModelHardeningTests: XCTestCase {
         let nextSolo = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: ["alice"], fee: 0, nonce: 1
+            signers: ["alice"], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         _ = try await afterSolo.proveAndUpdateState(
             allAccountActions: [],
@@ -219,7 +226,8 @@ final class StateModelHardeningTests: XCTestCase {
             genesisActions: [], receiptActions: [], withdrawalActions: [],
             signers: [CryptoUtils.createAddress(from: keyPair.publicKey)],
             fee: 0,
-            nonce: 0
+            nonce: 0,
+            chainPath: ["Nexus"]
         )
         let message = try! HeaderImpl<TransactionBody>(node: body).rawCID
         let privateKeyData = try XCTUnwrap(Data(hex: keyPair.privateKey))
@@ -265,7 +273,8 @@ final class StateModelHardeningTests: XCTestCase {
             withdrawalActions: [],
             signers: [signer],
             fee: 0,
-            nonce: 0
+            nonce: 0,
+            chainPath: ["Nexus"]
         )
         let invalidGeneralTx = signedTransaction(
             body: invalidGeneralAction,
@@ -284,7 +293,8 @@ final class StateModelHardeningTests: XCTestCase {
             withdrawalActions: [],
             signers: [signer],
             fee: 0,
-            nonce: 0
+            nonce: 0,
+            chainPath: ["Nexus"]
         )
         let invalidAccountTx = signedTransaction(
             body: invalidAccountAction,
@@ -308,7 +318,8 @@ final class StateModelHardeningTests: XCTestCase {
             withdrawalActions: [],
             signers: [signer],
             fee: 0,
-            nonce: 0
+            nonce: 0,
+            chainPath: ["Nexus"]
         )
         let tx = signedTransaction(
             body: body,
@@ -352,7 +363,8 @@ final class SignatureForgeryTests: XCTestCase {
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
             signers: [try! HeaderImpl<PublicKey>(node: PublicKey(key: kp.publicKey)).rawCID],
-            fee: 0, nonce: 1
+            fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let bodyHeader = try! HeaderImpl<TransactionBody>(node: body)
         let tx = Transaction(signatures: [kp.publicKey: "000000deadbeef000000"], body: bodyHeader)
@@ -366,7 +378,8 @@ final class SignatureForgeryTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [signerCID], fee: 0, nonce: 1
+            signers: [signerCID], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let bodyHeader = try! HeaderImpl<TransactionBody>(node: body)
         let sig = TransactionSigning.sign(bodyHeader: bodyHeader, privateKeyHex: kp1.privateKey)!
@@ -381,7 +394,8 @@ final class SignatureForgeryTests: XCTestCase {
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
             signers: [try! HeaderImpl<PublicKey>(node: PublicKey(key: kp.publicKey)).rawCID],
-            fee: 0, nonce: 1
+            fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let tx = Transaction(signatures: [kp.publicKey: ""], body: try! HeaderImpl<TransactionBody>(node: body))
         XCTAssertFalse(tx.signaturesAreValid())
@@ -401,7 +415,8 @@ final class BalanceConservationTests: XCTestCase {
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: ["sender"], fee: 1, nonce: 0
+            signers: ["sender"], fee: 1, nonce: 0,
+            chainPath: ["Nexus"]
         ).valueConservation()
         XCTAssertEqual(valid.totalDebits, WorkSum(UInt256(101)))
         XCTAssertEqual(valid.totalCredits, WorkSum(UInt256(100)))
@@ -415,7 +430,8 @@ final class BalanceConservationTests: XCTestCase {
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: ["sender"], fee: 1, nonce: 0
+            signers: ["sender"], fee: 1, nonce: 0,
+            chainPath: ["Nexus"]
         ).valueConservation()
         XCTAssertFalse(underfundedFee.conserved)
 
@@ -428,7 +444,8 @@ final class BalanceConservationTests: XCTestCase {
             depositActions: [DepositAction(nonce: 1, demander: "sender", amountDemanded: 30, amountDeposited: 30)],
             genesisActions: [], receiptActions: [],
             withdrawalActions: [WithdrawalAction(withdrawer: "sender", nonce: 1, demander: "recipient", amountDemanded: 20, amountWithdrawn: 20)],
-            signers: ["sender"], fee: 40, nonce: 0
+            signers: ["sender"], fee: 40, nonce: 0,
+            chainPath: ["Nexus"]
         ).valueConservation()
         XCTAssertEqual(bridged.totalDebits, WorkSum(UInt256(150)))
         XCTAssertEqual(bridged.totalCredits, WorkSum(UInt256(100)))
@@ -439,7 +456,8 @@ final class BalanceConservationTests: XCTestCase {
             accountActions: [AccountAction(owner: "sender", delta: Int64.min)],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: ["sender"], fee: 0, nonce: 0
+            signers: ["sender"], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         ).valueConservation()
         XCTAssertEqual(invalidExtremeDebit.totalDebits, .zero)
         XCTAssertTrue(invalidExtremeDebit.overflow)
@@ -456,7 +474,8 @@ final class BalanceConservationTests: XCTestCase {
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: ["sender"], fee: 0, nonce: 0
+            signers: ["sender"], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         ).valueConservation()
         let amount = UInt256(UInt64(Int64.max))
         let expected = WorkSum(amount) + amount + amount
@@ -758,7 +777,8 @@ final class FilterBypassTests: XCTestCase {
         let cheapTx = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [], fee: 50, nonce: 1
+            signers: [], fee: 50, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [cheapTx], spec: feeSpec, chainPath: ["Nexus"], fetcher: fetcher)
         XCTAssertFalse(accepted)
@@ -776,7 +796,7 @@ final class FilterBypassTests: XCTestCase {
             wasmPolicies: [policy]
         )
         let badAction = Action(key: "system/hack", oldValue: nil, newValue: "data")
-        let body = TransactionBody(accountActions: [], actions: [badAction], depositActions: [], genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 1, nonce: 0)
+        let body = TransactionBody(accountActions: [], actions: [badAction], depositActions: [], genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 1, nonce: 0, chainPath: ["Nexus"])
         let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: nsSpec, chainPath: ["Nexus"], fetcher: fetcher)
         XCTAssertFalse(accepted)
     }
@@ -796,7 +816,8 @@ final class FilterBypassTests: XCTestCase {
         let cheapTx = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [], fee: 10, nonce: 1
+            signers: [], fee: 10, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let childAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [cheapTx], spec: childSpec, chainPath: ["Nexus", "Child"], fetcher: fetcher)
         let parentAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [cheapTx], spec: parentSpec, chainPath: ["Nexus", "Child"], fetcher: fetcher)
@@ -1174,11 +1195,12 @@ final class StateRootValidationTests: XCTestCase {
         let result = try await level.admitBlockHeaderChainLocal(
             header(minedTampered),
             fetcher: f,
-            storer: f,
+            validationContentStorer: f,
+            materializedVolumeStorer: f,
             stage: testAdmissionStage
         )
 
-        guard case .rejected(.protocolInvalid) = result else {
+        guard case .rejected(.protocolInvalid, _, _) = result else {
             return XCTFail("block with tampered postState must be rejected")
         }
         let tip = await level.chain.getHighestBlockHeight()
@@ -1203,7 +1225,8 @@ final class StateRootValidationTests: XCTestCase {
         let accepted = try await acceptingLevel.admitBlockHeaderChainLocal(
             header(validBlock),
             fetcher: f,
-            storer: f,
+            validationContentStorer: f,
+            materializedVolumeStorer: f,
             stage: testAdmissionStage
         )
 
@@ -1231,11 +1254,12 @@ final class StateRootValidationTests: XCTestCase {
         let rejected = try await rejectingLevel.admitBlockHeaderChainLocal(
             header(minedTampered),
             fetcher: f,
-            storer: f,
+            validationContentStorer: f,
+            materializedVolumeStorer: f,
             stage: testAdmissionStage
         )
 
-        guard case .rejected(.protocolInvalid) = rejected else {
+        guard case .rejected(.protocolInvalid, _, _) = rejected else {
             return XCTFail("tampered block must be rejected")
         }
     }
@@ -1263,11 +1287,12 @@ final class StateRootValidationTests: XCTestCase {
         let unavailable = try await level.admitBlockHeaderChainLocal(
             header(block),
             fetcher: incompleteFetcher,
-            storer: incompleteFetcher,
+            validationContentStorer: incompleteFetcher,
+            materializedVolumeStorer: incompleteFetcher,
             stage: testAdmissionStage
         )
 
-        guard case .rejected(.unavailableEvidence) = unavailable else {
+        guard case .rejected(.unavailableEvidence, _, _) = unavailable else {
             return XCTFail("a block whose parent data is unavailable must not be admitted")
         }
         let unavailableHeight = await level.chain.getHighestBlockHeight()
@@ -1278,7 +1303,8 @@ final class StateRootValidationTests: XCTestCase {
         let accepted = try await level.admitBlockHeaderChainLocal(
             header(block),
             fetcher: completeFetcher,
-            storer: completeFetcher,
+            validationContentStorer: completeFetcher,
+            materializedVolumeStorer: completeFetcher,
             stage: testAdmissionStage
         )
 
@@ -1316,20 +1342,22 @@ final class StateRootValidationTests: XCTestCase {
         let rejected = try await level.admitBlockHeaderChainLocal(
             header(minedTampered),
             fetcher: f,
-            storer: f,
+            validationContentStorer: f,
+            materializedVolumeStorer: f,
             stage: testAdmissionStage
         )
         let rejectedAgain = try await level.admitBlockHeaderChainLocal(
             header(minedTampered),
             fetcher: f,
-            storer: f,
+            validationContentStorer: f,
+            materializedVolumeStorer: f,
             stage: testAdmissionStage
         )
 
-        guard case .rejected(.protocolInvalid) = rejected else {
+        guard case .rejected(.protocolInvalid, _, _) = rejected else {
             return XCTFail("fully-resolvable invalid blocks must reject")
         }
-        guard case .rejected(.protocolInvalid) = rejectedAgain else {
+        guard case .rejected(.protocolInvalid, _, _) = rejectedAgain else {
             return XCTFail("reprocessing complete invalid data must not become accepted")
         }
         let rejectedHeight = await level.chain.getHighestBlockHeight()
@@ -1398,11 +1426,12 @@ final class StateRootValidationTests: XCTestCase {
             header(minedTamperedChild),
             fetcher: f,
             childPackage: package,
-            storer: f,
+            validationContentStorer: f,
+            materializedVolumeStorer: f,
             stage: testAdmissionStage
         )
 
-        guard case .rejected(.protocolInvalid) = result else {
+        guard case .rejected(.protocolInvalid, _, _) = result else {
             return XCTFail("tampered child block must be rejected")
         }
         let childTip = await childLevel.chain.getHighestBlockHeight()

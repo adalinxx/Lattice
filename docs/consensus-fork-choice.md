@@ -26,7 +26,8 @@ Verification proceeds from cheap, global checks to chain-local work:
 1. recompute `CID(R)` and `h`;
 2. require `workForHash(h) >= minimumRootWork` before resolving child content;
 3. consume the exact sparse path and require its terminal CID to equal `CID(C)`;
-4. verify every carrier's same-chain continuity and every vertical
+4. verify the immediate parent's root-bound carrier link, which inductively
+   proves the upstream carrier path, and every vertical
    `child.parentState == carrier.prevState` binding;
 5. compare the same hash `h` with each level's target;
 6. execute and admit `C` only if this chain's target accepts the grind.
@@ -41,6 +42,10 @@ h >  target(level)  -> carrier only; descendants may still accept
 
 A carrier still has to prove continuity. A level that misses does not execute a
 transition or create a local work fact.
+
+Carrier-link derivation is header-only. If an intermediate level's target hits
+but its local transition fails, that rejection remains visible while the same
+candidate may still carry the grind to a descendant.
 
 ## Grind Identity, Quantity, And Coverage
 

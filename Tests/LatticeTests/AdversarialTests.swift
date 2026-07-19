@@ -51,7 +51,8 @@ final class DoubleSpendAdversarialTests: XCTestCase {
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [aliceAddr], fee: 0, nonce: 1
+            signers: [aliceAddr], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let spend2 = TransactionBody(
             accountActions: [
@@ -60,7 +61,8 @@ final class DoubleSpendAdversarialTests: XCTestCase {
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [aliceAddr], fee: 0, nonce: 2
+            signers: [aliceAddr], fee: 0, nonce: 2,
+            chainPath: ["Nexus"]
         )
 
         do {
@@ -94,7 +96,8 @@ final class DoubleSpendAdversarialTests: XCTestCase {
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [aliceAddr], fee: 0, nonce: 1
+            signers: [aliceAddr], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let block1 = try await buildAndStoreBlock(
             previous: genesis, transactions: [sign(spend1Body, alice)],
@@ -108,7 +111,8 @@ final class DoubleSpendAdversarialTests: XCTestCase {
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [aliceAddr], fee: 0, nonce: 2
+            signers: [aliceAddr], fee: 0, nonce: 2,
+            chainPath: ["Nexus"]
         )
 
         do {
@@ -197,14 +201,18 @@ final class FeeAccountingValidationTests: XCTestCase {
             accountActions: [AccountAction(owner: minerAddr, delta: Int64(fee))],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [minerAddr], fee: fee, nonce: 0
+            signers: [minerAddr], fee: fee, nonce: 0,
+            chainPath: ["Nexus"]
         )
         let genesis = try await buildAndStoreGenesis(
             spec: s, transactions: [sign(body, miner)],
             timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
 
-        let valid = try await genesis.validateGenesis(fetcher: fetcher, directory: "Nexus").0
+        let valid = try await genesis.validateGenesis(
+            fetcher: fetcher,
+            chainPath: [DEFAULT_ROOT_DIRECTORY]
+        ).0
         XCTAssertFalse(valid, "Genesis fees must not expand the premine budget")
     }
 }
@@ -230,7 +238,8 @@ final class SignatureSecurityTests: XCTestCase {
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(reward))],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 0
+            signers: [kpAddr], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
         let bodyHeader = try! HeaderImpl<TransactionBody>(node: body)
         let realSig = TransactionSigning.sign(bodyHeader: bodyHeader, privateKeyHex: kp.privateKey)!
@@ -267,7 +276,8 @@ final class SignatureSecurityTests: XCTestCase {
             accountActions: [AccountAction(owner: realAddr, delta: Int64(reward))],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [realAddr], fee: 0, nonce: 0
+            signers: [realAddr], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
         let bodyHeader = try! HeaderImpl<TransactionBody>(node: body)
         let sig = TransactionSigning.sign(bodyHeader: bodyHeader, privateKeyHex: imposter.privateKey)!
@@ -293,7 +303,8 @@ final class SignatureSecurityTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [], fee: 0, nonce: 0
+            signers: [], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
         let tx = Transaction(signatures: [:], body: try! HeaderImpl<TransactionBody>(node: body))
 
@@ -325,7 +336,8 @@ final class SignatureSecurityTests: XCTestCase {
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [thiefAddr], fee: 0, nonce: 0
+            signers: [thiefAddr], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
         let tx = sign(body, thief)
 
@@ -360,7 +372,8 @@ final class BalanceOverflowTests: XCTestCase {
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(reward + 1))],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 0
+            signers: [kpAddr], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
         let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [sign(body, kp)],
@@ -381,14 +394,18 @@ final class BalanceOverflowTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(premine + 1))],
             actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [kpAddr], fee: 0, nonce: 0
+            receiptActions: [], withdrawalActions: [], signers: [kpAddr], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
 
         let genesis = try await buildAndStoreGenesis(
             spec: s, transactions: [sign(body, kp)],
             timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
-        let gv = try await genesis.validateGenesis(fetcher: fetcher, directory: "Nexus").0
+        let gv = try await genesis.validateGenesis(
+            fetcher: fetcher,
+            chainPath: [DEFAULT_ROOT_DIRECTORY]
+        ).0
         XCTAssertFalse(gv)
     }
 
@@ -426,7 +443,8 @@ final class CrossChainSecurityTests: XCTestCase {
                 DepositAction(nonce: 1, demander: kpAddr, amountDemanded: 100, amountDeposited: 100)
             ],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 1
+            signers: [kpAddr], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
 
         do {
@@ -459,7 +477,8 @@ final class CrossChainSecurityTests: XCTestCase {
                 DepositAction(nonce: 1, demander: kpAddr, amountDemanded: 0, amountDeposited: 0)
             ],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 1
+            signers: [kpAddr], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
 
         do {
@@ -609,7 +628,8 @@ final class EconomicInvariantAdversarialTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [AccountAction(owner: ownerAddr, delta: Int64(premine))],
             actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [ownerAddr], fee: 0, nonce: 0
+            receiptActions: [], withdrawalActions: [], signers: [ownerAddr], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
         let tx = sign(body, kp)
 
@@ -752,7 +772,8 @@ final class BlockLimitTests: XCTestCase {
             let body = TransactionBody(
                 accountActions: [], actions: [], depositActions: [],
                 genesisActions: [], receiptActions: [], withdrawalActions: [],
-                signers: [], fee: 0, nonce: i
+                signers: [], fee: 0, nonce: i,
+                chainPath: ["Nexus"]
             )
             txs.append(sign(body, kp))
         }
@@ -797,7 +818,10 @@ final class BlockLimitTests: XCTestCase {
             spec: tinySpec, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
 
-        let valid = try await genesis.validateGenesis(fetcher: fetcher, directory: "Nexus").0
+        let valid = try await genesis.validateGenesis(
+            fetcher: fetcher,
+            chainPath: [DEFAULT_ROOT_DIRECTORY]
+        ).0
         XCTAssertFalse(valid, "Genesis block should exceed 100 byte limit")
     }
 
