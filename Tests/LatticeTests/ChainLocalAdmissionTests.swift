@@ -1549,6 +1549,13 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let child = bootstrap.level
         XCTAssertFalse(bootstrap.stateDiff.created.isEmpty)
         XCTAssertNotNil(bootstrap.materializedPostState)
+        XCTAssertEqual(
+            bootstrap.commit,
+            ChainCommit(
+                tipHash: header.rawCID,
+                mainChainBlocksAdded: [header.rawCID: 0]
+            )
+        )
         let childTip = await child.chain.getMainChainTip()
         XCTAssertEqual(childTip, header.rawCID)
 
@@ -1703,6 +1710,13 @@ final class ChainLocalAdmissionTests: XCTestCase {
         )
         let rootTip = await result.level.chain.getMainChainTip()
         XCTAssertEqual(rootTip, header.rawCID)
+        XCTAssertEqual(
+            result.commit,
+            ChainCommit(
+                tipHash: header.rawCID,
+                mainChainBlocksAdded: [header.rawCID: 0]
+            )
+        )
     }
 
     func testUnsignedRootPermitDoesNotLeakPastGenesis() async throws {
@@ -3594,6 +3608,286 @@ final class ChainLocalAdmissionTests: XCTestCase {
             stage: testAdmissionStage
         )
         XCTAssertEqual(accepted.commit?.revision, .max)
+    }
+
+    func testPreflightCommitUsesNoRemoteFetchAfterPreflight() async throws {
+        let backing = StorableFetcher()
+        let genesis = try await makeGenesis(fetcher: backing, timestamp: 1_000)
+        let candidate = try await makeChild(
+            of: genesis,
+            fetcher: backing,
+            timestamp: 2_000,
+            nonce: 1
+        )
+        let level = makeLevel(genesis: genesis)
+        let source = DisableableAdmissionFetcher(backing: backing)
+        let validationCache = StorableFetcher()
+        let materialized = RecordingAdmissionStorer()
+        let recorder = AdmissionStageRecorder()
+        let header = try BlockHeader(node: candidate)
+
+        let result = try await level.preflightBlockHeaderChainLocal(
+            header,
+            fetcher: source,
+            validationContentStorer: validationCache
+        )
+        guard case .ready(let preflight) = result else {
+            return XCTFail("valid candidate must produce a commit token")
+        }
+
+        await source.disable()
+        let committed = try await level.commitPreflight(
+            preflight,
+            materializedVolumeStorer: materialized,
+            staging: { context in await recorder.stage(context) }
+        )
+
+        let containsCandidate = await level.chain.contains(blockHash: header.rawCID)
+        let stagedCandidate = await recorder.count(for: header.rawCID)
+        XCTAssertNotNil(committed.commit)
+        XCTAssertTrue(containsCandidate)
+        XCTAssertEqual(stagedCandidate, 1)
+    }
+
+    func testPreflightTokenIsLevelBoundAndOneUse() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let candidate = try await makeChild(
+            of: genesis,
+            fetcher: fetcher,
+            timestamp: 2_000,
+            nonce: 1
+        )
+        let level = makeLevel(genesis: genesis)
+        let otherLevel = makeLevel(genesis: genesis)
+        let header = try BlockHeader(node: candidate)
+
+        let result = try await level.preflightBlockHeaderChainLocal(
+            header,
+            fetcher: fetcher,
+            validationContentStorer: fetcher
+        )
+        guard case .ready(let preflight) = result else {
+            return XCTFail("valid candidate must produce a commit token")
+        }
+
+        do {
+            _ = try await otherLevel.commitPreflight(
+                preflight,
+                materializedVolumeStorer: fetcher,
+                staging: { context in
+                    try await testAdmissionStage(context.batch)
+                }
+            )
+            XCTFail("a token must not commit on a different level")
+        } catch {
+            XCTAssertEqual(
+                error as? ChainAdmissionPreflightError,
+                .invalidToken
+            )
+        }
+
+        let committed = try await level.commitPreflight(
+            preflight,
+            materializedVolumeStorer: fetcher,
+            staging: { context in
+                try await testAdmissionStage(context.batch)
+            }
+        )
+        XCTAssertNotNil(committed.commit)
+
+        do {
+            _ = try await level.commitPreflight(
+                preflight,
+                materializedVolumeStorer: fetcher,
+                staging: { context in
+                    try await testAdmissionStage(context.batch)
+                }
+            )
+            XCTFail("a token must not commit twice")
+        } catch {
+            XCTAssertEqual(
+                error as? ChainAdmissionPreflightError,
+                .invalidToken
+            )
+        }
+    }
+
+    func testPreflightRemainsValidAfterAnotherAdmissionCommits() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let first = try await makeChild(
+            of: genesis,
+            fetcher: fetcher,
+            timestamp: 2_000,
+            nonce: 1
+        )
+        let sibling = try await makeChild(
+            of: genesis,
+            fetcher: fetcher,
+            timestamp: 2_000,
+            nonce: 2
+        )
+        let level = makeLevel(genesis: genesis)
+        let firstHeader = try BlockHeader(node: first)
+        let siblingHeader = try BlockHeader(node: sibling)
+
+        let preflightResult = try await level.preflightBlockHeaderChainLocal(
+            firstHeader,
+            fetcher: fetcher,
+            validationContentStorer: fetcher
+        )
+        guard case .ready(let preflight) = preflightResult else {
+            return XCTFail("valid candidate must produce a commit token")
+        }
+
+        let siblingResult = try await level.admitBlockHeaderChainLocal(
+            siblingHeader,
+            fetcher: fetcher,
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
+            stage: testAdmissionStage
+        )
+        let firstResult = try await level.commitPreflight(
+            preflight,
+            materializedVolumeStorer: fetcher,
+            staging: { context in
+                try await testAdmissionStage(context.batch)
+            }
+        )
+
+        XCTAssertEqual(
+            [siblingResult, firstResult].compactMap(\.commit?.revision).sorted(),
+            [1, 2]
+        )
+        let containsFirst = await level.chain.contains(blockHash: firstHeader.rawCID)
+        let containsSibling = await level.chain.contains(blockHash: siblingHeader.rawCID)
+        XCTAssertTrue(containsFirst)
+        XCTAssertTrue(containsSibling)
+    }
+
+    func testPreflightCommitPromotesCarrierLinkAfterPredecessorConnects() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let predecessor = try await makeChild(
+            of: genesis,
+            fetcher: fetcher,
+            timestamp: 2_000,
+            nonce: 1
+        )
+        let descendant = try await makeChild(
+            of: predecessor,
+            fetcher: fetcher,
+            timestamp: 3_000,
+            nonce: 2
+        )
+        let level = makeLevel(genesis: genesis)
+        let predecessorHeader = try BlockHeader(node: predecessor)
+        let descendantHeader = try BlockHeader(node: descendant)
+
+        let preflightResult = try await level.preflightBlockHeaderChainLocal(
+            descendantHeader,
+            fetcher: fetcher,
+            validationContentStorer: fetcher
+        )
+        guard case .ready(let preflight) = preflightResult else {
+            return XCTFail("valid descendant must produce a commit token")
+        }
+
+        _ = try await level.admitBlockHeaderChainLocal(
+            predecessorHeader,
+            fetcher: fetcher,
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
+            stage: testAdmissionStage
+        )
+        let recorder = AdmissionStageRecorder()
+        let committed = try await level.commitPreflight(
+            preflight,
+            materializedVolumeStorer: fetcher,
+            staging: { context in await recorder.stage(context) }
+        )
+
+        XCTAssertNotNil(committed.commit)
+        XCTAssertNotNil(committed.parentCarrierLink)
+        XCTAssertNil(committed.sameChainPredecessor)
+        let stagedContexts = await recorder.recordedContexts()
+        let stagedContext = try XCTUnwrap(stagedContexts.first)
+        XCTAssertEqual(
+            stagedContext.issuedCarrierLink,
+            committed.parentCarrierLink
+        )
+    }
+
+    func testDuplicatePreflightPromotesCarrierLinkAfterPredecessorConnectsWithoutStaging() async throws {
+        let backing = StorableFetcher()
+        let genesis = try await makeGenesis(fetcher: backing, timestamp: 1_000)
+        let predecessor = try await makeChild(
+            of: genesis,
+            fetcher: backing,
+            timestamp: 2_000,
+            nonce: 1
+        )
+        let orphan = try await makeChild(
+            of: predecessor,
+            fetcher: backing,
+            timestamp: 3_000,
+            nonce: 2
+        )
+        let level = makeLevel(genesis: genesis)
+        let recorder = AdmissionStageRecorder()
+        let predecessorHeader = try BlockHeader(node: predecessor)
+        let orphanHeader = try BlockHeader(node: orphan)
+
+        _ = try await level.admitBlockHeaderChainLocal(
+            orphanHeader,
+            fetcher: backing,
+            validationContentStorer: backing,
+            materializedVolumeStorer: backing,
+            stage: { context in await recorder.stage(context) }
+        )
+        let source = DisableableAdmissionFetcher(backing: backing)
+        let preflight = try await level.preflightBlockHeaderChainLocal(
+            orphanHeader,
+            fetcher: source,
+            validationContentStorer: backing
+        )
+        guard case .duplicate(let duplicate) = preflight else {
+            return XCTFail("known orphan must produce a duplicate token")
+        }
+
+        _ = try await level.admitBlockHeaderChainLocal(
+            predecessorHeader,
+            fetcher: backing,
+            validationContentStorer: backing,
+            materializedVolumeStorer: backing,
+            stage: { context in await recorder.stage(context) }
+        )
+        await source.disable()
+        let resolved = try await level.resolveDuplicatePreflight(duplicate)
+
+        guard case .duplicate(let link, let predecessor) = resolved.result else {
+            return XCTFail("resolved token must remain duplicate")
+        }
+        XCTAssertEqual(link?.carrierCID, orphanHeader.rawCID)
+        XCTAssertNil(predecessor)
+        XCTAssertEqual(resolved.parentGenesisLinks, [])
+        let orphanStageCount = await recorder.count(for: orphanHeader.rawCID)
+        let predecessorStageCount = await recorder.count(
+            for: predecessorHeader.rawCID
+        )
+        XCTAssertEqual(orphanStageCount, 1)
+        XCTAssertEqual(predecessorStageCount, 1)
+
+        do {
+            _ = try await level.resolveDuplicatePreflight(duplicate)
+            XCTFail("a duplicate token must not resolve twice")
+        } catch {
+            XCTAssertEqual(
+                error as? ChainAdmissionPreflightError,
+                .invalidToken
+            )
+        }
     }
 
     func testConcurrentAdmissionReachesStorageTogetherWithOneValidationContext() async throws {
