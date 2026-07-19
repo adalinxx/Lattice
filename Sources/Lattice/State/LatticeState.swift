@@ -117,10 +117,21 @@ private func collectMaterializedVolumePaths(
     found: inout Set<String>
 ) {
     guard let node = volume.node else { return }
+    let parentRadixPrefix = node is any RadixNode ? path.last : nil
     for property in node.properties() {
         guard let child = node.get(property: property) as? any Volume,
               child.node != nil else { continue }
-        let childPath = path + [property]
+        let childPath: [String]
+        if let radixNode = child.node as? any RadixNode {
+            // ArrayTrie traverses a compressed radix prefix within one path component.
+            if let prefix = parentRadixPrefix {
+                childPath = Array(path.dropLast()) + [prefix + radixNode.prefix]
+            } else {
+                childPath = path + [radixNode.prefix]
+            }
+        } else {
+            childPath = path + [property]
+        }
         if cids.contains(child.rawCID) {
             paths[childPath] = .targeted
             found.insert(child.rawCID)
