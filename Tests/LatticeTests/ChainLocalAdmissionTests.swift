@@ -1642,7 +1642,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(restoredSnapshot, liveSnapshot)
     }
 
-    func testRootBootstrapAllowsUnsignedTransactionsOnlyForTheExpectedCID() async throws {
+    func testConfiguredRootBootstrapAllowsUnsignedTransactions() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await makeGenesis(
             fetcher: fetcher,
@@ -1670,43 +1670,20 @@ final class ChainLocalAdmissionTests: XCTestCase {
                 materializedVolumeStorer: fetcher,
                 stage: testAdmissionStage
             )
-            XCTFail("unsigned root bootstrap must be explicitly pinned")
+            XCTFail("ordinary root bootstrap must remain signature-strict")
         } catch let failure as ChainAdmissionFailure {
             XCTAssertEqual(failure, .protocolInvalid)
         }
 
-        let countingFetcher = FetchCountingAdmissionFetcher()
-        let storageRecorder = RecordingAdmissionStorer()
-        let stageRecorder = AdmissionStageRecorder()
-        do {
-            _ = try await ChainLevel.bootstrap(
-                context: context,
-                genesisHeader: header,
-                expectedUnsignedGenesisCID: testCID("different-genesis"),
-                fetcher: countingFetcher,
-                validationContentStorer: storageRecorder,
-                materializedVolumeStorer: storageRecorder,
-                stage: { batch in await stageRecorder.stage(batch) }
-            )
-            XCTFail("the unsigned exception must bind the exact header CID")
-        } catch let failure as ChainAdmissionFailure {
-            XCTAssertEqual(failure, .protocolInvalid)
-        }
-        let fetchCount = await countingFetcher.fetchCount()
-        XCTAssertEqual(fetchCount, 0, "CID mismatch must fail before acquisition")
-        let storeCount = await storageRecorder.storeCallCount()
-        XCTAssertEqual(storeCount, 0, "CID mismatch must fail before storage")
-        let stagedBatches = await stageRecorder.recordedBatches()
-        XCTAssertTrue(stagedBatches.isEmpty, "CID mismatch must fail before staging")
-
-        let result = try await ChainLevel.bootstrap(
+        let result = try await ChainLevel.bootstrapConfiguredRoot(
             context: context,
             genesisHeader: header,
-            expectedUnsignedGenesisCID: header.rawCID,
             fetcher: fetcher,
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
-            stage: testAdmissionStage
+            staging: { context in
+                try await testAdmissionStage(context.batch)
+            }
         )
         let rootTip = await result.level.chain.getMainChainTip()
         XCTAssertEqual(rootTip, header.rawCID)
@@ -1719,7 +1696,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         )
     }
 
-    func testUnsignedRootPermitDoesNotLeakPastGenesis() async throws {
+    func testConfiguredRootBootstrapDoesNotRelaxLaterTransactions() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await makeGenesis(
             fetcher: fetcher,
@@ -1730,14 +1707,15 @@ final class ChainLocalAdmissionTests: XCTestCase {
             )]
         )
         let genesisHeader = try BlockHeader(node: genesis)
-        let bootstrap = try await ChainLevel.bootstrap(
+        let bootstrap = try await ChainLevel.bootstrapConfiguredRoot(
             context: testChainContext(),
             genesisHeader: genesisHeader,
-            expectedUnsignedGenesisCID: genesisHeader.rawCID,
             fetcher: fetcher,
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
-            stage: testAdmissionStage
+            staging: { context in
+                try await testAdmissionStage(context.batch)
+            }
         )
         let unsignedBody = TransactionBody(
             accountActions: [],
@@ -1774,7 +1752,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(result.failure, .protocolInvalid)
     }
 
-    func testSignedRootBootstrapNeedsNoUnsignedPermit() async throws {
+    func testSignedRootBootstrapNeedsNoConfiguredBootstrap() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await makeGenesis(
             fetcher: fetcher,
@@ -1798,7 +1776,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(tip, header.rawCID)
     }
 
-    func testPinnedUnsignedRootRejectsMalformedSignerSignaturePairs() async throws {
+    func testConfiguredRootBootstrapRejectsMalformedSignerSignaturePairs() async throws {
         let keyPair = CryptoUtils.generateKeyPair()
         let signer = testAddress(publicKey: keyPair.publicKey)
 
@@ -1836,16 +1814,17 @@ final class ChainLocalAdmissionTests: XCTestCase {
             )
             let header = try BlockHeader(node: genesis)
             do {
-                _ = try await ChainLevel.bootstrap(
+                _ = try await ChainLevel.bootstrapConfiguredRoot(
                     context: testChainContext(),
                     genesisHeader: header,
-                    expectedUnsignedGenesisCID: header.rawCID,
                     fetcher: fetcher,
                     validationContentStorer: fetcher,
                     materializedVolumeStorer: fetcher,
-                    stage: testAdmissionStage
+                    staging: { context in
+                        try await testAdmissionStage(context.batch)
+                    }
                 )
-                XCTFail("the exact-CID permit must accept only an empty/empty signature shape")
+                XCTFail("configured bootstrap must accept only an empty/empty signature shape")
             } catch let failure as ChainAdmissionFailure {
                 XCTAssertEqual(failure, .protocolInvalid)
             }

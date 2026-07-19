@@ -1161,13 +1161,12 @@ public extension ChainLevel {
         )
     }
 
-    /// Create the root-chain process from an externally supplied, fully
-    /// validated genesis. The runtime becomes visible only after storage and
-    /// atomic staging succeed.
+    /// Create the root-chain process from an externally supplied, signed
+    /// genesis. The runtime becomes visible only after storage and atomic
+    /// staging succeed.
     static func bootstrap(
         context: ChainRuntimeContext,
         genesisHeader: BlockHeader,
-        expectedUnsignedGenesisCID: String? = nil,
         fetcher: any Fetcher,
         validationContext: ValidationContext = .current,
         validationContentStorer: any Storer,
@@ -1183,7 +1182,6 @@ public extension ChainLevel {
         try await bootstrap(
             context: context,
             genesisHeader: genesisHeader,
-            expectedUnsignedGenesisCID: expectedUnsignedGenesisCID,
             fetcher: fetcher,
             validationContext: validationContext,
             validationContentStorer: validationContentStorer,
@@ -1195,11 +1193,11 @@ public extension ChainLevel {
     }
 
     /// Root bootstrap variant that stages verified hierarchy facts atomically
-    /// with the first admission batch.
+    /// with the first admission batch. Ordinary root genesis transactions use
+    /// the normal signature rules.
     static func bootstrap(
         context: ChainRuntimeContext,
         genesisHeader: BlockHeader,
-        expectedUnsignedGenesisCID: String? = nil,
         fetcher: any Fetcher,
         validationContext: ValidationContext = .current,
         validationContentStorer: any Storer,
@@ -1212,16 +1210,65 @@ public extension ChainLevel {
         commit: ChainCommit,
         parentCarrierLink: ParentCarrierLink
     ) {
+        try await bootstrapRootGenesis(
+            context: context,
+            genesisHeader: genesisHeader,
+            fetcher: fetcher,
+            validationContext: validationContext,
+            validationContentStorer: validationContentStorer,
+            materializedVolumeStorer: materializedVolumeStorer,
+            allowsUnsignedTransactions: false,
+            staging: staging
+        )
+    }
+
+    /// Bootstrap a locally configured root genesis. The caller must first bind
+    /// this exact header CID to its configured trust anchor and use only local
+    /// content. This is bootstrap, never peer admission.
+    static func bootstrapConfiguredRoot(
+        context: ChainRuntimeContext,
+        genesisHeader: BlockHeader,
+        fetcher: any Fetcher,
+        validationContext: ValidationContext = .current,
+        validationContentStorer: any Storer,
+        materializedVolumeStorer: any VolumeStorer,
+        staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
+    ) async throws -> (
+        level: ChainLevel,
+        stateDiff: StateDiff,
+        materializedPostState: LatticeState?,
+        commit: ChainCommit,
+        parentCarrierLink: ParentCarrierLink
+    ) {
+        try await bootstrapRootGenesis(
+            context: context,
+            genesisHeader: genesisHeader,
+            fetcher: fetcher,
+            validationContext: validationContext,
+            validationContentStorer: validationContentStorer,
+            materializedVolumeStorer: materializedVolumeStorer,
+            allowsUnsignedTransactions: true,
+            staging: staging
+        )
+    }
+
+    private static func bootstrapRootGenesis(
+        context: ChainRuntimeContext,
+        genesisHeader: BlockHeader,
+        fetcher: any Fetcher,
+        validationContext: ValidationContext,
+        validationContentStorer: any Storer,
+        materializedVolumeStorer: any VolumeStorer,
+        allowsUnsignedTransactions: Bool,
+        staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
+    ) async throws -> (
+        level: ChainLevel,
+        stateDiff: StateDiff,
+        materializedPostState: LatticeState?,
+        commit: ChainCommit,
+        parentCarrierLink: ParentCarrierLink
+    ) {
         guard context.isRoot else { throw ChainAdmissionFailure.protocolInvalid }
-        let allowUnsignedTransactions: Bool
-        if let expectedUnsignedGenesisCID {
-            guard genesisHeader.rawCID == expectedUnsignedGenesisCID else {
-                throw ChainAdmissionFailure.protocolInvalid
-            }
-            allowUnsignedTransactions = true
-        } else {
-            allowUnsignedTransactions = false
-        }
         let resolved: (header: BlockHeader, block: Block)
         switch await ChainLocalAdmission.resolveBlock(genesisHeader, fetcher: fetcher) {
         case .failure(let failure): throw failure
@@ -1248,7 +1295,7 @@ public extension ChainLevel {
             block: resolved.block,
             fetcher: fetcher,
             context: context,
-            allowUnsignedTransactions: allowUnsignedTransactions,
+            allowUnsignedTransactions: allowsUnsignedTransactions,
             validationContext: validationContext
         ) {
         case .failure(let failure): throw failure
