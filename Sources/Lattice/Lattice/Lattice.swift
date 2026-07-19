@@ -1,3 +1,4 @@
+import Foundation
 import UInt256
 
 public enum ChainRuntimeContextError: Error, Sendable, Equatable {
@@ -40,6 +41,7 @@ public struct ChainRuntimeContext: Sendable, Equatable {
 public actor ChainLevel {
     public let chain: ChainState
     public nonisolated let context: ChainRuntimeContext
+    let admissionIdentity = UUID()
 
     public init(chain: ChainState, context: ChainRuntimeContext) {
         self.chain = chain

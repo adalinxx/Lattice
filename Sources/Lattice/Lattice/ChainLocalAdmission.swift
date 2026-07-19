@@ -1,3 +1,4 @@
+import Foundation
 import cashew
 
 public enum ChainAdmissionFailure: Error, Sendable, Equatable {
@@ -80,8 +81,9 @@ public struct ChainAdmissionStagingContext: Sendable {
     /// Present only when this chain has verified a complete ancestry for the
     /// carrier and may issue a parent-process fact for it.
     public let issuedCarrierLink: ParentCarrierLink?
-    /// Child-genesis authorizations validated by this admission. Empty for
-    /// work-only evidence batches and unconnected accepted side branches.
+    /// Child-genesis actions carried by this admission. They become issuer
+    /// facts only when `issuedCarrierLink` is present; retaining them lets a
+    /// commit atomically observe a predecessor that connected after preflight.
     public let parentGenesisLinks: [ParentGenesisLink]
 
     init(
@@ -175,6 +177,7 @@ public struct ChildChainBootstrapAcceptance: Sendable {
     public let level: ChainLevel
     public let stateDiff: StateDiff
     public let materializedPostState: LatticeState?
+    public let commit: ChainCommit
     public let parentCarrierLink: ParentCarrierLink
 }
 
@@ -199,7 +202,7 @@ public enum ChildChainBootstrapResult: Sendable {
     }
 }
 
-private struct PreparedAdmission: Sendable {
+fileprivate struct PreparedAdmission: Sendable {
     enum Kind: Sendable {
         case block(StateDiff, LatticeState?)
         case evidence
@@ -240,26 +243,38 @@ private struct PreparedAdmission: Sendable {
         return ChainAdmissionBatch(facts: facts)
     }
 
-    func store(
-        validationContentTo validationContentStorer: any Storer,
-        materializedVolumesTo materializedVolumeStorer: any VolumeStorer
+    /// Cache the immutable validation inputs before the node takes its
+    /// durability lease. Sparse content is node policy, not a consensus fact,
+    /// so this may complete before the admission batch becomes visible.
+    func cacheValidationContent(
+        to validationContentStorer: any Storer
     ) async throws {
         switch kind {
         case .evidence:
             return
-        case .block(let stateDiff, let materializedPostState):
+        case .block:
             try await resolvedHeader.storeBlock(
                 fetcher: fetcher,
                 storer: validationContentStorer
             )
-            if let materializedPostState {
-                try await LatticeStateHeader(node: materializedPostState)
-                    .storeMaterialized(
-                        createdBy: stateDiff,
-                        storer: materializedVolumeStorer
-                    )
-            }
         }
+    }
+
+    /// Materialized state is a complete Volume and can be evicted until it is
+    /// retained with the staged batch. The node must therefore invoke this
+    /// immediately before its retention-and-stage boundary.
+    func storeMaterializedPostState(
+        to materializedVolumeStorer: any VolumeStorer
+    ) async throws {
+        guard case .block(let stateDiff, let materializedPostState) = kind,
+              let materializedPostState else {
+            return
+        }
+        try await LatticeStateHeader(node: materializedPostState)
+            .storeMaterialized(
+                createdBy: stateDiff,
+                storer: materializedVolumeStorer
+            )
     }
 
     /// The stage callback runs before `ChainState` applies `facts`, so this is
@@ -267,52 +282,123 @@ private struct PreparedAdmission: Sendable {
     /// facts across the node durability boundary without reconstructing them.
     func stagingContext() async throws -> ChainAdmissionStagingContext {
         let batch = facts
-        guard let issuedCarrierLink = verifiedCarrierLink else {
-            return ChainAdmissionStagingContext(
-                batch: batch,
-                issuedCarrierLink: nil,
-                parentGenesisLinks: []
-            )
-        }
-        guard case .block = kind else {
-            return ChainAdmissionStagingContext(
-                batch: batch,
-                issuedCarrierLink: issuedCarrierLink,
-                parentGenesisLinks: []
-            )
-        }
-
-        let content = try await resolvedHeader.resolveBlockContent(fetcher: fetcher)
-        guard let transactions = content.node?.transactions.node else {
-            throw DataErrors.nodeNotAvailable
-        }
-        var links = Set<ParentGenesisLink>()
-        for transaction in try transactions.allKeysAndValues().values {
-            guard let body = transaction.node?.body.node else {
-                throw DataErrors.nodeNotAvailable
-            }
-            for action in body.genesisActions {
-                links.insert(ParentGenesisLink(
-                    parentPath: issuedCarrierLink.parentPath,
-                    directory: action.directory,
-                    childGenesisCID: action.blockCID
-                ))
-            }
-        }
         return ChainAdmissionStagingContext(
             batch: batch,
-            issuedCarrierLink: issuedCarrierLink,
-            parentGenesisLinks: links.sorted {
-                ($0.directory, $0.childGenesisCID)
-                    < ($1.directory, $1.childGenesisCID)
-            }
+            issuedCarrierLink: verifiedCarrierLink,
+            parentGenesisLinks: try await parentGenesisLinks(
+                in: resolvedHeader,
+                parentPath: carrierLink.parentPath,
+                fetcher: fetcher
+            )
         )
     }
 }
 
-private enum Preparation {
+fileprivate enum Preparation {
     case ready(PreparedAdmission)
-    case result(ChainLocalBlockResult)
+    case result(
+        ChainLocalBlockResult,
+        parentGenesisLinks: [ParentGenesisLink] = []
+    )
+    case duplicate(PreparedDuplicateAdmissionState)
+}
+
+public enum ChainAdmissionPreflightError: Error, Sendable, Equatable {
+    case invalidToken
+}
+
+/// A one-use, level-bound result of remote validation and sparse content
+/// caching.
+public actor PreparedChainAdmission {
+    /// Commit may add an issuable carrier link if the already-validated
+    /// predecessor connected before the durability boundary.
+    fileprivate nonisolated let stagingContext: ChainAdmissionStagingContext
+
+    private let levelIdentity: UUID
+    private var prepared: PreparedAdmission?
+
+    fileprivate init(
+        levelIdentity: UUID,
+        prepared: PreparedAdmission,
+        stagingContext: ChainAdmissionStagingContext
+    ) {
+        self.levelIdentity = levelIdentity
+        self.prepared = prepared
+        self.stagingContext = stagingContext
+    }
+
+    fileprivate func take(for levelIdentity: UUID) -> PreparedAdmission? {
+        guard self.levelIdentity == levelIdentity else { return nil }
+        defer { prepared = nil }
+        return prepared
+    }
+}
+
+fileprivate struct PreparedDuplicateAdmissionState: Sendable {
+    let carrierLink: ParentCarrierLink
+    let parentGenesisLinks: [ParentGenesisLink]
+}
+
+/// A one-use, level-bound duplicate whose immutable validation completed before
+/// the node acquired its mutation lease. Resolving it under that lease can add
+/// a carrier link when a predecessor connected in the meantime; it never
+/// stages consensus facts or reacquires remote content.
+public actor PreparedDuplicateAdmission {
+    private let levelIdentity: UUID
+    private var state: PreparedDuplicateAdmissionState?
+
+    fileprivate init(
+        levelIdentity: UUID,
+        state: PreparedDuplicateAdmissionState
+    ) {
+        self.levelIdentity = levelIdentity
+        self.state = state
+    }
+
+    fileprivate func take(
+        for levelIdentity: UUID
+    ) -> PreparedDuplicateAdmissionState? {
+        guard self.levelIdentity == levelIdentity else { return nil }
+        defer { state = nil }
+        return state
+    }
+}
+
+public enum ChainAdmissionPreflightResult: Sendable {
+    case terminal(
+        ChainLocalBlockResult,
+        parentGenesisLinks: [ParentGenesisLink] = []
+    )
+    case duplicate(PreparedDuplicateAdmission)
+    case ready(PreparedChainAdmission)
+}
+
+private func parentGenesisLinks(
+    in header: BlockHeader,
+    parentPath: [String],
+    fetcher: any Fetcher
+) async throws -> [ParentGenesisLink] {
+    let content = try await header.resolveBlockContent(fetcher: fetcher)
+    guard let transactions = content.node?.transactions.node else {
+        throw DataErrors.nodeNotAvailable
+    }
+    var links = Set<ParentGenesisLink>()
+    for transaction in try transactions.allKeysAndValues().values {
+        guard let body = transaction.node?.body.node else {
+            throw DataErrors.nodeNotAvailable
+        }
+        for action in body.genesisActions {
+            links.insert(ParentGenesisLink(
+                parentPath: parentPath,
+                directory: action.directory,
+                childGenesisCID: action.blockCID
+            ))
+        }
+    }
+    return links.sorted {
+        ($0.directory, $0.childGenesisCID)
+            < ($1.directory, $1.childGenesisCID)
+    }
 }
 
 private enum ChainLocalAdmission {
@@ -454,6 +540,28 @@ private enum ChainLocalAdmission {
         if let existing = await level.chain.workContribution(id: contribution.id),
            existing.blockHashes.contains(blockHash),
            existing.contribution.work >= contribution.work {
+            if knownBlock {
+                // A predecessor can connect after preflight but before the
+                // node takes its mutation lease. Keep this duplicate's
+                // immutable evidence so the lease can recheck only ancestry.
+                let genesisLinks: [ParentGenesisLink]
+                do {
+                    genesisLinks = try await parentGenesisLinks(
+                        in: resolvedHeader,
+                        parentPath: carrierLink.parentPath,
+                        fetcher: fetcher
+                    )
+                } catch {
+                    return .result(.rejected(
+                        classifyValidationFailure(error),
+                        sameChainPredecessor: carrier.sameChainPredecessor
+                    ))
+                }
+                return .duplicate(PreparedDuplicateAdmissionState(
+                    carrierLink: carrierLink,
+                    parentGenesisLinks: genesisLinks
+                ))
+            }
             return .result(.duplicate(
                 carrier.link,
                 sameChainPredecessor: carrier.sameChainPredecessor
@@ -649,6 +757,7 @@ private enum ChainLocalAdmission {
         level: ChainLevel,
         stateDiff: StateDiff,
         materializedPostState: LatticeState?,
+        commit: ChainCommit,
         parentCarrierLink: ParentCarrierLink
     ) {
         let prepared = PreparedAdmission(
@@ -661,16 +770,21 @@ private enum ChainLocalAdmission {
             sameChainPredecessor: nil,
             kind: .block(transition.0, transition.1)
         )
-        try await prepared.store(
-            validationContentTo: validationContentStorer,
-            materializedVolumesTo: materializedVolumeStorer
+        try await prepared.cacheValidationContent(to: validationContentStorer)
+        let stagingContext = try await prepared.stagingContext()
+        try await prepared.storeMaterializedPostState(
+            to: materializedVolumeStorer
         )
-        try await staging(try await prepared.stagingContext())
+        try await staging(stagingContext)
         let chain = try await ChainState.restore(replaying: [prepared.facts])
         return (
             ChainLevel(chain: chain, context: context),
             transition.0,
             transition.1,
+            ChainCommit(
+                tipHash: resolved.header.rawCID,
+                mainChainBlocksAdded: [resolved.header.rawCID: 0]
+            ),
             carrierLink
         )
     }
@@ -850,6 +964,129 @@ public extension ChainLevel {
         )
     }
 
+    /// Verify one candidate and cache its immutable validation inputs without
+    /// mutating the accepted graph. The returned token contains the exact
+    /// hierarchy facts the node must make durable with the batch.
+    func preflightBlockHeaderChainLocal(
+        _ blockHeader: BlockHeader,
+        fetcher: any Fetcher,
+        childPackage: ChildValidationPackage? = nil,
+        validationContext: ValidationContext = .current,
+        validationContentStorer: any Storer
+    ) async throws -> ChainAdmissionPreflightResult {
+        switch await ChainLocalAdmission.prepare(
+            level: self,
+            blockHeader: blockHeader,
+            fetcher: fetcher,
+            childPackage: childPackage,
+            validationContext: validationContext
+        ) {
+        case .result(let result, let parentGenesisLinks):
+            return .terminal(
+                result,
+                parentGenesisLinks: parentGenesisLinks
+            )
+        case .duplicate(let duplicate):
+            return .duplicate(PreparedDuplicateAdmission(
+                levelIdentity: admissionIdentity,
+                state: duplicate
+            ))
+        case .ready(let prepared):
+            try await prepared.cacheValidationContent(
+                to: validationContentStorer
+            )
+            let stagingContext = try await prepared.stagingContext()
+            return .ready(PreparedChainAdmission(
+                levelIdentity: admissionIdentity,
+                prepared: prepared,
+                stagingContext: stagingContext
+            ))
+        }
+    }
+
+    /// Resolve an already-validated duplicate at the node's mutation boundary.
+    /// Accepted ancestry only grows, so this rechecks no remote content and
+    /// writes no consensus facts.
+    func resolveDuplicatePreflight(
+        _ preflight: PreparedDuplicateAdmission
+    ) async throws -> (
+        result: ChainLocalBlockResult,
+        parentGenesisLinks: [ParentGenesisLink]
+    ) {
+        guard let duplicate = await preflight.take(for: admissionIdentity) else {
+            throw ChainAdmissionPreflightError.invalidToken
+        }
+        let carrierLink = await chain.hasValidatedAncestry(
+            blockHash: duplicate.carrierLink.carrierCID
+        ) ? duplicate.carrierLink : nil
+        let requirement = await chain.sameChainPredecessorRequirement(
+            for: duplicate.carrierLink.carrierCID
+        )
+        return (
+            .duplicate(carrierLink, sameChainPredecessor: requirement),
+            carrierLink == nil ? [] : duplicate.parentGenesisLinks
+        )
+    }
+
+    /// Consume a preflight token at the node-owned durability boundary. This
+    /// method performs no remote resolution: callers can take their mutation
+    /// lease immediately before invoking it.
+    func commitPreflight(
+        _ preflight: PreparedChainAdmission,
+        materializedVolumeStorer: any VolumeStorer,
+        staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
+    ) async throws -> ChainLocalBlockResult {
+        guard let prepared = await preflight.take(for: admissionIdentity) else {
+            throw ChainAdmissionPreflightError.invalidToken
+        }
+        try await prepared.storeMaterializedPostState(
+            to: materializedVolumeStorer
+        )
+        guard await chain.reserveAdmissionRevision() else {
+            return .rejected(
+                .revisionExhausted,
+                parentCarrierLink: prepared.verifiedCarrierLink,
+                sameChainPredecessor: prepared.sameChainPredecessor
+            )
+        }
+        let stagingContext: ChainAdmissionStagingContext
+        if preflight.stagingContext.issuedCarrierLink != nil {
+            stagingContext = preflight.stagingContext
+        } else if let parentCID = prepared.block.parent?.rawCID,
+                  await chain.hasValidatedAncestry(blockHash: parentCID) {
+            stagingContext = ChainAdmissionStagingContext(
+                batch: preflight.stagingContext.batch,
+                issuedCarrierLink: prepared.carrierLink,
+                parentGenesisLinks: preflight.stagingContext.parentGenesisLinks
+            )
+        } else {
+            stagingContext = preflight.stagingContext
+        }
+        do {
+            try await staging(stagingContext)
+        } catch {
+            await chain.releaseAdmissionRevision()
+            throw error
+        }
+        let submission = try await chain.applyReservedStaged(prepared.facts)
+        let carrierLink = stagingContext.issuedCarrierLink
+        let requirement = await chain.sameChainPredecessorRequirement(
+            for: prepared.resolvedHeader.rawCID
+        )
+        guard let submission else {
+            return .duplicate(
+                carrierLink,
+                sameChainPredecessor: requirement
+            )
+        }
+        return ChainLocalAdmission.result(
+            for: submission,
+            prepared: prepared,
+            sameChainPredecessor: requirement,
+            parentCarrierLink: carrierLink
+        )
+    }
+
     /// The node-owned atomic durability boundary. The context contains the
     /// exact hierarchy facts Lattice verified for this admission, so callers do
     /// not need to recreate them after the batch has become durable.
@@ -862,51 +1099,22 @@ public extension ChainLevel {
         materializedVolumeStorer: any VolumeStorer,
         staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
     ) async throws -> ChainLocalBlockResult {
-        switch await ChainLocalAdmission.prepare(
-            level: self,
-            blockHeader: blockHeader,
+        switch try await preflightBlockHeaderChainLocal(
+            blockHeader,
             fetcher: fetcher,
             childPackage: childPackage,
-            validationContext: validationContext
+            validationContext: validationContext,
+            validationContentStorer: validationContentStorer
         ) {
-        case .result(let result):
+        case .terminal(let result, _):
             return result
-        case .ready(let prepared):
-            try await prepared.store(
-                validationContentTo: validationContentStorer,
-                materializedVolumesTo: materializedVolumeStorer
-            )
-            guard await chain.reserveAdmissionRevision() else {
-                return .rejected(
-                    .revisionExhausted,
-                    parentCarrierLink: prepared.verifiedCarrierLink,
-                    sameChainPredecessor: prepared.sameChainPredecessor
-                )
-            }
-            do {
-                try await staging(try await prepared.stagingContext())
-            } catch {
-                await chain.releaseAdmissionRevision()
-                throw error
-            }
-            let submission = try await chain.applyReservedStaged(prepared.facts)
-            let carrierLink = await chain.hasValidatedAncestry(
-                blockHash: prepared.resolvedHeader.rawCID
-            ) ? prepared.carrierLink : nil
-            let requirement = await chain.sameChainPredecessorRequirement(
-                for: prepared.resolvedHeader.rawCID
-            )
-            guard let submission else {
-                return .duplicate(
-                    carrierLink,
-                    sameChainPredecessor: requirement
-                )
-            }
-            return ChainLocalAdmission.result(
-                for: submission,
-                prepared: prepared,
-                sameChainPredecessor: requirement,
-                parentCarrierLink: carrierLink
+        case .duplicate(let preflight):
+            return try await resolveDuplicatePreflight(preflight).result
+        case .ready(let preflight):
+            return try await commitPreflight(
+                preflight,
+                materializedVolumeStorer: materializedVolumeStorer,
+                staging: staging
             )
         }
     }
@@ -969,6 +1177,7 @@ public extension ChainLevel {
         level: ChainLevel,
         stateDiff: StateDiff,
         materializedPostState: LatticeState?,
+        commit: ChainCommit,
         parentCarrierLink: ParentCarrierLink
     ) {
         try await bootstrap(
@@ -1000,6 +1209,7 @@ public extension ChainLevel {
         level: ChainLevel,
         stateDiff: StateDiff,
         materializedPostState: LatticeState?,
+        commit: ChainCommit,
         parentCarrierLink: ParentCarrierLink
     ) {
         guard context.isRoot else { throw ChainAdmissionFailure.protocolInvalid }
@@ -1168,6 +1378,7 @@ public extension ChainLevel {
             level: accepted.level,
             stateDiff: accepted.stateDiff,
             materializedPostState: accepted.materializedPostState,
+            commit: accepted.commit,
             parentCarrierLink: accepted.parentCarrierLink
         ))
     }
