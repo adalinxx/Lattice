@@ -143,7 +143,8 @@ public struct ChildBlockProof: Sendable {
         case .success(let verified): root = verified
         case .failure(let failure): return .failure(failure)
         }
-        guard chainPath.count == directoryPath.count + 1,
+        guard chainPath.first == DEFAULT_ROOT_DIRECTORY,
+              chainPath.count == directoryPath.count + 1,
               directoryPath == Array(chainPath.dropFirst()),
               !entries.isEmpty,
               !directoryPath.isEmpty else {

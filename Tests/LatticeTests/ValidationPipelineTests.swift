@@ -670,8 +670,12 @@ final class WasmPolicyTests: XCTestCase {
         let rejectedOnDifferentPath = try await TransactionBody.batchVerifyPolicies(
             bodies: [body], spec: spec, chainPath: ["Nexus", "other-chain"], fetcher: fetcher
         )
+        let rejectedOnRootRelativePath = try await TransactionBody.batchVerifyPolicies(
+            bodies: [body], spec: spec, chainPath: ["policy-chain-sentinel"], fetcher: fetcher
+        )
         XCTAssertTrue(acceptedOnMatchingPath)
         XCTAssertFalse(rejectedOnDifferentPath)
+        XCTAssertFalse(rejectedOnRootRelativePath)
     }
 
     func testMultiplePoliciesAreAllRequired() async throws {

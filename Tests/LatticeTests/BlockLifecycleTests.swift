@@ -121,6 +121,35 @@ final class BlockMintingTests: XCTestCase {
         XCTAssertTrue(absolute)
     }
 
+    func testNexusValidationRequiresAnAbsoluteNexusPath() async throws {
+        let fetcher = makeFetcher()
+        let timestamp = now() - 20_000
+        let genesis = try await buildAndStoreGenesis(
+            spec: noPremine("Payments"),
+            timestamp: timestamp,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+        let block = try await buildAndStoreBlock(
+            previous: genesis,
+            timestamp: timestamp + 1_000,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+
+        let rootRelative = try await block.validateNexus(
+            fetcher: fetcher,
+            chainPath: ["Payments"]
+        ).0
+        let absolute = try await block.validateNexus(
+            fetcher: fetcher,
+            chainPath: [DEFAULT_ROOT_DIRECTORY, "Payments"]
+        ).0
+
+        XCTAssertFalse(rootRelative)
+        XCTAssertTrue(absolute)
+    }
+
     func testAdmissionStagesBlockAndWorkFactsOnceAndReturnsCommit() async throws {
         let fetcher = makeFetcher()
         let base = now() - 100_000

@@ -2852,6 +2852,23 @@ final class ChainLocalAdmissionTests: XCTestCase {
             try BlockHeader(node: candidate).rawCID
         )
 
+        let carrierLink = try XCTUnwrap(fixture.package.parentCarrierLink)
+        let alternateRoot = await proof.verify(
+            child: candidate,
+            chainPath: ["Other", "Child"],
+            minimumRootWork: UInt256(1),
+            parentCarrierLink: ParentCarrierLink(
+                parentPath: ["Other"],
+                carrierCID: carrierLink.carrierCID,
+                rootCID: carrierLink.rootCID
+            ),
+            parentGenesisLink: fixture.package.parentGenesisLink
+        )
+        guard case .failure(let alternateRootFailure) = alternateRoot else {
+            return XCTFail("proof verification must reject a non-Nexus root")
+        }
+        XCTAssertEqual(alternateRootFailure, .malformedEvidence)
+
         let impostor = Block(
             version: candidate.version,
             parent: candidate.parent,
