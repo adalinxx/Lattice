@@ -357,6 +357,41 @@ final class SignatureForgeryTests: XCTestCase {
             "bare 32-byte hex encoding of the same key must fail closed")
     }
 
+    func testNoncanonicalSignatureAndPublicKeyHexRejected() {
+        let kp = CryptoUtils.generateKeyPair()
+        let message = "canonical-hex-check"
+        guard let signature = CryptoUtils.sign(message: message, privateKeyHex: kp.privateKey),
+              let letter = signature.firstIndex(where: { $0.isLetter }) else {
+            return XCTFail("signing must produce lowercase hexadecimal")
+        }
+        var uppercaseSignature = signature
+        uppercaseSignature.replaceSubrange(
+            letter...letter,
+            with: String(signature[letter]).uppercased()
+        )
+
+        XCTAssertFalse(CryptoUtils.verify(
+            message: message,
+            signature: "0x\(signature)",
+            publicKeyHex: kp.publicKey
+        ))
+        XCTAssertFalse(CryptoUtils.verify(
+            message: message,
+            signature: uppercaseSignature,
+            publicKeyHex: kp.publicKey
+        ))
+        XCTAssertFalse(CryptoUtils.verify(
+            message: message,
+            signature: signature,
+            publicKeyHex: "0x\(kp.publicKey)"
+        ))
+        XCTAssertFalse(CryptoUtils.verify(
+            message: message,
+            signature: signature,
+            publicKeyHex: kp.publicKey.uppercased()
+        ))
+    }
+
     func testForgedSignatureRejected() {
         let kp = CryptoUtils.generateKeyPair()
         let body = TransactionBody(

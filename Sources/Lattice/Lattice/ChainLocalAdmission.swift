@@ -71,6 +71,30 @@ public struct ChainAdmissionBatch: Codable, Sendable, Equatable {
     }
 }
 
+/// The verified, node-owned facts that must become durable with one admission
+/// batch. They are deliberately separate from ``ChainAdmissionBatch``: chain
+/// replay needs only consensus facts, while the node also needs these facts to
+/// relay hierarchy evidence after a restart.
+public struct ChainAdmissionStagingContext: Sendable {
+    public let batch: ChainAdmissionBatch
+    /// Present only when this chain has verified a complete ancestry for the
+    /// carrier and may issue a parent-process fact for it.
+    public let issuedCarrierLink: ParentCarrierLink?
+    /// Child-genesis authorizations validated by this admission. Empty for
+    /// work-only evidence batches and unconnected accepted side branches.
+    public let parentGenesisLinks: [ParentGenesisLink]
+
+    init(
+        batch: ChainAdmissionBatch,
+        issuedCarrierLink: ParentCarrierLink?,
+        parentGenesisLinks: [ParentGenesisLink]
+    ) {
+        self.batch = batch
+        self.issuedCarrierLink = issuedCarrierLink
+        self.parentGenesisLinks = parentGenesisLinks
+    }
+}
+
 public struct ChainAcceptance: Sendable {
     public let facts: ChainAdmissionBatch
     public let materializedPostState: LatticeState?
@@ -236,6 +260,53 @@ private struct PreparedAdmission: Sendable {
                     )
             }
         }
+    }
+
+    /// The stage callback runs before `ChainState` applies `facts`, so this is
+    /// the only point where Lattice can pass the already-verified hierarchy
+    /// facts across the node durability boundary without reconstructing them.
+    func stagingContext() async throws -> ChainAdmissionStagingContext {
+        let batch = facts
+        guard let issuedCarrierLink = verifiedCarrierLink else {
+            return ChainAdmissionStagingContext(
+                batch: batch,
+                issuedCarrierLink: nil,
+                parentGenesisLinks: []
+            )
+        }
+        guard case .block = kind else {
+            return ChainAdmissionStagingContext(
+                batch: batch,
+                issuedCarrierLink: issuedCarrierLink,
+                parentGenesisLinks: []
+            )
+        }
+
+        let content = try await resolvedHeader.resolveBlockContent(fetcher: fetcher)
+        guard let transactions = content.node?.transactions.node else {
+            throw DataErrors.nodeNotAvailable
+        }
+        var links = Set<ParentGenesisLink>()
+        for transaction in try transactions.allKeysAndValues().values {
+            guard let body = transaction.node?.body.node else {
+                throw DataErrors.nodeNotAvailable
+            }
+            for action in body.genesisActions {
+                links.insert(ParentGenesisLink(
+                    parentPath: issuedCarrierLink.parentPath,
+                    directory: action.directory,
+                    childGenesisCID: action.blockCID
+                ))
+            }
+        }
+        return ChainAdmissionStagingContext(
+            batch: batch,
+            issuedCarrierLink: issuedCarrierLink,
+            parentGenesisLinks: links.sorted {
+                ($0.directory, $0.childGenesisCID)
+                    < ($1.directory, $1.childGenesisCID)
+            }
+        )
     }
 }
 
@@ -453,6 +524,10 @@ private enum ChainLocalAdmission {
             guard let block = resolved.node else {
                 return .failure(.unavailableEvidence)
             }
+            guard let canonicalCID = try? BlockHeader(node: block).rawCID,
+                  canonicalCID == resolved.rawCID else {
+                return .failure(.providerMalformedEvidence)
+            }
             return .success((resolved, block))
         } catch {
             return .failure(classifyResolutionFailure(error))
@@ -569,7 +644,7 @@ private enum ChainLocalAdmission {
         transition: (StateDiff, LatticeState?),
         validationContentStorer: any Storer,
         materializedVolumeStorer: any VolumeStorer,
-        stage: @Sendable (ChainAdmissionBatch) async throws -> Void
+        staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
     ) async throws -> (
         level: ChainLevel,
         stateDiff: StateDiff,
@@ -590,7 +665,7 @@ private enum ChainLocalAdmission {
             validationContentTo: validationContentStorer,
             materializedVolumesTo: materializedVolumeStorer
         )
-        try await stage(prepared.facts)
+        try await staging(try await prepared.stagingContext())
         let chain = try await ChainState.restore(replaying: [prepared.facts])
         return (
             ChainLevel(chain: chain, context: context),
@@ -716,11 +791,17 @@ public extension ChainLevel {
         guard await chain.hasValidatedAncestry(blockHash: parentBlockCID) else {
             return .failure(.unavailableEvidence)
         }
+        let block: Block
+        switch await ChainLocalAdmission.resolveBlock(
+            parentBlockHeader,
+            fetcher: fetcher
+        ) {
+        case .success(let resolved):
+            block = resolved.block
+        case .failure(let failure):
+            return .failure(failure)
+        }
         do {
-            let resolvedBlock = try await parentBlockHeader.resolve(fetcher: fetcher)
-            guard let block = resolvedBlock.node else {
-                return .failure(.unavailableEvidence)
-            }
             let resolvedState = try await block.postState.resolve(
                 paths: [[GENESIS_STATE_PROPERTY, directory]: .targeted],
                 fetcher: fetcher
@@ -756,6 +837,31 @@ public extension ChainLevel {
         materializedVolumeStorer: any VolumeStorer,
         stage: @Sendable (ChainAdmissionBatch) async throws -> Void
     ) async throws -> ChainLocalBlockResult {
+        try await admitBlockHeaderChainLocal(
+            blockHeader,
+            fetcher: fetcher,
+            childPackage: childPackage,
+            validationContext: validationContext,
+            validationContentStorer: validationContentStorer,
+            materializedVolumeStorer: materializedVolumeStorer,
+            staging: { context in
+                try await stage(context.batch)
+            }
+        )
+    }
+
+    /// The node-owned atomic durability boundary. The context contains the
+    /// exact hierarchy facts Lattice verified for this admission, so callers do
+    /// not need to recreate them after the batch has become durable.
+    func admitBlockHeaderChainLocal(
+        _ blockHeader: BlockHeader,
+        fetcher: any Fetcher,
+        childPackage: ChildValidationPackage? = nil,
+        validationContext: ValidationContext = .current,
+        validationContentStorer: any Storer,
+        materializedVolumeStorer: any VolumeStorer,
+        staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
+    ) async throws -> ChainLocalBlockResult {
         switch await ChainLocalAdmission.prepare(
             level: self,
             blockHeader: blockHeader,
@@ -778,7 +884,7 @@ public extension ChainLevel {
                 )
             }
             do {
-                try await stage(prepared.facts)
+                try await staging(try await prepared.stagingContext())
             } catch {
                 await chain.releaseAdmissionRevision()
                 throw error
@@ -816,12 +922,34 @@ public extension ChainLevel {
     ) async throws -> ChainLocalBlockResult {
         try await admitBlockHeaderChainLocal(
             blockHeader,
+            source: source,
+            childPackage: childPackage,
+            validationContext: validationContext,
+            validationContentStorer: validationContentStorer,
+            materializedVolumeStorer: materializedVolumeStorer,
+            staging: { context in
+                try await stage(context.batch)
+            }
+        )
+    }
+
+    func admitBlockHeaderChainLocal(
+        _ blockHeader: BlockHeader,
+        source: any ContentSource,
+        childPackage: ChildValidationPackage? = nil,
+        validationContext: ValidationContext = .current,
+        validationContentStorer: any Storer,
+        materializedVolumeStorer: any VolumeStorer,
+        staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
+    ) async throws -> ChainLocalBlockResult {
+        try await admitBlockHeaderChainLocal(
+            blockHeader,
             fetcher: CoalescingFetcher(source),
             childPackage: childPackage,
             validationContext: validationContext,
             validationContentStorer: validationContentStorer,
             materializedVolumeStorer: materializedVolumeStorer,
-            stage: stage
+            staging: staging
         )
     }
 
@@ -837,6 +965,37 @@ public extension ChainLevel {
         validationContentStorer: any Storer,
         materializedVolumeStorer: any VolumeStorer,
         stage: @Sendable (ChainAdmissionBatch) async throws -> Void
+    ) async throws -> (
+        level: ChainLevel,
+        stateDiff: StateDiff,
+        materializedPostState: LatticeState?,
+        parentCarrierLink: ParentCarrierLink
+    ) {
+        try await bootstrap(
+            context: context,
+            genesisHeader: genesisHeader,
+            expectedUnsignedGenesisCID: expectedUnsignedGenesisCID,
+            fetcher: fetcher,
+            validationContext: validationContext,
+            validationContentStorer: validationContentStorer,
+            materializedVolumeStorer: materializedVolumeStorer,
+            staging: { context in
+                try await stage(context.batch)
+            }
+        )
+    }
+
+    /// Root bootstrap variant that stages verified hierarchy facts atomically
+    /// with the first admission batch.
+    static func bootstrap(
+        context: ChainRuntimeContext,
+        genesisHeader: BlockHeader,
+        expectedUnsignedGenesisCID: String? = nil,
+        fetcher: any Fetcher,
+        validationContext: ValidationContext = .current,
+        validationContentStorer: any Storer,
+        materializedVolumeStorer: any VolumeStorer,
+        staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
     ) async throws -> (
         level: ChainLevel,
         stateDiff: StateDiff,
@@ -901,7 +1060,7 @@ public extension ChainLevel {
             transition: transition,
             validationContentStorer: validationContentStorer,
             materializedVolumeStorer: materializedVolumeStorer,
-            stage: stage
+            staging: staging
         )
     }
 
@@ -915,6 +1074,32 @@ public extension ChainLevel {
         validationContentStorer: any Storer,
         materializedVolumeStorer: any VolumeStorer,
         stage: @Sendable (ChainAdmissionBatch) async throws -> Void
+    ) async throws -> ChildChainBootstrapResult {
+        try await bootstrap(
+            context: context,
+            genesisHeader: genesisHeader,
+            fetcher: fetcher,
+            childPackage: childPackage,
+            validationContext: validationContext,
+            validationContentStorer: validationContentStorer,
+            materializedVolumeStorer: materializedVolumeStorer,
+            staging: { context in
+                try await stage(context.batch)
+            }
+        )
+    }
+
+    /// Child bootstrap variant that stages verified hierarchy facts atomically
+    /// with the first admission batch.
+    static func bootstrap(
+        context: ChainRuntimeContext,
+        genesisHeader: BlockHeader,
+        fetcher: any Fetcher,
+        childPackage: ChildValidationPackage,
+        validationContext: ValidationContext = .current,
+        validationContentStorer: any Storer,
+        materializedVolumeStorer: any VolumeStorer,
+        staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
     ) async throws -> ChildChainBootstrapResult {
         guard !context.isRoot else { throw ChainAdmissionFailure.protocolInvalid }
         switch childPackage.proof.verifyRootFloor(
@@ -977,7 +1162,7 @@ public extension ChainLevel {
             transition: transition,
             validationContentStorer: validationContentStorer,
             materializedVolumeStorer: materializedVolumeStorer,
-            stage: stage
+            staging: staging
         )
         return .accepted(ChildChainBootstrapAcceptance(
             level: accepted.level,
