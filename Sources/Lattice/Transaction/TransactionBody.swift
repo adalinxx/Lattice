@@ -241,6 +241,7 @@ public struct TransactionBody: Scalar {
         fetcher: Fetcher,
         scopes: Set<WasmPolicyRef.Scope>? = nil
     ) async throws -> Bool {
+        guard chainPath.first == DEFAULT_ROOT_DIRECTORY else { return false }
         let policies = scopes.map { allowedScopes in
             spec.wasmPolicies.filter { allowedScopes.contains($0.scope) }
         } ?? spec.wasmPolicies

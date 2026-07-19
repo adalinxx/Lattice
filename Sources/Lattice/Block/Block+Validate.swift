@@ -251,6 +251,10 @@ public extension Block {
         reportTemporalFailure: Bool = false,
         validationContext: ValidationContext = .current
     ) async throws -> (Bool, StateDiff, LatticeState?) {
+        let expectedChainPath = chainPath ?? [DEFAULT_ROOT_DIRECTORY]
+        guard expectedChainPath.first == DEFAULT_ROOT_DIRECTORY else {
+            return (false, .empty, nil)
+        }
         if version != Block.currentVersion { return (false, .empty, nil) }
         async let parentFuture = parent?.resolve(fetcher: fetcher)
         async let specFuture = spec.resolve(fetcher: fetcher)
@@ -285,10 +289,7 @@ public extension Block {
         guard let transactionBodies = try await txBodiesFuture else { return (false, .empty, nil) }
 
         // Directory is positional (the anchor context / chainPath), not in the
-        // spec; nil chainPath ⇒ root. An explicitly-empty chainPath has no root
-        // and is rejected (fail closed) rather than silently degrading to root.
-        let expectedChainPath = chainPath ?? [DEFAULT_ROOT_DIRECTORY]
-        if expectedChainPath.isEmpty { return (false, .empty, nil) }
+        // spec; nil chainPath ⇒ root.
         if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, fetcher: fetcher)) { return (false, .empty, nil) }
         if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
