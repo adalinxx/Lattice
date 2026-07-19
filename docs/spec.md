@@ -237,12 +237,15 @@ A genesis block `B` is valid if and only if ALL of the following hold:
     proveAndUpdateState(prevState, allActions) == postState
     ```
 
-Nexus bootstrap has one exact exception to the signature requirement above. An
-implementation may configure one pinned Nexus genesis CID; only when the
-candidate header equals that exact CID may its transactions have both empty
-signature maps and empty signer lists. The exception does not apply to another
-CID, an ordinary child genesis, or any later transaction. The reference node
-pins `bafyreiayw4z5qz4lt2sljf2enzn7uol3qa6bebadav7qwnqz7agxkiuwhq`.
+Configured root bootstrap is separate from genesis validation and peer
+admission. A host that has locally bound a genesis header CID to its configured
+trust anchor may call `bootstrapConfiguredRoot`; it retains the root shape,
+proof-of-work, state-transition, storage, and staging checks, while allowing
+only transactions with both empty signature maps and empty signer lists. Hosts
+MUST NOT invoke this API for peer-supplied content. Ordinary root bootstrap,
+child genesis, and all later transactions remain signature-strict. The
+reference node binds
+`bafyreiayw4z5qz4lt2sljf2enzn7uol3qa6bebadav7qwnqz7agxkiuwhq` locally.
 
 ### 5.2 Nexus Block Validation
 
@@ -554,10 +557,11 @@ cross-path replay still fails. This fallback does not accept bare public-key
 encodings; signing keys remain canonical Multikey values.
 
 For each `(publicKeyHex, signatureHex)` in `tx.signatures`, one accepted
-Ed25519 verification MUST succeed. At least one signature is required, except
-for the exact pinned Nexus bootstrap exception in section 5.1. The set
-of addresses derived from the signing public keys MUST equal the set in
-`tx.body.signers`; extra and missing signers are both invalid.
+Ed25519 verification MUST succeed. At least one signature is required for
+ordinary transaction and genesis validation. `bootstrapConfiguredRoot` is a
+separate local initialization API defined in section 5.1. The set of addresses
+derived from the signing public keys MUST equal the set in `tx.body.signers`;
+extra and missing signers are both invalid.
 
 ### 7.2 Authorization
 
