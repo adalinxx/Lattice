@@ -56,6 +56,82 @@ public struct BlockBuilder {
         version: UInt16 = Block.currentVersion,
         fetcher: Fetcher
     ) async throws -> BlockBuildResult {
+        try await buildGenesisWithTransition(
+            spec: spec,
+            transactions: transactions,
+            children: children,
+            parentState: LatticeState.emptyHeader,
+            timestamp: timestamp,
+            target: target,
+            nonce: nonce,
+            version: version,
+            fetcher: fetcher
+        )
+    }
+
+    /// Build a child-chain genesis that commits the entering state of the
+    /// parent carrier which will contain it. The child's own `prevState` remains
+    /// empty; `parentState` is the vertical binding verified by
+    /// `ChildBlockProof`.
+    public static func buildChildGenesis(
+        spec: ChainSpec,
+        parentState: LatticeStateHeader,
+        transactions: [Transaction] = [],
+        children: [String: Block] = [:],
+        timestamp: Int64,
+        target: UInt256,
+        nonce: UInt64 = 0,
+        version: UInt16 = Block.currentVersion,
+        fetcher: Fetcher
+    ) async throws -> Block {
+        try await buildChildGenesisWithTransition(
+            spec: spec,
+            parentState: parentState,
+            transactions: transactions,
+            children: children,
+            timestamp: timestamp,
+            target: target,
+            nonce: nonce,
+            version: version,
+            fetcher: fetcher
+        ).block
+    }
+
+    public static func buildChildGenesisWithTransition(
+        spec: ChainSpec,
+        parentState: LatticeStateHeader,
+        transactions: [Transaction] = [],
+        children: [String: Block] = [:],
+        timestamp: Int64,
+        target: UInt256,
+        nonce: UInt64 = 0,
+        version: UInt16 = Block.currentVersion,
+        fetcher: Fetcher
+    ) async throws -> BlockBuildResult {
+        try await buildGenesisWithTransition(
+            spec: spec,
+            transactions: transactions,
+            children: children,
+            parentState: parentState,
+            timestamp: timestamp,
+            target: target,
+            nonce: nonce,
+            version: version,
+            fetcher: fetcher
+        )
+    }
+
+    private static func buildGenesisWithTransition(
+        spec: ChainSpec,
+        transactions: [Transaction],
+        children: [String: Block],
+        parentState: LatticeStateHeader,
+        timestamp: Int64,
+        target: UInt256,
+        nonce: UInt64,
+        version: UInt16,
+        fetcher: Fetcher
+    ) async throws -> BlockBuildResult {
         let emptyState = LatticeState.emptyState()
         let prevState = try LatticeStateHeader(node: emptyState)
 
@@ -73,7 +149,7 @@ public struct BlockBuilder {
             target: target,
             nextTarget: target,
             spec: try VolumeImpl<ChainSpec>(node: spec),
-            parentState: prevState.removingNode(),
+            parentState: parentState.removingNode(),
             prevState: prevState.removingNode(),
             postState: postState,
             children: try buildChildrenDictionary(children),

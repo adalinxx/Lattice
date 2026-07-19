@@ -267,7 +267,8 @@ final class StateDiffTests: XCTestCase {
             accountActions: [AccountAction(owner: owner, delta: 100)],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [owner], fee: 0, nonce: 0
+            signers: [owner], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
 
         let (_, diffWithNonce) = try await empty.proveAndUpdateState(
@@ -294,7 +295,8 @@ final class StateDiffTests: XCTestCase {
         let transaction = TransactionBody(
             accountActions: [], actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [], signers: ["owner"], fee: 0,
-            nonce: .max
+            nonce: .max,
+            chainPath: ["Nexus"]
         )
         do {
             _ = try await state.proveAndUpdateState(

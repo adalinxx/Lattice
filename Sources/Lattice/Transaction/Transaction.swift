@@ -47,10 +47,9 @@ public struct Transaction {
         body = try container.decode(HeaderImpl<TransactionBody>.self, forKey: .body)
     }
 
-    /// THE consensus signature rule: every attached signature must verify over
-    /// the body CID, and at least one signature must be present. Consumed by
-    /// block validation (validateTransaction*) and by node-side admission —
-    /// one definition so the two cannot drift. Requires a resolved body.
+    /// The consensus signature rule: every attached signature must verify over
+    /// the current envelope or historical body-CID preimage, and at least one
+    /// signature must be present. Requires a resolved body.
     public func signaturesAreValid() -> Bool {
         guard let bodyNode = body.node else { return false }
         return signaturesAreValid(bodyNode)
@@ -81,15 +80,28 @@ public struct Transaction {
         return signatureHashes == signerSet
     }
 
-    private func validateSignaturesAndResolve(fetcher: Fetcher) async throws -> TransactionBody? {
+    private func validateSignaturesAndResolve(
+        fetcher: Fetcher,
+        allowUnsigned: Bool = false
+    ) async throws -> TransactionBody? {
         let resolvedBody = try await body.resolve(fetcher: fetcher)
         guard let bodyNode = resolvedBody.node else { throw ValidationErrors.transactionNotResolved }
-        if !signaturesAreValid(bodyNode) || !signaturesMatchSigners(bodyNode) { return nil }
+        let isUnsigned = signatures.isEmpty && bodyNode.signers.isEmpty
+        if !(allowUnsigned && isUnsigned),
+           (!signaturesAreValid(bodyNode) || !signaturesMatchSigners(bodyNode)) {
+            return nil
+        }
         return bodyNode
     }
 
-    func validateTransactionForGenesis(fetcher: Fetcher) async throws -> Bool {
-        guard let bodyNode = try await validateSignaturesAndResolve(fetcher: fetcher) else { return false }
+    func validateTransactionForGenesis(
+        fetcher: Fetcher,
+        allowUnsigned: Bool = false
+    ) async throws -> Bool {
+        guard let bodyNode = try await validateSignaturesAndResolve(
+            fetcher: fetcher,
+            allowUnsigned: allowUnsigned
+        ) else { return false }
         if !bodyNode.accountActionsAreValid() { return false }
         if !bodyNode.actionsAreValid() { return false }
         if !bodyNode.depositActions.isEmpty { return false }

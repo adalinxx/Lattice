@@ -135,8 +135,8 @@ public struct ChildBlockProof: Sendable {
         child: Block,
         chainPath: [String],
         minimumRootWork: UInt256,
-        parentContinuityLinks: [ParentContinuityLink],
-        parentGenesisLinks: [ParentGenesisLink]
+        parentCarrierLink: ParentCarrierLink?,
+        parentGenesisLink: ParentGenesisLink?
     ) async -> Result<VerifiedChildEvidence, ChildProofVerificationFailure> {
         let root: (block: Block, hash: UInt256)
         switch verifiedRoot(minimumRootWork: minimumRootWork) {
@@ -168,22 +168,10 @@ public struct ChildBlockProof: Sendable {
                 return .failure(.malformedEvidence)
             }
         }
-        var linksBySuccessor: [String: ParentContinuityLink] = [:]
-        for link in parentContinuityLinks {
-            if linksBySuccessor.updateValue(link, forKey: link.successorCID) != nil {
-                return .failure(.malformedEvidence)
-            }
-        }
-        var genesisLinksByChild: [String: ParentGenesisLink] = [:]
-        for link in parentGenesisLinks {
-            if genesisLinksByChild.updateValue(link, forKey: link.childGenesisCID) != nil {
-                return .failure(.malformedEvidence)
-            }
-        }
         let fetcher = _TrackingProofFetcher(proofEntries)
         var directlyConsumed = Set([rootCID])
-        var carriers: [(block: Block, cid: String, path: [String])] = [
-            (rootBlock, rootCID, Array(chainPath.prefix(1)))
+        var carriers: [(block: Block, cid: String)] = [
+            (rootBlock, rootCID)
         ]
         var currentBlock = rootBlock
 
@@ -209,50 +197,11 @@ public struct ChildBlockProof: Sendable {
                     return .failure(.protocolInvalid)
                 }
 
-                var expectedContinuity: [String: ParentContinuityLink] = [:]
-                var expectedGenesis: [String: ParentGenesisLink] = [:]
-                var requirements: [CrossChainEvidenceRequirement] = []
-
                 for carrier in carriers {
                     if carrier.block.parent == nil {
                         guard validParentlessCarrier(carrier.block) else {
                             return .failure(.protocolInvalid)
                         }
-                        guard carrier.path.count > 1 else { continue }
-                        guard let directory = carrier.path.last else {
-                            return .failure(.malformedEvidence)
-                        }
-                        let link = ParentGenesisLink(
-                            parentPath: Array(carrier.path.dropLast()),
-                            directory: directory,
-                            childGenesisCID: carrier.cid
-                        )
-                        guard expectedGenesis.updateValue(
-                            link,
-                            forKey: carrier.cid
-                        ) == nil else {
-                            return .failure(.malformedEvidence)
-                        }
-                        requirements.append(.parentGenesis(
-                            parentPath: link.parentPath,
-                            directory: link.directory,
-                            childGenesisCID: link.childGenesisCID
-                        ))
-                    } else {
-                        let link = ParentContinuityLink(
-                            parentPath: carrier.path,
-                            successorCID: carrier.cid
-                        )
-                        guard expectedContinuity.updateValue(
-                            link,
-                            forKey: carrier.cid
-                        ) == nil else {
-                            return .failure(.malformedEvidence)
-                        }
-                        requirements.append(.parentContinuity(
-                            parentPath: link.parentPath,
-                            successorCID: link.successorCID
-                        ))
                     }
                 }
 
@@ -260,43 +209,44 @@ public struct ChildBlockProof: Sendable {
                     guard let directory = chainPath.last else {
                         return .failure(.malformedEvidence)
                     }
-                    let link = ParentGenesisLink(
+                    let expectedGenesis = ParentGenesisLink(
                         parentPath: Array(chainPath.dropLast()),
                         directory: directory,
                         childGenesisCID: childCID
                     )
-                    guard expectedGenesis.updateValue(
-                        link,
-                        forKey: childCID
-                    ) == nil else {
-                        return .failure(.malformedEvidence)
+                    if let parentGenesisLink {
+                        guard parentGenesisLink == expectedGenesis else {
+                            return .failure(.malformedEvidence)
+                        }
+                    } else {
+                        return .failure(.crossChainEvidenceRequired(.parentGenesis(
+                            parentPath: expectedGenesis.parentPath,
+                            directory: expectedGenesis.directory,
+                            childGenesisCID: expectedGenesis.childGenesisCID
+                        )))
                     }
-                    requirements.append(.parentGenesis(
-                        parentPath: link.parentPath,
-                        directory: link.directory,
-                        childGenesisCID: link.childGenesisCID
-                    ))
-                }
-
-                guard linksBySuccessor.allSatisfy({
-                    expectedContinuity[$0.key] == $0.value
-                }), genesisLinksByChild.allSatisfy({
-                    expectedGenesis[$0.key] == $0.value
-                }) else {
+                } else if parentGenesisLink != nil {
                     return .failure(.malformedEvidence)
                 }
 
-                for requirement in requirements {
-                    switch requirement {
-                    case .parentContinuity(_, let successorCID)
-                    where linksBySuccessor[successorCID] == nil:
-                        return .failure(.crossChainEvidenceRequired(requirement))
-                    case .parentGenesis(_, _, let childGenesisCID)
-                    where genesisLinksByChild[childGenesisCID] == nil:
-                        return .failure(.crossChainEvidenceRequired(requirement))
-                    default:
-                        continue
+                guard let deepestCarrier = carriers.last else {
+                    return .failure(.malformedEvidence)
+                }
+                let expectedCarrier = ParentCarrierLink(
+                    parentPath: Array(chainPath.dropLast()),
+                    carrierCID: deepestCarrier.cid,
+                    rootCID: rootCID
+                )
+                if let parentCarrierLink {
+                    guard parentCarrierLink == expectedCarrier else {
+                        return .failure(.malformedEvidence)
                     }
+                } else {
+                    return .failure(.crossChainEvidenceRequired(.parentCarrier(
+                        parentPath: expectedCarrier.parentPath,
+                        carrierCID: expectedCarrier.carrierCID,
+                        rootCID: expectedCarrier.rootCID
+                    )))
                 }
 
                 let strongestAncestorWork = carriers.reduce(UInt256.zero) {
@@ -334,8 +284,7 @@ public struct ChildBlockProof: Sendable {
             currentBlock = next
             carriers.append((
                 currentBlock,
-                childHeader.rawCID,
-                Array(chainPath.prefix(index + 2))
+                childHeader.rawCID
             ))
         }
         return .failure(.malformedEvidence)

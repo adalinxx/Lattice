@@ -73,9 +73,43 @@ At a vertical edge, the nested child commits the carrier's `prevState` as
 
 - same-chain predecessors are explicit block links and missing predecessors are
   derived as holes in the accepted graph;
-- cross-chain acquisition asks the authenticated parent process for a proof or
-  parent-issued continuity fact;
+- cross-chain acquisition asks only the authenticated immediate-parent process
+  for a root-bound carrier fact and, for genesis, a parent-issued genesis fact;
 - Lattice never tries to invert `parentState` into a parent block.
+
+### Why Parent Continuity Is Required
+
+A content address proves exact bytes, and proof of work proves effort over those
+bytes. Neither proves that a parent chain legitimately reached a referenced
+state. A child therefore requires both links:
+
+```text
+valid parent predecessor -> deepest carrier
+                            deepest carrier.prevState == child.parentState
+```
+
+Without the first link, mined data could bind a child to an invented parent
+state containing, for example, a receipt the parent never produced. The parent
+process validates the exact root-to-carrier proof using its own immediate-parent
+fact, validates the deepest carrier's connected same-chain succession, and
+rolls those checks into one immutable `ParentCarrierLink(rootCID, parentPath,
+carrierCID)`. The Nexus process is the base case. A child therefore trusts no
+ancestor identity and receives no per-ancestor link, while every carrier on the
+proof remains inductively checked. The node authenticates the immediate-parent
+process, transports the fact, and may cache it. It proves validity, not
+canonicity, so a later parent reorganization cannot revoke it.
+
+Carrier validity here is deliberately header-only. A target-hit carrier may
+fail its own state transition, MTP/future-drift check, or proposed `nextTarget`
+and still return both that local rejection and a carrier link. Those local rules
+do not become descendant dependencies.
+
+A child genesis with no same-chain predecessor may still relay descendants
+after its immediate parent authorized that exact genesis CID. Child bootstrap returns a carrier link
+on a target miss, or a rejection together with that link when a target hit fails
+the local transition, without creating a runtime or durable local consensus
+fact. A target-missing Nexus genesis has no upstream authorization and cannot
+issue a link.
 
 A parent may export rolled-up accepted work, including eligible noncanonical
 branches, through the immediate-parent provider. That work may change a child's
@@ -107,9 +141,12 @@ Root and child bootstrap expose no runtime until the genesis batch has been
 stored, staged, and restored.
 
 A target miss returns a carrier result. It creates no local consensus fact,
-executes no local transition, and causes no implicit Lattice retention. The node
-may retain the carrier or an exact child path when its availability policy calls
-for it.
+executes no local transition, and causes no implicit Lattice retention. A
+target-hit candidate can return a local rejection and a carrier link together;
+the link still creates no local consensus fact. When an explicit predecessor is
+not connected, carrier, duplicate, and rejected outcomes expose that exact typed
+backfill requirement so the node can retry link derivation. The node may retain
+the carrier or an exact child path when its availability policy calls for it.
 
 ## Ownership
 
@@ -146,7 +183,9 @@ A change preserves the architecture only if all of these remain true:
 
 1. One process owns one path and never recursively runs another chain.
 2. The root-work floor is checked before child resolution.
-3. Every carrier proves same-chain continuity, even on a target miss.
+3. Every carrier proves same-chain continuity inductively regardless of its
+   target or local transition outcome; an authorized parentless child genesis
+   may relay without bootstrapping.
 4. Work is joined by grind identity before quantities are totaled.
 5. Accepted parent work may affect child weight; parent canonicity alone may not.
 6. Fork choice compares effective `trueCumWork`, then segment-base CID.

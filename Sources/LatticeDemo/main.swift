@@ -89,7 +89,8 @@ Task {
         let result = try await level.admitBlockHeaderChainLocal(
             header,
             fetcher: fetcher,
-            storer: fetcher,
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
             stage: { _ in }
         )
         print("  Block \(i): CID=\(String(header.rawCID.prefix(20)))... canonical=\(canonicalized(result))")
@@ -119,7 +120,8 @@ Task {
         let result = try await level.admitBlockHeaderChainLocal(
             header,
             fetcher: fetcher,
-            storer: fetcher,
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
             stage: { _ in }
         )
         print("  Fork block \(i): canonical=\(canonicalized(result))")

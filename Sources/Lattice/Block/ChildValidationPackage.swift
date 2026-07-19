@@ -15,20 +15,23 @@ public struct VerifiedWorkContribution: Codable, Sendable, Equatable {
     }
 }
 
-/// A permanent semantic fact produced by the Lattice process responsible for
-/// `parentPath`. The node authenticates that process, transports this value, and
-/// caches it; child admission only verifies that it binds the exact carrier it
-/// is about to use.
-public struct ParentContinuityLink: Codable, Hashable, Sendable {
+/// A permanent fact produced by the Lattice process responsible for
+/// `parentPath` after it verifies this exact grind's path to `carrierCID`.
+/// The node authenticates the immediate-parent process and transports or caches
+/// the value; no ancestor process identity crosses this boundary.
+public struct ParentCarrierLink: Codable, Hashable, Sendable {
     public let parentPath: [String]
-    public let successorCID: String
+    public let carrierCID: String
+    public let rootCID: String
 
     package init(
         parentPath: [String],
-        successorCID: String
+        carrierCID: String,
+        rootCID: String
     ) {
         self.parentPath = parentPath
-        self.successorCID = successorCID
+        self.carrierCID = carrierCID
+        self.rootCID = rootCID
     }
 }
 
@@ -56,30 +59,17 @@ public struct ParentGenesisLink: Codable, Hashable, Sendable {
 /// values so neither can silently stand in for the other.
 public struct ChildValidationPackage: Sendable {
     public let proof: ChildBlockProof
-    public let parentContinuityLinks: [ParentContinuityLink]
-    public let parentGenesisLinks: [ParentGenesisLink]
+    public let parentCarrierLink: ParentCarrierLink?
+    public let parentGenesisLink: ParentGenesisLink?
 
     public init(
         proof: ChildBlockProof,
-        parentContinuityLinks: [ParentContinuityLink] = [],
-        parentGenesisLinks: [ParentGenesisLink] = []
+        parentCarrierLink: ParentCarrierLink? = nil,
+        parentGenesisLink: ParentGenesisLink? = nil
     ) {
         self.proof = proof
-        self.parentContinuityLinks = parentContinuityLinks.sorted {
-            if $0.parentPath != $1.parentPath {
-                return $0.parentPath.lexicographicallyPrecedes($1.parentPath)
-            }
-            return $0.successorCID < $1.successorCID
-        }
-        self.parentGenesisLinks = parentGenesisLinks.sorted {
-            if $0.parentPath != $1.parentPath {
-                return $0.parentPath.lexicographicallyPrecedes($1.parentPath)
-            }
-            if $0.directory != $1.directory {
-                return $0.directory < $1.directory
-            }
-            return $0.childGenesisCID < $1.childGenesisCID
-        }
+        self.parentCarrierLink = parentCarrierLink
+        self.parentGenesisLink = parentGenesisLink
     }
 }
 
@@ -88,7 +78,7 @@ public struct ChildValidationPackage: Sendable {
 /// carrier; the authenticated parent process supplies these facts.
 public enum CrossChainEvidenceRequirement: Sendable, Equatable {
     case childProof(chainPath: [String], childCID: String)
-    case parentContinuity(parentPath: [String], successorCID: String)
+    case parentCarrier(parentPath: [String], carrierCID: String, rootCID: String)
     case parentGenesis(parentPath: [String], directory: String, childGenesisCID: String)
 }
 

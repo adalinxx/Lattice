@@ -32,7 +32,8 @@ private func premineGenesis(
     let body = TransactionBody(
         accountActions: [AccountAction(owner: addr, delta: Int64(spec.premineAmount()))],
         actions: [], depositActions: [], genesisActions: [],
-        receiptActions: [], withdrawalActions: [], signers: [addr], fee: 0, nonce: 0
+        receiptActions: [], withdrawalActions: [], signers: [addr], fee: 0, nonce: 0,
+        chainPath: ["Nexus"]
     )
     return try await buildAndStoreGenesis(
         spec: spec, transactions: [tx(body, kp)],
@@ -292,7 +293,8 @@ final class ClaimSecurityTests: XCTestCase {
             actions: [],
             depositActions: [childSwap],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 1
+            signers: [kpAddr], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let childBlock1 = try await buildAndStoreBlock(
             previous: childGenesis, transactions: [tx(swapBody, kp)],
@@ -304,7 +306,8 @@ final class ClaimSecurityTests: XCTestCase {
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: 500, directory: "Child")],
             withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 0
+            signers: [kpAddr], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
         let nexusBlock1 = try await buildAndStoreBlock(
             previous: nexusGenesis, transactions: [tx(settleBody, kp)],
@@ -319,7 +322,8 @@ final class ClaimSecurityTests: XCTestCase {
             withdrawalActions: [
                 WithdrawalAction(withdrawer: kpAddr, nonce: 99, demander: kpAddr, amountDemanded: 500, amountWithdrawn: 500)
             ],
-            signers: [kpAddr], fee: 0, nonce: 2
+            signers: [kpAddr], fee: 0, nonce: 2,
+            chainPath: ["Nexus"]
         )
 
         do {
@@ -359,7 +363,8 @@ final class ClaimSecurityTests: XCTestCase {
             actions: [],
             depositActions: [childSwap],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 1
+            signers: [kpAddr], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let childBlock1 = try await buildAndStoreBlock(
             previous: childGenesis, transactions: [tx(swapBody, kp)],
@@ -371,7 +376,8 @@ final class ClaimSecurityTests: XCTestCase {
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: 500, directory: "Child")],
             withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 0
+            signers: [kpAddr], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
         let nexusBlock1 = try await buildAndStoreBlock(
             previous: nexusGenesis, transactions: [tx(settleBody, kp)],
@@ -386,7 +392,8 @@ final class ClaimSecurityTests: XCTestCase {
             withdrawalActions: [
                 WithdrawalAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: 9999, amountWithdrawn: 9999)
             ],
-            signers: [kpAddr], fee: 0, nonce: 2
+            signers: [kpAddr], fee: 0, nonce: 2,
+            chainPath: ["Nexus"]
         )
 
         do {
@@ -470,7 +477,8 @@ final class DustAttackTests: XCTestCase {
             spec: tinySpec, transactions: [tx(TransactionBody(
                 accountActions: [AccountAction(owner: funderAddr, delta: Int64(premine))],
                 actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [], signers: [funderAddr], fee: 0, nonce: 0
+                receiptActions: [], withdrawalActions: [], signers: [funderAddr], fee: 0, nonce: 0,
+                chainPath: ["Nexus"]
             ), funder)],
             timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
@@ -486,7 +494,8 @@ final class DustAttackTests: XCTestCase {
             accountActions: [AccountAction(owner: funderAddr, delta: Int64(reward))],
             actions: kvActions, depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [funderAddr], fee: 0, nonce: 1
+            signers: [funderAddr], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [tx(body, funder)],
@@ -564,7 +573,8 @@ final class CrossChainBalanceConservationTests: XCTestCase {
             actions: [],
             depositActions: [childSwap],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 1
+            signers: [kpAddr], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let _ = try await buildAndStoreBlock(
             previous: childGenesis, transactions: [tx(swapBody, kp)],

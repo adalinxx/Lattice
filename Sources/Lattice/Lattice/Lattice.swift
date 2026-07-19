@@ -3,10 +3,12 @@ import UInt256
 public enum ChainRuntimeContextError: Error, Sendable, Equatable {
     case emptyPath
     case emptyDirectory
+    case rootMustBeNexus
+    case directoryContainsSeparator
     case zeroMinimumRootWork
 }
 
-/// Immutable identity and setup-wide proof floor for one chain process.
+/// Immutable Nexus-rooted identity and setup-wide proof floor for one chain process.
 public struct ChainRuntimeContext: Sendable, Equatable {
     public let path: [String]
     public let minimumRootWork: UInt256
@@ -15,6 +17,12 @@ public struct ChainRuntimeContext: Sendable, Equatable {
         guard !path.isEmpty else { throw ChainRuntimeContextError.emptyPath }
         guard path.allSatisfy({ !$0.isEmpty }) else {
             throw ChainRuntimeContextError.emptyDirectory
+        }
+        guard path.first == DEFAULT_ROOT_DIRECTORY else {
+            throw ChainRuntimeContextError.rootMustBeNexus
+        }
+        guard path.allSatisfy({ !$0.contains(DIRECTORY_KEY_SEPARATOR) }) else {
+            throw ChainRuntimeContextError.directoryContainsSeparator
         }
         guard minimumRootWork > .zero else {
             throw ChainRuntimeContextError.zeroMinimumRootWork

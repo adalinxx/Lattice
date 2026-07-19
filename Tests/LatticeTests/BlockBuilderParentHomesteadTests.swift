@@ -4,6 +4,64 @@ import cashew
 @testable import Lattice
 
 final class BlockBuilderParentHomesteadTests: XCTestCase {
+    func testChildGenesisCommitsCarrierEnteringState() async throws {
+        let fetcher = StorableFetcher()
+        let timestamp = Int64(Date().timeIntervalSince1970 * 1000) - 10_000
+        let parentGenesis = try await buildAndStoreGenesis(
+            spec: spec("Nexus"),
+            transactions: [transaction(delta: 7, nonce: 0, chainPath: ["Nexus"])],
+            timestamp: timestamp,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+        let childGenesis = try await BlockBuilder.buildChildGenesis(
+            spec: spec("Child"),
+            parentState: parentGenesis.postState,
+            timestamp: timestamp + 1_000,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+        try await storeBuiltBlock(childGenesis, in: fetcher)
+        let carrier = try await buildAndStoreBlock(
+            previous: parentGenesis,
+            children: ["Child": childGenesis],
+            timestamp: timestamp + 2_000,
+            target: UInt256.max,
+            nextTarget: UInt256.max,
+            fetcher: fetcher
+        )
+
+        XCTAssertEqual(childGenesis.parentState.rawCID, carrier.prevState.rawCID)
+        XCTAssertEqual(childGenesis.prevState.rawCID, LatticeState.emptyHeader.rawCID)
+        XCTAssertNotEqual(childGenesis.parentState.rawCID, childGenesis.prevState.rawCID)
+
+        let carrierHeader = try BlockHeader(node: carrier)
+        let childHeader = try BlockHeader(node: childGenesis)
+        let proof = try await ChildBlockProof.generate(
+            rootHeader: carrierHeader,
+            childDirectory: "Child",
+            fetcher: fetcher
+        )
+        let result = await proof.verify(
+            child: childGenesis,
+            chainPath: ["Nexus", "Child"],
+            minimumRootWork: UInt256(1),
+            parentCarrierLink: ParentCarrierLink(
+                parentPath: ["Nexus"],
+                carrierCID: carrierHeader.rawCID,
+                rootCID: carrierHeader.rawCID
+            ),
+            parentGenesisLink: ParentGenesisLink(
+                parentPath: ["Nexus"],
+                directory: "Child",
+                childGenesisCID: childHeader.rawCID
+            )
+        )
+        guard case .success = result else {
+            return XCTFail("the builder's parentState must satisfy the same-carrier proof")
+        }
+    }
+
     func testChildBlockAnchorsToParentHomesteadNotFrontier() async throws {
         let fetcher = StorableFetcher()
         let parentSpec = spec("Nexus")

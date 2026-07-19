@@ -191,7 +191,8 @@ func buildPremineGenesis(
         withdrawalActions: [],
         signers: [ownerAddress],
         fee: 0,
-        nonce: 0
+        nonce: 0,
+        chainPath: ["Nexus"]
     )
     let result = try await BlockBuilder.buildGenesisWithTransition(
         spec: spec,
@@ -382,14 +383,30 @@ func testWorkBatch(
 func childValidationPackage(
     proof: ChildBlockProof,
     fetcher: any Fetcher,
-    parentContinuityLinks: [ParentContinuityLink] = [],
-    parentGenesisLinks: [ParentGenesisLink] = []
+    parentCarrierLink: ParentCarrierLink? = nil,
+    parentGenesisLink: ParentGenesisLink? = nil
 ) async throws -> ChildValidationPackage {
-    _ = fetcher
+    var carrierHeader = BlockHeader(rawCID: proof.rootCID)
+    for directory in proof.directoryPath.dropLast() {
+        guard let carrier = try await carrierHeader.resolve(fetcher: fetcher).node,
+              let children = try await carrier.children.resolve(
+                paths: [[directory]: .targeted],
+                fetcher: fetcher
+              ).node,
+              let next: BlockHeader = try? children.get(key: directory) else {
+            throw FetcherError.notFound(carrierHeader.rawCID)
+        }
+        carrierHeader = next
+    }
     return ChildValidationPackage(
         proof: proof,
-        parentContinuityLinks: parentContinuityLinks,
-        parentGenesisLinks: parentGenesisLinks
+        parentCarrierLink: parentCarrierLink ?? ParentCarrierLink(
+            parentPath: [DEFAULT_ROOT_DIRECTORY]
+                + Array(proof.directoryPath.dropLast()),
+            carrierCID: carrierHeader.rawCID,
+            rootCID: proof.rootCID
+        ),
+        parentGenesisLink: parentGenesisLink
     )
 }
 

@@ -19,7 +19,8 @@ final class BlockContentResolverTests: XCTestCase {
             withdrawalActions: [],
             signers: ["alice"],
             fee: 0,
-            nonce: 0
+            nonce: 0,
+            chainPath: ["Nexus"]
         )
         let transaction = Transaction(
             signatures: ["alice": "sig"],
@@ -109,7 +110,8 @@ final class BlockContentResolverTests: XCTestCase {
             withdrawalActions: [],
             signers: ["alice"],
             fee: 0,
-            nonce: 0
+            nonce: 0,
+            chainPath: ["Nexus"]
         )
         let tx = Transaction(signatures: ["alice": "sig"], body: try! HeaderImpl(node: txBody))
         let child = try await buildAndStoreGenesis(
@@ -176,7 +178,8 @@ final class BlockContentResolverTests: XCTestCase {
             withdrawalActions: [],
             signers: ["alice"],
             fee: 0,
-            nonce: 0
+            nonce: 0,
+            chainPath: ["Nexus"]
         )
         let transaction = Transaction(
             signatures: ["alice": "sig"],
@@ -270,7 +273,7 @@ final class BlockContentResolverTests: XCTestCase {
         let block = try XCTUnwrap(copied.node)
         let (valid, _) = try await block.validateGenesis(
             fetcher: destination,
-            directory: "Nexus"
+            chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
         XCTAssertTrue(valid)
     }
