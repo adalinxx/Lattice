@@ -33,14 +33,16 @@ public struct CryptoUtils {
     // MARK: - Verification (dispatches by key type in Multikey encoding)
 
     public static func verify(message: String, signature: String, publicKeyHex: String) -> Bool {
-        guard let sigData = Data(hex: signature) else { return false }
+        guard let sigData = Data(hex: signature),
+              signature == sigData.hexString else { return false }
         let messageData = signaturePayload(message)
 
         // Exactly ONE accepted key encoding: Multikey. The pre-genesis legacy
         // branch that also accepted a bare 32-byte Ed25519 hex key gave the
         // same key two valid encodings on live consensus surface — fail closed
         // on anything that is not canonical Multikey.
-        guard let mk = try? Multikey.decode(fromHex: publicKeyHex) else { return false }
+        guard let mk = try? Multikey.decode(fromHex: publicKeyHex),
+              publicKeyHex == mk.hexEncoded else { return false }
         return verifyWithMultikey(mk, message: messageData, signature: sigData)
     }
 
