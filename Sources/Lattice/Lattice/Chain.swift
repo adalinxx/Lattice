@@ -18,7 +18,7 @@ public func workForHash(_ hash: UInt256) -> UInt256 {
 /// Stable tie-break for equal-work segment bases. Compare the CID bytes rather
 /// than an encoded presentation string; malformed values remain deterministic
 /// so persistence validation can reject them without order-dependent behavior.
-func forkChoicePrefersSegmentBase(
+public func forkChoicePrefersSegmentBase(
     _ candidateHash: String,
     over currentHash: String
 ) -> Bool {
