@@ -800,11 +800,20 @@ public actor ChainState {
         let requestedParentBlocks = Set(
             verifiedParentBlocksByChildBlock.values.joined()
         )
+        guard requestedParentBlocks.allSatisfy({ hashToBlock[$0] != nil }) else {
+            return nil
+        }
+        let connectedCoverage = verifiedParentBlocksByChildBlock.compactMapValues {
+            let eligible = $0.filter { segmentIndex.baseByBlock[$0] != nil }
+            return eligible.isEmpty ? nil : eligible
+        }
+        guard !connectedCoverage.isEmpty else { return nil }
+        let connectedParentBlocks = Set(connectedCoverage.values.joined())
         guard let acceptedAncestry = acceptedAncestry(
-            of: requestedParentBlocks
+            of: connectedParentBlocks
         ) else { return nil }
         let rootsByChildBlock = minimalSubtreeRoots(
-            for: verifiedParentBlocksByChildBlock,
+            for: connectedCoverage,
             within: acceptedAncestry
         )
         let inherited = retainedInheritedWork()
@@ -825,7 +834,7 @@ public actor ChainState {
             strongestWork: strongestWork
         )
         var workByChildBlock: [String: WorkMeasure] = [:]
-        for childBlockHash in verifiedParentBlocksByChildBlock.keys {
+        for childBlockHash in connectedCoverage.keys {
             let roots = rootsByChildBlock[childBlockHash] ?? []
             workByChildBlock[childBlockHash] = roots.reduce(
                 into: WorkMeasure.zero
