@@ -143,6 +143,10 @@ public extension Block {
         guard chainPath.first == DEFAULT_ROOT_DIRECTORY else {
             return (false, .empty, nil)
         }
+        guard (chainPath.count == 1 && specNode.parentWorkAuthorityKey == nil)
+                || (chainPath.count > 1 && specNode.parentWorkAuthorityKey != nil) else {
+            return (false, .empty, nil)
+        }
         if !validateChainPaths(transactionBodies: transactionBodies, expectedPath: chainPath) {
             return (false, .empty, nil)
         }
@@ -297,21 +301,11 @@ public extension Block {
         if !validateChainPaths(transactionBodies: transactionBodies, expectedPath: expectedChainPath) { return (false, .empty, nil) }
         if !validateNoDepositsOrWithdrawalsOnRoot(transactionBodies: transactionBodies, expectedPath: expectedChainPath) { return (false, .empty, nil) }
 
-        // Check that withdrawals have corresponding deposits in prevState AND
-        // receipts in parentState. Resolves prevState and parentState only when
-        // the block actually contains withdrawals.
-        let withdrawalBodies = transactionBodies.filter { !$0.withdrawalActions.isEmpty }
-        if !withdrawalBodies.isEmpty {
-            async let prevStateFuture = prevState.resolve(fetcher: fetcher)
-            async let parentStateFuture = parentState.resolve(fetcher: fetcher)
-            let (resolvedPrevState, resolvedParentState) = try await (prevStateFuture, parentStateFuture)
-            guard let prevStateNode = resolvedPrevState.node,
-                  let parentStateNode = resolvedParentState.node else {
-                return (false, .empty, nil)
-            }
-            let ownDirectory = expectedChainPath.last ?? DEFAULT_ROOT_DIRECTORY
-            if try await withdrawalBodies.concurrentMap({ try await $0.withdrawalsAreValid(directory: ownDirectory, prevState: prevStateNode, parentState: parentStateNode, fetcher: fetcher) }).contains(false) { return (false, .empty, nil) }
-        }
+        if try await !validateWithdrawals(
+            transactionBodies: transactionBodies,
+            fetcher: fetcher,
+            chainPath: expectedChainPath
+        ) { return (false, .empty, nil) }
 
         let allAccountActions = transactionBodies.flatMap { $0.accountActions }
         let allDepositActions = transactionBodies.flatMap { $0.depositActions }
@@ -328,6 +322,57 @@ public extension Block {
         let (postStateValid, diff, materializedPostState) = try await validatePostState(transactionBodies: transactionBodies, allAccountActions: allAccountActions, allActions: transactionBodies.flatMap { $0.actions }, allDepositActions: allDepositActions, allGenesisActions: transactionBodies.flatMap { $0.genesisActions }, allReceiptActions: allReceiptActions, allWithdrawalActions: allWithdrawalActions, fetcher: fetcher)
         if !postStateValid { return (false, .empty, nil) }
         return (true, diff, materializedPostState)
+    }
+
+    /// Preflight the state-dependent withdrawal rule used by full validation.
+    /// Mining uses this to omit transactions that cannot settle against the
+    /// exact entering parent state without repeating unrelated block checks.
+    func validateWithdrawals(
+        fetcher: Fetcher,
+        chainPath: [String]
+    ) async throws -> Bool {
+        guard chainPath.first == DEFAULT_ROOT_DIRECTORY,
+              let transactionBodies = try await resolveTransactionBodies(
+                fetcher: fetcher,
+                validator: { transaction in
+                    try await transaction.validateTransactionForNexus(fetcher: fetcher)
+                }
+              ) else { return false }
+        return try await validateWithdrawals(
+            transactionBodies: transactionBodies,
+            fetcher: fetcher,
+            chainPath: chainPath
+        )
+    }
+
+    private func validateWithdrawals(
+        transactionBodies: [TransactionBody],
+        fetcher: Fetcher,
+        chainPath: [String]
+    ) async throws -> Bool {
+        let withdrawalBodies = transactionBodies.filter {
+            !$0.withdrawalActions.isEmpty
+        }
+        guard !withdrawalBodies.isEmpty else { return true }
+        guard chainPath.count > 1 else { return false }
+
+        async let prevStateFuture = prevState.resolve(fetcher: fetcher)
+        async let parentStateFuture = parentState.resolve(fetcher: fetcher)
+        let (resolvedPrevState, resolvedParentState) = try await (
+            prevStateFuture,
+            parentStateFuture
+        )
+        guard let prevStateNode = resolvedPrevState.node,
+              let parentStateNode = resolvedParentState.node,
+              let directory = chainPath.last else { return false }
+        return try await !withdrawalBodies.concurrentMap {
+            try await $0.withdrawalsAreValid(
+                directory: directory,
+                prevState: prevStateNode,
+                parentState: parentStateNode,
+                fetcher: fetcher
+            )
+        }.contains(false)
     }
 
     func validateProofOfWork(nexusHash: UInt256) -> Bool {

@@ -509,7 +509,7 @@ final class OutOfOrderSubmissionTests: XCTestCase {
             blockHeader: try! VolumeImpl<Block>(node: block2),
             block: block2
         )
-        let requirements = await chain.missingSameChainPredecessors()
+        let requirements = await chain.unresolvedSameChainPredecessors()
         XCTAssertEqual(
             requirements,
             [SameChainPredecessorRequirement(
@@ -530,7 +530,7 @@ final class OutOfOrderSubmissionTests: XCTestCase {
             blockHeader: try! VolumeImpl<Block>(node: block2),
             block: block2
         )
-        let orphanRequirements = await chain.missingSameChainPredecessors()
+        let orphanRequirements = await chain.unresolvedSameChainPredecessors()
         XCTAssertEqual(orphanRequirements.count, 1)
 
         let _ = await chain.submitTestBlock(
@@ -539,7 +539,7 @@ final class OutOfOrderSubmissionTests: XCTestCase {
         )
 
         let tip = await chain.getMainChainTip()
-        let remainingRequirements = await chain.missingSameChainPredecessors()
+        let remainingRequirements = await chain.unresolvedSameChainPredecessors()
         XCTAssertEqual(tip, try! VolumeImpl<Block>(node: block2).rawCID)
         XCTAssertTrue(remainingRequirements.isEmpty)
     }

@@ -47,7 +47,7 @@ public struct ReceiptKey: LosslessStringConvertible {
     }
 }
 
-public typealias ReceiptState = VolumeMerkleDictionaryImpl<HeaderImpl<PublicKey>>
+public typealias ReceiptState = VolumeMerkleDictionaryImpl<String>
 public typealias ReceiptStateHeader = VolumeImpl<ReceiptState>
 
 public extension ReceiptStateHeader {
@@ -61,10 +61,10 @@ public extension ReceiptStateHeader {
         guard let node = proven.node else { throw StateErrors.conflictingActions }
         for wa in withdrawalActions {
             let key = ReceiptKey(withdrawalAction: wa, directory: directory).description
-            guard let stored: HeaderImpl<PublicKey> = try? node.get(key: key) else {
+            guard let stored: String = try? node.get(key: key) else {
                 throw StateErrors.conflictingActions
             }
-            if stored.rawCID != wa.withdrawer { throw StateErrors.conflictingActions }
+            if stored != wa.withdrawer { throw StateErrors.conflictingActions }
         }
         return proven
     }

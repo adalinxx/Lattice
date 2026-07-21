@@ -31,6 +31,9 @@ public struct ChainSpec: Scalar {
     }
     public let retargetWindow: UInt64
     public let wasmPolicies: [WasmPolicyRef]
+    /// Present on every child chain and immutable for its whole history. Nexus
+    /// has no parent and therefore no inherited-work authority.
+    public let parentWorkAuthorityKey: ParentWorkAuthorityKey?
 
     enum CodingKeys: String, CodingKey {
         case maxNumberOfTransactionsPerBlock
@@ -42,6 +45,7 @@ public struct ChainSpec: Scalar {
         case halvingInterval
         case retargetWindow
         case wasmPolicies
+        case parentWorkAuthorityKey
     }
 
     enum LegacyCodingKeys: String, CodingKey {
@@ -58,7 +62,8 @@ public struct ChainSpec: Scalar {
         initialReward: UInt64,
         halvingInterval: UInt64,
         retargetWindow: UInt64 = 10,
-        wasmPolicies: [WasmPolicyRef] = []
+        wasmPolicies: [WasmPolicyRef] = [],
+        parentWorkAuthorityKey: ParentWorkAuthorityKey? = nil
     ) {
         self.maxNumberOfTransactionsPerBlock = maxNumberOfTransactionsPerBlock
         self.maxStateGrowth = maxStateGrowth
@@ -69,6 +74,7 @@ public struct ChainSpec: Scalar {
         self.halvingInterval = halvingInterval
         self.retargetWindow = retargetWindow
         self.wasmPolicies = wasmPolicies
+        self.parentWorkAuthorityKey = parentWorkAuthorityKey
     }
 
     public init(from decoder: Decoder) throws {
@@ -90,6 +96,27 @@ public struct ChainSpec: Scalar {
             )
         }
         wasmPolicies = try container.decodeIfPresent([WasmPolicyRef].self, forKey: .wasmPolicies) ?? []
+        parentWorkAuthorityKey = try container.decodeIfPresent(
+            ParentWorkAuthorityKey.self,
+            forKey: .parentWorkAuthorityKey
+        )
+    }
+
+    public func withParentWorkAuthorityKey(
+        _ parentWorkAuthorityKey: ParentWorkAuthorityKey
+    ) -> ChainSpec {
+        ChainSpec(
+            maxNumberOfTransactionsPerBlock: maxNumberOfTransactionsPerBlock,
+            maxStateGrowth: maxStateGrowth,
+            maxBlockSize: maxBlockSize,
+            premine: premine,
+            targetBlockTime: targetBlockTime,
+            initialReward: initialReward,
+            halvingInterval: halvingInterval,
+            retargetWindow: retargetWindow,
+            wasmPolicies: wasmPolicies,
+            parentWorkAuthorityKey: parentWorkAuthorityKey
+        )
     }
 }
 

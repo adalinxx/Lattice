@@ -85,7 +85,6 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
             blockHeight: 0,
             childHashes: [],
             workContributions: [bucketContribution("grind:G")],
-            cumulativeWork: UInt256(1).toHexString(),
             target: "not-hex"
         )
         let persisted = PersistedChainState(
@@ -106,7 +105,6 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
             blockHeight: 0,
             childHashes: [],
             workContributions: [bucketContribution("grind:G")],
-            cumulativeWork: UInt256(1).toHexString(),
             nextTarget: "not-hex"
         )
         let persisted = PersistedChainState(
@@ -126,8 +124,7 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
             parentBlockHash: nil,
             blockHeight: 0,
             childHashes: [],
-            workContributions: [bucketContribution("grind:G")],
-            cumulativeWork: UInt256(1).toHexString()
+            workContributions: [bucketContribution("grind:G")]
         )
         let persisted = PersistedChainState(
             chainTip: persistedGenesisCID,
@@ -144,8 +141,7 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
             parentBlockHash: nil,
             blockHeight: 0,
             childHashes: [],
-            workContributions: [bucketContribution("grind:G")],
-            cumulativeWork: UInt256(1).toHexString()
+            workContributions: [bucketContribution("grind:G")]
         )
         let persisted = PersistedChainState(
             chainTip: "G",
@@ -164,18 +160,22 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
             parentBlockHash: nil,
             blockHeight: 0,
             childHashes: [],
-            workContributions: [bucketContribution("grind:G")],
-            cumulativeWork: UInt256(1).toHexString()
+            workContributions: [bucketContribution("grind:G")]
         )
-        let persisted = PersistedChainState(
-            schemaVersion: PersistedChainState.currentSchemaVersion + 1,
-            chainTip: persistedGenesisCID,
-            mainChainHashes: [persistedGenesisCID],
-            blocks: [block]
-        )
+        for schemaVersion in [
+            PersistedChainState.currentSchemaVersion - 1,
+            PersistedChainState.currentSchemaVersion + 1,
+        ] {
+            let persisted = PersistedChainState(
+                schemaVersion: schemaVersion,
+                chainTip: persistedGenesisCID,
+                mainChainHashes: [persistedGenesisCID],
+                blocks: [block]
+            )
 
-        XCTAssertThrowsError(try ChainState.restore(from: persisted)) { error in
-            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
+            XCTAssertThrowsError(try ChainState.restore(from: persisted)) { error in
+                XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
+            }
         }
     }
 }

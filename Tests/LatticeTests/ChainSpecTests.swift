@@ -1,8 +1,56 @@
 import XCTest
 @testable import Lattice
 import UInt256
+import cashew
 
 final class ChainSpecTests: XCTestCase {
+
+    func testNilAuthorityPreservesPinnedNexusGenesisCID() async throws {
+        let spec = ChainSpec(
+            maxNumberOfTransactionsPerBlock: 5_000,
+            maxStateGrowth: 3_000_000,
+            maxBlockSize: 1_000_000,
+            premine: 175_320,
+            targetBlockTime: 3_600_000,
+            initialReward: 1_048_576,
+            halvingInterval: 876_600,
+            retargetWindow: 120
+        )
+        XCTAssertNil(spec.parentWorkAuthorityKey)
+        let owner = CryptoUtils.createAddress(
+            from: "ed01fe416588df6e7fa5213c0d3e430f504bb5203172120c86b874826b55f53bdb7d"
+        )
+        let body = TransactionBody(
+            accountActions: [AccountAction(
+                owner: owner,
+                delta: Int64(spec.premineAmount())
+            )],
+            actions: [],
+            depositActions: [],
+            genesisActions: [],
+            receiptActions: [],
+            withdrawalActions: [],
+            signers: [],
+            fee: 0,
+            nonce: 0,
+            chainPath: [DEFAULT_ROOT_DIRECTORY]
+        )
+        let transaction = Transaction(
+            signatures: [:],
+            body: try HeaderImpl<TransactionBody>(node: body)
+        )
+        let block = try await BlockBuilder.buildGenesis(
+            spec: spec,
+            transactions: [transaction],
+            timestamp: 0,
+            target: UInt256.max,
+            fetcher: StorableFetcher()
+        )
+        XCTAssertEqual(
+            try BlockHeader(node: block).rawCID,
+            "bafyreiayw4z5qz4lt2sljf2enzn7uol3qa6bebadav7qwnqz7agxkiuwhq"
+        )
+    }
 
     // MARK: - Basic Properties Tests
 

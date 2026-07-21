@@ -207,32 +207,104 @@ public struct WorkMeasure: Codable, Sendable, Equatable {
         result.formUnion(other)
         return result
     }
+
+    /// A transport adapter can split an exact measure without exposing its
+    /// storage. Rejoining any partition with `union` recovers this measure.
+    public func restricted(toGrindIDs ids: Set<String>) -> WorkMeasure {
+        WorkMeasure(workByGrind.compactMap { id, work in
+            ids.contains(id)
+                ? VerifiedWorkContribution(id: id, work: work)
+                : nil
+        })
+    }
 }
 
 /// One coherent node-provided view of work inherited by blocks in this chain.
-/// The node authenticates, routes, and caches the immediate-parent process;
+/// The node authenticates, routes, and caches the delegated parent processes;
 /// Lattice consumes the snapshot as a live fork-choice input. `revision` is a
 /// source-progress watermark, not a commitment to the snapshot contents.
+public struct InheritedWorkFact: Sendable, Equatable {
+    public let blockCID: String
+    public let grindID: String
+    public let work: UInt256
+
+    /// Recovery and transport may construct delegated facts without gaining
+    /// access to the package-only local-work contribution type.
+    public init?(
+        blockCID: String,
+        grindID: String,
+        work: UInt256
+    ) {
+        guard work > .zero else { return nil }
+        self.blockCID = blockCID
+        self.grindID = grindID
+        self.work = work
+    }
+}
+
 public struct InheritedWorkSnapshot: Codable, Sendable, Equatable {
     public let revision: UInt64
+    /// The authenticated immediate-parent relation. A physical grind can have
+    /// a different observed maximum at each covered block; normalize only at
+    /// the fork-choice view, never while retaining or transporting facts.
     private let workByBlock: [String: WorkMeasure]
+    /// Derived once from the source relation. It is deliberately excluded from
+    /// Codable so the wire and durable representation remain only raw facts.
+    private let normalizedStrongestWorkByGrind: [String: UInt256]
+
+    private enum CodingKeys: String, CodingKey {
+        case revision
+        case workByBlock
+    }
 
     public static let zero = InheritedWorkSnapshot(revision: 0, workByBlock: [:])
 
     public init(revision: UInt64, workByBlock: [String: WorkMeasure]) {
-        var strongestWork: [String: UInt256] = [:]
-        for measure in workByBlock.values {
-            for (id, work) in measure.entries where work > (strongestWork[id] ?? .zero) {
-                strongestWork[id] = work
-            }
-        }
         self.revision = revision
-        self.workByBlock = workByBlock.mapValues {
-            $0.normalized(using: strongestWork)
+        self.workByBlock = workByBlock
+        normalizedStrongestWorkByGrind = Self.strongestWork(in: workByBlock)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            revision: try container.decode(UInt64.self, forKey: .revision),
+            workByBlock: try container.decode([String: WorkMeasure].self, forKey: .workByBlock)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(revision, forKey: .revision)
+        try container.encode(workByBlock, forKey: .workByBlock)
+    }
+
+    /// Build a snapshot from already authenticated delegated facts. This keeps
+    /// live local proof-of-work mutation package-only while allowing a node to
+    /// restore its durable immediate-parent view.
+    public init(revision: UInt64, facts: [InheritedWorkFact]) {
+        var workByBlock: [String: WorkMeasure] = [:]
+        for fact in facts {
+            var measure = workByBlock[fact.blockCID] ?? .zero
+            _ = measure.insert(VerifiedWorkContribution(
+                id: fact.grindID,
+                work: fact.work
+            ))
+            workByBlock[fact.blockCID] = measure
         }
+        self.init(revision: revision, workByBlock: workByBlock)
     }
 
     public func work(forBlock hash: String) -> WorkMeasure {
+        (workByBlock[hash] ?? .zero).normalized(
+            using: normalizedStrongestWorkByGrind
+        )
+    }
+
+    /// Exact source facts for one block, before a physical grind is normalized
+    /// across all covered blocks. Persistence and transport use this relation;
+    /// fork choice uses `work(forBlock:)`.
+    public func sourceWork(forBlock hash: String) -> WorkMeasure {
         workByBlock[hash] ?? .zero
     }
 
@@ -240,7 +312,53 @@ public struct InheritedWorkSnapshot: Codable, Sendable, Equatable {
         workByBlock.values.allSatisfy(\.isEmpty)
     }
 
+    /// Whether every retained inherited fact belongs to one of the supplied
+    /// child blocks.
+    public func isScoped(to blockCIDs: Set<String>) -> Bool {
+        workByBlock.keys.allSatisfy(blockCIDs.contains)
+    }
+
+    /// The block CIDs represented by this snapshot, in stable order. This
+    /// permits a node to page a trusted snapshot without exposing mutable
+    /// storage internals.
+    public var blockCIDs: [String] {
+        workByBlock.keys.sorted()
+    }
+
+    /// Retain only source facts for the supplied child blocks. Normalization is
+    /// then recomputed over exactly that retained coverage.
+    public func restricted(to blockCIDs: Set<String>) -> InheritedWorkSnapshot {
+        InheritedWorkSnapshot(
+            revision: revision,
+            workByBlock: workByBlock.filter { blockCIDs.contains($0.key) }
+        )
+    }
+
+    /// The monotonic source facts this snapshot adds beyond an earlier one.
+    public func additions(since earlier: InheritedWorkSnapshot) -> InheritedWorkSnapshot {
+        let stronger = workByBlock.reduce(into: [String: WorkMeasure]()) {
+            result, entry in
+            let (blockCID, measure) = entry
+            let previous = earlier.sourceWork(forBlock: blockCID)
+            let additions = WorkMeasure(measure.entries.compactMap { id, work in
+                work > (previous.work(forGrind: id) ?? .zero)
+                    ? VerifiedWorkContribution(id: id, work: work)
+                    : nil
+            })
+            if !additions.isEmpty {
+                result[blockCID] = additions
+            }
+        }
+        return InheritedWorkSnapshot(revision: revision, workByBlock: stronger)
+    }
+
     var strongestWorkByGrind: [String: UInt256] {
+        normalizedStrongestWorkByGrind
+    }
+
+    private static func strongestWork(
+        in workByBlock: [String: WorkMeasure]
+    ) -> [String: UInt256] {
         workByBlock.values.reduce(into: [:]) { strongest, measure in
             for (id, work) in measure.entries where work > (strongest[id] ?? .zero) {
                 strongest[id] = work
@@ -248,14 +366,35 @@ public struct InheritedWorkSnapshot: Codable, Sendable, Equatable {
         }
     }
 
+    /// Package-internal raw source relation. Consumers that make a fork-choice
+    /// decision must use `work(forBlock:)` instead.
     var entriesByBlock: [String: WorkMeasure] {
         workByBlock
+    }
+
+    /// The in-memory algebra permits opaque test and simulation identifiers.
+    /// Any identifier that parses as a CID must already use its unique
+    /// canonical text spelling. Durable and wire boundaries additionally
+    /// require every identifier to parse as a CID.
+    var hasNoCIDTextAliases: Bool {
+        workByBlock.allSatisfy { blockCID, measure in
+            let blockEncoding = CIDIdentity.canonicalString(blockCID)
+            guard blockEncoding == nil || blockEncoding == blockCID else {
+                return false
+            }
+            return measure.entries.keys.allSatisfy { grindID in
+                let grindEncoding = CIDIdentity.canonicalString(grindID)
+                return grindEncoding == nil || grindEncoding == grindID
+            }
+        }
     }
 
     public func union(_ newer: InheritedWorkSnapshot) -> InheritedWorkSnapshot {
         var merged = workByBlock
         for hash in newer.workByBlock.keys {
-            merged[hash] = (merged[hash] ?? .zero).union(newer.work(forBlock: hash))
+            merged[hash] = (merged[hash] ?? .zero).union(
+                newer.sourceWork(forBlock: hash)
+            )
         }
         return InheritedWorkSnapshot(
             revision: max(revision, newer.revision),
