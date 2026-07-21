@@ -339,6 +339,44 @@ final class InheritedWorkForkChoiceTests: XCTestCase {
         XCTAssertNotNil(completeExport)
     }
 
+    func testDisconnectedCoverageDoesNotSuppressConnectedExport() async throws {
+        var root = makeBlockMeta(hash: "root", height: 0)
+        let connected = makeBlockMeta(
+            hash: "connected",
+            previousHash: "root",
+            height: 1
+        )
+        let disconnected = makeBlockMeta(
+            hash: "disconnected",
+            previousHash: "missing",
+            height: 2
+        )
+        root.childHashes = ["connected"]
+        let chain = makeChain(
+            blocks: [root, connected, disconnected],
+            mainChainHashes: ["root", "connected"]
+        )
+
+        let exported = await chain.inheritedWorkSnapshot(
+            forChildCoverage: [
+                "connected-child": ["connected"],
+                "mixed-child": ["connected", "disconnected"],
+                "disconnected-child": ["disconnected"],
+            ]
+        )
+        let snapshot = try XCTUnwrap(exported)
+
+        XCTAssertEqual(
+            snapshot.work(forBlock: "mixed-child"),
+            snapshot.work(forBlock: "connected-child")
+        )
+        XCTAssertFalse(snapshot.blockCIDs.contains("disconnected-child"))
+        let unknownExport = await chain.inheritedWorkSnapshot(
+            forChildCoverage: ["child": ["connected", "unknown"]]
+        )
+        XCTAssertNil(unknownExport)
+    }
+
     func testRecoveryReportsEveryUnresolvedImmediatePredecessor() async {
         let root = makeBlockMeta(hash: "root", height: 0)
         var parent = makeBlockMeta(
