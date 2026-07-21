@@ -1048,6 +1048,13 @@ public actor ChainState {
         chainTip
     }
 
+    /// One coherent canonical context for transaction preflight. Keeping the
+    /// tip and its snapshot in one actor read lets callers reject a result if
+    /// the canonical tip changes while content is being resolved.
+    func transactionPreflightTip() -> (cid: String, snapshot: TipBlockSnapshot?) {
+        (chainTip, tipSnapshot)
+    }
+
     public func isOnMainChain(hash: String) -> Bool {
         guard let height = hashToBlock[hash]?.blockHeight else { return false }
         return mainChainBlockAtIndex[height] == hash
