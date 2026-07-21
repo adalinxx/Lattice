@@ -6,6 +6,22 @@ public enum ChildProofSerializationError: Error, Sendable, Equatable {
     case valueTooLarge
 }
 
+/// Canonical sparse proof for the terminal parent-to-child commitment in a
+/// potentially composed ``ChildBlockProof``.
+///
+/// This is a structural CAS fact only. It makes no claim about work,
+/// authority, admission, or canonicity.
+public struct DirectChildHop: Sendable {
+    public let proof: ChildBlockProof
+    public let childCID: String
+    public let parentStateCID: String
+
+    public func binds(child: Block) -> Bool {
+        guard let cid = try? BlockHeader(node: child).rawCID else { return false }
+        return cid == childCID && child.parentState.rawCID == parentStateCID
+    }
+}
+
 // MARK: - Proof
 
 /// Sparse proof that a block is embedded under a PoW root, following the
@@ -100,6 +116,54 @@ public struct ChildBlockProof: Sendable {
     }
 
     // MARK: - Verification
+
+    /// Extract the terminal direct hop from this proof's sealed CAS entries.
+    /// The returned proof is regenerated using the same canonical generation
+    /// path as an originally single-hop proof.
+    public func directHop() async -> DirectChildHop? {
+        guard let directory = directoryPath.last,
+              CIDIdentity.isCanonical(rootCID) else { return nil }
+
+        var uniqueEntries: [String: Data] = [:]
+        for entry in entries {
+            guard CIDIdentity.isCanonical(entry.cid),
+                  uniqueEntries.updateValue(entry.data, forKey: entry.cid) == nil else {
+                return nil
+            }
+        }
+        let source = InMemoryContentSource(uniqueEntries)
+        var carrier = BlockHeader(rawCID: rootCID)
+
+        for directory in directoryPath.dropLast() {
+            guard let block = try? await carrier.resolve(fetcher: source).node,
+                  let children = try? await block.children.resolve(
+                    paths: [[directory]: .targeted],
+                    fetcher: source
+                  ).node,
+                  let next: BlockHeader = try? children.get(key: directory),
+                  CIDIdentity.isCanonical(next.rawCID) else { return nil }
+            carrier = next
+        }
+
+        guard let block = try? await carrier.resolve(fetcher: source).node,
+              let children = try? await block.children.resolve(
+                paths: [[directory]: .targeted],
+                fetcher: source
+              ).node,
+              let child: BlockHeader = try? children.get(key: directory),
+              CIDIdentity.isCanonical(child.rawCID),
+              let proof = try? await Self.generate(
+                rootHeader: carrier,
+                childDirectory: directory,
+                fetcher: source
+              ) else { return nil }
+
+        return DirectChildHop(
+            proof: proof,
+            childCID: child.rawCID,
+            parentStateCID: block.prevState.rawCID
+        )
+    }
 
     package func verifyRootFloor(
         minimumRootWork: UInt256

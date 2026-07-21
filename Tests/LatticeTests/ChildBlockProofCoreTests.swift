@@ -11,6 +11,54 @@ final class ChildBlockProofCoreTests: XCTestCase {
         ChildBlockProof(rootCID: root, directoryPath: path, entries: entries)
     }
 
+    private func composedFixture() async throws -> (
+        leaf: Block,
+        middle: Block,
+        composed: ChildBlockProof,
+        terminalHop: ChildBlockProof
+    ) {
+        let storage = StorableFetcher()
+        let spec = ChainSpec(
+            maxNumberOfTransactionsPerBlock: 100,
+            maxStateGrowth: 100_000,
+            premine: 0,
+            targetBlockTime: 1_000,
+            initialReward: 1_024,
+            halvingInterval: 10_000
+        )
+        let leaf = try await buildAndStoreGenesis(
+            spec: spec,
+            timestamp: 1_000,
+            target: .max,
+            fetcher: storage
+        )
+        let middle = try await buildAndStoreGenesis(
+            spec: spec,
+            children: ["Leaf": leaf],
+            timestamp: 2_000,
+            target: .max,
+            fetcher: storage
+        )
+        let root = try await buildAndStoreGenesis(
+            spec: spec,
+            children: ["Middle": middle],
+            timestamp: 3_000,
+            target: .max,
+            fetcher: storage
+        )
+        let firstHop = try await ChildBlockProof.generate(
+            rootHeader: try BlockHeader(node: root),
+            childDirectory: "Middle",
+            fetcher: storage
+        )
+        let terminalHop = try await ChildBlockProof.generate(
+            rootHeader: try BlockHeader(node: middle),
+            childDirectory: "Leaf",
+            fetcher: storage
+        )
+        return (leaf, middle, firstHop.composing(hop: terminalHop), terminalHop)
+    }
+
     func test_serialize_roundTrips() throws {
         let p = proof()
         guard let back = ChildBlockProof.deserialize(try p.serialize()) else {
@@ -68,5 +116,65 @@ final class ChildBlockProofCoreTests: XCTestCase {
         let composed = upstream.composing(hop: hop)
 
         XCTAssertEqual(composed.entries.count, 1)
+    }
+
+    func test_directHopExtractsCanonicalTerminalHopAndBindsChild() async throws {
+        let fixture = try await composedFixture()
+        let extracted = await fixture.composed.directHop()
+        let direct = try XCTUnwrap(extracted)
+
+        XCTAssertEqual(
+            try direct.proof.serialize(),
+            try fixture.terminalHop.serialize()
+        )
+        XCTAssertEqual(direct.childCID, try BlockHeader(node: fixture.leaf).rawCID)
+        XCTAssertEqual(direct.parentStateCID, fixture.middle.prevState.rawCID)
+        XCTAssertTrue(direct.binds(child: fixture.leaf))
+        XCTAssertFalse(direct.binds(child: fixture.middle))
+
+        let reextractedResult = await fixture.terminalHop.directHop()
+        let reextracted = try XCTUnwrap(reextractedResult)
+        XCTAssertEqual(
+            try reextracted.proof.serialize(),
+            try fixture.terminalHop.serialize()
+        )
+    }
+
+    func test_directHopRejectsDuplicateEntries() async throws {
+        let fixture = try await composedFixture()
+        let duplicate = ChildBlockProof(
+            rootCID: fixture.composed.rootCID,
+            directoryPath: fixture.composed.directoryPath,
+            entries: fixture.composed.entries + [try XCTUnwrap(fixture.composed.entries.first)]
+        )
+
+        let extracted = await duplicate.directHop()
+        XCTAssertNil(extracted)
+    }
+
+    func test_directHopRejectsMalformedOrUnresolvableProofs() async throws {
+        let fixture = try await composedFixture()
+        let emptyPath = ChildBlockProof(
+            rootCID: fixture.composed.rootCID,
+            directoryPath: [],
+            entries: fixture.composed.entries
+        )
+        let malformedEntry = ChildBlockProof(
+            rootCID: fixture.composed.rootCID,
+            directoryPath: fixture.composed.directoryPath,
+            entries: fixture.composed.entries + [("not-a-cid", Data([1]))]
+        )
+        let missingRoot = ChildBlockProof(
+            rootCID: testCID("missing-root"),
+            directoryPath: fixture.composed.directoryPath,
+            entries: fixture.composed.entries
+        )
+
+        let emptyPathResult = await emptyPath.directHop()
+        let malformedEntryResult = await malformedEntry.directHop()
+        let missingRootResult = await missingRoot.directHop()
+        XCTAssertNil(emptyPathResult)
+        XCTAssertNil(malformedEntryResult)
+        XCTAssertNil(missingRootResult)
     }
 }
