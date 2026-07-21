@@ -239,9 +239,9 @@ final class ReceiptStateTests: XCTestCase {
         )
 
         let receiptKey = ReceiptKey(receiptAction: receiptAction).description
-        let stored: HeaderImpl<PublicKey>? = try? updatedReceiptState.node?.get(key: receiptKey)
+        let stored: String? = try? updatedReceiptState.node?.get(key: receiptKey)
         XCTAssertNotNil(stored, "Receipt should be stored in state")
-        XCTAssertEqual(stored?.rawCID, withdrawerAddr, "Stored withdrawer should match")
+        XCTAssertEqual(stored, withdrawerAddr, "Stored withdrawer should match")
     }
 
     func testDuplicateReceiptKeysInBlockRejected() async throws {
@@ -602,7 +602,8 @@ final class AtomicSwapCycleTests: XCTestCase {
 @MainActor
 final class CrossChainFlowTests: XCTestCase {
 
-    /// End-to-end: deposit on child chain, receipt on nexus, withdrawal on child chain
+    /// Protocol integration: valid child deposit, later parent receipt carrier,
+    /// and valid child withdrawal through the real consensus validator.
     func testFullDepositReceiptWithdrawalFlow() async throws {
         let fetcher = makeFetcher()
         let t = now()
@@ -613,16 +614,28 @@ final class CrossChainFlowTests: XCTestCase {
         let withdrawerAddr = addr(withdrawer.publicKey)
 
         let nSpec = nexusSpec()
-        let cSpec = childSpec()
-        let childReward = cSpec.rewardAtBlock(0)
-        let nexusReward = nSpec.rewardAtBlock(0)
+        let cSpec = childSpec().withParentWorkAuthorityKey(testParentWorkAuthorityKey)
+        let childReward = cSpec.rewardAtBlock(1)
+        let nexusReward = nSpec.rewardAtBlock(1)
         let depositAmount: UInt64 = 200
         let swapNonce: UInt128 = 999
 
-        // --- Step 1: Build child chain genesis ---
-        let childGenesis = try await buildAndStoreGenesis(
-            spec: cSpec, timestamp: t - 30_000, target: UInt256(1000), fetcher: fetcher
+        let nexusGenesis = try await buildAndStoreGenesis(
+            spec: nSpec, timestamp: t - 30_000, target: .max, fetcher: fetcher
         )
+        let childGenesis = try await BlockBuilder.buildChildGenesis(
+            spec: cSpec,
+            parentState: nexusGenesis.postState,
+            timestamp: t - 30_000,
+            target: .max,
+            fetcher: fetcher
+        )
+        try await storeBuiltBlock(childGenesis, in: fetcher)
+        let childGenesisValid = try await childGenesis.validateGenesis(
+            fetcher: fetcher,
+            chainPath: ["Nexus", "Child"]
+        ).0
+        XCTAssertTrue(childGenesisValid)
 
         // --- Step 2: Deposit on child chain (demander deposits, locking funds) ---
         let depositBody = TransactionBody(
@@ -635,14 +648,19 @@ final class CrossChainFlowTests: XCTestCase {
             ],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
             signers: [demanderAddr], fee: 0, nonce: 0,
-            chainPath: ["Nexus"]
+            chainPath: ["Nexus", "Child"]
         )
         let depositTx = signTx(body: depositBody, keypair: demander)
 
         let childBlock1 = try await buildAndStoreBlock(
             previous: childGenesis, transactions: [depositTx],
-            timestamp: t - 20_000, target: UInt256(1000), fetcher: fetcher
+            timestamp: t - 20_000, target: .max, fetcher: fetcher
         )
+        let depositValid = try await childBlock1.validateNexus(
+            fetcher: fetcher,
+            chainPath: ["Nexus", "Child"]
+        ).0
+        XCTAssertTrue(depositValid)
 
         // Verify deposit is in child chain state
         guard let childFrontier1 = childBlock1.postState.node else {
@@ -652,12 +670,7 @@ final class CrossChainFlowTests: XCTestCase {
         let depositStored: UInt64? = try? childFrontier1.depositState.node?.get(key: depositKey)
         XCTAssertEqual(depositStored, depositAmount, "Deposit should exist in child state")
 
-        // --- Step 3: Receipt on nexus (withdrawer pays demander) ---
-        let nexusGenesis = try await buildAndStoreGenesis(
-            spec: nSpec, timestamp: t - 30_000, target: UInt256(1000), fetcher: fetcher
-        )
-
-        // Withdrawer gets the block reward and pays demander via receipt
+        // The receipt enters the parent's post-state in this block.
         let receiptBody = TransactionBody(
             accountActions: [
                 AccountAction(owner: withdrawerAddr, delta: Int64(nexusReward))
@@ -674,7 +687,7 @@ final class CrossChainFlowTests: XCTestCase {
 
         let nexusBlock1 = try await buildAndStoreBlock(
             previous: nexusGenesis, transactions: [receiptTx],
-            timestamp: t - 20_000, target: UInt256(1000), fetcher: fetcher
+            timestamp: t - 20_000, target: .max, fetcher: fetcher
         )
         let nexusValid = try await nexusBlock1.validateNexus(fetcher: fetcher).0
         XCTAssertTrue(nexusValid, "Nexus block with receipt should validate")
@@ -690,14 +703,25 @@ final class CrossChainFlowTests: XCTestCase {
             ),
             directory: "Child"
         ).description
-        let receiptStored: HeaderImpl<PublicKey>? = try? nexusFrontier1.receiptState.node?.get(key: receiptKey)
+        let receiptStored: String? = try? nexusFrontier1.receiptState.node?.get(key: receiptKey)
         XCTAssertNotNil(receiptStored, "Receipt should exist in nexus state")
-        XCTAssertEqual(receiptStored?.rawCID, withdrawerAddr, "Receipt withdrawer should match")
+        XCTAssertEqual(receiptStored, withdrawerAddr, "Receipt withdrawer should match")
+
+        // A later carrier exposes the receipt through its entering prevState.
+        let receiptCarrier = try await buildAndStoreBlock(
+            previous: nexusBlock1,
+            timestamp: t - 10_000,
+            target: .max,
+            fetcher: fetcher
+        )
 
         // --- Step 4: Withdrawal on child chain (withdrawer claims deposit) ---
         let withdrawalBody = TransactionBody(
             accountActions: [
-                AccountAction(owner: withdrawerAddr, delta: Int64(childReward) + Int64(depositAmount))
+                AccountAction(
+                    owner: withdrawerAddr,
+                    delta: Int64(cSpec.rewardAtBlock(2)) + Int64(depositAmount)
+                )
             ],
             actions: [], depositActions: [],
             genesisActions: [], receiptActions: [],
@@ -705,7 +729,7 @@ final class CrossChainFlowTests: XCTestCase {
                 WithdrawalAction(withdrawer: withdrawerAddr, nonce: swapNonce, demander: demanderAddr, amountDemanded: depositAmount, amountWithdrawn: depositAmount)
             ],
             signers: [withdrawerAddr], fee: 0, nonce: 0,
-            chainPath: ["Nexus"]
+            chainPath: ["Nexus", "Child"]
         )
         let withdrawalTx = signTx(body: withdrawalBody, keypair: withdrawer)
 
@@ -713,9 +737,14 @@ final class CrossChainFlowTests: XCTestCase {
         // parentHomestead must be the nexus frontier (contains the receipt)
         let childBlock2 = try await buildAndStoreBlock(
             previous: childBlock1, transactions: [withdrawalTx],
-            parentChainBlock: nexusBlock1,
-            timestamp: t - 10_000, target: UInt256(1000), fetcher: fetcher
+            parentChainBlock: receiptCarrier,
+            timestamp: t - 10_000, target: .max, fetcher: fetcher
         )
+        let withdrawalValid = try await childBlock2.validateNexus(
+            fetcher: fetcher,
+            chainPath: ["Nexus", "Child"]
+        ).0
+        XCTAssertTrue(withdrawalValid)
 
         // Verify withdrawal: deposit should be marked spent in child state.
         guard let childFrontier2 = childBlock2.postState.node else {
@@ -728,7 +757,7 @@ final class CrossChainFlowTests: XCTestCase {
 
         // Withdrawer should have the credited amount
         let withdrawerBalance: UInt64? = try? childFrontier2.accountState.node?.get(key: withdrawerAddr)
-        XCTAssertEqual(withdrawerBalance, childReward + depositAmount,
+        XCTAssertEqual(withdrawerBalance, cSpec.rewardAtBlock(2) + depositAmount,
             "Withdrawer should receive reward + withdrawn amount")
     }
 
@@ -744,17 +773,24 @@ final class CrossChainFlowTests: XCTestCase {
         let attacker = CryptoUtils.generateKeyPair()
         let attackerAddr = addr(attacker.publicKey)
 
-        let cSpec = childSpec()
+        let cSpec = childSpec().withParentWorkAuthorityKey(testParentWorkAuthorityKey)
         let nSpec = nexusSpec()
-        let childReward = cSpec.rewardAtBlock(0)
-        let nexusReward = nSpec.rewardAtBlock(0)
+        let childReward = cSpec.rewardAtBlock(1)
+        let nexusReward = nSpec.rewardAtBlock(1)
         let depositAmount: UInt64 = 200
         let swapNonce: UInt128 = 888
 
-        // Deposit on child
-        let childGenesis = try await buildAndStoreGenesis(
-            spec: cSpec, timestamp: t - 30_000, target: UInt256(1000), fetcher: fetcher
+        let nexusGenesis = try await buildAndStoreGenesis(
+            spec: nSpec, timestamp: t - 30_000, target: .max, fetcher: fetcher
         )
+        let childGenesis = try await BlockBuilder.buildChildGenesis(
+            spec: cSpec,
+            parentState: nexusGenesis.postState,
+            timestamp: t - 30_000,
+            target: .max,
+            fetcher: fetcher
+        )
+        try await storeBuiltBlock(childGenesis, in: fetcher)
         let depositBody = TransactionBody(
             accountActions: [AccountAction(owner: demanderAddr, delta: Int64(childReward) - Int64(depositAmount))],
             actions: [], depositActions: [
@@ -762,17 +798,19 @@ final class CrossChainFlowTests: XCTestCase {
             ],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
             signers: [demanderAddr], fee: 0, nonce: 0,
-            chainPath: ["Nexus"]
+            chainPath: ["Nexus", "Child"]
         )
         let childBlock1 = try await buildAndStoreBlock(
             previous: childGenesis, transactions: [signTx(body: depositBody, keypair: demander)],
-            timestamp: t - 20_000, target: UInt256(1000), fetcher: fetcher
+            timestamp: t - 20_000, target: .max, fetcher: fetcher
         )
+        let depositValid = try await childBlock1.validateNexus(
+            fetcher: fetcher,
+            chainPath: ["Nexus", "Child"]
+        ).0
+        XCTAssertTrue(depositValid)
 
         // Receipt on nexus — authorized to `withdrawer`, not `attacker`
-        let nexusGenesis = try await buildAndStoreGenesis(
-            spec: nSpec, timestamp: t - 30_000, target: UInt256(1000), fetcher: fetcher
-        )
         // Withdrawer pays demander via receipt (funded by block reward)
         let receiptBody = TransactionBody(
             accountActions: [AccountAction(owner: withdrawerAddr, delta: Int64(nexusReward))],
@@ -787,7 +825,13 @@ final class CrossChainFlowTests: XCTestCase {
         )
         let nexusBlock1 = try await buildAndStoreBlock(
             previous: nexusGenesis, transactions: [signTx(body: receiptBody, keypair: withdrawer)],
-            timestamp: t - 20_000, target: UInt256(1000), fetcher: fetcher
+            timestamp: t - 20_000, target: .max, fetcher: fetcher
+        )
+        let receiptCarrier = try await buildAndStoreBlock(
+            previous: nexusBlock1,
+            timestamp: t - 10_000,
+            target: .max,
+            fetcher: fetcher
         )
 
         // Attacker tries to withdraw — should fail because receipt.withdrawer != attacker
@@ -799,17 +843,26 @@ final class CrossChainFlowTests: XCTestCase {
                 WithdrawalAction(withdrawer: attackerAddr, nonce: swapNonce, demander: demanderAddr, amountDemanded: depositAmount, amountWithdrawn: depositAmount)
             ],
             signers: [attackerAddr], fee: 0, nonce: 0,
-            chainPath: ["Nexus"]
+            chainPath: ["Nexus", "Child"]
         )
         let attackTx = signTx(body: attackBody, keypair: attacker)
 
-        // Block builds (frontier computation doesn't check withdrawer identity),
-        // but validation rejects: proveExistenceAndVerifyWithdrawers checks stored.rawCID != wa.withdrawer
-        let _ = try await buildAndStoreBlock(
-            previous: childBlock1, transactions: [attackTx],
-            parentChainBlock: nexusBlock1,
-            timestamp: t - 10_000, target: UInt256(1000), fetcher: fetcher
-        )
+        // Either construction or full validation must fail closed because the
+        // receipt names a different withdrawer.
+        do {
+            let attackBlock = try await buildAndStoreBlock(
+                previous: childBlock1, transactions: [attackTx],
+                parentChainBlock: receiptCarrier,
+                timestamp: t - 10_000, target: .max, fetcher: fetcher
+            )
+            let valid = try await attackBlock.validateNexus(
+                fetcher: fetcher,
+                chainPath: ["Nexus", "Child"]
+            ).0
+            XCTAssertFalse(valid, "A receipt must authorize the withdrawing account")
+        } catch StateErrors.conflictingActions {
+            // State application may reject before a candidate can be formed.
+        }
 
         // Verify the receipt stores the legitimate withdrawer, not the attacker
         guard let nexusFrontier = nexusBlock1.postState.node else {
@@ -822,9 +875,9 @@ final class CrossChainFlowTests: XCTestCase {
             ),
             directory: "Child"
         ).description
-        let storedReceipt: HeaderImpl<PublicKey>? = try? nexusFrontier.receiptState.node?.get(key: receiptKey)
+        let storedReceipt: String? = try? nexusFrontier.receiptState.node?.get(key: receiptKey)
         XCTAssertNotNil(storedReceipt, "Receipt should exist in nexus state")
-        XCTAssertNotEqual(storedReceipt?.rawCID, attackerAddr,
+        XCTAssertNotEqual(storedReceipt, attackerAddr,
             "Receipt withdrawer doesn't match attacker — proveExistenceAndVerifyWithdrawers rejects this at validation time")
     }
 

@@ -34,15 +34,14 @@ private func persistedMeta(
     height: UInt64,
     children: [String] = [],
     contributions: [VerifiedWorkContribution],
-    cumulativeWork: UInt256
+    cumulativeWork _: UInt256
 ) -> PersistedBlockMeta {
     PersistedBlockMeta(
         blockHash: hash,
         parentBlockHash: parent,
         blockHeight: height,
         childHashes: children,
-        workContributions: contributions,
-        cumulativeWork: cumulativeWork.toHexString()
+        workContributions: contributions
     )
 }
 
@@ -491,7 +490,7 @@ final class PersistWorkRoundTripTests: XCTestCase {
             block: fork2,
             contribution: fork2ExtraWork
         )
-        let liveRequirements = await live.missingSameChainPredecessors()
+        let liveRequirements = await live.unresolvedSameChainPredecessors()
         XCTAssertEqual(
             liveRequirements,
             [SameChainPredecessorRequirement(
@@ -512,7 +511,7 @@ final class PersistWorkRoundTripTests: XCTestCase {
         let expected = await live.persist()
 
         let restored = try ChainState.restore(from: snapshot)
-        let restoredRequirements = await restored.missingSameChainPredecessors()
+        let restoredRequirements = await restored.unresolvedSameChainPredecessors()
         XCTAssertEqual(
             restoredRequirements,
             [SameChainPredecessorRequirement(
@@ -527,7 +526,7 @@ final class PersistWorkRoundTripTests: XCTestCase {
         )
         let restoredTip = await restored.getMainChainTip()
         let recovered = await restored.persist()
-        let remainingRequirements = await restored.missingSameChainPredecessors()
+        let remainingRequirements = await restored.unresolvedSameChainPredecessors()
         let restoredFork2 = try XCTUnwrap(
             recovered.blocks.first { $0.blockHash == fork2Header.rawCID }
         )
@@ -1269,8 +1268,6 @@ final class PersistWorkRoundTripTests: XCTestCase {
                 blockHeight: block.blockHeight,
                 childHashes: block.childHashes,
                 workContributions: block.workContributions,
-                cumulativeWork: block.cumulativeWork,
-                subtreeWeight: block.subtreeWeight,
                 timestamp: block.timestamp
             )
         }
@@ -1306,8 +1303,6 @@ final class PersistWorkRoundTripTests: XCTestCase {
                 blockHeight: block.blockHeight,
                 childHashes: block.childHashes,
                 workContributions: block.workContributions,
-                cumulativeWork: block.cumulativeWork,
-                subtreeWeight: block.subtreeWeight,
                 timestamp: child.timestamp + 1
             )
         }
@@ -1339,8 +1334,6 @@ final class PersistWorkRoundTripTests: XCTestCase {
                 blockHeight: block.blockHeight,
                 childHashes: block.childHashes,
                 workContributions: block.workContributions,
-                cumulativeWork: block.cumulativeWork,
-                subtreeWeight: block.subtreeWeight,
                 target: target.toHexString(),
                 timestamp: block.timestamp
             )

@@ -150,6 +150,52 @@ private func permutations<T>(_ values: [T]) -> [[T]] {
 }
 
 final class InheritedWorkAlgebraTests: XCTestCase {
+    func testSnapshotPreservesSourceFactsAcrossCodableUnionAndRestriction() throws {
+        let left = testCID("recovered-facts:left")
+        let right = testCID("recovered-facts:right")
+        let shared = testCID("recovered-facts:shared")
+        let weak = try XCTUnwrap(InheritedWorkFact(
+            blockCID: left,
+            grindID: shared,
+            work: UInt256(2)
+        ))
+        let strong = try XCTUnwrap(InheritedWorkFact(
+            blockCID: right,
+            grindID: shared,
+            work: UInt256(7)
+        ))
+
+        let snapshot = InheritedWorkSnapshot(revision: 9, facts: [weak, strong])
+        let decoded = try JSONDecoder().decode(
+            InheritedWorkSnapshot.self,
+            from: JSONEncoder().encode(snapshot)
+        )
+        let leftOnly = snapshot.restricted(to: [left])
+        let rejoined = leftOnly.union(snapshot.restricted(to: [right]))
+        let additions = snapshot.additions(since: InheritedWorkSnapshot(
+            revision: 8,
+            facts: [strong]
+        ))
+
+        XCTAssertNil(InheritedWorkFact(
+            blockCID: left,
+            grindID: shared,
+            work: .zero
+        ))
+        XCTAssertEqual(snapshot.revision, 9)
+        XCTAssertEqual(decoded, snapshot)
+        XCTAssertEqual(
+            snapshot.sourceWork(forBlock: left).work(forGrind: shared),
+            UInt256(2)
+        )
+        XCTAssertEqual(snapshot.work(forBlock: left).work(forGrind: shared), UInt256(7))
+        XCTAssertEqual(snapshot.work(forBlock: right).work(forGrind: shared), UInt256(7))
+        XCTAssertEqual(leftOnly.sourceWork(forBlock: left).work(forGrind: shared), UInt256(2))
+        XCTAssertEqual(leftOnly.work(forBlock: left).work(forGrind: shared), UInt256(2))
+        XCTAssertEqual(rejoined, snapshot)
+        XCTAssertEqual(additions.sourceWork(forBlock: left).work(forGrind: shared), UInt256(2))
+    }
+
     func testWorkMeasureUnionIsAssociativeCommutativeAndIdempotent() {
         let block = testCID("algebra:block")
         let first = InheritedWorkOracleInput(

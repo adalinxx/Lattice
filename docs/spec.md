@@ -89,7 +89,7 @@ LatticeState = (
     accountState:      SMT<CID(PublicKey) -> uint64>,
     generalState:      SMT<string -> string>,
     depositState:      SMT<DepositKey -> uint64>,
-    genesisState:      SMT<string -> CID(Block)>,
+    genesisState:      SMT<string -> ChildGenesisAuthorization>,
     receiptState:      SMT<ReceiptKey -> CID(PublicKey)>
 )
 ```
@@ -106,7 +106,8 @@ ChainSpec = (
     initialReward:                  uint64,
     halvingInterval:                uint64,
     retargetWindow:                 uint64,
-    wasmPolicies:                   [WasmPolicyRef]
+    wasmPolicies:                   [WasmPolicyRef],
+    parentWorkAuthorityKey:         ParentWorkAuthorityKey? // absent on Nexus; required on descendants
 )
 ```
 
@@ -155,10 +156,27 @@ ReceiptAction = (withdrawer: CID(PublicKey), nonce: uint128, demander: CID(Publi
 #### GenesisAction
 
 ```
-GenesisAction = (directory: string, blockCID: CID(Block))
+GenesisAction = (
+    directory:              string,
+    blockCID:               CID(Block),
+    parentWorkAuthorityKey: ParentWorkAuthorityKey
+)
 ```
 
 ### 3.7 Keys
+
+#### ParentWorkAuthorityKey
+
+`ParentWorkAuthorityKey` is the lowercase hexadecimal encoding of exactly 32
+Ed25519 public-key bytes: 64 UTF-8 bytes with no prefix. A child chain commits
+its immediate parent's process key in both its `ChainSpec` and the
+`GenesisAction` that creates it. The two values MUST match. Nexus has no parent,
+so its `ChainSpec.parentWorkAuthorityKey` field MUST be absent.
+
+`ChildGenesisAuthorization` is the state value
+`parentWorkAuthorityKey || childGenesisCID`, with no delimiter. The authority
+occupies the first fixed 64 UTF-8 bytes; the non-empty remainder is the child
+genesis CID.
 
 #### DepositKey
 
@@ -504,7 +522,7 @@ Receipt actions also derive account actions: the `withdrawer` is debited `amount
 For each `GenesisAction`:
 - **Key**: `action.directory`
 - **Proof**: Verify key does not exist in `prevState.genesisState` (insertion proof)
-- **Update**: `genesisState[directory] = action.blockCID`
+- **Update**: `genesisState[directory] = action.parentWorkAuthorityKey || action.blockCID`
 
 ### 6.7 State Delta Accounting
 
@@ -519,7 +537,7 @@ Each action type reports a state delta in bytes:
 | `DepositAction` | `+32 + len(demander)` |
 | `WithdrawalAction` | `+len(withdrawer) + len(demander) + 32` |
 | `ReceiptAction` | `+len(withdrawer) + len(demander) + len(directory) + 24` |
-| `GenesisAction` | `+len(blockCID) + len(directory)` |
+| `GenesisAction` | `+len(blockCID) + len(directory) + len(parentWorkAuthorityKey)` |
 
 Total delta per block must not exceed `spec.maxStateGrowth`.
 
@@ -550,8 +568,9 @@ Both domain markers are consensus bytes; there is no newline between the outer
 prefix and the first envelope line.
 
 Writers MUST sign this exact preimage. For compatibility, validators accept
-either that signature or the historical bare preimage `UTF8(CID(tx.body))`.
-The body CID commits the complete
+either that signature or the historical body-CID input to the same outer
+domain: `UTF8("lattice-tx-v1:" || CID(tx.body))`. A truly bare
+`UTF8(CID(tx.body))` signature is not accepted. The body CID commits the complete
 transaction body, including its absolute `chainPath` and nonce, so mutation or
 cross-path replay still fails. This fallback does not accept bare public-key
 encodings; signing keys remain canonical Multikey values.
@@ -720,6 +739,11 @@ fact ID also includes the observed work. Weaker or equal replay is a duplicate;
 a stronger verified observation remains separately durable and updates the one
 grind quantity across all of its coverage.
 
+Consensus ingress stores each CID identity in its unique canonical text spelling.
+An alternate multibase spelling is rejected before it can create another map key;
+this identity-encoding rule is separate from branch canonicity, which never
+determines whether accepted work contributes.
+
 Consensus comparisons use a `WorkMeasure`, conceptually `Map<RootCID, U256>`.
 Measure union takes the maximum value per root CID. `total(measure)` is the exact
 sum of the resulting distinct values. Therefore one physical grind is counted
@@ -729,6 +753,11 @@ secures, while independent grinds always sum.
 The strongest known quantity for a root CID is normalized across every local and
 inherited coverage before any competing subtree is compared. Shared work is
 therefore neutral even when its strongest observation arrived on only one side.
+Every successfully authenticated and staged local fact remains a quantity
+observation even while its
+same-chain predecessor is absent. It may strengthen the same root CID on an
+already routed coverage, but its own coverage has no segment route until that
+predecessor attaches.
 
 ### 9.2 Chain State and Hierarchical GHOST
 
@@ -790,12 +819,13 @@ facts are durable and restored.
 A current-level target miss returns a carrier result without executing its
 transition, inserting it, or implicitly retaining it for this chain. A node may
 explicitly retain a carrier or an exact child-link path as availability policy;
-Lattice does not enumerate an attacker-sized child trie. Missing same-chain
-predecessors are derived from the accepted graph, including after recovery, and
-must enter this same admission boundary. A carrier, duplicate, or rejected
-candidate that cannot yet issue its link exposes the exact typed predecessor
-requirement so the node can backfill and retry. This does not claim a predecessor
-body is unavailable. Missing cross-chain input instead identifies the child proof,
+Lattice does not enumerate an attacker-sized child trie. Unresolved same-chain
+predecessors (absent or accepted-but-unconnected) are derived from the accepted
+graph, including after recovery, and must enter this same admission boundary. A
+carrier, duplicate, or rejected candidate that cannot yet issue its link exposes
+the exact typed predecessor requirement so the node can backfill and retry. This
+does not claim a predecessor body is unavailable. Missing cross-chain input
+instead identifies the child proof,
 root-bound immediate-parent carrier fact, or immediate-parent genesis fact that
 the node must obtain from the authenticated parent process. `parentState` is a
 state CID, not a parent-block lookup key. Consensus derives neither relationship
@@ -834,8 +864,16 @@ is excluded. The node authenticates and routes that process, derives the
 child-block bindings from validated content-addressed paths, and supplies a
 coherent revisioned inherited-work snapshot. If any requested securing parent
 block is unknown, the export is unavailable rather than a zero-valued measure. A
-known block whose accepted ancestry is not yet connected to a genesis root is
-likewise ineligible for export.
+known block whose accepted ancestry has not yet joined a valid same-chain root
+component is likewise ineligible for export. Connection is inductive: any
+valid height-zero root is a base case, and a validated successor joins through
+its connected predecessor. This is not a Nexus or canonical-branch exception.
+
+This connection requirement gates a coverage location, not a physical grind's
+quantity. A successfully authenticated and staged disconnected local
+observation may strengthen the root
+CID of an eligible connected coverage elsewhere, but it cannot itself add a
+child binding or an export route until its same-chain predecessor attaches.
 
 Snapshots are append-only joins. Every authenticated snapshot unions with the
 retained view and revisions combine by maximum. An older or equal revision may

@@ -239,7 +239,11 @@ final class ChildGenesisValidationTests: XCTestCase {
     private func bodyAnchoring(directory: String, blockCID: String) -> TransactionBody {
         TransactionBody(
             accountActions: [], actions: [], depositActions: [],
-            genesisActions: [GenesisAction(directory: directory, blockCID: blockCID)],
+            genesisActions: [GenesisAction(
+                directory: directory,
+                blockCID: blockCID,
+                parentWorkAuthorityKey: testParentWorkAuthorityKey
+            )],
             receiptActions: [], withdrawalActions: [],
             signers: [], fee: 0, nonce: 0, chainPath: ["Nexus"]
         )

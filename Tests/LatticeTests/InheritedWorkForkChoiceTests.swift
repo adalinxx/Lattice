@@ -17,6 +17,36 @@ final class InheritedWorkForkChoiceTests: XCTestCase {
         return try XCTUnwrap(snapshot).work(forBlock: "child")
     }
 
+    private func stagedHash(_ name: String) -> String {
+        testCID("orphan-boundary-live:\(name)")
+    }
+
+    private func stagedAdmission(
+        _ name: String,
+        parent: String?,
+        height: UInt64,
+        contribution: VerifiedWorkContribution
+    ) -> ChainAdmissionBatch {
+        ChainAdmissionBatch(facts: [
+            .block(ChainBlockFact(
+                blockHash: stagedHash(name),
+                parentBlockHash: parent,
+                blockHeight: height,
+                postStateCID: testCID("orphan-boundary-live:post:\(name)"),
+                prevStateCID: testCID("orphan-boundary-live:prev:\(name)"),
+                specCID: testCID("orphan-boundary-live:spec:\(name)"),
+                target: "1",
+                nextTarget: "1",
+                timestamp: Int64(height),
+                stateDiff: .empty
+            )),
+            .work(ChainWorkFact(
+                blockHash: stagedHash(name),
+                contribution: contribution
+            )),
+        ])
+    }
+
     private func fork() -> ChainState {
         var root = makeBlockMeta(hash: "root", height: 0)
         let left = makeBlockMeta(hash: "left", previousHash: "root", height: 1)
@@ -236,6 +266,43 @@ final class InheritedWorkForkChoiceTests: XCTestCase {
         XCTAssertEqual(rightWork.total, WorkSum(UInt256(1)))
     }
 
+    func testCanonicalPointerDoesNotChangeWorkOrChildExport() async throws {
+        var root = makeBlockMeta(hash: "root", height: 0)
+        let left = BlockMeta(
+            blockHash: "left",
+            parentBlockHash: "root",
+            blockHeight: 1,
+            childHashes: [],
+            workContributions: [contribution("left-work", 3)]
+        )
+        let right = BlockMeta(
+            blockHash: "right",
+            parentBlockHash: "root",
+            blockHeight: 1,
+            childHashes: [],
+            workContributions: [contribution("right-work", 5)]
+        )
+        root.childHashes = ["left", "right"]
+        let leftPointer = makeChain(
+            blocks: [root, left, right],
+            mainChainHashes: ["root", "left"]
+        )
+        let rightPointer = makeChain(
+            blocks: [root, left, right],
+            mainChainHashes: ["root", "right"]
+        )
+
+        let coverage: Set<String> = ["left", "right"]
+        let leftExport = try await exportedWork(leftPointer, parentBlocks: coverage)
+        let rightExport = try await exportedWork(rightPointer, parentBlocks: coverage)
+        let leftChoice = await leftPointer.forkChoiceSnapshot(startingAt: "root")
+        let rightChoice = await rightPointer.forkChoiceSnapshot(startingAt: "root")
+
+        XCTAssertEqual(leftExport, rightExport)
+        XCTAssertEqual(leftChoice, rightChoice)
+        XCTAssertEqual(leftChoice?.tipHash, "right")
+    }
+
     func testDisconnectedOrphanCannotExportSecuringWork() async {
         let root = makeBlockMeta(hash: "root", height: 0)
         let orphan = makeBlockMeta(
@@ -272,6 +339,41 @@ final class InheritedWorkForkChoiceTests: XCTestCase {
         XCTAssertNotNil(completeExport)
     }
 
+    func testRecoveryReportsEveryUnresolvedImmediatePredecessor() async {
+        let root = makeBlockMeta(hash: "root", height: 0)
+        var parent = makeBlockMeta(
+            hash: "parent",
+            previousHash: "missing",
+            height: 1
+        )
+        let descendant = makeBlockMeta(
+            hash: "descendant",
+            previousHash: "parent",
+            height: 2
+        )
+        parent.childHashes = ["descendant"]
+        let chain = makeChain(
+            blocks: [root, parent, descendant],
+            mainChainHashes: ["root"]
+        )
+
+        let requirements = await chain.unresolvedSameChainPredecessors()
+
+        XCTAssertEqual(
+            requirements,
+            [
+                SameChainPredecessorRequirement(
+                    descendantCID: "descendant",
+                    predecessorCID: "parent"
+                ),
+                SameChainPredecessorRequirement(
+                    descendantCID: "parent",
+                    predecessorCID: "missing"
+                ),
+            ]
+        )
+    }
+
     func testInheritedSharedGrindDoesNotProjectThroughMissingOrphanParent() async {
         let shared = contribution("orphan-shared", 2)
         let orphanOnly = contribution("orphan-only", 17)
@@ -298,6 +400,184 @@ final class InheritedWorkForkChoiceTests: XCTestCase {
         let rootChoice = await chain.forkChoiceSnapshot(startingAt: "root")
         XCTAssertEqual(tip, "root")
         XCTAssertEqual(rootChoice?.subtreeWork, WorkSum(UInt256(3)))
+    }
+
+    func testAcceptedOrphanStrengthensSharedConnectedCoverageWithoutRoutingItself() async throws {
+        let rootHash = testCID("orphan-boundary-root")
+        let leftHash = testCID("orphan-boundary-left")
+        let rightHash = testCID("orphan-boundary-right")
+        let missingHash = testCID("orphan-boundary-missing")
+        let orphanHash = testCID("orphan-boundary-orphan")
+        let shared = contribution(testCID("orphan-boundary-shared"), 2)
+        let rightOnly = contribution(testCID("orphan-boundary-right-only"), 10)
+        let orphanStrength = contribution(shared.id, 100)
+        let root = BlockMeta(
+            blockHash: rootHash,
+            parentBlockHash: nil,
+            blockHeight: 0,
+            childHashes: [leftHash, rightHash],
+            workContributions: [
+                contribution(testCID("orphan-boundary-root-work"), 1),
+            ]
+        )
+        let left = BlockMeta(
+            blockHash: leftHash,
+            parentBlockHash: rootHash,
+            blockHeight: 1,
+            childHashes: [],
+            workContributions: [shared]
+        )
+        let right = BlockMeta(
+            blockHash: rightHash,
+            parentBlockHash: rootHash,
+            blockHeight: 1,
+            childHashes: [],
+            workContributions: [rightOnly]
+        )
+        let orphan = BlockMeta(
+            blockHash: orphanHash,
+            parentBlockHash: missingHash,
+            blockHeight: 2,
+            childHashes: [],
+            workContributions: [orphanStrength]
+        )
+        let chain = makeChain(
+            blocks: [root, left, right, orphan],
+            mainChainHashes: [rootHash, rightHash]
+        )
+
+        _ = await chain.reevaluateForkChoice()
+        let tip = await chain.getMainChainTip()
+        let orphanChoice = await chain.forkChoiceSnapshot(startingAt: orphanHash)
+        let leftCumulative = await chain.getCumulativeWork(forHash: leftHash)
+        let tipCumulative = await chain.getCumulativeWork(limit: 1)
+        let rootSubtree = await chain.subtreeWeight(forHash: rootHash)
+        XCTAssertEqual(tip, leftHash)
+        XCTAssertNil(orphanChoice)
+        XCTAssertEqual(leftCumulative, WorkSum(UInt256(101)))
+        XCTAssertEqual(tipCumulative, WorkSum(UInt256(101)))
+        XCTAssertEqual(rootSubtree, WorkSum(UInt256(111)))
+
+        let exported = try await exportedWork(chain, parentBlocks: [leftHash])
+        XCTAssertEqual(exported.work(forGrind: shared.id), orphanStrength.work)
+
+        let persisted = await chain.persist()
+        let persistedLeft = try XCTUnwrap(
+            persisted.blocks.first { $0.blockHash == leftHash }
+        )
+        XCTAssertEqual(persistedLeft.workContributions, [shared])
+
+        let restored = try ChainState.restore(from: persisted)
+        let restoredTip = await restored.getMainChainTip()
+        let restoredOrphanChoice = await restored.forkChoiceSnapshot(
+            startingAt: orphanHash
+        )
+        let restoredLeftCumulative = await restored.getCumulativeWork(
+            forHash: leftHash
+        )
+        XCTAssertEqual(restoredTip, leftHash)
+        XCTAssertNil(restoredOrphanChoice)
+        XCTAssertEqual(restoredLeftCumulative, WorkSum(UInt256(101)))
+        let restoredExport = try await exportedWork(
+            restored,
+            parentBlocks: [leftHash]
+        )
+        XCTAssertEqual(restoredExport.work(forGrind: shared.id), orphanStrength.work)
+    }
+
+    func testAcceptedOrphanSeparatesQuantityStrengtheningFromCoverageActivation() async throws {
+        let rootHash = stagedHash("root")
+        let leftHash = stagedHash("left")
+        let missingHash = stagedHash("missing")
+        let orphanHash = stagedHash("orphan")
+        let shared = contribution(testCID("orphan-boundary-live:shared"), 2)
+        let rightOnly = contribution(testCID("orphan-boundary-live:right-only"), 10)
+        let orphanOnly = contribution(testCID("orphan-boundary-live:orphan-only"), 1)
+        let root = stagedAdmission(
+            "root",
+            parent: nil,
+            height: 0,
+            contribution: contribution(testCID("orphan-boundary-live:root"), 1)
+        )
+        let left = stagedAdmission(
+            "left",
+            parent: rootHash,
+            height: 1,
+            contribution: shared
+        )
+        let right = stagedAdmission(
+            "right",
+            parent: rootHash,
+            height: 1,
+            contribution: rightOnly
+        )
+        let orphan = stagedAdmission(
+            "orphan",
+            parent: missingHash,
+            height: 3,
+            contribution: orphanOnly
+        )
+
+        let chain = try await ChainState.restore(replaying: [root])
+        for batch in [left, right, orphan] {
+            _ = try await chain.applyStaged(batch)
+        }
+        let orphanStrength = contribution(shared.id, 100)
+        let update = await chain.addWorkContribution(orphanStrength, to: orphanHash)
+        XCTAssertTrue(update.addedContribution)
+
+        let tipBeforeAttachment = await chain.getMainChainTip()
+        XCTAssertEqual(tipBeforeAttachment, leftHash)
+        let exportBeforeAttachment = try await exportedWork(
+            chain,
+            parentBlocks: [leftHash]
+        )
+        XCTAssertEqual(exportBeforeAttachment.work(forGrind: shared.id), orphanStrength.work)
+        XCTAssertNil(exportBeforeAttachment.work(forGrind: orphanOnly.id))
+        let orphanChoice = await chain.forkChoiceSnapshot(startingAt: orphanHash)
+        XCTAssertNil(orphanChoice)
+
+        let persisted = await chain.persist()
+        let persistedOrphan = try XCTUnwrap(
+            persisted.blocks.first { $0.blockHash == orphanHash }
+        )
+        XCTAssertEqual(
+            persistedOrphan.workContributions.sorted { $0.id < $1.id },
+            [orphanOnly, orphanStrength].sorted { $0.id < $1.id }
+        )
+
+        let restored = try ChainState.restore(from: persisted)
+        let restoredTipBeforeAttachment = await restored.getMainChainTip()
+        XCTAssertEqual(restoredTipBeforeAttachment, leftHash)
+        let restoredExportBeforeAttachment = try await exportedWork(
+            restored,
+            parentBlocks: [leftHash]
+        )
+        XCTAssertEqual(
+            restoredExportBeforeAttachment.work(forGrind: shared.id),
+            orphanStrength.work
+        )
+        XCTAssertNil(restoredExportBeforeAttachment.work(forGrind: orphanOnly.id))
+
+        let missing = stagedAdmission(
+            "missing",
+            parent: leftHash,
+            height: 2,
+            contribution: shared
+        )
+        _ = try await restored.applyStaged(missing)
+
+        let tipAfterAttachment = await restored.getMainChainTip()
+        XCTAssertEqual(tipAfterAttachment, orphanHash)
+        let exportAfterAttachment = try await exportedWork(
+            restored,
+            parentBlocks: [leftHash]
+        )
+        XCTAssertEqual(
+            exportAfterAttachment.work(forGrind: shared.id),
+            orphanStrength.work
+        )
+        XCTAssertEqual(exportAfterAttachment.work(forGrind: orphanOnly.id), orphanOnly.work)
     }
 
     func testPackageInitializerRejectsNonreciprocalKnownEdges() {

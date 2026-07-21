@@ -86,7 +86,7 @@ public struct CryptoUtils {
         guard let cid = try? CID(address) else { return false }
         guard cid.version == .v1, cid.codec == .dag_cbor else { return false }
         guard cid.multihash.algorithm == .sha2_256, cid.multihash.length == 32 else { return false }
-        return cid.toBaseEncodedString == address
+        return CIDIdentity.isCanonical(address)
     }
 
     /// Confirm `address` is the CID of the `PublicKey` for `publicKeyHex` — i.e.

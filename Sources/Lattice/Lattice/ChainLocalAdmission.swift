@@ -391,7 +391,8 @@ private func parentGenesisLinks(
             links.insert(ParentGenesisLink(
                 parentPath: parentPath,
                 directory: action.directory,
-                childGenesisCID: action.blockCID
+                childGenesisCID: action.blockCID,
+                parentWorkAuthorityKey: action.parentWorkAuthorityKey
             ))
         }
     }
@@ -405,7 +406,8 @@ private enum ChainLocalAdmission {
     static func verifyChildPackage(
         _ package: ChildValidationPackage,
         child: Block,
-        context: ChainRuntimeContext
+        context: ChainRuntimeContext,
+        fetcher: any Fetcher
     ) async -> Result<VerifiedChildEvidence, ChainAdmissionFailure> {
         let proofResult = await package.proof.verify(
             child: child,
@@ -421,7 +423,22 @@ private enum ChainLocalAdmission {
             case .protocolInvalid: .protocolInvalid
             }
         }
-        return proofResult
+        guard case .success(let evidence) = proofResult else {
+            return proofResult
+        }
+        guard child.parent == nil,
+              let link = package.parentGenesisLink else {
+            return .success(evidence)
+        }
+        do {
+            guard let spec = try await child.spec.resolve(fetcher: fetcher).node,
+                  spec.parentWorkAuthorityKey == link.parentWorkAuthorityKey else {
+                return .failure(.protocolInvalid)
+            }
+            return .success(evidence)
+        } catch {
+            return .failure(classifyResolutionFailure(error))
+        }
     }
 
     static func prepare(
@@ -487,7 +504,8 @@ private enum ChainLocalAdmission {
             switch await verifyChildPackage(
                 childPackage,
                 child: block,
-                context: context
+                context: context,
+                fetcher: fetcher
             ) {
             case .success(let verified):
                 grindID = verified.grindID
@@ -537,9 +555,10 @@ private enum ChainLocalAdmission {
         }
 
         let knownBlock = await level.chain.contains(blockHash: blockHash)
-        if let existing = await level.chain.workContribution(id: contribution.id),
-           existing.blockHashes.contains(blockHash),
-           existing.contribution.work >= contribution.work {
+        if let existing = await level.chain.workContribution(
+            id: contribution.id,
+            at: blockHash
+        ), existing.work >= contribution.work {
             if knownBlock {
                 // A predecessor can connect after preflight but before the
                 // node takes its mutation lease. Keep this duplicate's
@@ -924,14 +943,16 @@ public extension ChainLevel {
                   let genesisState = state.genesisState.node else {
                 return .failure(.unavailableEvidence)
             }
-            guard let anchoredCID: String = try? genesisState.get(key: directory),
-                  anchoredCID == childGenesisCID else {
+            guard let stored: String = try? genesisState.get(key: directory),
+                  let authorization = ChildGenesisAuthorization(stored),
+                  authorization.childGenesisCID == childGenesisCID else {
                 return .failure(.protocolInvalid)
             }
             return .success(ParentGenesisLink(
                 parentPath: context.path,
                 directory: directory,
-                childGenesisCID: childGenesisCID
+                childGenesisCID: childGenesisCID,
+                parentWorkAuthorityKey: authorization.parentWorkAuthorityKey
             ))
         } catch {
             return .failure(classifyValidationFailure(error))
@@ -1379,7 +1400,8 @@ public extension ChainLevel {
         switch await ChainLocalAdmission.verifyChildPackage(
             childPackage,
             child: resolved.block,
-            context: context
+            context: context,
+            fetcher: fetcher
         ) {
         case .success(let verified): evidence = verified
         case .failure(let failure): throw failure

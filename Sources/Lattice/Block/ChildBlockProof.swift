@@ -210,20 +210,18 @@ public struct ChildBlockProof: Sendable {
                     guard let directory = chainPath.last else {
                         return .failure(.malformedEvidence)
                     }
-                    let expectedGenesis = ParentGenesisLink(
-                        parentPath: Array(chainPath.dropLast()),
-                        directory: directory,
-                        childGenesisCID: childCID
-                    )
                     if let parentGenesisLink {
-                        guard parentGenesisLink == expectedGenesis else {
+                        guard parentGenesisLink.parentPath
+                                == Array(chainPath.dropLast()),
+                              parentGenesisLink.directory == directory,
+                              parentGenesisLink.childGenesisCID == childCID else {
                             return .failure(.malformedEvidence)
                         }
                     } else {
                         return .failure(.crossChainEvidenceRequired(.parentGenesis(
-                            parentPath: expectedGenesis.parentPath,
-                            directory: expectedGenesis.directory,
-                            childGenesisCID: expectedGenesis.childGenesisCID
+                            parentPath: Array(chainPath.dropLast()),
+                            directory: directory,
+                            childGenesisCID: childCID
                         )))
                     }
                 } else if parentGenesisLink != nil {

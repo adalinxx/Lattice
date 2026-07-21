@@ -71,8 +71,8 @@ carrier continuity, vertical state bindings, and this chain's transition.
 At a vertical edge, the nested child commits the carrier's `prevState` as
 `parentState`. It does not commit the carrier CID. Therefore:
 
-- same-chain predecessors are explicit block links and missing predecessors are
-  derived as holes in the accepted graph;
+- same-chain predecessors are explicit block links and unresolved predecessors
+  (absent or accepted-but-unconnected) are derived from the accepted graph;
 - cross-chain acquisition asks only the authenticated immediate-parent process
   for a root-bound carrier fact and, for genesis, a parent-issued genesis fact;
 - Lattice never tries to invert `parentState` into a parent block.

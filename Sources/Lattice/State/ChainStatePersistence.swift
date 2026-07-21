@@ -1,5 +1,4 @@
 import UInt256
-import CID
 
 public enum ChainStateRestoreError: Error, Sendable, Equatable {
     case corruptConsensusGraph
@@ -10,7 +9,7 @@ public enum ChainStateRestoreError: Error, Sendable, Equatable {
 /// Node-persistable projection of one chain's local consensus state and the
 /// inherited revision under which its canonical cache was derived.
 public struct PersistedChainState: Codable, Sendable, Equatable {
-    public static let currentSchemaVersion: UInt16 = 1
+    public static let currentSchemaVersion: UInt16 = 3
 
     public let schemaVersion: UInt16
     public let revision: UInt64
@@ -46,8 +45,6 @@ public struct PersistedBlockMeta: Codable, Sendable, Equatable {
     public let blockHeight: UInt64
     public let childHashes: [String]
     public let workContributions: [VerifiedWorkContribution]
-    public let cumulativeWork: String
-    public let subtreeWeight: String?
     public let target: String?
     public let timestamp: Int64?
     public let postStateCID: String?
@@ -61,8 +58,6 @@ public struct PersistedBlockMeta: Codable, Sendable, Equatable {
         blockHeight: UInt64,
         childHashes: [String],
         workContributions: [VerifiedWorkContribution],
-        cumulativeWork: String,
-        subtreeWeight: String? = nil,
         target: String? = nil,
         timestamp: Int64? = nil,
         postStateCID: String? = nil,
@@ -75,8 +70,6 @@ public struct PersistedBlockMeta: Codable, Sendable, Equatable {
         self.blockHeight = blockHeight
         self.childHashes = childHashes
         self.workContributions = workContributions
-        self.cumulativeWork = cumulativeWork
-        self.subtreeWeight = subtreeWeight
         self.target = target
         self.timestamp = timestamp
         self.postStateCID = postStateCID
@@ -91,7 +84,7 @@ private extension PersistedBlockMeta {
         guard !workContributions.isEmpty,
               Set(workContributions.map(\.id)).count == workContributions.count,
               workContributions.allSatisfy({
-                  $0.work > .zero && (try? CID($0.id)) != nil
+                  $0.work > .zero && CIDIdentity.isCanonical($0.id)
               }) else { return nil }
         return WorkMeasure(workContributions).total
     }
@@ -108,17 +101,15 @@ private extension PersistedBlockMeta {
         let hasCompleteSnapshot = timestamp != nil
             && snapshotPayload.allSatisfy { $0 }
         guard decodedWork != nil,
-              WorkSum(hex: cumulativeWork) != nil,
-              (try? CID(blockHash)) != nil,
-              parentBlockHash.map({ (try? CID($0)) != nil }) ?? true,
-              childHashes.allSatisfy({ (try? CID($0)) != nil }),
-              postStateCID.map({ (try? CID($0)) != nil }) ?? true,
-              prevStateCID.map({ (try? CID($0)) != nil }) ?? true,
-              specCID.map({ (try? CID($0)) != nil }) ?? true,
+              CIDIdentity.isCanonical(blockHash),
+              parentBlockHash.map(CIDIdentity.isCanonical) ?? true,
+              childHashes.allSatisfy(CIDIdentity.isCanonical),
+              postStateCID.map(CIDIdentity.isCanonical) ?? true,
+              prevStateCID.map(CIDIdentity.isCanonical) ?? true,
+              specCID.map(CIDIdentity.isCanonical) ?? true,
               hasNoSnapshot || hasCompleteSnapshot else { return false }
         if let target, UInt256(target, radix: 16) == nil { return false }
         if let nextTarget, UInt256(nextTarget, radix: 16) == nil { return false }
-        if let subtreeWeight, WorkSum(hex: subtreeWeight) == nil { return false }
         return true
     }
 }
@@ -155,7 +146,7 @@ private func hasValidConsensusGraph(
         }
     }
 
-    var projectionBlocks = blocks.mapValues { block in
+    let projectionBlocks = blocks.mapValues { block in
         BlockMeta(
             blockHash: block.blockHash,
             parentBlockHash: block.parentBlockHash,
@@ -163,15 +154,6 @@ private func hasValidConsensusGraph(
             childHashes: block.childHashes,
             workContributions: block.workContributions
         )
-    }
-    ChainState.normalizeWorkContributions(in: &projectionBlocks)
-    ChainState.recomputeWorkCaches(in: &projectionBlocks)
-    for (hash, block) in blocks {
-        guard let projected = projectionBlocks[hash],
-              WorkSum(hex: block.cumulativeWork) == projected.cumulativeWork,
-              block.subtreeWeight.map({
-                  WorkSum(hex: $0) == projected.subtreeWeight
-              }) ?? true else { return false }
     }
 
     var canonicalPath = Set<String>()
@@ -208,8 +190,6 @@ public extension ChainState {
                 blockHeight: meta.blockHeight,
                 childHashes: meta.childHashes,
                 workContributions: Array(meta.workContributions.values).sorted { $0.id < $1.id },
-                cumulativeWork: meta.cumulativeWork.toHexString(),
-                subtreeWeight: meta.subtreeWeight.toHexString(),
                 target: snapshot?.target.toHexString(),
                 timestamp: blockTimestamps[meta.blockHash],
                 postStateCID: snapshot?.postStateCID,
@@ -218,10 +198,11 @@ public extension ChainState {
                 nextTarget: snapshot?.nextTarget.toHexString()
             )
         }
+        let retainedInheritedSnapshot = inheritedWorkSnapshot
         return PersistedChainState(
             revision: mutationGeneration,
-            inheritedWorkRevision: inheritedWorkSnapshot?.revision,
-            inheritedWorkSnapshot: inheritedWorkSnapshot,
+            inheritedWorkRevision: retainedInheritedSnapshot?.revision,
+            inheritedWorkSnapshot: retainedInheritedSnapshot,
             chainTip: chainTip,
             mainChainHashes: Array(mainChainHashes).sorted(),
             blocks: hashToBlock.values.map(persistedMeta)
@@ -256,8 +237,8 @@ public extension ChainState {
         }
         let inherited = retainedInherited ?? .zero
         let validInherited = inherited.entriesByBlock.allSatisfy { blockHash, measure in
-            (try? CID(blockHash)) != nil && measure.entries.allSatisfy { grindID, work in
-                (try? CID(grindID)) != nil && work > .zero
+            CIDIdentity.isCanonical(blockHash) && measure.entries.allSatisfy { grindID, work in
+                CIDIdentity.isCanonical(grindID) && work > .zero
             }
         }
         var projection: ConsensusProjection?
@@ -296,8 +277,7 @@ public extension ChainState {
             if let snapshot = snapshot(from: block) { snapshots[block.blockHash] = snapshot }
         }
         for block in persistedBlocks {
-            guard block.decodedWork != nil,
-                  let cumulativeWork = WorkSum(hex: block.cumulativeWork) else {
+            guard block.decodedWork != nil else {
                 throw ChainStateRestoreError.corruptConsensusGraph
             }
             let meta = BlockMeta(
@@ -305,8 +285,7 @@ public extension ChainState {
                 parentBlockHash: block.parentBlockHash,
                 blockHeight: block.blockHeight,
                 childHashes: block.childHashes,
-                workContributions: block.workContributions,
-                cumulativeWork: cumulativeWork
+                workContributions: block.workContributions
             )
             blocks[block.blockHash] = meta
             byHeight[block.blockHeight, default: []].insert(block.blockHash)

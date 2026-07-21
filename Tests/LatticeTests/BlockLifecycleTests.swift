@@ -16,7 +16,9 @@ private func lifecycleSpec(_ dir: String = "Nexus") -> ChainSpec {
         premine: 1000,
         targetBlockTime: 1_000,
         initialReward: 1024, halvingInterval: 10_000,
-        retargetWindow: 5
+        retargetWindow: 5,
+        parentWorkAuthorityKey: dir == DEFAULT_ROOT_DIRECTORY
+            ? nil : testParentWorkAuthorityKey
     )
 }
 
@@ -28,7 +30,9 @@ private func noPremine(_ dir: String = "Nexus") -> ChainSpec {
         premine: 0,
         targetBlockTime: 1_000,
         initialReward: 1024, halvingInterval: 10_000,
-        retargetWindow: 5
+        retargetWindow: 5,
+        parentWorkAuthorityKey: dir == DEFAULT_ROOT_DIRECTORY
+            ? nil : testParentWorkAuthorityKey
     )
 }
 
@@ -525,7 +529,7 @@ final class BlockMintingTests: XCTestCase {
 @MainActor
 final class CrossChainTests: XCTestCase {
 
-    func testSwapOnChildChain() async throws {
+    func testDepositTransitionChangesState() async throws {
         let fetcher = makeFetcher()
         let t = now()
         let depositor = CryptoUtils.generateKeyPair()
@@ -718,7 +722,7 @@ final class CrossChainTests: XCTestCase {
         XCTAssertFalse(valid, "Nexus root must consensus-reject blocks containing withdrawal actions")
     }
 
-    func testWithdrawalOnNexusIsIgnored() async throws {
+    func testNexusWithdrawalFailsDuringConstruction() async throws {
         let fetcher = makeFetcher()
         let t = now()
         let kp = CryptoUtils.generateKeyPair()
@@ -776,7 +780,11 @@ final class CrossChainTests: XCTestCase {
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(reward))],
             actions: [],
             depositActions: [],
-            genesisActions: [GenesisAction(directory: "Child", blockCID: try VolumeImpl<Block>(node: childGenesis).rawCID)],
+            genesisActions: [GenesisAction(
+                directory: "Child",
+                blockCID: try VolumeImpl<Block>(node: childGenesis).rawCID,
+                parentWorkAuthorityKey: testParentWorkAuthorityKey
+            )],
             receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], fee: 0, nonce: 0, chainPath: ["Nexus"]
         )
@@ -792,7 +800,7 @@ final class CrossChainTests: XCTestCase {
         XCTAssertEqual(nexusBlock1.height, 1)
     }
 
-    func testSwapAndSettleFullFlow() async throws {
+    func testDepositAndReceiptTransitions() async throws {
         let fetcher = makeFetcher()
         let t = now()
         let depositor = CryptoUtils.generateKeyPair()

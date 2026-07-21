@@ -54,7 +54,8 @@ final class BlockBuilderParentHomesteadTests: XCTestCase {
             parentGenesisLink: ParentGenesisLink(
                 parentPath: ["Nexus"],
                 directory: "Child",
-                childGenesisCID: childHeader.rawCID
+                childGenesisCID: childHeader.rawCID,
+                parentWorkAuthorityKey: testParentWorkAuthorityKey
             )
         )
         guard case .success = result else {

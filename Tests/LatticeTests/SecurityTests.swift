@@ -935,7 +935,7 @@ final class ConsensusStressTests: XCTestCase {
         let chain = ChainState.fromGenesis(block: blocks[0])
 
         _ = await chain.submitTestBlock(blockHeader: header(blocks[3]), block: blocks[3])
-        let requirements = await chain.missingSameChainPredecessors()
+        let requirements = await chain.unresolvedSameChainPredecessors()
         XCTAssertEqual(
             requirements,
             [SameChainPredecessorRequirement(

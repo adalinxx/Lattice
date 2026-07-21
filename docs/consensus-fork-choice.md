@@ -61,6 +61,12 @@ Identity never changes. Quantity may strengthen. Coverage may grow. A single
 grind may cover arbitrary content and any number of blocks; it still contributes
 one quantity.
 
+A successfully authenticated and staged fact with a missing same-chain
+predecessor still proves a quantity for its root CID. It has no local GHOST
+route of its own until that predecessor attaches, so it can strengthen an
+existing routed coverage for the same root but cannot add its otherwise unique
+coverage to a segment.
+
 `WorkMeasure` is a set-like map from grind ID to quantity:
 
 ```text
@@ -141,6 +147,11 @@ Snapshots join monotonically:
 
 A snapshot revision is a source-progress watermark, not a hash of its contents.
 An older or equal revision may still reveal valid coverage and must still join.
+
+The same separation applies to successfully authenticated and staged local
+orphans: their observed quantity can strengthen a root CID already routed in
+this chain, while their distinct coverage remains absent from GHOST and child
+export until local attachment.
 
 Parent work and parent canonicity are orthogonal. New accepted work may change a
 child's fork choice. Moving only the parent's canonical pointer may not.
