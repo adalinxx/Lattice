@@ -1,6 +1,14 @@
 import XCTest
 @testable import Lattice
 import Foundation
+import cashew
+
+private struct LegacyDirectChildEdge: Hashable, Scalar {
+    let parentCarrierCID: String
+    let directory: String
+    let childCID: String
+    let proofBytes: Data
+}
 
 final class ChildBlockProofCoreTests: XCTestCase {
     private func proof(
@@ -138,6 +146,40 @@ final class ChildBlockProofCoreTests: XCTestCase {
             try reextracted.proof.serialize(),
             try fixture.terminalHop.serialize()
         )
+    }
+
+    func test_directChildEdgeCanonicalizesTerminalHopAndBindsChild() async throws {
+        let fixture = try await composedFixture()
+        let derived = await DirectChildEdge.derive(from: fixture.composed)
+        let edge = try XCTUnwrap(derived)
+
+        XCTAssertEqual(edge.parentCarrierCID, fixture.terminalHop.rootCID)
+        XCTAssertEqual(edge.directory, try XCTUnwrap(fixture.terminalHop.directoryPath.last))
+        XCTAssertEqual(edge.childCID, try BlockHeader(node: fixture.leaf).rawCID)
+        XCTAssertEqual(edge.proofBytes, try fixture.terminalHop.serialize())
+        XCTAssertNotNil(edge.edgeCID)
+        XCTAssertEqual(
+            edge.edgeCID,
+            try HeaderImpl<LegacyDirectChildEdge>(node: .init(
+                parentCarrierCID: edge.parentCarrierCID,
+                directory: edge.directory,
+                childCID: edge.childCID,
+                proofBytes: edge.proofBytes
+            )).rawCID
+        )
+        let bindsLeaf = await edge.validates(child: fixture.leaf)
+        let bindsMiddle = await edge.validates(child: fixture.middle)
+        XCTAssertTrue(bindsLeaf)
+        XCTAssertFalse(bindsMiddle)
+
+        let malformed = DirectChildEdge(
+            parentCarrierCID: edge.parentCarrierCID,
+            directory: edge.directory,
+            childCID: edge.childCID,
+            proofBytes: edge.proofBytes + Data([0])
+        )
+        let validatedMalformed = await malformed.validated()
+        XCTAssertNil(validatedMalformed)
     }
 
     func test_directHopRejectsDuplicateEntries() async throws {
