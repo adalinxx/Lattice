@@ -427,8 +427,7 @@ func testParentGenesisLink(
     ParentGenesisLink(
         parentPath: parentPath,
         directory: directory,
-        childGenesisCID: childGenesisCID,
-        parentWorkAuthorityKey: testParentWorkAuthorityKey
+        childGenesisCID: childGenesisCID
     )
 }
 

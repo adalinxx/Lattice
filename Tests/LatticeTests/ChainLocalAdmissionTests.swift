@@ -1318,8 +1318,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             depositActions: [],
             genesisActions: [GenesisAction(
                 directory: "Child",
-                blockCID: childCID,
-                parentWorkAuthorityKey: testParentWorkAuthorityKey
+                blockCID: childCID
             )],
             receiptActions: [],
             withdrawalActions: [],
@@ -1348,6 +1347,15 @@ final class ChainLocalAdmissionTests: XCTestCase {
             return XCTFail("parent anchor should validate: \(failure)")
         }
 
+        let resolvedState = try await anchor.postState.resolve(
+            paths: [[GENESIS_STATE_PROPERTY, "Child"]: .targeted],
+            fetcher: fetcher
+        )
+        let storedChildCID = try XCTUnwrap(
+            resolvedState.node?.genesisState.node?.get(key: "Child")
+        )
+        XCTAssertEqual(storedChildCID, childCID)
+
         switch await parentLevel.genesisLink(
             parentBlockHeader: try BlockHeader(node: anchor),
             directory: "Child",
@@ -1357,7 +1365,6 @@ final class ChainLocalAdmissionTests: XCTestCase {
         case .success(let link):
             XCTAssertEqual(link.parentPath, [DEFAULT_ROOT_DIRECTORY])
             XCTAssertEqual(link.childGenesisCID, childCID)
-            XCTAssertEqual(link.parentWorkAuthorityKey, testParentWorkAuthorityKey)
         case .failure(let failure):
             XCTFail("validated parent state should issue genesis fact: \(failure)")
         }
@@ -1878,8 +1885,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             depositActions: [],
             genesisActions: [GenesisAction(
                 directory: "Child",
-                blockCID: childHeader.rawCID,
-                parentWorkAuthorityKey: testParentWorkAuthorityKey
+                blockCID: childHeader.rawCID
             )],
             receiptActions: [],
             withdrawalActions: [],
@@ -2001,8 +2007,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             depositActions: [],
             genesisActions: [GenesisAction(
                 directory: "Child",
-                blockCID: alternateHeader.rawCID,
-                parentWorkAuthorityKey: testParentWorkAuthorityKey
+                blockCID: alternateHeader.rawCID
             )],
             receiptActions: [],
             withdrawalActions: [],
