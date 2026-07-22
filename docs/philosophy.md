@@ -37,10 +37,10 @@ child valid or choose its preferred branch.
 
 ## Shared Work Without Multiplication
 
-The root CID identifies one physical grind. A proof may show that this grind
-covers many blocks and many levels, but coverage is not additional work. Lattice
-joins observations by root CID, keeps the strongest verified accepted-target
-quantity for that identity, and sums only distinct identities.
+The root CID identifies one physical grind. At each chain level that grind has
+one terminal block location; an exact parent-child commitment may project the
+same identity to the next level. Lattice keeps the strongest verified quantity
+for that identity and sums only distinct identities.
 
 This is the central economic abstraction: miners may reuse one nonce search
 across subscribed chains, while consensus never treats repeated evidence as
@@ -139,7 +139,7 @@ Lattice does not remove the basic costs of distributed consensus:
 2. **Do not invent cross-volume ownership.** A CID reference supports traversal,
    but does not imply retention or pinning. Same-chain accepted-forest indexes
    remain durable consensus state.
-3. **Keep identity separate from quantity and coverage.** This prevents work
+3. **Keep identity separate from quantity and location.** This prevents work
    multiplication.
 4. **Keep accepted evidence separate from canonical projection.** This prevents a
    parent pointer from becoming child authority.

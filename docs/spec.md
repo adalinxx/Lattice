@@ -9,7 +9,7 @@ order, start with the [documentation index](index.md),
 
 ## 1. Overview
 
-Lattice is a hierarchical proof-of-work protocol, not a single blockchain. Every chain may commit child blocks, and each child may do the same. One mined root therefore commits a nested block tree. **Nexus** is the single outermost chain and the entry point from outside the hierarchy; every absolute chain path begins with `Nexus`. Descendants inherit identity-bearing work from accepted ancestor graphs: the root CID identifies one grind, its strongest verified accepted-target bound fixes its quantity, and arbitrary coverage never multiplies it. Value moves across chains through a three-phase **deposit/receipt/withdrawal** protocol.
+Lattice is a hierarchical proof-of-work protocol, not a single blockchain. Every chain may commit child blocks, and each child may do the same. One mined root therefore commits a nested block tree. **Nexus** is the single outermost chain and the entry point from outside the hierarchy; every absolute chain path begins with `Nexus`. Descendants inherit identity-bearing work from accepted ancestor graphs: the root CID identifies one grind, its strongest verified accepted-target bound fixes its quantity, and its sparse proof terminates at exactly one block per chain. Value moves across chains through a three-phase **deposit/receipt/withdrawal** protocol.
 
 Each chain defines its own operations, `ChainSpec`, and chain policies, so chains are heterogeneous; only the organizing protocol -- block structure, proof-of-work, fork choice, and the cross-chain transfer rules -- is shared across the hierarchy.
 
@@ -732,21 +732,14 @@ contribution.work = floor(U256_MAX / target(B_i))
 
 Grind identity is immutable. Its credited quantity is the maximum of all verified
 accepted-target bounds observed for that identity, so it can strengthen but never
-decrease. Coverage is independent and append-only: one grind may secure any
-number of blocks or content objects, and one block may be secured by many distinct
-grinds. The logical coverage key is `(blockHash, grindID)`, while the immutable
-fact ID also includes the observed work. Weaker or equal replay is a duplicate;
-a stronger verified observation remains separately durable and updates the one
-grind quantity across all of its coverage.
-
-An inherited snapshot MAY encode one grind's coverage by its maximal accepted
-frontier in the receiving child's same-chain forest. Replacing covered block
-`A` with a covered descendant `D` is exact because every subtree reached through
-`A` by that placement is also reached through `D`; incomparable covered blocks
-remain separate. The grind's globally strongest quantity is attached to every
-retained frontier block, then ordinary measure union still counts that identity
-once. This normalization changes representation, not logical coverage or
-`trueCumWork`.
+decrease. Its sparse proof has exactly one terminal block in each chain it
+reaches. One block may be secured by many distinct grinds, but one grind MUST NOT
+be placed at multiple blocks in the same chain. Same-chain ancestry makes a
+descendant's work support its ancestors without creating more locations. The
+logical location key is `(blockHash, grindID)`, while the immutable fact ID also
+includes the observed work. Weaker or equal replay at the same location is a
+duplicate. A stronger observation at that location remains durable. A conflicting
+location is rejected atomically.
 
 Consensus ingress stores each CID identity in its unique canonical text spelling.
 An alternate multibase spelling is rejected before it can create another map key;
@@ -755,18 +748,10 @@ determines whether accepted work contributes.
 
 Consensus comparisons use a `WorkMeasure`, conceptually `Map<RootCID, U256>`.
 Measure union takes the maximum value per root CID. `total(measure)` is the exact
-sum of the resulting distinct values. Therefore one physical grind is counted
-once no matter how much data, how many blocks, or how many hierarchy levels it
-secures, while independent grinds always sum.
-
-The strongest known quantity for a root CID is normalized across every local and
-inherited coverage before any competing subtree is compared. Shared work is
-therefore neutral even when its strongest observation arrived on only one side.
-Every successfully authenticated and staged local fact remains a quantity
-observation even while its
-same-chain predecessor is absent. It may strengthen the same root CID on an
-already routed coverage, but its own coverage has no segment route until that
-predecessor attaches.
+sum of the resulting distinct values. This deduplicates repeated observations
+and recursive inheritance of the same physical grind, while independent grinds
+always sum. A disconnected staged location remains durable but has no segment
+route until its same-chain predecessor attaches.
 
 ### 9.2 Chain State and Hierarchical GHOST
 
@@ -774,12 +759,12 @@ Fork-choice state contains only one chain's accepted graph:
 
 ```text
 accepted blocks + same-chain predecessor edges
-local grind coverage + strongest verified quantities
+local unique grind locations + strongest verified quantities
 one retained immediate-parent inherited-work snapshot
 one derived canonical projection
 ```
 
-For each block, `own(B)` is the measure formed by all local grind coverage on that
+For each block, `own(B)` is the measure formed by all local grind locations on that
 block. `inherited(B)` is the retained immediate-parent measure securing it:
 
 ```text
@@ -794,11 +779,10 @@ cumulativeWork(B) = total(prefix(B))
 trueCumWork(B)     = total(effectiveSubtree(B))
 ```
 
-Measure union occurs before totaling. A grind covering an ancestor and descendant,
-both sibling subtrees, or both local and inherited inputs therefore contributes
-once to that comparison. Implementations may cache local-only totals, but fork
-choice MUST capture one inherited snapshot and compute `trueCumWork` from the
-effective measures.
+Measure union occurs before totaling. Repeated local, inherited, or transitive
+observations of one grind at the same location therefore contribute once.
+Implementations may cache local-only totals, but fork choice MUST capture one
+inherited snapshot and compute `trueCumWork` from the effective measures.
 
 `WorkSum` is an exact growable unsigned integer. Individual contributions remain
 `U256`, but their sums must not wrap or saturate because either behavior can
@@ -858,60 +842,51 @@ canonical delta identifies the new tip and exact added and removed blocks. This
 is a chain-local reorganization; Lattice sends no commands to parent, child, or
 sibling processes.
 
-Adding grind coverage, strengthening a verified grind quantity, or receiving a
+Adding a grind location, strengthening a verified grind quantity, or receiving a
 newer inherited-work snapshot may make a subtree strictly heavier and trigger
 this same reorganization procedure. None replays the block's state transition.
 
 ### 9.5 Cross-Chain Evidence Independence
 
-The sparse proof and authenticated immediate-parent carrier/genesis facts derive
-local child coverage. In addition, each chain may consume one live rolled-up
-view from its immediate parent. For each child block, the parent exports only
-connected, accepted work whose validated content binding covers that child.
-Eligible work may come from noncanonical parent branches; unrelated parent work
-is excluded. The node authenticates and routes that process, derives the
-child-block bindings from validated content-addressed paths, and supplies a
-coherent revisioned inherited-work snapshot. If any requested securing parent
-block is unknown, the export is unavailable rather than a zero-valued measure. A
-known block whose accepted ancestry has not yet joined a valid same-chain root
-component is likewise ineligible for export. Connection is inductive: any
-valid height-zero root is a base case, and a validated successor joins through
-its connected predecessor. This is not a Nexus or canonical-branch exception.
+Each chain may consume one live child-independent view from its immediate
+parent. The parent view is a relation `(parentBlock, grind, quantity)` over
+connected accepted blocks. Eligible work may come from noncanonical parent
+branches. The view contains no child topology and no canonical pointer. The
+parent receives no child data, topology, validity, work, attachment, or recovery
+state.
 
-This connection requirement gates a coverage location, not a physical grind's
-quantity. A successfully authenticated and staged disconnected local
-observation may strengthen the root
-CID of an eligible connected coverage elsewhere, but it cannot itself add a
-child binding or an export route until its same-chain predecessor attaches.
+The child derives exact `parentBlock -> childBlock` bindings from validated
+content-addressed paths and joins them with the parent view. A parent fact at
+`P` becomes an inherited location at `C` only when the child has the exact edge
+`P -> C`. Parent ancestry MUST NOT create an implicit child location. Therefore
+a later parent block that does not directly commit a child candidate adds no
+weight to that child candidate.
 
-The child may give its immediate parent a session-scoped accepted-coverage
-quotient solely to frontier-normalize that child's response. The parent MUST
-intersect every quotient endpoint with its own validated direct-child coverage.
-The quotient grants no validity, work, coverage, canonicity, or authority; it
-is never shared between child replicas. Missing or stale quotient relations
-mean “incomparable,” retaining redundant coverage rather than dropping work.
-Consequently a false hint cannot invent a binding or increase a grind quantity.
-For one grind, a covered descendant reaches every segment base reached by its
-covered ancestor. The exported source relation MAY therefore retain only the
-deepest incomparable child blocks and MUST carry that grind's globally strongest
-quantity at every retained frontier block. This frontier is exactly equivalent
-to the expanded relation for every effective-subtree comparison.
+A parent block whose accepted ancestry has not joined a valid same-chain root
+component is ineligible for export. Connection is inductive: any valid
+height-zero root is a base case, and a validated successor joins through its
+connected predecessor. This is not a Nexus or canonical-branch exception.
+
+The transformation is recursive. A middle chain projects its immediate parent's
+facts onto its own exact locations, unions those facts with distinct local work
+at the same blocks, and publishes the resulting child-independent relation. No
+chain needs every ancestor graph.
 
 Snapshots are append-only joins. Every authenticated snapshot unions with the
 retained view and revisions combine by maximum. An older or equal revision may
-add previously unseen valid coverage, but no snapshot can retract or weaken a
+add previously unseen valid facts, but no snapshot can retract or weaken a
 fact. Revision is a source-progress watermark, not a commitment to snapshot
-contents; coverage discovery may advance independently. Lattice keeps the
+contents; fact discovery may advance independently. Lattice keeps the
 retained view during a provider outage. The node may
 persist that cache according to its own restart and storage policy. A chain
-consumes only its immediate parent's rolled-up measure, so it need not track every
+consumes only its immediate parent's rolled-up locations, so it need not track every
 ancestor process.
 
 The current parent tip and parent canonical branch are not fork-choice inputs.
 Parent accepted work and parent canonicity are orthogonal: adding accepted work
 may change child `trueCumWork`, while moving only the parent's canonical pointer
-cannot. The same root CID is unioned across local, inherited, and transitive input,
-so inherited work is never counted twice.
+cannot. The same root CID is unioned across local, inherited, and transitive input
+at its one chain-local location, so inherited work is never counted twice.
 
 ### 9.6 Ingress Equivalence
 
@@ -925,7 +900,7 @@ trusted canonical projection.
 ### 9.7 Consensus Graph and Node State Lifecycle
 
 Lattice retains the complete accepted consensus graph and every verified local
-grind coverage. It performs no age-, depth-, body-, or state-retention pruning of
+grind location. It performs no age-, depth-, body-, or state-retention pruning of
 consensus inputs. Live inherited work is an immediate-parent input retained as a
 monotone snapshot, not a recursively stored copy of every ancestor graph.
 
@@ -937,7 +912,7 @@ projections, archival, and garbage collection.
 ### 9.8 Persistence
 
 The node durably preserves every accepted block's consensus fields, every
-distinct coverage fact and strengthening observation, and a monotone mutation
+distinct location fact and strengthening observation, and a monotone mutation
 order. A crash may occur after durable staging and before in-memory mutation;
 recovery therefore replays those already-authenticated facts idempotently through
 Lattice's graph and fork-choice reducer. The node does not reconstruct weights,
@@ -945,7 +920,7 @@ ancestry, or canonical choice itself.
 
 For inherited work, the node either retains the complete snapshot or
 reconstructs it from durable parent facts before restore. A revision watermark
-alone does not prove complete coverage, so a marker without its snapshot fails
+alone does not prove the complete fact set, so a marker without its snapshot fails
 closed rather than substituting zero. Restoration rejects malformed facts,
 reconstructs exact measures, captures one coherent inherited snapshot, and
 reprojects canonicality. A persisted tip is a derived cache, not protocol truth.
@@ -1064,12 +1039,13 @@ state); withdrawals return it to the block-wide credit budget.
    and all chain targets
 2. Every level evaluates the same root hash against its own target
 3. Every carrier proves same-chain predecessor continuity even when its target misses
-4. A grind is deduplicated by root CID across all local and inherited coverage;
+4. A grind has exactly one terminal location per chain and is deduplicated by
+   root CID across local, inherited, and transitive observations at that location;
    its credited quantity is the strongest verified accepted-target bound
 5. Work measures union by grind ID before totaling, so shared work is counted once
    while distinct grinds sum
-6. Effective `trueCumWork` includes one coherent monotone immediate-parent
-   snapshot scoped to accepted work whose validated binding covers each child
+6. Effective `trueCumWork` includes one coherent monotone child-independent
+   immediate-parent view, projected only through exact child-owned direct edges
 7. Equal-work segments prefer the lexicographically smaller canonical base CID;
    `nextTarget` and segment tips are not comparators
 8. Parent accepted work may change child fork choice; parent canonicity alone

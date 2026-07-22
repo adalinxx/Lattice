@@ -14,9 +14,9 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
             let chain = try await ChainState.restore(replaying: [admission(for: blocks[0])])
             var delivered = [blocks[0].hash]
             var localStrength: [String: UInt64] = [:]
-            var localCoverage: [String: Set<String>] = [:]
             var inheritedByBlock: [String: WorkMeasure] = [:]
             var inheritedStrength: [String: UInt64] = [:]
+            var locationByGrind: [String: String] = [:]
             var inheritedRevision: UInt64 = 0
             let sharedGrinds = (0..<3).map {
                 testCID("segment-base-differential-\(seed)-shared-\($0)")
@@ -41,11 +41,11 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
             ))
             XCTAssertEqual(localResult?.addedContribution, true, "seed \(seed), initial local work")
             localStrength[localGrind] = localWork
-            localCoverage[localGrind] = [blocks[4].hash]
+            locationByGrind[localGrind] = blocks[4].hash
             await assertMatchesReference(chain, seed: seed, event: "local orphan work")
 
             let inheritedWork: UInt64 = 4
-            inheritedByBlock[blocks[3].hash] = WorkMeasure(
+            inheritedByBlock[blocks[4].hash] = WorkMeasure(
                 VerifiedWorkContribution(id: localGrind, work: UInt256(inheritedWork))
             )
             inheritedStrength[localGrind] = inheritedWork
@@ -64,6 +64,7 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
                 VerifiedWorkContribution(id: futureGrind, work: UInt256(2))
             )
             inheritedStrength[futureGrind] = 2
+            locationByGrind[futureGrind] = blocks[5].hash
             inheritedRevision += 1
             let futureCommit = await chain.mergeInheritedWork(InheritedWorkSnapshot(
                 revision: inheritedRevision,
@@ -104,35 +105,32 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
                 }
 
                 updateCount += 1
-                let blockHash = delivered[random.nextInt(delivered.count)]
                 let grind = sharedGrinds[random.nextInt(sharedGrinds.count)]
+                let blockHash = locationByGrind[grind] ?? {
+                    let location = delivered[random.nextInt(delivered.count)]
+                    locationByGrind[grind] = location
+                    return location
+                }()
                 if random.nextInt(2) == 0 {
                     let existingStrength = localStrength[grind, default: 0]
-                    let alreadyCovered = localCoverage[grind, default: []].contains(blockHash)
-                    let work = alreadyCovered || random.nextInt(2) == 0
-                        ? max(existingStrength, 1) + UInt64(random.nextInt(3) + 1)
-                        : max(existingStrength, 1)
+                    let work = existingStrength + UInt64(random.nextInt(3) + 1)
                     let result = try await chain.applyStaged(workAdmission(
                         blockHash: blockHash,
                         id: grind,
                         work: work
                     ))
                     XCTAssertEqual(result?.addedContribution, true, "seed \(seed), local update")
-                    localStrength[grind] = max(existingStrength, work)
-                    localCoverage[grind, default: []].insert(blockHash)
+                    localStrength[grind] = work
                     await assertMatchesReference(chain, seed: seed, event: "local update \(updateCount)")
                 } else {
                     let existingStrength = inheritedStrength[grind, default: 0]
                     var measure = inheritedByBlock[blockHash] ?? .zero
-                    let alreadyCovered = measure.work(forGrind: grind) != nil
-                    let work = alreadyCovered || random.nextInt(2) == 0
-                        ? max(existingStrength, 1) + UInt64(random.nextInt(3) + 1)
-                        : max(existingStrength, 1)
+                    let work = existingStrength + UInt64(random.nextInt(3) + 1)
                     XCTAssertTrue(measure.insert(
                         VerifiedWorkContribution(id: grind, work: UInt256(work))
                     ), "seed \(seed), inherited update must add a fact")
                     inheritedByBlock[blockHash] = measure
-                    inheritedStrength[grind] = max(existingStrength, work)
+                    inheritedStrength[grind] = work
                     inheritedRevision += 1
                     let commit = await chain.mergeInheritedWork(InheritedWorkSnapshot(
                         revision: inheritedRevision,

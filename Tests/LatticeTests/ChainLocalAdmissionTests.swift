@@ -3124,7 +3124,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(restoredRecord).contribution, fixture.contribution)
 
         let exportedSnapshot = await restored.inheritedWorkSnapshot(
-            forChildCoverage: [fixture.downstreamCID: [candidateHeader.rawCID]]
+            forDirectParentBindings: [fixture.downstreamCID: [candidateHeader.rawCID]]
         )
         let exported = try XCTUnwrap(exportedSnapshot).work(forBlock: fixture.downstreamCID)
         XCTAssertEqual(exported.work(forGrind: fixture.rootCID), expectedWork)

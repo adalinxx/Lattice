@@ -738,7 +738,7 @@ final class PersistWorkRoundTripTests: XCTestCase {
         XCTAssertEqual(tip, forkHash)
     }
 
-    func testRestoreNormalizesOneGrindAcrossLocalAndInheritedCoverage() async throws {
+    func testRestoreRejectsOneGrindAtTwoLocationsAcrossSources() throws {
         let rootHash = persistedCID("cross-source-root")
         let firstHash = persistedCID("cross-source-first")
         let secondHash = persistedCID("cross-source-second")
@@ -779,17 +779,19 @@ final class PersistWorkRoundTripTests: XCTestCase {
             ]
         )
 
-        let restored = try ChainState.restore(
+        XCTAssertThrowsError(try ChainState.restore(
             from: persistedState(
                 tip: preferredHash,
                 main: [rootHash, preferredHash],
                 blocks: [root, preferred, other]
             ),
             inheritedWorkProvider: { inherited }
-        )
-        let tip = await restored.getMainChainTip()
-
-        XCTAssertEqual(tip, preferredHash)
+        )) { error in
+            XCTAssertEqual(
+                error as? ChainStateRestoreError,
+                .corruptConsensusGraph
+            )
+        }
     }
 
     func testRestoreRetainsInheritedSnapshotAndRequiresProviderWhenCacheIsOmitted() async throws {
@@ -1034,7 +1036,7 @@ final class PersistWorkRoundTripTests: XCTestCase {
         XCTAssertEqual(retainedTip, fixture.forkHash)
     }
 
-    func testUnknownInheritedCoverageActivatesAfterAdmissionAndSurvivesReplay() async throws {
+    func testUnknownInheritedLocationActivatesAfterAdmissionAndSurvivesReplay() async throws {
         let fetcher = StorableFetcher()
         let target = UInt256(1_000)
         let localWork = workForTarget(target)
@@ -1352,7 +1354,7 @@ final class PersistWorkRoundTripTests: XCTestCase {
         }
     }
 
-    func testRestoreAllowsOneGrindToCoverMultipleBlocksWithoutDoubleCounting() async throws {
+    func testRestoreRejectsOneGrindAtTwoLocalBlocks() {
         let rootHash = persistedCID("replay-root")
         let childHash = persistedCID("replay-child")
         let repeated = persistedContribution("same-grind", work: UInt256(1))
@@ -1371,11 +1373,17 @@ final class PersistWorkRoundTripTests: XCTestCase {
             cumulativeWork: UInt256(1)
         )
 
-        let restored = try ChainState.restore(
-            from: persistedState(tip: childHash, main: [rootHash, childHash], blocks: [root, child])
-        )
-        let cumulative = await restored.getCumulativeWork(forHash: childHash)
-        XCTAssertEqual(cumulative, WorkSum(UInt256(1)))
+        XCTAssertThrowsError(
+            try ChainState.restore(
+                from: persistedState(
+                    tip: childHash,
+                    main: [rootHash, childHash],
+                    blocks: [root, child]
+                )
+            )
+        ) { error in
+            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
+        }
     }
 
     private func staleForkChoiceSnapshot() -> PersistedChainState {

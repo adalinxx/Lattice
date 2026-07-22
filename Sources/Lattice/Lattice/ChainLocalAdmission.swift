@@ -62,7 +62,7 @@ public enum ChainAdmissionFact: Codable, Sendable, Equatable {
 }
 
 /// One node-atomic durability unit. New blocks stage their block and first work
-/// observations together; later coverage or stronger work appends another
+/// observations together; later work or a stronger observation appends another
 /// immutable fact.
 public struct ChainAdmissionBatch: Codable, Sendable, Equatable {
     public let facts: [ChainAdmissionFact]
