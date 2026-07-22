@@ -391,8 +391,7 @@ private func parentGenesisLinks(
             links.insert(ParentGenesisLink(
                 parentPath: parentPath,
                 directory: action.directory,
-                childGenesisCID: action.blockCID,
-                parentWorkAuthorityKey: action.parentWorkAuthorityKey
+                childGenesisCID: action.blockCID
             ))
         }
     }
@@ -406,8 +405,7 @@ private enum ChainLocalAdmission {
     static func verifyChildPackage(
         _ package: ChildValidationPackage,
         child: Block,
-        context: ChainRuntimeContext,
-        fetcher: any Fetcher
+        context: ChainRuntimeContext
     ) async -> Result<VerifiedChildEvidence, ChainAdmissionFailure> {
         let proofResult = await package.proof.verify(
             child: child,
@@ -426,19 +424,7 @@ private enum ChainLocalAdmission {
         guard case .success(let evidence) = proofResult else {
             return proofResult
         }
-        guard child.parent == nil,
-              let link = package.parentGenesisLink else {
-            return .success(evidence)
-        }
-        do {
-            guard let spec = try await child.spec.resolve(fetcher: fetcher).node,
-                  spec.parentWorkAuthorityKey == link.parentWorkAuthorityKey else {
-                return .failure(.protocolInvalid)
-            }
-            return .success(evidence)
-        } catch {
-            return .failure(classifyResolutionFailure(error))
-        }
+        return .success(evidence)
     }
 
     static func prepare(
@@ -504,8 +490,7 @@ private enum ChainLocalAdmission {
             switch await verifyChildPackage(
                 childPackage,
                 child: block,
-                context: context,
-                fetcher: fetcher
+                context: context
             ) {
             case .success(let verified):
                 grindID = verified.grindID
@@ -944,15 +929,13 @@ public extension ChainLevel {
                 return .failure(.unavailableEvidence)
             }
             guard let stored: String = try? genesisState.get(key: directory),
-                  let authorization = ChildGenesisAuthorization(stored),
-                  authorization.childGenesisCID == childGenesisCID else {
+                  stored == childGenesisCID else {
                 return .failure(.protocolInvalid)
             }
             return .success(ParentGenesisLink(
                 parentPath: context.path,
                 directory: directory,
-                childGenesisCID: childGenesisCID,
-                parentWorkAuthorityKey: authorization.parentWorkAuthorityKey
+                childGenesisCID: childGenesisCID
             ))
         } catch {
             return .failure(classifyValidationFailure(error))
@@ -1400,8 +1383,7 @@ public extension ChainLevel {
         switch await ChainLocalAdmission.verifyChildPackage(
             childPackage,
             child: resolved.block,
-            context: context,
-            fetcher: fetcher
+            context: context
         ) {
         case .success(let verified): evidence = verified
         case .failure(let failure): throw failure

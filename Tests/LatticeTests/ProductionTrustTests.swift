@@ -241,8 +241,7 @@ final class ChildGenesisValidationTests: XCTestCase {
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [GenesisAction(
                 directory: directory,
-                blockCID: blockCID,
-                parentWorkAuthorityKey: testParentWorkAuthorityKey
+                blockCID: blockCID
             )],
             receiptActions: [], withdrawalActions: [],
             signers: [], fee: 0, nonce: 0, chainPath: ["Nexus"]

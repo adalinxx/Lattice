@@ -42,18 +42,15 @@ public struct ParentGenesisLink: Codable, Hashable, Sendable {
     public let parentPath: [String]
     public let directory: String
     public let childGenesisCID: String
-    public let parentWorkAuthorityKey: ParentWorkAuthorityKey
 
     package init(
         parentPath: [String],
         directory: String,
-        childGenesisCID: String,
-        parentWorkAuthorityKey: ParentWorkAuthorityKey
+        childGenesisCID: String
     ) {
         self.parentPath = parentPath
         self.directory = directory
         self.childGenesisCID = childGenesisCID
-        self.parentWorkAuthorityKey = parentWorkAuthorityKey
     }
 }
 

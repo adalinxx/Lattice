@@ -782,8 +782,7 @@ final class CrossChainTests: XCTestCase {
             depositActions: [],
             genesisActions: [GenesisAction(
                 directory: "Child",
-                blockCID: try VolumeImpl<Block>(node: childGenesis).rawCID,
-                parentWorkAuthorityKey: testParentWorkAuthorityKey
+                blockCID: try VolumeImpl<Block>(node: childGenesis).rawCID
             )],
             receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], fee: 0, nonce: 0, chainPath: ["Nexus"]

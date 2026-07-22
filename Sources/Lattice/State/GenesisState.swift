@@ -1,8 +1,7 @@
 import cashew
 
-// The committed genesis state stays a string trie so an empty root preserves
-// Nexus's exact genesis CID. Each value is a fixed-width authority prefix plus
-// the child CID, decoded by `ChildGenesisAuthorization`.
+// The committed genesis state records each child chain's genesis CID. Resolving
+// that content reveals the child spec, including its parent-work authority.
 public typealias GenesisState = VolumeMerkleDictionaryImpl<String>
 public typealias GenesisStateHeader = VolumeImpl<GenesisState>
 
@@ -15,12 +14,7 @@ public extension GenesisStateHeader {
         for genesisAction in allGenesisActions {
             if proofs[[genesisAction.directory]] != nil { throw StateErrors.conflictingActions }
             proofs[[genesisAction.directory]] = .insertion
-            transforms[[genesisAction.directory]] = .insert(
-                ChildGenesisAuthorization(
-                    childGenesisCID: genesisAction.blockCID,
-                    parentWorkAuthorityKey: genesisAction.parentWorkAuthorityKey
-                ).description
-            )
+            transforms[[genesisAction.directory]] = .insert(genesisAction.blockCID)
         }
 
         let proven = try await proof(paths: proofs, fetcher: fetcher)

@@ -231,8 +231,7 @@ final class StatelessChildChainVerificationTests: XCTestCase {
                 actions: [], depositActions: [],
                 genesisActions: [GenesisAction(
                     directory: "Payments",
-                    blockCID: try VolumeImpl<Block>(node: childGenesis).rawCID,
-                    parentWorkAuthorityKey: testParentWorkAuthorityKey
+                    blockCID: try VolumeImpl<Block>(node: childGenesis).rawCID
                 )],
                 receiptActions: [], withdrawalActions: [], signers: [ownerAddr], fee: 0, nonce: 0,
                 chainPath: ["Nexus"]

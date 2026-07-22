@@ -89,7 +89,7 @@ LatticeState = (
     accountState:      SMT<CID(PublicKey) -> uint64>,
     generalState:      SMT<string -> string>,
     depositState:      SMT<DepositKey -> uint64>,
-    genesisState:      SMT<string -> ChildGenesisAuthorization>,
+    genesisState:      SMT<string -> CID(Block)>,
     receiptState:      SMT<ReceiptKey -> CID(PublicKey)>
 )
 ```
@@ -157,9 +157,8 @@ ReceiptAction = (withdrawer: CID(PublicKey), nonce: uint128, demander: CID(Publi
 
 ```
 GenesisAction = (
-    directory:              string,
-    blockCID:               CID(Block),
-    parentWorkAuthorityKey: ParentWorkAuthorityKey
+    directory: string,
+    blockCID:  CID(Block)
 )
 ```
 
@@ -169,14 +168,9 @@ GenesisAction = (
 
 `ParentWorkAuthorityKey` is the lowercase hexadecimal encoding of exactly 32
 Ed25519 public-key bytes: 64 UTF-8 bytes with no prefix. A child chain commits
-its immediate parent's process key in both its `ChainSpec` and the
-`GenesisAction` that creates it. The two values MUST match. Nexus has no parent,
+its immediate parent's process key in its `ChainSpec`. The parent commits that
+spec transitively by recording the exact child genesis CID. Nexus has no parent,
 so its `ChainSpec.parentWorkAuthorityKey` field MUST be absent.
-
-`ChildGenesisAuthorization` is the state value
-`parentWorkAuthorityKey || childGenesisCID`, with no delimiter. The authority
-occupies the first fixed 64 UTF-8 bytes; the non-empty remainder is the child
-genesis CID.
 
 #### DepositKey
 
@@ -522,7 +516,7 @@ Receipt actions also derive account actions: the `withdrawer` is debited `amount
 For each `GenesisAction`:
 - **Key**: `action.directory`
 - **Proof**: Verify key does not exist in `prevState.genesisState` (insertion proof)
-- **Update**: `genesisState[directory] = action.parentWorkAuthorityKey || action.blockCID`
+- **Update**: `genesisState[directory] = action.blockCID`
 
 ### 6.7 State Delta Accounting
 
@@ -537,7 +531,7 @@ Each action type reports a state delta in bytes:
 | `DepositAction` | `+32 + len(demander)` |
 | `WithdrawalAction` | `+len(withdrawer) + len(demander) + 32` |
 | `ReceiptAction` | `+len(withdrawer) + len(demander) + len(directory) + 24` |
-| `GenesisAction` | `+len(blockCID) + len(directory) + len(parentWorkAuthorityKey)` |
+| `GenesisAction` | `+len(blockCID) + len(directory)` |
 
 Total delta per block must not exceed `spec.maxStateGrowth`.
 
