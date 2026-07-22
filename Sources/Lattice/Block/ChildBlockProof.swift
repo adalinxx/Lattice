@@ -22,6 +22,68 @@ public struct DirectChildHop: Sendable {
     }
 }
 
+/// Content-addressed identity for one canonical direct
+/// `parent.children[directory] -> child` commitment.
+///
+/// This remains a structural CAS fact: availability does not imply work,
+/// authority, admission, or canonicity.
+public struct DirectChildEdge: Hashable, Scalar {
+    public let parentCarrierCID: String
+    public let directory: String
+    public let childCID: String
+    public let proofBytes: Data
+
+    public var edgeCID: String? {
+        try? HeaderImpl<DirectChildEdge>(node: self).rawCID
+    }
+
+    public var proof: ChildBlockProof? {
+        ChildBlockProof.deserialize(proofBytes)
+    }
+
+    /// Strip the outer root context from a complete proof and regenerate its
+    /// exact canonical terminal hop using only the sealed proof entries.
+    public static func derive(from proof: ChildBlockProof) async -> DirectChildEdge? {
+        guard let directory = proof.directoryPath.last,
+              let hop = await proof.directHop(),
+              let proofBytes = try? hop.proof.serialize(),
+              let edge = await DirectChildEdge(
+                parentCarrierCID: hop.proof.rootCID,
+                directory: directory,
+                childCID: hop.childCID,
+                proofBytes: proofBytes
+              ).validated()
+        else { return nil }
+        return edge
+    }
+
+    public func validated() async -> DirectChildEdge? {
+        guard await canonicalHop() != nil, edgeCID != nil else { return nil }
+        return self
+    }
+
+    public func validates(child: Block) async -> Bool {
+        guard let hop = await canonicalHop(), edgeCID != nil else { return false }
+        return hop.binds(child: child)
+    }
+
+    private func canonicalHop() async -> DirectChildHop? {
+        guard CIDIdentity.isCanonical(parentCarrierCID),
+              CIDIdentity.isCanonical(childCID),
+              !directory.isEmpty,
+              directory.utf8.count <= Int(UInt16.max),
+              !directory.contains("/"),
+              let proof,
+              proof.rootCID == parentCarrierCID,
+              proof.directoryPath == [directory],
+              (try? proof.serialize()) == proofBytes,
+              let hop = await proof.directHop(),
+              hop.childCID == childCID,
+              (try? hop.proof.serialize()) == proofBytes else { return nil }
+        return hop
+    }
+}
+
 // MARK: - Proof
 
 /// Sparse proof that a block is embedded under a PoW root, following the
