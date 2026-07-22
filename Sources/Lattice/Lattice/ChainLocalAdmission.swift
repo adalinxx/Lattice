@@ -243,11 +243,11 @@ fileprivate struct PreparedAdmission: Sendable {
         return ChainAdmissionBatch(facts: facts)
     }
 
-    /// Cache the immutable validation inputs before the node takes its
-    /// durability lease. Sparse content is node policy, not a consensus fact,
-    /// so this may complete before the admission batch becomes visible.
+    /// Store the immutable validation Volumes before the node takes its
+    /// durability lease. They remain unretained until the admission batch
+    /// becomes visible.
     func cacheValidationContent(
-        to validationContentStorer: any Storer
+        to validationContentStorer: any VolumeStorer
     ) async throws {
         switch kind {
         case .evidence:
@@ -307,8 +307,8 @@ public enum ChainAdmissionPreflightError: Error, Sendable, Equatable {
     case invalidToken
 }
 
-/// A one-use, level-bound result of remote validation and sparse content
-/// caching.
+/// A one-use, level-bound result of remote validation and validation-Volume
+/// storage.
 public actor PreparedChainAdmission {
     /// Commit may add an issuable carrier link if the already-validated
     /// predecessor connected before the durability boundary.
@@ -769,7 +769,7 @@ private enum ChainLocalAdmission {
         contribution: VerifiedWorkContribution,
         carrierLink: ParentCarrierLink,
         transition: (StateDiff, LatticeState?),
-        validationContentStorer: any Storer,
+        validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
         staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
     ) async throws -> (
@@ -968,7 +968,7 @@ public extension ChainLevel {
         fetcher: any Fetcher,
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
-        validationContentStorer: any Storer,
+        validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
         stage: @Sendable (ChainAdmissionBatch) async throws -> Void
     ) async throws -> ChainLocalBlockResult {
@@ -985,7 +985,7 @@ public extension ChainLevel {
         )
     }
 
-    /// Verify one candidate and cache its immutable validation inputs without
+    /// Verify one candidate and store its immutable validation Volumes without
     /// mutating the accepted graph. The returned token contains the exact
     /// hierarchy facts the node must make durable with the batch.
     func preflightBlockHeaderChainLocal(
@@ -993,7 +993,7 @@ public extension ChainLevel {
         fetcher: any Fetcher,
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
-        validationContentStorer: any Storer
+        validationContentStorer: any VolumeStorer
     ) async throws -> ChainAdmissionPreflightResult {
         switch await ChainLocalAdmission.prepare(
             level: self,
@@ -1116,7 +1116,7 @@ public extension ChainLevel {
         fetcher: any Fetcher,
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
-        validationContentStorer: any Storer,
+        validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
         staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
     ) async throws -> ChainLocalBlockResult {
@@ -1145,7 +1145,7 @@ public extension ChainLevel {
         source: any ContentSource,
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
-        validationContentStorer: any Storer,
+        validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
         stage: @Sendable (ChainAdmissionBatch) async throws -> Void
     ) async throws -> ChainLocalBlockResult {
@@ -1167,7 +1167,7 @@ public extension ChainLevel {
         source: any ContentSource,
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
-        validationContentStorer: any Storer,
+        validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
         staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
     ) async throws -> ChainLocalBlockResult {
@@ -1190,7 +1190,7 @@ public extension ChainLevel {
         genesisHeader: BlockHeader,
         fetcher: any Fetcher,
         validationContext: ValidationContext = .current,
-        validationContentStorer: any Storer,
+        validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
         stage: @Sendable (ChainAdmissionBatch) async throws -> Void
     ) async throws -> (
@@ -1221,7 +1221,7 @@ public extension ChainLevel {
         genesisHeader: BlockHeader,
         fetcher: any Fetcher,
         validationContext: ValidationContext = .current,
-        validationContentStorer: any Storer,
+        validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
         staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
     ) async throws -> (
@@ -1251,7 +1251,7 @@ public extension ChainLevel {
         genesisHeader: BlockHeader,
         fetcher: any Fetcher,
         validationContext: ValidationContext = .current,
-        validationContentStorer: any Storer,
+        validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
         staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
     ) async throws -> (
@@ -1278,7 +1278,7 @@ public extension ChainLevel {
         genesisHeader: BlockHeader,
         fetcher: any Fetcher,
         validationContext: ValidationContext,
-        validationContentStorer: any Storer,
+        validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
         allowsUnsignedTransactions: Bool,
         staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
@@ -1349,7 +1349,7 @@ public extension ChainLevel {
         fetcher: any Fetcher,
         childPackage: ChildValidationPackage,
         validationContext: ValidationContext = .current,
-        validationContentStorer: any Storer,
+        validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
         stage: @Sendable (ChainAdmissionBatch) async throws -> Void
     ) async throws -> ChildChainBootstrapResult {
@@ -1375,7 +1375,7 @@ public extension ChainLevel {
         fetcher: any Fetcher,
         childPackage: ChildValidationPackage,
         validationContext: ValidationContext = .current,
-        validationContentStorer: any Storer,
+        validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
         staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
     ) async throws -> ChildChainBootstrapResult {
