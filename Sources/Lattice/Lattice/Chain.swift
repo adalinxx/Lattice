@@ -150,6 +150,235 @@ private struct SegmentIndex {
     }
 }
 
+/// Parent-proven child coverage plus the accepted ancestry relations explicitly
+/// reported by that child process. Unreported relations stay incomparable.
+/// This is a routing hint, never parent-side evidence of child validity.
+private struct ChildCoverageQuotient {
+    private let intervals: [String: (entry: Int, exit: Int)]
+    private let blockByEntry: [Int: String]
+    private let clockSize: Int
+    let blocks: Set<String>
+
+    init?(_ predecessorByBlock: [String: String?]) {
+        blocks = Set(predecessorByBlock.keys)
+        guard blocks.allSatisfy(Self.hasCanonicalIdentity) else { return nil }
+
+        var children: [String: [String]] = [:]
+        var roots: [String] = []
+        for block in blocks {
+            guard let predecessor = predecessorByBlock[block] else { return nil }
+            if let predecessor {
+                guard predecessor != block,
+                      blocks.contains(predecessor),
+                      Self.hasCanonicalIdentity(predecessor) else { return nil }
+                children[predecessor, default: []].append(block)
+            } else {
+                roots.append(block)
+            }
+        }
+        guard blocks.isEmpty || !roots.isEmpty else { return nil }
+
+        var discovered = Set<String>()
+        var entries: [String: Int] = [:]
+        var completed: [String: Int] = [:]
+        var next = 0
+        var pending = roots.sorted().reversed().map {
+            (block: $0, exiting: false)
+        }
+        while let frame = pending.popLast() {
+            if frame.exiting {
+                completed[frame.block] = next
+                next += 1
+                continue
+            }
+            guard discovered.insert(frame.block).inserted else { return nil }
+            entries[frame.block] = next
+            next += 1
+            pending.append((frame.block, true))
+            for child in (children[frame.block] ?? []).sorted().reversed() {
+                pending.append((child, false))
+            }
+        }
+        guard discovered == blocks else { return nil }
+        let builtIntervals: [String: (entry: Int, exit: Int)] = Dictionary(
+            uniqueKeysWithValues: blocks.compactMap { block in
+            guard let entry = entries[block], let exit = completed[block] else {
+                return nil
+            }
+            return (block, (entry, exit))
+        })
+        guard builtIntervals.count == blocks.count else { return nil }
+        intervals = builtIntervals
+        blockByEntry = Dictionary(uniqueKeysWithValues: builtIntervals.map {
+            ($0.value.entry, $0.key)
+        })
+        clockSize = next
+    }
+
+    private static func hasCanonicalIdentity(_ value: String) -> Bool {
+        let canonical = CIDIdentity.canonicalString(value)
+        return canonical == nil || canonical == value
+    }
+
+    func makeFrontier() -> LaminarFrontier {
+        LaminarFrontier(
+            intervals: intervals,
+            blockByEntry: blockByEntry,
+            clockSize: clockSize
+        )
+    }
+
+    func maximalBlocks(in candidates: Set<String>) -> [String] {
+        let ordered = candidates.compactMap { block -> (String, Int, Int)? in
+            guard let interval = intervals[block] else { return nil }
+            return (block, interval.entry, interval.exit)
+        }.sorted { $0.1 < $1.1 }
+        return ordered.indices.compactMap { index in
+            let candidate = ordered[index]
+            if index + 1 < ordered.count,
+               ordered[index + 1].1 <= candidate.2 {
+                return nil
+            }
+            return candidate.0
+        }
+    }
+}
+
+/// A mutable antichain over one fixed DFS-interval forest. Point counts make
+/// descendant and sole-possible-ancestor checks logarithmic; mutations are
+/// reversible so one frontier can follow a parent DFS without branch copies.
+private struct LaminarFrontier {
+    struct Mutation {
+        let inserted: Int?
+        let removed: Int?
+        let previousStateID: Int
+    }
+
+    private struct Transition: Hashable {
+        let stateID: Int
+        let entry: Int
+    }
+
+    private let exitByEntry: [Int: Int]
+    private let entryByBlock: [String: Int]
+    private let blockByEntry: [Int: String]
+    private var counts: [Int]
+    private var entries = Set<Int>()
+    private var transitionIDs: [Transition: Int] = [:]
+    private var nextStateID = 1
+    private(set) var stateID = 0
+
+    init(
+        intervals: [String: (entry: Int, exit: Int)],
+        blockByEntry: [Int: String],
+        clockSize: Int
+    ) {
+        exitByEntry = Dictionary(uniqueKeysWithValues: intervals.values.map {
+            ($0.entry, $0.exit)
+        })
+        entryByBlock = intervals.mapValues(\.entry)
+        self.blockByEntry = blockByEntry
+        counts = Array(repeating: 0, count: clockSize + 1)
+    }
+
+    var blocks: [String] {
+        entries.compactMap { blockByEntry[$0] }
+    }
+
+    mutating func insert(_ block: String) -> Mutation {
+        let previousStateID = stateID
+        guard let entry = entryByBlock[block],
+              let exit = exitByEntry[entry],
+              rangeCount(entry...exit) == 0 else {
+            return Mutation(
+                inserted: nil,
+                removed: nil,
+                previousStateID: previousStateID
+            )
+        }
+        var removed: Int?
+        let earlierCount = prefixCount(through: entry - 1)
+        if earlierCount > 0 {
+            let predecessor = entryAtRank(earlierCount)
+            if let predecessorExit = exitByEntry[predecessor],
+               predecessorExit >= exit {
+                remove(predecessor)
+                removed = predecessor
+            }
+        }
+        add(entry)
+        let transition = Transition(stateID: previousStateID, entry: entry)
+        if let existing = transitionIDs[transition] {
+            stateID = existing
+        } else {
+            stateID = nextStateID
+            transitionIDs[transition] = nextStateID
+            nextStateID += 1
+        }
+        return Mutation(
+            inserted: entry,
+            removed: removed,
+            previousStateID: previousStateID
+        )
+    }
+
+    mutating func undo(_ mutation: Mutation) {
+        if let inserted = mutation.inserted { remove(inserted) }
+        if let removed = mutation.removed { add(removed) }
+        stateID = mutation.previousStateID
+    }
+
+    private func prefixCount(through entry: Int) -> Int {
+        guard entry >= 0 else { return 0 }
+        var index = min(entry + 1, counts.count - 1)
+        var result = 0
+        while index > 0 {
+            result += counts[index]
+            index -= index & -index
+        }
+        return result
+    }
+
+    private func rangeCount(_ range: ClosedRange<Int>) -> Int {
+        prefixCount(through: range.upperBound)
+            - prefixCount(through: range.lowerBound - 1)
+    }
+
+    private func entryAtRank(_ rank: Int) -> Int {
+        var remaining = rank
+        var index = 0
+        var step = 1
+        while step << 1 < counts.count { step <<= 1 }
+        while step > 0 {
+            let next = index + step
+            if next < counts.count, counts[next] < remaining {
+                index = next
+                remaining -= counts[next]
+            }
+            step >>= 1
+        }
+        return index
+    }
+
+    private mutating func add(_ entry: Int) {
+        guard entries.insert(entry).inserted else { return }
+        update(entry, by: 1)
+    }
+
+    private mutating func remove(_ entry: Int) {
+        guard entries.remove(entry) != nil else { return }
+        update(entry, by: -1)
+    }
+
+    private mutating func update(_ entry: Int, by delta: Int) {
+        var index = entry + 1
+        while index < counts.count {
+            counts[index] += delta
+            index += index & -index
+        }
+    }
+}
+
 private struct CanonicalSegment: Equatable {
     var base: String
     var tail: String
@@ -792,11 +1021,28 @@ public actor ChainState {
     }
 
     /// Atomically export the parent-side work securing each child block. The node
-    /// supplies bindings already verified from content-addressed paths; Lattice
-    /// stores no cross-process parent/child relationship index.
+    /// supplies bindings already verified from content-addressed paths and may
+    /// supply the child's session-scoped accepted coverage quotient. Only those
+    /// explicit ancestry relations remove dominated routes; unmentioned coverage
+    /// remains conservatively incomparable. Lattice stores no cross-process
+    /// parent/child relationship index.
     public func inheritedWorkSnapshot(
-        forChildCoverage verifiedParentBlocksByChildBlock: [String: Set<String>]
+        forChildCoverage verifiedParentBlocksByChildBlock: [String: Set<String>],
+        acceptedChildPredecessorByBlock: [String: String?]? = nil
     ) -> InheritedWorkSnapshot? {
+        let coveredChildBlocks = Set(verifiedParentBlocksByChildBlock.keys)
+        let suppliedQuotient = acceptedChildPredecessorByBlock ?? [:]
+        let conservativeQuotient = Dictionary(
+            uniqueKeysWithValues: coveredChildBlocks.map { childBlock in
+                let predecessor = suppliedQuotient[childBlock]
+                    .flatMap { $0 }
+                    .flatMap { coveredChildBlocks.contains($0) ? $0 : nil }
+                return (childBlock, predecessor)
+            }
+        )
+        guard let quotient = ChildCoverageQuotient(conservativeQuotient) else {
+            return nil
+        }
         let requestedParentBlocks = Set(
             verifiedParentBlocksByChildBlock.values.joined()
         )
@@ -808,40 +1054,69 @@ public actor ChainState {
             return eligible.isEmpty ? nil : eligible
         }
         guard !connectedCoverage.isEmpty else { return nil }
-        let connectedParentBlocks = Set(connectedCoverage.values.joined())
-        guard let acceptedAncestry = acceptedAncestry(
-            of: connectedParentBlocks
-        ) else { return nil }
-        let rootsByChildBlock = minimalSubtreeRoots(
-            for: connectedCoverage,
-            within: acceptedAncestry
-        )
+
+        var childBlocksByParentBlock: [String: Set<String>] = [:]
+        for (childBlock, parentBlocks) in connectedCoverage {
+            for parentBlock in parentBlocks {
+                childBlocksByParentBlock[parentBlock, default: []].insert(childBlock)
+            }
+        }
         let inherited = retainedInheritedWork()
         let strongestWork = Self.strongestWorkByGrind(
             in: hashToBlock,
             inherited: inherited
         )
-        let requestedRoots = Set(rootsByChildBlock.values.joined())
-        let traversalRoots = minimalSubtreeRoots(
-            for: ["export": requestedRoots],
-            within: acceptedAncestry
-        )["export"] ?? []
-        let measuresByParentBlock = Self.effectiveSubtreeMeasures(
-            startingAt: traversalRoots,
-            retaining: requestedRoots,
-            in: hashToBlock,
-            inherited: inherited,
-            strongestWork: strongestWork
+        let roots = hashToBlock.values.filter {
+            $0.parentBlockHash == nil && $0.blockHeight == 0
+        }.map(\.blockHash).sorted()
+        let terminalGrinds = deepestConnectedWorkOccurrences(
+            from: roots,
+            inherited: inherited
         )
-        var workByChildBlock: [String: WorkMeasure] = [:]
-        for childBlockHash in connectedCoverage.keys {
-            let roots = rootsByChildBlock[childBlockHash] ?? []
-            workByChildBlock[childBlockHash] = roots.reduce(
-                into: WorkMeasure.zero
-            ) { result, hash in
-                if let measure = measuresByParentBlock[hash] {
-                    result.formUnion(measure)
+        var candidatesByGrind: [String: Set<String>] = [:]
+        var routedStatesByGrind: [String: Set<Int>] = [:]
+        var activeChildren = quotient.makeFrontier()
+        var pending: [(parentBlock: String, undo: [LaminarFrontier.Mutation]?)] =
+            roots.reversed().map { ($0, nil) }
+        while let frame = pending.popLast() {
+            if let mutations = frame.undo {
+                for mutation in mutations.reversed() {
+                    activeChildren.undo(mutation)
                 }
+                continue
+            }
+            guard let block = hashToBlock[frame.parentBlock],
+                  segmentIndex.baseByBlock[frame.parentBlock] != nil else {
+                continue
+            }
+            let mutations = (childBlocksByParentBlock[frame.parentBlock] ?? [])
+                .sorted()
+                .map { activeChildren.insert($0) }
+            if let grindIDs = terminalGrinds[frame.parentBlock] {
+                var routedChildren: [String]?
+                for grindID in grindIDs {
+                    guard routedStatesByGrind[grindID, default: []]
+                        .insert(activeChildren.stateID).inserted else { continue }
+                    if routedChildren == nil {
+                        routedChildren = activeChildren.blocks
+                    }
+                    candidatesByGrind[grindID, default: []]
+                        .formUnion(routedChildren ?? [])
+                }
+            }
+            pending.append((frame.parentBlock, mutations))
+            for child in block.childHashes.reversed() {
+                pending.append((child, nil))
+            }
+        }
+
+        var workByChildBlock: [String: WorkMeasure] = [:]
+        for (grindID, candidates) in candidatesByGrind {
+            guard let work = strongestWork[grindID] else { continue }
+            for childBlock in quotient.maximalBlocks(in: candidates) {
+                _ = workByChildBlock[childBlock, default: .zero].insert(
+                    VerifiedWorkContribution(id: grindID, work: work)
+                )
             }
         }
         return InheritedWorkSnapshot(
@@ -850,78 +1125,44 @@ public actor ChainState {
         )
     }
 
-    private func acceptedAncestry(
-        of blockHashes: Set<String>
-    ) -> Set<String>? {
-        var valid = Set<String>()
-        for startHash in blockHashes {
-            var currentHash = startHash
-            var path: [String] = []
-            var visiting = Set<String>()
-            while !valid.contains(currentHash) {
-                guard visiting.insert(currentHash).inserted,
-                      let current = hashToBlock[currentHash] else { return nil }
-                path.append(currentHash)
-                guard let parentHash = current.parentBlockHash else {
-                    guard current.blockHeight == 0 else { return nil }
-                    break
-                }
-                guard let parent = hashToBlock[parentHash],
-                      parent.childHashes.contains(currentHash) else { return nil }
-                let (expectedHeight, overflow) = parent.blockHeight.addingReportingOverflow(1)
-                guard !overflow, current.blockHeight == expectedHeight else { return nil }
-                currentHash = parentHash
-            }
-            valid.formUnion(path)
-        }
-        return valid
-    }
-
-    private func minimalSubtreeRoots(
-        for coverageByChildBlock: [String: Set<String>],
-        within ancestry: Set<String>
-    ) -> [String: [String]] {
-        var childBlocksByParentBlock: [String: [String]] = [:]
-        var rootsByChildBlock = Dictionary(
-            uniqueKeysWithValues: coverageByChildBlock.keys.map { ($0, [String]()) }
-        )
-        for (childBlockHash, parentBlockHashes) in coverageByChildBlock {
-            for parentBlockHash in parentBlockHashes {
-                childBlocksByParentBlock[parentBlockHash, default: []]
-                    .append(childBlockHash)
-            }
+    /// For one grind, an occurrence below another connected occurrence carries
+    /// every child route active above it. Only deepest incomparable parent
+    /// occurrences can therefore add coverage to the exported frontier.
+    private func deepestConnectedWorkOccurrences(
+        from roots: [String],
+        inherited: InheritedWorkSnapshot
+    ) -> [String: Set<String>] {
+        var order: [String] = []
+        var pending = Array(roots.reversed())
+        while let hash = pending.popLast() {
+            guard let block = hashToBlock[hash],
+                  segmentIndex.baseByBlock[hash] != nil else { continue }
+            order.append(hash)
+            pending.append(contentsOf: block.childHashes.reversed())
         }
 
-        let localRoots = ancestry.compactMap { hash -> BlockMeta? in
-            guard let meta = hashToBlock[hash],
-                  meta.parentBlockHash == nil else { return nil }
-            return meta
-        }.sorted { $0.blockHash < $1.blockHash }
-        var activeChildBlocks = Set<String>()
-        for root in localRoots {
-            var pending: [(hash: String, exiting: Bool, selected: [String])] = [
-                (root.blockHash, false, []),
-            ]
-            while let frame = pending.popLast() {
-                if frame.exiting {
-                    activeChildBlocks.subtract(frame.selected)
-                    continue
-                }
-                guard let meta = hashToBlock[frame.hash] else { continue }
-                var selected: [String] = []
-                for childBlockHash in childBlocksByParentBlock[frame.hash] ?? []
-                where activeChildBlocks.insert(childBlockHash).inserted {
-                    rootsByChildBlock[childBlockHash, default: []].append(frame.hash)
-                    selected.append(childBlockHash)
-                }
-                pending.append((frame.hash, true, selected))
-                for childHash in meta.childHashes.reversed()
-                where ancestry.contains(childHash) {
-                    pending.append((childHash, false, []))
-                }
+        var subtreeGrinds: [String: Set<String>] = [:]
+        var terminalGrinds: [String: Set<String>] = [:]
+        for hash in order.reversed() {
+            guard let block = hashToBlock[hash] else { continue }
+            let largestChild = block.childHashes.max {
+                (subtreeGrinds[$0]?.count ?? 0)
+                    < (subtreeGrinds[$1]?.count ?? 0)
             }
+            var descendants = largestChild.flatMap {
+                subtreeGrinds.removeValue(forKey: $0)
+            } ?? []
+            for child in block.childHashes where child != largestChild {
+                descendants.formUnion(subtreeGrinds.removeValue(forKey: child) ?? [])
+            }
+            var local = Set(block.workContributions.keys)
+            local.formUnion(inherited.sourceWork(forBlock: hash).grindIDs)
+            let terminal = local.subtracting(descendants)
+            if !terminal.isEmpty { terminalGrinds[hash] = terminal }
+            descendants.formUnion(local)
+            subtreeGrinds[hash] = descendants
         }
-        return rootsByChildBlock
+        return terminalGrinds
     }
 
     private func retainedInheritedWork() -> InheritedWorkSnapshot {
@@ -961,6 +1202,35 @@ public actor ChainState {
 
     public func contains(blockHash: String) -> Bool {
         hashToBlock[blockHash] != nil
+    }
+
+    /// Project the connected accepted forest onto the supplied block set. Each
+    /// retained block points to its nearest retained accepted ancestor. The
+    /// node sends this session-scoped quotient to its immediate parent only as
+    /// a sparse-export hint; it is not child-validity evidence.
+    public func connectedAcceptedCoverageQuotient(
+        for blockCIDs: Set<String>
+    ) -> [String: String?] {
+        let roots = hashToBlock.values.filter {
+            $0.parentBlockHash == nil && $0.blockHeight == 0
+        }.map(\.blockHash).sorted()
+        var result: [String: String?] = [:]
+        var pending = roots.reversed().map {
+            (block: $0, nearest: Optional<String>.none)
+        }
+        while let frame = pending.popLast() {
+            guard let block = hashToBlock[frame.block],
+                  segmentIndex.baseByBlock[frame.block] != nil else { continue }
+            var nearest = frame.nearest
+            if blockCIDs.contains(frame.block) {
+                result.updateValue(nearest, forKey: frame.block)
+                nearest = frame.block
+            }
+            for child in block.childHashes.reversed() {
+                pending.append((child, nearest))
+            }
+        }
+        return result
     }
 
     /// Same-chain acquisition needs are every unresolved immediate edge:

@@ -303,6 +303,161 @@ final class InheritedWorkForkChoiceTests: XCTestCase {
         XCTAssertEqual(leftChoice?.tipHash, "right")
     }
 
+    func testAcceptedChildQuotientExportsSparseForkEquivalentToExpandedWork()
+        async throws {
+        let parentRoot = testCID("frontier-fork-parent-root")
+        let parentLeft = testCID("frontier-fork-parent-left")
+        let parentRight = testCID("frontier-fork-parent-right")
+        let childRoot = testCID("frontier-fork-child-root")
+        let childLeft = testCID("frontier-fork-child-left")
+        let childRight = testCID("frontier-fork-child-right")
+        let childInvalid = testCID("frontier-fork-child-invalid")
+        let baseGrind = testCID("frontier-fork-base-grind")
+        let leftGrind = testCID("frontier-fork-left-grind")
+        let rightGrind = testCID("frontier-fork-right-grind")
+        let sharedGrind = testCID("frontier-fork-shared-grind")
+
+        var root = BlockMeta(
+            blockHash: parentRoot,
+            parentBlockHash: nil,
+            blockHeight: 0,
+            childHashes: [parentLeft, parentRight],
+            workContributions: [contribution(baseGrind, 2)]
+        )
+        let left = BlockMeta(
+            blockHash: parentLeft,
+            parentBlockHash: parentRoot,
+            blockHeight: 1,
+            childHashes: [],
+            workContributions: [
+                contribution(leftGrind, 5),
+                contribution(sharedGrind, 3),
+            ]
+        )
+        let right = BlockMeta(
+            blockHash: parentRight,
+            parentBlockHash: parentRoot,
+            blockHeight: 1,
+            childHashes: [],
+            workContributions: [
+                contribution(rightGrind, 7),
+                contribution(sharedGrind, 9),
+            ]
+        )
+        root.childHashes = [left.blockHash, right.blockHash]
+        let parent = makeChain(blocks: [root, left, right])
+        let sparseValue = await parent.inheritedWorkSnapshot(
+            forChildCoverage: [
+                childRoot: [parentRoot, parentLeft],
+                childLeft: [parentLeft],
+                childRight: [parentRight],
+                // The parent retained these bytes, but the child process did
+                // not accept them and therefore gives them no ancestry hint.
+                childInvalid: [parentLeft],
+            ],
+            acceptedChildPredecessorByBlock: [
+                childRoot: nil,
+                childLeft: childRoot,
+                childRight: childRoot,
+            ]
+        )
+        let sparse = try XCTUnwrap(sparseValue)
+
+        assertInheritedWorkMeasure(
+            sparse.sourceWork(forBlock: childRoot),
+            equals: [baseGrind: 2]
+        )
+        assertInheritedWorkMeasure(
+            sparse.sourceWork(forBlock: childLeft),
+            equals: [leftGrind: 5, sharedGrind: 9]
+        )
+        assertInheritedWorkMeasure(
+            sparse.sourceWork(forBlock: childRight),
+            equals: [rightGrind: 7, sharedGrind: 9]
+        )
+        assertInheritedWorkMeasure(
+            sparse.sourceWork(forBlock: childInvalid),
+            equals: [leftGrind: 5, sharedGrind: 9]
+        )
+
+        let expanded = InheritedWorkSnapshot(
+            revision: sparse.revision,
+            workByBlock: [
+                childRoot: WorkMeasure([
+                    contribution(baseGrind, 2),
+                    contribution(leftGrind, 5),
+                    contribution(rightGrind, 7),
+                    contribution(sharedGrind, 9),
+                ]),
+                childLeft: WorkMeasure([
+                    contribution(leftGrind, 5),
+                    contribution(sharedGrind, 9),
+                ]),
+                childRight: WorkMeasure([
+                    contribution(rightGrind, 7),
+                    contribution(sharedGrind, 9),
+                ]),
+            ]
+        )
+        let childBlocks: [BlockMeta] = [
+            BlockMeta(
+                blockHash: childRoot,
+                parentBlockHash: nil,
+                blockHeight: 0,
+                childHashes: [childLeft, childRight],
+                workContributions: [contribution(testCID("frontier-child-local-root"), 1)]
+            ),
+            BlockMeta(
+                blockHash: childLeft,
+                parentBlockHash: childRoot,
+                blockHeight: 1,
+                childHashes: [],
+                workContributions: [contribution(testCID("frontier-child-local-left"), 1)]
+            ),
+            BlockMeta(
+                blockHash: childRight,
+                parentBlockHash: childRoot,
+                blockHeight: 1,
+                childHashes: [],
+                workContributions: [contribution(testCID("frontier-child-local-right"), 1)]
+            ),
+        ]
+        let sparseChild = makeChain(blocks: childBlocks)
+        let expandedChild = makeChain(blocks: childBlocks)
+        _ = await sparseChild.setInheritedWorkProvider { sparse }
+        _ = await expandedChild.setInheritedWorkProvider { expanded }
+        let sparseTip = await sparseChild.getMainChainTip()
+        let expandedTip = await expandedChild.getMainChainTip()
+        let sparseForkChoice = await sparseChild.forkChoiceSnapshot(
+            startingAt: childRoot
+        )
+        let expandedForkChoice = await expandedChild.forkChoiceSnapshot(
+            startingAt: childRoot
+        )
+
+        XCTAssertEqual(sparseTip, expandedTip)
+        XCTAssertEqual(sparseForkChoice, expandedForkChoice)
+    }
+
+    func testAcceptedChildCoverageQuotientIsConservativeAndRejectsCycles() async {
+        let chain = fork()
+        let child = testCID("frontier-invalid-child")
+        let missing = testCID("frontier-invalid-missing")
+        let other = testCID("frontier-invalid-other")
+        let coverage = [child: Set(["root"])]
+
+        let conservative = await chain.inheritedWorkSnapshot(
+            forChildCoverage: coverage,
+            acceptedChildPredecessorByBlock: [child: missing]
+        )
+        let cyclic = await chain.inheritedWorkSnapshot(
+            forChildCoverage: [child: ["root"], other: ["root"]],
+            acceptedChildPredecessorByBlock: [child: other, other: child]
+        )
+        XCTAssertNotNil(conservative)
+        XCTAssertNil(cyclic)
+    }
+
     func testDisconnectedOrphanCannotExportSecuringWork() async {
         let root = makeBlockMeta(hash: "root", height: 0)
         let orphan = makeBlockMeta(
@@ -317,8 +472,13 @@ final class InheritedWorkForkChoiceTests: XCTestCase {
         let incompleteExport = await incomplete.inheritedWorkSnapshot(
             forChildCoverage: ["child": ["orphan"]]
         )
+        let incompleteQuotient = await incomplete.connectedAcceptedCoverageQuotient(
+            for: ["root", "orphan"]
+        )
 
         XCTAssertNil(incompleteExport)
+        XCTAssertEqual(Set(incompleteQuotient.keys), ["root"])
+        XCTAssertEqual(incompleteQuotient["root"], .some(nil))
 
         var connectedRoot = root
         connectedRoot.childHashes = ["missing"]
@@ -335,8 +495,14 @@ final class InheritedWorkForkChoiceTests: XCTestCase {
         let completeExport = await complete.inheritedWorkSnapshot(
             forChildCoverage: ["child": ["orphan"]]
         )
+        let completeQuotient = await complete.connectedAcceptedCoverageQuotient(
+            for: ["root", "orphan"]
+        )
 
         XCTAssertNotNil(completeExport)
+        XCTAssertEqual(Set(completeQuotient.keys), ["root", "orphan"])
+        XCTAssertEqual(completeQuotient["root"], .some(nil))
+        XCTAssertEqual(completeQuotient["orphan"], .some("root"))
     }
 
     func testDisconnectedCoverageDoesNotSuppressConnectedExport() async throws {
