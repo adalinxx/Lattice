@@ -210,10 +210,7 @@ public extension ChainState {
         )
     }
 
-    static func restore(
-        from persisted: PersistedChainState,
-        inheritedWorkProvider: InheritedWorkProvider? = nil
-    ) throws -> ChainState {
+    static func restore(from persisted: PersistedChainState) throws -> ChainState {
         let persistedBlocks = persisted.blocks
         let blockHashes = persistedBlocks.map(\.blockHash)
         let cachedInherited = persisted.inheritedWorkSnapshot
@@ -226,15 +223,12 @@ public extension ChainState {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
 
-        let liveInherited = inheritedWorkProvider?()
         let retainedInherited: InheritedWorkSnapshot?
         if let cachedInherited {
-            retainedInherited = liveInherited.map(cachedInherited.union) ?? cachedInherited
+            retainedInherited = cachedInherited
         } else if persisted.inheritedWorkRevision != nil {
             throw ChainStateRestoreError.missingInheritedWorkSnapshot
-        } else {
-            retainedInherited = liveInherited
-        }
+        } else { retainedInherited = nil }
         let inherited = retainedInherited ?? .zero
         let validInherited = inherited.entriesByBlock.allSatisfy { blockHash, measure in
             CIDIdentity.isCanonical(blockHash) && measure.entries.allSatisfy { grindID, work in
@@ -256,9 +250,8 @@ public extension ChainState {
         }
         let projectionChanged = projection.chainTip != persisted.chainTip
             || projection.mainChainHashes != Set(persisted.mainChainHashes)
-        let inheritedAdvanced = retainedInherited != cachedInherited
         let revision: UInt64
-        if projectionChanged || inheritedAdvanced {
+        if projectionChanged {
             let (next, overflow) = persisted.revision.addingReportingOverflow(1)
             guard !overflow else {
                 throw ChainStateRestoreError.corruptConsensusGraph
@@ -299,7 +292,6 @@ public extension ChainState {
             tipSnapshot: snapshots[projection.chainTip],
             tipSnapshotsByHash: snapshots,
             mutationGeneration: revision,
-            inheritedWorkProvider: inheritedWorkProvider,
             inheritedWorkSnapshot: retainedInherited
         )
     }

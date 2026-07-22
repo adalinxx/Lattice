@@ -87,7 +87,7 @@ func storeBuiltBlock(
     in fetcher: any Fetcher & Storer
 ) async throws -> Block {
     let header = try BlockHeader(node: block)
-    try await header.storeBlockContent(storer: fetcher)
+    try await header.store(paths: Block.contentResolutionPaths, storer: fetcher)
     if let children = block.children.node {
         var childPaths = ArrayTrie<ResolutionStrategy>()
         for directory in try children.allKeysAndValues().keys {
@@ -195,14 +195,17 @@ func buildPremineGenesis(
         genesisActions: [],
         receiptActions: [],
         withdrawalActions: [],
-        signers: [ownerAddress],
+        signers: [],
         fee: 0,
         nonce: 0,
         chainPath: ["Nexus"]
     )
     let result = try await BlockBuilder.buildGenesisWithTransition(
         spec: spec,
-        transactions: [signedTestTransaction(body, by: owner)],
+        transactions: [Transaction(
+            signatures: [:],
+            body: try HeaderImpl<TransactionBody>(node: body)
+        )],
         timestamp: timestamp,
         target: target,
         fetcher: fetcher

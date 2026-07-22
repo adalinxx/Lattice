@@ -98,6 +98,28 @@ final class ChildBlockProofCoreTests: XCTestCase {
         }
     }
 
+    func test_serializeEnforcesExactDirectoryAndDepthBounds() throws {
+        let maximumDirectory = String(
+            repeating: "x",
+            count: ChildProofWireLimits.maximumDirectoryBytes
+        )
+        XCTAssertNoThrow(try proof(path: [maximumDirectory]).serialize())
+        XCTAssertThrowsError(try proof(path: [maximumDirectory + "x"]).serialize()) {
+            XCTAssertEqual($0 as? ChildProofSerializationError, .valueTooLarge)
+        }
+
+        XCTAssertNoThrow(try proof(path: Array(
+            repeating: "x",
+            count: ChildProofWireLimits.maximumDepth
+        )).serialize())
+        XCTAssertThrowsError(try proof(path: Array(
+            repeating: "x",
+            count: ChildProofWireLimits.maximumDepth + 1
+        )).serialize()) {
+            XCTAssertEqual($0 as? ChildProofSerializationError, .valueTooLarge)
+        }
+    }
+
     func test_deserializeRejectsNonCanonicalEntryOrder() throws {
         var nonCanonical = try proof(root: "r", path: [], entries: [
             ("a", Data([1])),

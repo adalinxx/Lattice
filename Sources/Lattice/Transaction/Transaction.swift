@@ -81,27 +81,22 @@ public struct Transaction {
     }
 
     private func validateSignaturesAndResolve(
-        fetcher: Fetcher,
-        allowUnsigned: Bool = false
+        fetcher: Fetcher
     ) async throws -> TransactionBody? {
         let resolvedBody = try await body.resolve(fetcher: fetcher)
         guard let bodyNode = resolvedBody.node else { throw ValidationErrors.transactionNotResolved }
-        let isUnsigned = signatures.isEmpty && bodyNode.signers.isEmpty
-        if !(allowUnsigned && isUnsigned),
-           (!signaturesAreValid(bodyNode) || !signaturesMatchSigners(bodyNode)) {
+        if !signaturesAreValid(bodyNode) || !signaturesMatchSigners(bodyNode) {
             return nil
         }
         return bodyNode
     }
 
-    func validateTransactionForGenesis(
-        fetcher: Fetcher,
-        allowUnsigned: Bool = false
-    ) async throws -> Bool {
-        guard let bodyNode = try await validateSignaturesAndResolve(
-            fetcher: fetcher,
-            allowUnsigned: allowUnsigned
-        ) else { return false }
+    func validateTransactionForGenesis(fetcher: Fetcher) async throws -> Bool {
+        let resolvedBody = try await body.resolve(fetcher: fetcher)
+        guard let bodyNode = resolvedBody.node else {
+            throw ValidationErrors.transactionNotResolved
+        }
+        guard signatures.isEmpty, bodyNode.signers.isEmpty else { return false }
         if !bodyNode.accountActionsAreValid() { return false }
         if !bodyNode.actionsAreValid() { return false }
         if !bodyNode.depositActions.isEmpty { return false }

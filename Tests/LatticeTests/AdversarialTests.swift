@@ -51,7 +51,7 @@ final class DoubleSpendAdversarialTests: XCTestCase {
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [aliceAddr], fee: 0, nonce: 1,
+            signers: [aliceAddr], fee: 0, nonce: 0,
             chainPath: ["Nexus"]
         )
         let spend2 = TransactionBody(
@@ -61,7 +61,7 @@ final class DoubleSpendAdversarialTests: XCTestCase {
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [aliceAddr], fee: 0, nonce: 2,
+            signers: [aliceAddr], fee: 0, nonce: 1,
             chainPath: ["Nexus"]
         )
 
@@ -96,7 +96,7 @@ final class DoubleSpendAdversarialTests: XCTestCase {
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [aliceAddr], fee: 0, nonce: 1,
+            signers: [aliceAddr], fee: 0, nonce: 0,
             chainPath: ["Nexus"]
         )
         let block1 = try await buildAndStoreBlock(
@@ -111,7 +111,7 @@ final class DoubleSpendAdversarialTests: XCTestCase {
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [aliceAddr], fee: 0, nonce: 2,
+            signers: [aliceAddr], fee: 0, nonce: 1,
             chainPath: ["Nexus"]
         )
 
@@ -179,7 +179,7 @@ final class FeeAccountingValidationTests: XCTestCase {
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [payerAddr], fee: fee, nonce: 1, chainPath: ["Nexus"]
+            signers: [payerAddr], fee: fee, nonce: 0, chainPath: ["Nexus"]
         )
         let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [sign(body, payer)],
@@ -443,7 +443,7 @@ final class CrossChainSecurityTests: XCTestCase {
                 DepositAction(nonce: 1, demander: kpAddr, amountDemanded: 100, amountDeposited: 100)
             ],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 1,
+            signers: [kpAddr], fee: 0, nonce: 0,
             chainPath: ["Nexus"]
         )
 
@@ -477,7 +477,7 @@ final class CrossChainSecurityTests: XCTestCase {
                 DepositAction(nonce: 1, demander: kpAddr, amountDemanded: 0, amountDeposited: 0)
             ],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 1,
+            signers: [kpAddr], fee: 0, nonce: 0,
             chainPath: ["Nexus"]
         )
 
@@ -563,7 +563,7 @@ final class EconomicInvariantAdversarialTests: XCTestCase {
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [payerAddr], fee: fee, nonce: 1, chainPath: ["Nexus"]
+            signers: [payerAddr], fee: fee, nonce: 0, chainPath: ["Nexus"]
         )
         let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [sign(body, payer)],

@@ -685,7 +685,7 @@ final class ModelAFeeKeystoneTests: XCTestCase {
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [payerAddr], fee: fee, nonce: 1, chainPath: ["Nexus"]
+            signers: [payerAddr], fee: fee, nonce: 0, chainPath: ["Nexus"]
         )
         let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [signNexus(fundedBody, payer)],

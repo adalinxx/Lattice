@@ -650,14 +650,12 @@ private enum ChainLocalAdmission {
         block: Block,
         fetcher: any Fetcher,
         context: ChainRuntimeContext,
-        allowUnsignedTransactions: Bool = false,
         validationContext: ValidationContext
     ) async -> Result<(StateDiff, LatticeState?), ChainAdmissionFailure> {
         do {
             let validation = try await block.validateGenesisTransition(
                 fetcher: fetcher,
                 chainPath: context.path,
-                allowUnsignedTransactions: allowUnsignedTransactions,
                 reportTemporalFailure: true,
                 validationContext: validationContext
             )
@@ -1165,9 +1163,8 @@ public extension ChainLevel {
         )
     }
 
-    /// Create the root-chain process from an externally supplied, signed
-    /// genesis. The runtime becomes visible only after storage and atomic
-    /// staging succeed.
+    /// Create a chain process from its exact authorized genesis. The runtime
+    /// becomes visible only after storage and atomic staging succeed.
     static func bootstrap(
         context: ChainRuntimeContext,
         genesisHeader: BlockHeader,
@@ -1197,8 +1194,7 @@ public extension ChainLevel {
     }
 
     /// Root bootstrap variant that stages verified hierarchy facts atomically
-    /// with the first admission batch. Ordinary root genesis transactions use
-    /// the normal signature rules.
+    /// with the first admission batch.
     static func bootstrap(
         context: ChainRuntimeContext,
         genesisHeader: BlockHeader,
@@ -1206,64 +1202,6 @@ public extension ChainLevel {
         validationContext: ValidationContext = .current,
         validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
-        staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
-    ) async throws -> (
-        level: ChainLevel,
-        stateDiff: StateDiff,
-        materializedPostState: LatticeState?,
-        commit: ChainCommit,
-        parentCarrierLink: ParentCarrierLink
-    ) {
-        try await bootstrapRootGenesis(
-            context: context,
-            genesisHeader: genesisHeader,
-            fetcher: fetcher,
-            validationContext: validationContext,
-            validationContentStorer: validationContentStorer,
-            materializedVolumeStorer: materializedVolumeStorer,
-            allowsUnsignedTransactions: false,
-            staging: staging
-        )
-    }
-
-    /// Bootstrap a locally configured root genesis. The caller must first bind
-    /// this exact header CID to its configured trust anchor and use only local
-    /// content. This is bootstrap, never peer admission.
-    static func bootstrapConfiguredRoot(
-        context: ChainRuntimeContext,
-        genesisHeader: BlockHeader,
-        fetcher: any Fetcher,
-        validationContext: ValidationContext = .current,
-        validationContentStorer: any VolumeStorer,
-        materializedVolumeStorer: any VolumeStorer,
-        staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
-    ) async throws -> (
-        level: ChainLevel,
-        stateDiff: StateDiff,
-        materializedPostState: LatticeState?,
-        commit: ChainCommit,
-        parentCarrierLink: ParentCarrierLink
-    ) {
-        try await bootstrapRootGenesis(
-            context: context,
-            genesisHeader: genesisHeader,
-            fetcher: fetcher,
-            validationContext: validationContext,
-            validationContentStorer: validationContentStorer,
-            materializedVolumeStorer: materializedVolumeStorer,
-            allowsUnsignedTransactions: true,
-            staging: staging
-        )
-    }
-
-    private static func bootstrapRootGenesis(
-        context: ChainRuntimeContext,
-        genesisHeader: BlockHeader,
-        fetcher: any Fetcher,
-        validationContext: ValidationContext,
-        validationContentStorer: any VolumeStorer,
-        materializedVolumeStorer: any VolumeStorer,
-        allowsUnsignedTransactions: Bool,
         staging: @Sendable (ChainAdmissionStagingContext) async throws -> Void
     ) async throws -> (
         level: ChainLevel,
@@ -1299,7 +1237,6 @@ public extension ChainLevel {
             block: resolved.block,
             fetcher: fetcher,
             context: context,
-            allowUnsignedTransactions: allowsUnsignedTransactions,
             validationContext: validationContext
         ) {
         case .failure(let failure): throw failure

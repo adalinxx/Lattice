@@ -109,10 +109,10 @@ public struct TransactionBody: Scalar {
         return true
     }
 
-    /// THE consensus shape rule for genesis actions: an anchor must name a
-    /// non-empty directory and a non-empty genesis block CID. The parent only
-    /// RECORDS the anchor (directory → genesis CID); the genesis block's CONTENT
-    /// is validated by the child chain it belongs to during admission, not here.
+    /// THE consensus shape rule for genesis actions: an anchor must fit the
+    /// child-proof wire format and name a canonical genesis block CID. The
+    /// parent only RECORDS the anchor (directory → genesis CID); the genesis
+    /// block's CONTENT is validated by its child chain during admission.
     /// Consumed by block validation and by node-side admission — one definition
     /// so the two cannot drift.
     ///
@@ -124,10 +124,17 @@ public struct TransactionBody: Scalar {
     /// the single consensus entry point for new directory names — keeps every
     /// directory in any chainPath separator-free.
     public func genesisActionsAreValid() -> Bool {
+        if !genesisActions.isEmpty,
+           chainPath.count > ChildProofWireLimits.maximumDepth {
+            return false
+        }
         for genesisAction in genesisActions {
             if genesisAction.directory.isEmpty { return false }
             if genesisAction.directory.contains(DIRECTORY_KEY_SEPARATOR) { return false }
-            if genesisAction.blockCID.isEmpty { return false }
+            if genesisAction.directory.utf8.count > ChildProofWireLimits.maximumDirectoryBytes {
+                return false
+            }
+            if !CIDIdentity.isCanonical(genesisAction.blockCID) { return false }
         }
         return true
     }

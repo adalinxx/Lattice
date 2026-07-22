@@ -6,6 +6,11 @@ public enum ChildProofSerializationError: Error, Sendable, Equatable {
     case valueTooLarge
 }
 
+enum ChildProofWireLimits {
+    static let maximumDirectoryBytes = Int(UInt16.max)
+    static let maximumDepth = Int(UInt16.max)
+}
+
 /// Canonical sparse proof for the terminal parent-to-child commitment in a
 /// potentially composed ``ChildBlockProof``.
 ///
@@ -71,7 +76,7 @@ public struct DirectChildEdge: Hashable, Scalar {
         guard CIDIdentity.isCanonical(parentCarrierCID),
               CIDIdentity.isCanonical(childCID),
               !directory.isEmpty,
-              directory.utf8.count <= Int(UInt16.max),
+              directory.utf8.count <= ChildProofWireLimits.maximumDirectoryBytes,
               !directory.contains("/"),
               let proof,
               proof.rootCID == parentCarrierCID,
@@ -124,6 +129,13 @@ public struct ChildBlockProof: Sendable {
         self.entries = entries.sorted { $0.cid < $1.cid }
     }
 
+    private var hasRepresentableDirectoryPath: Bool {
+        directoryPath.count <= ChildProofWireLimits.maximumDepth
+            && directoryPath.allSatisfy {
+                $0.utf8.count <= ChildProofWireLimits.maximumDirectoryBytes
+            }
+    }
+
     // MARK: - Generation
 
     /// Generate a single-hop sparse proof for `childDirectory` from a block the
@@ -135,6 +147,9 @@ public struct ChildBlockProof: Sendable {
         childDirectory: String,
         fetcher: Fetcher
     ) async throws -> ChildBlockProof {
+        guard childDirectory.utf8.count <= ChildProofWireLimits.maximumDirectoryBytes else {
+            throw ChildProofSerializationError.valueTooLarge
+        }
         let path: [[String]: ResolutionStrategy] = [["children", childDirectory]: .targeted]
         let resolvedRoot = try await rootHeader.resolve(paths: path, fetcher: fetcher)
         let storer = _CollectingStorer()
@@ -270,6 +285,7 @@ public struct ChildBlockProof: Sendable {
         case .failure(let failure): return .failure(failure)
         }
         guard chainPath.first == DEFAULT_ROOT_DIRECTORY,
+              hasRepresentableDirectoryPath,
               chainPath.count == directoryPath.count + 1,
               directoryPath == Array(chainPath.dropFirst()),
               !entries.isEmpty,
@@ -421,7 +437,7 @@ public struct ChildBlockProof: Sendable {
         var out = Data()
         let rootCIDBytes = Data(rootCID.utf8)
         guard rootCIDBytes.count <= Int(UInt16.max),
-              directoryPath.count <= Int(UInt16.max),
+              hasRepresentableDirectoryPath,
               entries.count <= Int(UInt16.max) else {
             throw ChildProofSerializationError.valueTooLarge
         }
@@ -430,9 +446,6 @@ public struct ChildBlockProof: Sendable {
         writeU16(&out, UInt16(directoryPath.count))
         for dir in directoryPath {
             let db = Data(dir.utf8)
-            guard db.count <= Int(UInt16.max) else {
-                throw ChildProofSerializationError.valueTooLarge
-            }
             writeU16(&out, UInt16(db.count))
             out.append(db)
         }

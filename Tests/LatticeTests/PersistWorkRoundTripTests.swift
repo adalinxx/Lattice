@@ -11,6 +11,33 @@ private func persistedContribution(
     VerifiedWorkContribution(id: persistedCID(id), work: work)
 }
 
+// Snapshot persistence is test-only. Keep its historical provider scenarios
+// out of the production consensus API while these fixtures are retired.
+private extension ChainState {
+    static func restore(
+        from persisted: PersistedChainState,
+        inheritedWorkProvider: () -> InheritedWorkSnapshot
+    ) throws -> ChainState {
+        if let revision = persisted.inheritedWorkRevision {
+            guard persisted.inheritedWorkSnapshot?.revision == revision else {
+                throw ChainStateRestoreError.missingInheritedWorkSnapshot
+            }
+        }
+        let live = inheritedWorkProvider()
+        let retained = persisted.inheritedWorkSnapshot?.union(live) ?? live
+        let combined = PersistedChainState(
+            schemaVersion: persisted.schemaVersion,
+            revision: persisted.revision,
+            inheritedWorkRevision: retained.revision,
+            inheritedWorkSnapshot: retained,
+            chainTip: persisted.chainTip,
+            mainChainHashes: persisted.mainChainHashes,
+            blocks: persisted.blocks
+        )
+        return try restore(from: combined)
+    }
+}
+
 private func persistedCID(_ seed: String) -> String {
     try! HeaderImpl<PublicKey>(node: PublicKey(key: seed)).rawCID
 }
@@ -819,7 +846,7 @@ final class PersistWorkRoundTripTests: XCTestCase {
                 ),
             ]
         )
-        _ = await chain.setInheritedWorkProvider { inherited }
+        _ = await chain.mergeInheritedWork(inherited)
         let snapshot = await chain.persist()
         XCTAssertEqual(snapshot.inheritedWorkRevision, 3)
         XCTAssertEqual(snapshot.inheritedWorkSnapshot, inherited)
@@ -1093,7 +1120,7 @@ final class PersistWorkRoundTripTests: XCTestCase {
             contribution: incumbentContribution
         )
         XCTAssertTrue(incumbentResult.addedBlock)
-        let inheritedCommit = await live.setInheritedWorkProvider { inherited }
+        let inheritedCommit = await live.mergeInheritedWork(inherited)
         let containsFutureBeforeAdmission = await live.contains(blockHash: futureHeader.rawCID)
         let tipBeforeAdmission = await live.getMainChainTip()
         XCTAssertEqual(inheritedCommit?.revision, 2)
@@ -1157,23 +1184,7 @@ final class PersistWorkRoundTripTests: XCTestCase {
         XCTAssertEqual(restartedSnapshot.revision, expected.revision)
     }
 
-    func testRestoreFailsClosedWhenRevisionWouldOverflow() {
-        let fixture = inheritedForkState(revision: .max)
-        let newer = InheritedWorkSnapshot(
-            revision: fixture.inherited.revision + 1,
-            workByBlock: [
-                fixture.forkHash: fixture.inherited.work(forBlock: fixture.forkHash),
-            ]
-        )
-        XCTAssertThrowsError(
-            try ChainState.restore(
-                from: fixture.state,
-                inheritedWorkProvider: { newer }
-            )
-        ) { error in
-            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
-        }
-
+    func testRestoreFailsClosedWhenProjectionRepairWouldOverflow() {
         let staleProjection = staleForkChoiceSnapshot()
         let exhaustedProjection = PersistedChainState(
             schemaVersion: staleProjection.schemaVersion,

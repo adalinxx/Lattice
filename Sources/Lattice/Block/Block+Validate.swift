@@ -111,7 +111,6 @@ public extension Block {
         let transition = try await validateGenesisTransition(
             fetcher: fetcher,
             chainPath: chainPath,
-            allowUnsignedTransactions: false,
             reportTemporalFailure: reportTemporalFailure,
             validationContext: validationContext
         )
@@ -123,7 +122,6 @@ public extension Block {
     internal func validateGenesisTransition(
         fetcher: Fetcher,
         chainPath: [String],
-        allowUnsignedTransactions: Bool,
         reportTemporalFailure: Bool = false,
         validationContext: ValidationContext
     ) async throws -> (Bool, StateDiff, LatticeState?) {
@@ -133,10 +131,7 @@ public extension Block {
             return (false, .empty, nil)
         }
         guard let transactionBodies = try await resolveTransactionBodies(fetcher: fetcher, validator: { tx in
-            try await tx.validateTransactionForGenesis(
-                fetcher: fetcher,
-                allowUnsigned: allowUnsignedTransactions
-            )
+            try await tx.validateTransactionForGenesis(fetcher: fetcher)
         }) else { return (false, .empty, nil) }
         guard let specNode = try await spec.resolve(fetcher: fetcher).node else { return (false, .empty, nil) }
         guard specNode.isValid else { return (false, .empty, nil) }

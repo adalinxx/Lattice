@@ -229,9 +229,8 @@ A genesis block `B` is valid if and only if ALL of the following hold:
 5. `B.target >= minimumTarget` and `B.nextTarget == B.target`
 6. All transactions in `B.transactions` are fully resolvable
 7. For each transaction `tx`: `tx.validateTransactionForGenesis()` returns true
-   - Signatures are valid Ed25519 signatures under section 7.1
-   - Signers match signature public keys
-   - Account debits are authorized by signers
+   - `tx.signatures` and `tx.body.signers` are both empty
+   - Account and general actions are structurally valid
    - No deposit, receipt, or withdrawal actions are present
 8. Every transaction's `chainPath` equals the runtime's absolute path
 9. All transaction bodies pass the chain's policies
@@ -241,23 +240,21 @@ A genesis block `B` is valid if and only if ALL of the following hold:
     ```
     totalCredits <= premineAmount
     ```
-13. Every `GenesisAction` has a non-empty separator-free directory and non-empty
-    genesis block CID. The child process validates that block's content.
+13. Every `GenesisAction` has a non-empty separator-free directory of at most
+    `UInt16.max` UTF-8 bytes and a canonical genesis block CID. Its child proof
+    depth must remain at most `UInt16.max`. The child process validates that
+    block's content.
 14. **Post-state correctness**: Applying all actions to `prevState` (empty
     state) produces `postState`:
     ```
     proveAndUpdateState(prevState, allActions) == postState
     ```
 
-Configured root bootstrap is separate from genesis validation and peer
-admission. A host that has locally bound a genesis header CID to its configured
-trust anchor may call `bootstrapConfiguredRoot`; it retains the root shape,
-proof-of-work, state-transition, storage, and staging checks, while allowing
-only transactions with both empty signature maps and empty signer lists. Hosts
-MUST NOT invoke this API for peer-supplied content. Ordinary root bootstrap,
-child genesis, and all later transactions remain signature-strict. The
-reference node binds
-`bafyreiayw4z5qz4lt2sljf2enzn7uol3qa6bebadav7qwnqz7agxkiuwhq` locally.
+Genesis transactions are unsigned because their containing block is authorized
+as an exact content-addressed object: Nexus by its configured genesis CID and a
+child by its parent's `GenesisAction.blockCID`. A signature would assert no
+independent fact. All later transactions remain signature-strict. The reference
+node binds `bafyreiayw4z5qz4lt2sljf2enzn7uol3qa6bebadav7qwnqz7agxkiuwhq` locally.
 
 ### 5.2 Nexus Block Validation
 
@@ -569,12 +566,11 @@ transaction body, including its absolute `chainPath` and nonce, so mutation or
 cross-path replay still fails. This fallback does not accept bare public-key
 encodings; signing keys remain canonical Multikey values.
 
-For each `(publicKeyHex, signatureHex)` in `tx.signatures`, one accepted
-Ed25519 verification MUST succeed. At least one signature is required for
-ordinary transaction and genesis validation. `bootstrapConfiguredRoot` is a
-separate local initialization API defined in section 5.1. The set of addresses
-derived from the signing public keys MUST equal the set in `tx.body.signers`;
-extra and missing signers are both invalid.
+For each `(publicKeyHex, signatureHex)` in an ordinary transaction's
+`tx.signatures`, one accepted Ed25519 verification MUST succeed. At least one
+signature is required. The set of addresses derived from the signing public
+keys MUST equal the set in `tx.body.signers`; extra and missing signers are both
+invalid. Genesis transactions follow the unsigned rule in section 5.1.
 
 ### 7.2 Authorization
 

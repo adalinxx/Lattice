@@ -507,7 +507,6 @@ public actor ChainState {
     /// fork-choice inputs and are rebuilt only when an API exposes them.
     private var localWorkCachesDirty: Bool
 
-    var inheritedWorkProvider: InheritedWorkProvider?
     private var inheritedWorkFacts: InheritedWorkAccumulator?
     var inheritedWorkSnapshot: InheritedWorkSnapshot? {
         inheritedWorkFacts?.snapshot()
@@ -538,7 +537,6 @@ public actor ChainState {
         tipSnapshot: TipBlockSnapshot? = nil,
         tipSnapshotsByHash: [String: TipBlockSnapshot] = [:],
         mutationGeneration: UInt64 = 0,
-        inheritedWorkProvider: InheritedWorkProvider? = nil,
         inheritedWorkSnapshot: InheritedWorkSnapshot? = nil
     ) throws {
         self.chainTip = chainTip
@@ -585,13 +583,12 @@ public actor ChainState {
             allByHeight[meta.blockHeight, default: []].insert(meta.blockHash)
         }
         self.indexToBlockHash = allByHeight
-        let initialInherited = inheritedWorkSnapshot ?? inheritedWorkProvider?()
+        let initialInherited = inheritedWorkSnapshot
         if let initialInherited,
-           (!initialInherited.hasNoCIDTextAliases
+           (!initialInherited.hasCanonicalCIDs
                 || !initialInherited.hasUniqueGrindLocations) {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
-        self.inheritedWorkProvider = inheritedWorkProvider
         self.inheritedWorkFacts = initialInherited.map(InheritedWorkAccumulator.init)
         self.tipSnapshot = tipSnapshot
         self.tipSnapshotsByHash = tipSnapshotsByHash
@@ -713,8 +710,7 @@ public actor ChainState {
     /// before the in-memory actor was created.
     public static func restore(
         replaying batches: [ChainAdmissionBatch],
-        revisionFloor: UInt64 = 0,
-        inheritedWorkProvider: InheritedWorkProvider? = nil
+        revisionFloor: UInt64 = 0
     ) async throws -> ChainState {
         let genesis = batches.compactMap(TrustedAdmissionBatch.init).filter {
             $0.block?.parentBlockHash == nil && $0.block?.blockHeight == 0
@@ -732,7 +728,6 @@ public actor ChainState {
         // The node may enumerate its durable facts in any order. Replay the seed
         // batch too: its existing block/work record makes that a no-op.
         try await replay(batches[...], onto: chain)
-        _ = await chain.setInheritedWorkProvider(inheritedWorkProvider)
         return chain
     }
 
@@ -741,13 +736,9 @@ public actor ChainState {
     /// batches is safe: duplicate facts are idempotent.
     public static func restore(
         from persisted: PersistedChainState,
-        replaying batches: [ChainAdmissionBatch],
-        inheritedWorkProvider: InheritedWorkProvider? = nil
+        replaying batches: [ChainAdmissionBatch]
     ) async throws -> ChainState {
-        let chain = try restore(
-            from: persisted,
-            inheritedWorkProvider: inheritedWorkProvider
-        )
+        let chain = try restore(from: persisted)
         try await replay(batches[...], onto: chain)
         return chain
     }
@@ -839,23 +830,12 @@ public actor ChainState {
 
     // MARK: - Queries
 
-    /// Install the node's coherent immediate-parent view and immediately make
-    /// this chain's canonical projection agree with it.
-    @discardableResult
-    public func setInheritedWorkProvider(
-        _ provider: InheritedWorkProvider?
-    ) -> ChainCommit? {
-        inheritedWorkProvider = provider
-        return reevaluateForkChoice()
-    }
-
-    /// Re-read a live provider whose cached snapshot changed.
+    /// Recompute canonical projection after local simulation/test mutation.
     @discardableResult
     public func reevaluateForkChoice() -> ChainCommit? {
         guard hasUnreservedMutationCapacity else { return nil }
-        let inheritedChanged = refreshInheritedWork()
         let canonicalChange = projectCanonicalChain()
-        guard inheritedChanged || canonicalChange != nil else { return nil }
+        guard canonicalChange != nil else { return nil }
         mutationGeneration += 1
         return (canonicalChange ?? ChainCommit(tipHash: chainTip))
             .atRevision(mutationGeneration)
@@ -882,7 +862,7 @@ public actor ChainState {
     public func acceptsInheritedWork(
         _ snapshot: InheritedWorkSnapshot
     ) -> Bool {
-        guard snapshot.hasNoCIDTextAliases,
+        guard snapshot.hasCanonicalCIDs,
               snapshot.hasUniqueGrindLocations,
               inheritedWorkFacts?.accepts(snapshot) ?? true else { return false }
         return snapshot.entriesByBlock.allSatisfy { blockHash, measure in
@@ -933,7 +913,7 @@ public actor ChainState {
         from parent: InheritedWorkSnapshot,
         parentCarrierBlocksByChildBlock: [String: Set<String>]
     ) -> InheritedWorkSnapshot? {
-        guard parent.hasNoCIDTextAliases,
+        guard parent.hasCanonicalCIDs,
               parent.hasUniqueGrindLocations else { return nil }
         var childByParentBlock: [String: String] = [:]
         for (childBlock, carriers) in parentCarrierBlocksByChildBlock {
@@ -973,12 +953,6 @@ public actor ChainState {
 
     private func inheritedWork(forBlock blockHash: String) -> WorkMeasure {
         inheritedWorkFacts?.work(forBlock: blockHash) ?? .zero
-    }
-
-    @discardableResult
-    private func refreshInheritedWork() -> Bool {
-        guard let candidate = inheritedWorkProvider?() else { return false }
-        return mergeInheritedWorkSnapshot(candidate)
     }
 
     /// Apply only new locations and stronger quantities. The retained
@@ -1256,12 +1230,10 @@ public actor ChainState {
             rebuildSegmentCache: topologyChanged
         )
         if !result.addedBlock { return result }
-        let inheritedChanged = refreshInheritedWork()
         mutationGeneration += 1
 
         let canonicalChange: ChainCommit?
-        if !inheritedChanged,
-           canAppendCanonicalTip(blockHash, parentHash: input.parentBlockHash, oldTip: oldTip) {
+        if canAppendCanonicalTip(blockHash, parentHash: input.parentBlockHash, oldTip: oldTip) {
             canonicalChange = appendCanonicalTip(blockHash)
         } else {
             canonicalChange = projectCanonicalChain(forceFull: topologyChanged)
@@ -1769,7 +1741,6 @@ public actor ChainState {
         guard hasUnreservedMutationCapacity else { return .discarded() }
         applyLocalContribution(contribution, to: blockHash)
         applyForkChoiceContribution(contribution, to: blockHash)
-        _ = refreshInheritedWork()
         mutationGeneration += 1
 
         let canonicalChange = projectCanonicalChain()

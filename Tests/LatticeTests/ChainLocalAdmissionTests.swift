@@ -276,7 +276,41 @@ final class ChainLocalAdmissionTests: XCTestCase {
         }
     }
 
-    private func stateChangingGenesisTransaction(
+    func testRuntimeContextEnforcesProofWireDirectoryAndDepthBounds() throws {
+        let maximumDirectory = String(
+            repeating: "x",
+            count: ChildProofWireLimits.maximumDirectoryBytes
+        )
+        XCTAssertNoThrow(try ChainRuntimeContext(
+            path: [DEFAULT_ROOT_DIRECTORY, maximumDirectory],
+            minimumRootWork: UInt256(1)
+        ))
+        XCTAssertThrowsError(try ChainRuntimeContext(
+            path: [DEFAULT_ROOT_DIRECTORY, maximumDirectory + "x"],
+            minimumRootWork: UInt256(1)
+        )) { error in
+            XCTAssertEqual(error as? ChainRuntimeContextError, .directoryTooLong)
+        }
+
+        XCTAssertNoThrow(try ChainRuntimeContext(
+            path: [DEFAULT_ROOT_DIRECTORY] + Array(
+                repeating: "Child",
+                count: ChildProofWireLimits.maximumDepth
+            ),
+            minimumRootWork: UInt256(1)
+        ))
+        XCTAssertThrowsError(try ChainRuntimeContext(
+            path: [DEFAULT_ROOT_DIRECTORY] + Array(
+                repeating: "Child",
+                count: ChildProofWireLimits.maximumDepth + 1
+            ),
+            minimumRootWork: UInt256(1)
+        )) { error in
+            XCTAssertEqual(error as? ChainRuntimeContextError, .pathTooDeep)
+        }
+    }
+
+    private func signedStateChangingGenesisTransaction(
         key: String,
         chainPath: [String]
     ) -> Transaction {
@@ -678,7 +712,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let genesis = try await makeGenesis(
             fetcher: fetcher,
             timestamp: 1_000,
-            transactions: [stateChangingGenesisTransaction(
+            transactions: [unsignedStateChangingGenesisTransaction(
                 key: "carrier-parent",
                 chainPath: [DEFAULT_ROOT_DIRECTORY]
             )]
@@ -1415,7 +1449,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             nonce: 1,
             parentWorkAuthorityKey: testParentWorkAuthorityKey
         )
-        let transaction = stateChangingGenesisTransaction(
+        let transaction = unsignedStateChangingGenesisTransaction(
             key: "materialized",
             chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
         )
@@ -1488,7 +1522,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
 
     func testPublicBootstrapRequiresVerifiedGenesisAndStorage() async throws {
         let fetcher = StorableFetcher()
-        let transaction = stateChangingGenesisTransaction(
+        let transaction = unsignedStateChangingGenesisTransaction(
             key: "bootstrap",
             chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
         )
@@ -1606,7 +1640,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
 
     func testPublicRootBootstrapStagesTransactionGenesisBeforeVisibility() async throws {
         let fetcher = StorableFetcher()
-        let transaction = stateChangingGenesisTransaction(
+        let transaction = unsignedStateChangingGenesisTransaction(
             key: "root-bootstrap",
             chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
@@ -1665,7 +1699,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(restoredSnapshot, liveSnapshot)
     }
 
-    func testConfiguredRootBootstrapAllowsUnsignedTransactions() async throws {
+    func testGenesisBootstrapRequiresUnsignedTransactions() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await makeGenesis(
             fetcher: fetcher,
@@ -1682,31 +1716,15 @@ final class ChainLocalAdmissionTests: XCTestCase {
             fetcher: fetcher,
             chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
-        XCTAssertFalse(direct.0, "ordinary genesis validation remains signature-strict")
+        XCTAssertTrue(direct.0)
 
-        do {
-            _ = try await ChainLevel.bootstrap(
-                context: context,
-                genesisHeader: header,
-                fetcher: fetcher,
-                validationContentStorer: fetcher,
-                materializedVolumeStorer: fetcher,
-                stage: testAdmissionStage
-            )
-            XCTFail("ordinary root bootstrap must remain signature-strict")
-        } catch let failure as ChainAdmissionFailure {
-            XCTAssertEqual(failure, .protocolInvalid)
-        }
-
-        let result = try await ChainLevel.bootstrapConfiguredRoot(
+        let result = try await ChainLevel.bootstrap(
             context: context,
             genesisHeader: header,
             fetcher: fetcher,
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
-            staging: { context in
-                try await testAdmissionStage(context.batch)
-            }
+            stage: testAdmissionStage
         )
         let rootTip = await result.level.chain.getMainChainTip()
         XCTAssertEqual(rootTip, header.rawCID)
@@ -1719,7 +1737,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         )
     }
 
-    func testConfiguredRootBootstrapDoesNotRelaxLaterTransactions() async throws {
+    func testGenesisBootstrapDoesNotRelaxLaterTransactions() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await makeGenesis(
             fetcher: fetcher,
@@ -1730,15 +1748,13 @@ final class ChainLocalAdmissionTests: XCTestCase {
             )]
         )
         let genesisHeader = try BlockHeader(node: genesis)
-        let bootstrap = try await ChainLevel.bootstrapConfiguredRoot(
+        let bootstrap = try await ChainLevel.bootstrap(
             context: testChainContext(),
             genesisHeader: genesisHeader,
             fetcher: fetcher,
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
-            staging: { context in
-                try await testAdmissionStage(context.batch)
-            }
+            stage: testAdmissionStage
         )
         let unsignedBody = TransactionBody(
             accountActions: [],
@@ -1775,31 +1791,34 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(result.failure, .protocolInvalid)
     }
 
-    func testSignedRootBootstrapNeedsNoConfiguredBootstrap() async throws {
+    func testGenesisBootstrapRejectsSignedTransactions() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await makeGenesis(
             fetcher: fetcher,
             timestamp: 1_000,
-            transactions: [stateChangingGenesisTransaction(
+            transactions: [signedStateChangingGenesisTransaction(
                 key: "signed-root",
                 chainPath: [DEFAULT_ROOT_DIRECTORY]
             )]
         )
         let header = try BlockHeader(node: genesis)
 
-        let result = try await ChainLevel.bootstrap(
-            context: testChainContext(),
-            genesisHeader: header,
-            fetcher: fetcher,
-            validationContentStorer: fetcher,
-            materializedVolumeStorer: fetcher,
-            stage: testAdmissionStage
-        )
-        let tip = await result.level.chain.getMainChainTip()
-        XCTAssertEqual(tip, header.rawCID)
+        do {
+            _ = try await ChainLevel.bootstrap(
+                context: testChainContext(),
+                genesisHeader: header,
+                fetcher: fetcher,
+                validationContentStorer: fetcher,
+                materializedVolumeStorer: fetcher,
+                stage: testAdmissionStage
+            )
+            XCTFail("genesis transactions must be unsigned")
+        } catch let failure as ChainAdmissionFailure {
+            XCTAssertEqual(failure, .protocolInvalid)
+        }
     }
 
-    func testConfiguredRootBootstrapRejectsMalformedSignerSignaturePairs() async throws {
+    func testGenesisBootstrapRejectsEverySignedShape() async throws {
         let keyPair = CryptoUtils.generateKeyPair()
         let signer = testAddress(publicKey: keyPair.publicKey)
 
@@ -1837,17 +1856,15 @@ final class ChainLocalAdmissionTests: XCTestCase {
             )
             let header = try BlockHeader(node: genesis)
             do {
-                _ = try await ChainLevel.bootstrapConfiguredRoot(
+                _ = try await ChainLevel.bootstrap(
                     context: testChainContext(),
                     genesisHeader: header,
                     fetcher: fetcher,
                     validationContentStorer: fetcher,
                     materializedVolumeStorer: fetcher,
-                    staging: { context in
-                        try await testAdmissionStage(context.batch)
-                    }
+                    stage: testAdmissionStage
                 )
-                XCTFail("configured bootstrap must accept only an empty/empty signature shape")
+                XCTFail("genesis must accept only an empty/empty signature shape")
             } catch let failure as ChainAdmissionFailure {
                 XCTAssertEqual(failure, .protocolInvalid)
             }
@@ -1863,7 +1880,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
                 testParentWorkAuthorityKey
             ),
             parentState: parentGenesis.postState,
-            transactions: [stateChangingGenesisTransaction(
+            transactions: [unsignedStateChangingGenesisTransaction(
                 key: "child-genesis",
                 chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
             )],
@@ -2087,7 +2104,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertFalse(stored)
     }
 
-    func testChildBootstrapKeepsUnsignedGenesisTransactionsStrict() async throws {
+    func testChildBootstrapAcceptsUnsignedGenesisTransactions() async throws {
         let fetcher = StorableFetcher()
         let childGenesis = try await BlockBuilder.buildChildGenesis(
             spec: chainLocalSpec().withParentWorkAuthorityKey(
@@ -2136,7 +2153,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
         )
-        XCTAssertEqual(result.failure, .protocolInvalid)
+        XCTAssertNil(result.failure)
         XCTAssertEqual(result.parentCarrierLink.carrierCID, childHeader.rawCID)
     }
 
@@ -2655,7 +2672,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             spec: chainLocalSpec().withParentWorkAuthorityKey(
                 testParentWorkAuthorityKey
             ),
-            transactions: [stateChangingGenesisTransaction(
+            transactions: [unsignedStateChangingGenesisTransaction(
                 key: "invalid-middle",
                 chainPath: [DEFAULT_ROOT_DIRECTORY, "Middle"]
             )],
