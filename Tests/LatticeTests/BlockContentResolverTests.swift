@@ -185,9 +185,16 @@ final class BlockContentResolverTests: XCTestCase {
             signatures: ["alice": "sig"],
             body: try HeaderImpl(node: body)
         )
+        let child = try await buildAndStoreGenesis(
+            spec: testSpec(directory: "Child"),
+            timestamp: 1,
+            target: UInt256.max,
+            fetcher: source
+        )
         let block = try await buildAndStoreBlock(
             previous: genesis,
             transactions: [transaction],
+            children: ["Child": child],
             timestamp: 2,
             target: UInt256.max,
             nonce: 0,
@@ -207,8 +214,15 @@ final class BlockContentResolverTests: XCTestCase {
 
         XCTAssertEqual(nodeDestination.entries, decodedDestination.entries)
         XCTAssertEqual(nodeDestination.entries, unresolvedDestination.entries)
+        XCTAssertTrue(nodeDestination.volumeRoots.contains(cid))
+        XCTAssertTrue(nodeDestination.volumeRoots.contains(block.spec.rawCID))
+        XCTAssertTrue(nodeDestination.volumeRoots.contains(block.prevState.rawCID))
+        XCTAssertTrue(nodeDestination.volumeRoots.contains(try VolumeImpl<Transaction>(node: transaction).rawCID))
         XCTAssertFalse(nodeDestination.contains(rawCid: block.postState.rawCID))
         XCTAssertFalse(nodeDestination.contains(rawCid: try XCTUnwrap(block.parent).rawCID))
+        XCTAssertFalse(nodeDestination.volumeRoots.contains(block.postState.rawCID))
+        XCTAssertFalse(nodeDestination.volumeRoots.contains(try XCTUnwrap(block.parent).rawCID))
+        XCTAssertFalse(nodeDestination.volumeRoots.contains(try VolumeImpl<Block>(node: child).rawCID))
 
         let copied = try await VolumeImpl<Block>(rawCID: cid).resolveBlockContent(fetcher: decodedDestination)
         XCTAssertNotNil(copied.node?.transactions.node)
@@ -267,6 +281,16 @@ final class BlockContentResolverTests: XCTestCase {
 
         try await header.storeBlock(fetcher: source, storer: destination)
         XCTAssertTrue(destination.contains(rawCid: policy.moduleCID))
+        let roots = destination.volumeRoots()
+        XCTAssertTrue(roots.contains(header.rawCID))
+        XCTAssertTrue(roots.contains(policy.moduleCID))
+        XCTAssertTrue(roots.contains(LatticeState.emptyHeader.rawCID))
+        let emptyState = try XCTUnwrap(LatticeState.emptyHeader.node)
+        XCTAssertTrue(roots.contains(emptyState.accountState.rawCID))
+        XCTAssertTrue(roots.contains(emptyState.generalState.rawCID))
+        XCTAssertTrue(roots.contains(emptyState.depositState.rawCID))
+        XCTAssertTrue(roots.contains(emptyState.genesisState.rawCID))
+        XCTAssertTrue(roots.contains(emptyState.receiptState.rawCID))
 
         let copied = try await VolumeImpl<Block>(rawCID: header.rawCID)
             .resolveBlockContent(fetcher: destination)
@@ -298,11 +322,17 @@ private func testSpec(
 /// 3.x resolution is per-CID over a plain `Fetcher`; there is no `VolumeAware`
 /// enter/exit side-channel, so a content-by-CID dictionary is all that
 /// `resolveBlockContent` needs.
-private final class TestVolumeFetcher: Fetcher, Storer, @unchecked Sendable {
+private final class TestVolumeFetcher: Fetcher, Storer, VolumeStorer, @unchecked Sendable {
     private let state = OSAllocatedUnfairLock(initialState: [String: Data]())
+    private let roots = OSAllocatedUnfairLock(initialState: Set<String>())
 
     func store(entries: [String: Data]) async {
         state.withLock { $0.merge(entries) { _, new in new } }
+    }
+
+    func store(volume: SerializedVolume) async {
+        roots.withLock { _ = $0.insert(volume.root) }
+        state.withLock { $0.merge(volume.entries) { _, new in new } }
     }
 
     func contains(rawCid: String) -> Bool {
@@ -311,6 +341,10 @@ private final class TestVolumeFetcher: Fetcher, Storer, @unchecked Sendable {
 
     var entries: [String: Data] {
         state.withLock { $0 }
+    }
+
+    var volumeRoots: Set<String> {
+        roots.withLock { $0 }
     }
 
     func fetch(rawCid: String) async throws -> Data {

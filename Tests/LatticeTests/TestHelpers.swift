@@ -10,6 +10,7 @@ import WAT
 
 final class StorableFetcher: Fetcher, Storer, VolumeStorer, Sendable {
     private let state = OSAllocatedUnfairLock<[String: Data]>(initialState: [:])
+    private let roots = OSAllocatedUnfairLock<Set<String>>(initialState: [])
 
     func store(rawCid: String, data: Data) {
         state.withLock { $0[rawCid] = data }
@@ -20,7 +21,12 @@ final class StorableFetcher: Fetcher, Storer, VolumeStorer, Sendable {
     }
 
     func store(volume: SerializedVolume) async {
+        roots.withLock { _ = $0.insert(volume.root) }
         state.withLock { $0.merge(volume.entries) { _, new in new } }
+    }
+
+    func volumeRoots() -> Set<String> {
+        roots.withLock { $0 }
     }
 
     func contains(rawCid: String) -> Bool {

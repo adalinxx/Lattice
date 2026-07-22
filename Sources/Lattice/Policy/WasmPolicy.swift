@@ -4,7 +4,7 @@ import cashew
 import WasmKit
 import WasmParser
 
-public typealias WasmPolicyModuleHeader = HeaderImpl<WasmPolicyModule>
+public typealias WasmPolicyModuleHeader = VolumeImpl<WasmPolicyModule>
 
 public struct WasmPolicyModule: Scalar {
     public let bytes: Data
