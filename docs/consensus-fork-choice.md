@@ -138,6 +138,21 @@ authenticates and routes that parent process and supplies a coherent
 The child does not retain every ancestor graph. Each parent snapshot already
 contains transitive securing work, deduplicated by root CID.
 
+The snapshot may retain only the deepest accepted coverage frontier for each
+grind. If the same grind covers an accepted ancestor and descendant, the
+ancestor entry is redundant: GHOST ancestry routes the descendant to every
+segment base the ancestor could affect. Sibling or otherwise incomparable
+coverage remains on both frontiers, and the globally strongest quantity is
+used everywhere that identity is routed. This is exactly equivalent to the
+dense `(block, grind)` relation while avoiding its quadratic repetition on
+aligned linear parent and child histories.
+
+The accepted ancestry used for this compression comes from the receiving child
+as an ephemeral per-session quotient. It is only a compression hint. The parent
+still owns every child binding and work quantity, ignores endpoints outside its
+validated coverage, and treats absent relations as incomparable. It neither
+validates the child's transitions nor reuses one replica's quotient for another.
+
 Snapshots join monotonically:
 
 - new coverage may be added;

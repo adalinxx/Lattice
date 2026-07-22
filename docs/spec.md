@@ -739,6 +739,15 @@ fact ID also includes the observed work. Weaker or equal replay is a duplicate;
 a stronger verified observation remains separately durable and updates the one
 grind quantity across all of its coverage.
 
+An inherited snapshot MAY encode one grind's coverage by its maximal accepted
+frontier in the receiving child's same-chain forest. Replacing covered block
+`A` with a covered descendant `D` is exact because every subtree reached through
+`A` by that placement is also reached through `D`; incomparable covered blocks
+remain separate. The grind's globally strongest quantity is attached to every
+retained frontier block, then ordinary measure union still counts that identity
+once. This normalization changes representation, not logical coverage or
+`trueCumWork`.
+
 Consensus ingress stores each CID identity in its unique canonical text spelling.
 An alternate multibase spelling is rejected before it can create another map key;
 this identity-encoding rule is separate from branch canonicity, which never
@@ -874,6 +883,19 @@ quantity. A successfully authenticated and staged disconnected local
 observation may strengthen the root
 CID of an eligible connected coverage elsewhere, but it cannot itself add a
 child binding or an export route until its same-chain predecessor attaches.
+
+The child may give its immediate parent a session-scoped accepted-coverage
+quotient solely to frontier-normalize that child's response. The parent MUST
+intersect every quotient endpoint with its own validated direct-child coverage.
+The quotient grants no validity, work, coverage, canonicity, or authority; it
+is never shared between child replicas. Missing or stale quotient relations
+mean “incomparable,” retaining redundant coverage rather than dropping work.
+Consequently a false hint cannot invent a binding or increase a grind quantity.
+For one grind, a covered descendant reaches every segment base reached by its
+covered ancestor. The exported source relation MAY therefore retain only the
+deepest incomparable child blocks and MUST carry that grind's globally strongest
+quantity at every retained frontier block. This frontier is exactly equivalent
+to the expanded relation for every effective-subtree comparison.
 
 Snapshots are append-only joins. Every authenticated snapshot unions with the
 retained view and revisions combine by maximum. An older or equal revision may
