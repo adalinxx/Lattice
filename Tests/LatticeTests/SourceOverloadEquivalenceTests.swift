@@ -5,8 +5,7 @@ import UInt256
 import Foundation
 
 /// Equivalence tests for the additive `source:` overloads on Lattice's
-/// block-validation/resolution APIs (`resolveBlockContent`, `validateNexus`,
-/// `admitBlockHeaderChainLocal`). Each test runs the same block through the existing
+/// block-validation APIs (`validateNexus`, `admitBlockHeaderChainLocal`). Each test runs the same block through the existing
 /// `fetcher:` API and the new `source:` API over the SAME backing CAS, and
 /// asserts the two paths produce identical results. The `source:` path wraps a
 /// batched cashew `ContentSource` in a single `CoalescingFetcher`; these tests
@@ -51,12 +50,11 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         let premineBody = TransactionBody(
             accountActions: [AccountAction(owner: aliceAddr, delta: Int64(premineAmount))],
             actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [aliceAddr], fee: 0, nonce: 0,
+            receiptActions: [], withdrawalActions: [], signers: [], fee: 0, nonce: 0,
             chainPath: ["Nexus"]
         )
         let premineHeader = try! HeaderImpl<TransactionBody>(node: premineBody)
-        let premineSig = TransactionSigning.sign(bodyHeader: premineHeader, privateKeyHex: alice.privateKey)!
-        let premineTx = Transaction(signatures: [alice.publicKey: premineSig], body: premineHeader)
+        let premineTx = Transaction(signatures: [:], body: premineHeader)
 
         let genesis = try await buildAndStoreGenesis(
             spec: s, transactions: [premineTx],
@@ -71,7 +69,7 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [aliceAddr], fee: 0, nonce: 1, chainPath: ["Nexus"]
+            signers: [aliceAddr], fee: 0, nonce: 0, chainPath: ["Nexus"]
         )
         let transferHeader = try! HeaderImpl<TransactionBody>(node: transferBody)
         let transferSig = TransactionSigning.sign(bodyHeader: transferHeader, privateKeyHex: alice.privateKey)!
@@ -87,49 +85,14 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
             timestamp: t - 10_000, target: UInt256.max, nonce: 1, fetcher: fetcher
         )
         // Persist the full block volume so both paths can resolve it by CID.
-        try await VolumeImpl<Block>(node: block).storeBlockContent(storer: fetcher)
+        try await VolumeImpl<Block>(node: block).store(
+            paths: Block.contentResolutionPaths,
+            storer: fetcher
+        )
 
         let genesisHeader = try! VolumeImpl<Block>(node: genesis)
         let blockHeader = VolumeImpl<Block>(rawCID: try! VolumeImpl<Block>(node: block).rawCID)
         return (genesisHeader, blockHeader, block)
-    }
-
-    // MARK: - resolveBlockContent
-
-    func testResolveBlockContentSourceMatchesFetcher() async throws {
-        let fetcher = StorableFetcher()
-        let (_, blockHeader, _) = try await buildRepresentativeBlock(fetcher: fetcher)
-        let source = FetcherContentSource(fetcher)
-
-        let viaFetcher = try await blockHeader.resolveBlockContent(fetcher: fetcher)
-        // Fresh header (no node) so the source path resolves from scratch, not a cache.
-        let freshHeader = VolumeImpl<Block>(rawCID: blockHeader.rawCID)
-        let viaSource = try await freshHeader.resolveBlockContent(source: source)
-
-        // The resolved block must be byte-identical: same root CID, same resolved
-        // children CIDs, and the same resolved/unresolved structure.
-        let f = try XCTUnwrap(viaFetcher.node)
-        let s = try XCTUnwrap(viaSource.node)
-        XCTAssertEqual(viaFetcher.rawCID, viaSource.rawCID)
-        XCTAssertEqual(f.spec.rawCID, s.spec.rawCID)
-        XCTAssertEqual(f.transactions.rawCID, s.transactions.rawCID)
-        XCTAssertEqual(f.children.rawCID, s.children.rawCID)
-        XCTAssertEqual(f.toData(), s.toData())
-
-        // Same resolution policy applied: spec/transactions resolved while
-        // child links and state remain external.
-        XCTAssertNotNil(s.spec.node)
-        XCTAssertNotNil(s.transactions.node)
-        XCTAssertNil(s.children.node)
-        XCTAssertNil(s.postState.node)
-
-        let fTxs = try XCTUnwrap(f.transactions.node?.allKeysAndValues())
-        let sTxs = try XCTUnwrap(s.transactions.node?.allKeysAndValues())
-        XCTAssertEqual(fTxs.count, sTxs.count)
-        XCTAssertEqual(
-            fTxs.values.compactMap { $0.node?.body.node?.toData() },
-            sTxs.values.compactMap { $0.node?.body.node?.toData() }
-        )
     }
 
     // MARK: - validateNexus
@@ -183,7 +146,10 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
             previous: genesis, transactions: [tx],
             timestamp: t - 10_000, target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
-        try await VolumeImpl<Block>(node: block).storeBlockContent(storer: fetcher)
+        try await VolumeImpl<Block>(node: block).store(
+            paths: Block.contentResolutionPaths,
+            storer: fetcher
+        )
         let source = FetcherContentSource(fetcher)
 
         let viaFetcher = try await block.validateNexus(fetcher: fetcher).0

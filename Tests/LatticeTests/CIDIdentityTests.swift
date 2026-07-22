@@ -40,7 +40,7 @@ final class CIDIdentityTests: XCTestCase {
         let root = makeBlockMeta(hash: "root", height: 0)
         let chain = makeChain(blocks: [root])
 
-        XCTAssertFalse(snapshot.hasNoCIDTextAliases)
+        XCTAssertFalse(snapshot.hasCanonicalCIDs)
         let commit = await chain.mergeInheritedWork(snapshot)
         let tip = await chain.getMainChainTip()
         let work = await chain.getCumulativeWork(limit: 1)

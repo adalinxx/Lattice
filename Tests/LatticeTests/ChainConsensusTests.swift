@@ -627,12 +627,10 @@ final class EdgeCaseTests: XCTestCase {
         )
 
         let result = await chain.addWorkContribution(extra, to: "G")
-        let providerCommit = await chain.setInheritedWorkProvider {
-            InheritedWorkSnapshot(
-                revision: 1,
-                workByBlock: ["G": WorkMeasure(extra)]
-            )
-        }
+        let providerCommit = await chain.mergeInheritedWork(InheritedWorkSnapshot(
+            revision: 1,
+            workByBlock: ["G": WorkMeasure(extra)]
+        ))
         let persisted = await chain.persist()
 
         XCTAssertFalse(result.addedContribution)

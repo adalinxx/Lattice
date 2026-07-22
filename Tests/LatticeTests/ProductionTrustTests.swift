@@ -236,7 +236,11 @@ final class TwoNodeConvergenceTests: XCTestCase {
 final class ChildGenesisValidationTests: XCTestCase {
     // testChildGenesisWithWrongDirectoryRejected removed: spec.directory no longer exists, so a directory mismatch is structurally impossible.
 
-    private func bodyAnchoring(directory: String, blockCID: String) -> TransactionBody {
+    private func bodyAnchoring(
+        directory: String,
+        blockCID: String,
+        chainPath: [String] = [DEFAULT_ROOT_DIRECTORY]
+    ) -> TransactionBody {
         TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [GenesisAction(
@@ -244,25 +248,72 @@ final class ChildGenesisValidationTests: XCTestCase {
                 blockCID: blockCID
             )],
             receiptActions: [], withdrawalActions: [],
-            signers: [], fee: 0, nonce: 0, chainPath: ["Nexus"]
+            signers: [], fee: 0, nonce: 0, chainPath: chainPath
         )
     }
 
     func testGenesisActionAcceptsWellFormedAnchor() {
-        XCTAssertTrue(bodyAnchoring(directory: "Child", blockCID: "bafyvalidcid").genesisActionsAreValid())
+        XCTAssertTrue(bodyAnchoring(
+            directory: "Child",
+            blockCID: testCID("child")
+        ).genesisActionsAreValid())
     }
 
     func testGenesisActionRejectsEmptyDirectoryOrCID() {
-        XCTAssertFalse(bodyAnchoring(directory: "", blockCID: "bafycid").genesisActionsAreValid())
+        XCTAssertFalse(bodyAnchoring(directory: "", blockCID: testCID("child")).genesisActionsAreValid())
         XCTAssertFalse(bodyAnchoring(directory: "Child", blockCID: "").genesisActionsAreValid())
+    }
+
+    func testGenesisActionRequiresCanonicalChildCID() {
+        let alternateCID =
+            "f01711220e9eb6c60800df90fc8e237ed53246f396e87579aba406aaa7976a056859ee22d"
+        XCTAssertNotNil(CIDIdentity.canonicalString(alternateCID))
+        XCTAssertFalse(bodyAnchoring(
+            directory: "Child",
+            blockCID: alternateCID
+        ).genesisActionsAreValid())
+    }
+
+    func testGenesisActionEnforcesProofWireDirectoryAndDepthBounds() {
+        let cid = testCID("child")
+        let maximumDirectory = String(
+            repeating: "x",
+            count: ChildProofWireLimits.maximumDirectoryBytes
+        )
+        XCTAssertTrue(bodyAnchoring(
+            directory: maximumDirectory,
+            blockCID: cid
+        ).genesisActionsAreValid())
+        XCTAssertFalse(bodyAnchoring(
+            directory: maximumDirectory + "x",
+            blockCID: cid
+        ).genesisActionsAreValid())
+
+        XCTAssertTrue(bodyAnchoring(
+            directory: "Child",
+            blockCID: cid,
+            chainPath: [DEFAULT_ROOT_DIRECTORY] + Array(
+                repeating: "Parent",
+                count: ChildProofWireLimits.maximumDepth - 1
+            )
+        ).genesisActionsAreValid())
+        XCTAssertFalse(bodyAnchoring(
+            directory: "Child",
+            blockCID: cid,
+            chainPath: [DEFAULT_ROOT_DIRECTORY] + Array(
+                repeating: "Parent",
+                count: ChildProofWireLimits.maximumDepth
+            )
+        ).genesisActionsAreValid())
     }
 
     func testGenesisActionRejectsDirectoryWithKeySeparator() {
         // A "/" in the directory would break ReceiptKey injectivity (two distinct
         // (directory, demander) pairs could encode to the same receipt key), so it
         // must be rejected at anchor creation — the single entry for directory names.
-        XCTAssertFalse(bodyAnchoring(directory: "evil/x", blockCID: "bafycid").genesisActionsAreValid())
-        XCTAssertFalse(bodyAnchoring(directory: "a/b/c", blockCID: "bafycid").genesisActionsAreValid())
+        let cid = testCID("child")
+        XCTAssertFalse(bodyAnchoring(directory: "evil/x", blockCID: cid).genesisActionsAreValid())
+        XCTAssertFalse(bodyAnchoring(directory: "a/b/c", blockCID: cid).genesisActionsAreValid())
     }
 }
 

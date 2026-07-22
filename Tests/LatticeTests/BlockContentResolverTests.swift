@@ -80,15 +80,15 @@ final class BlockContentResolverTests: XCTestCase {
 
         let paths = Block.validationPaths(transactionBodies: [body])
         XCTAssertEqual(
-            paths.get([PREV_STATE_PROPERTY, RECEIPT_STATE_PROPERTY, ReceiptKey(receiptAction: receipt).description]),
+            paths[[PREV_STATE_PROPERTY, RECEIPT_STATE_PROPERTY, ReceiptKey(receiptAction: receipt).description]],
             .targeted
         )
         XCTAssertEqual(
-            paths.get([PARENT_STATE_PROPERTY, RECEIPT_STATE_PROPERTY, ReceiptKey(withdrawalAction: withdrawal, directory: "Child").description]),
+            paths[[PARENT_STATE_PROPERTY, RECEIPT_STATE_PROPERTY, ReceiptKey(withdrawalAction: withdrawal, directory: "Child").description]],
             .targeted
         )
-        XCTAssertNil(paths.get([PREV_STATE_PROPERTY, RECEIPT_STATE_PROPERTY, ""]))
-        XCTAssertNil(paths.get([PARENT_STATE_PROPERTY, RECEIPT_STATE_PROPERTY, ""]))
+        XCTAssertNil(paths[[PREV_STATE_PROPERTY, RECEIPT_STATE_PROPERTY, ""]])
+        XCTAssertNil(paths[[PARENT_STATE_PROPERTY, RECEIPT_STATE_PROPERTY, ""]])
     }
 
     func testResolveBlockContentIncludesTransactionsAndSpecButLeavesChildrenIndependent() async throws {
@@ -99,7 +99,10 @@ final class BlockContentResolverTests: XCTestCase {
             target: UInt256.max,
             fetcher: fetcher
         )
-        try await VolumeImpl<Block>(node: parent).storeBlockContent(storer: fetcher)
+        try await VolumeImpl<Block>(node: parent).store(
+            paths: Block.contentResolutionPaths,
+            storer: fetcher
+        )
 
         let txBody = TransactionBody(
             accountActions: [AccountAction(owner: "alice", delta: 10)],
@@ -130,7 +133,10 @@ final class BlockContentResolverTests: XCTestCase {
             fetcher: fetcher
         )
         let contentOnly = TestVolumeFetcher()
-        try await VolumeImpl<Block>(node: block).storeBlockContent(storer: contentOnly)
+        try await VolumeImpl<Block>(node: block).store(
+            paths: Block.contentResolutionPaths,
+            storer: contentOnly
+        )
 
         let header = VolumeImpl<Block>(rawCID: try! VolumeImpl<Block>(node: block).rawCID)
         let resolved = try await header.resolveBlockContent(fetcher: contentOnly)

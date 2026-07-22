@@ -80,10 +80,13 @@ final class BlockMintingTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [AccountAction(owner: owner, delta: Int64(premineAmount))],
             actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [owner], fee: 0, nonce: 0,
+            receiptActions: [], withdrawalActions: [], signers: [], fee: 0, nonce: 0,
             chainPath: ["Nexus"]
         )
-        let tx = signTransaction(body: body, keypair: kp)
+        let tx = Transaction(
+            signatures: [:],
+            body: try HeaderImpl<TransactionBody>(node: body)
+        )
 
         let genesis = try await buildAndStoreGenesis(
             spec: spec, transactions: [tx], timestamp: now() - 10_000,

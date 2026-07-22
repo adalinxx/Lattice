@@ -3,68 +3,87 @@ import UInt256
 @testable import Lattice
 
 final class InheritedWorkForkChoiceTests: XCTestCase {
+    private func cid(_ label: String) -> String { testCID(label) }
+
     private func contribution(_ id: String, _ work: UInt64) -> VerifiedWorkContribution {
         VerifiedWorkContribution(id: id, work: UInt256(work))
     }
 
     private func fork() -> ChainState {
-        var root = makeBlockMeta(hash: "root", height: 0)
-        let left = makeBlockMeta(hash: "left", previousHash: "root", height: 1)
-        let right = makeBlockMeta(hash: "right", previousHash: "root", height: 1)
-        root.childHashes = ["left", "right"]
-        return makeChain(blocks: [root, left, right], mainChainHashes: ["root", "left"])
+        var root = makeBlockMeta(hash: cid("root"), height: 0)
+        let left = makeBlockMeta(
+            hash: cid("left"), previousHash: cid("root"), height: 1
+        )
+        let right = makeBlockMeta(
+            hash: cid("right"), previousHash: cid("root"), height: 1
+        )
+        root.childHashes = [cid("left"), cid("right")]
+        return makeChain(
+            blocks: [root, left, right],
+            mainChainHashes: [cid("root"), cid("left")]
+        )
     }
 
     func testInheritedWorkReorganizesOnlyTheReceivingChain() async {
         let chain = fork()
         let rightWins = InheritedWorkSnapshot(
             revision: 1,
-            workByBlock: ["right": WorkMeasure(contribution("parent-right", 5))]
+            workByBlock: [cid("right"): WorkMeasure(
+                contribution(cid("parent-right"), 5)
+            )]
         )
 
-        let commit = await chain.setInheritedWorkProvider { rightWins }
+        let commit = await chain.mergeInheritedWork(rightWins)
         let tip = await chain.getMainChainTip()
 
-        XCTAssertEqual(tip, "right")
-        XCTAssertEqual(commit?.mainChainBlocksRemoved, ["left"])
-        XCTAssertEqual(commit?.mainChainBlocksAdded, ["right": 1])
+        XCTAssertEqual(tip, cid("right"))
+        XCTAssertEqual(commit?.mainChainBlocksRemoved, [cid("left")])
+        XCTAssertEqual(commit?.mainChainBlocksAdded, [cid("right"): 1])
     }
 
-    func testProviderOutageRetainsLastAuthenticatedWork() async {
+    func testNoUpdateRetainsLastAuthenticatedWork() async {
         let chain = fork()
         let inherited = InheritedWorkSnapshot(
             revision: 1,
-            workByBlock: ["right": WorkMeasure(contribution("retained-right", 5))]
+            workByBlock: [cid("right"): WorkMeasure(
+                contribution(cid("retained-right"), 5)
+            )]
         )
-        _ = await chain.setInheritedWorkProvider { inherited }
-
-        _ = await chain.setInheritedWorkProvider(nil)
+        _ = await chain.mergeInheritedWork(inherited)
         _ = await chain.reevaluateForkChoice()
         let tip = await chain.getMainChainTip()
-        let rightWeight = await chain.forkChoiceSnapshot(startingAt: "right")?.subtreeWork
+        let rightWeight = await chain.forkChoiceSnapshot(
+            startingAt: cid("right")
+        )?.subtreeWork
 
-        XCTAssertEqual(tip, "right")
+        XCTAssertEqual(tip, cid("right"))
         XCTAssertEqual(rightWeight, WorkSum(UInt256(6)))
     }
 
     func testDistinctDescendantGrindsSumAlongSameChainAncestry() async {
-        var root = makeBlockMeta(hash: "root", height: 0)
-        let child = makeBlockMeta(hash: "child", previousHash: "root", height: 1)
-        root.childHashes = ["child"]
+        var root = makeBlockMeta(hash: cid("root"), height: 0)
+        let child = makeBlockMeta(
+            hash: cid("child"), previousHash: cid("root"), height: 1
+        )
+        root.childHashes = [cid("child")]
         let chain = makeChain(blocks: [root, child])
         let inherited = InheritedWorkSnapshot(
             revision: 1,
             workByBlock: [
-                "child": WorkMeasure([
-                    contribution("parent-one", 5),
-                    contribution("parent-two", 7),
+                cid("child"): WorkMeasure([
+                    contribution(cid("parent-one"), 5),
+                    contribution(cid("parent-two"), 7),
                 ]),
             ]
         )
 
         _ = await chain.mergeInheritedWork(inherited)
-        let rootWeight = await chain.forkChoiceSnapshot(startingAt: "root")?.subtreeWork
-        let childWeight = await chain.forkChoiceSnapshot(startingAt: "child")?.subtreeWork
+        let rootWeight = await chain.forkChoiceSnapshot(
+            startingAt: cid("root")
+        )?.subtreeWork
+        let childWeight = await chain.forkChoiceSnapshot(
+            startingAt: cid("child")
+        )?.subtreeWork
 
         XCTAssertEqual(rootWeight, WorkSum(UInt256(14)))
         XCTAssertEqual(childWeight, WorkSum(UInt256(13)))
@@ -75,17 +94,21 @@ final class InheritedWorkForkChoiceTests: XCTestCase {
         let grind = testCID("conflicting-inherited-grind")
         let first = InheritedWorkSnapshot(
             revision: 1,
-            workByBlock: ["left": WorkMeasure(contribution(grind, 3))]
+            workByBlock: [cid("left"): WorkMeasure(contribution(grind, 3))]
         )
         let conflict = InheritedWorkSnapshot(
             revision: 2,
-            workByBlock: ["right": WorkMeasure(contribution(grind, 100))]
+            workByBlock: [cid("right"): WorkMeasure(contribution(grind, 100))]
         )
 
         let accepted = await chain.mergeInheritedWork(first)
         let rejected = await chain.mergeInheritedWork(conflict)
-        let leftWeight = await chain.forkChoiceSnapshot(startingAt: "left")?.subtreeWork
-        let rightWeight = await chain.forkChoiceSnapshot(startingAt: "right")?.subtreeWork
+        let leftWeight = await chain.forkChoiceSnapshot(
+            startingAt: cid("left")
+        )?.subtreeWork
+        let rightWeight = await chain.forkChoiceSnapshot(
+            startingAt: cid("right")
+        )?.subtreeWork
 
         XCTAssertNotNil(accepted)
         XCTAssertNil(rejected)
@@ -94,15 +117,15 @@ final class InheritedWorkForkChoiceTests: XCTestCase {
     }
 
     func testUnknownInheritedLocationReservesTheGrind() async {
-        let chain = makeChain(blocks: [makeBlockMeta(hash: "root", height: 0)])
+        let chain = makeChain(blocks: [makeBlockMeta(hash: cid("root"), height: 0)])
         let grind = testCID("future-location-grind")
         let first = InheritedWorkSnapshot(
             revision: 1,
-            workByBlock: ["future-a": WorkMeasure(contribution(grind, 3))]
+            workByBlock: [cid("future-a"): WorkMeasure(contribution(grind, 3))]
         )
         let conflictingInherited = InheritedWorkSnapshot(
             revision: 2,
-            workByBlock: ["future-b": WorkMeasure(contribution(grind, 100))]
+            workByBlock: [cid("future-b"): WorkMeasure(contribution(grind, 100))]
         )
 
         let accepted = await chain.mergeInheritedWork(first)
@@ -116,37 +139,43 @@ final class InheritedWorkForkChoiceTests: XCTestCase {
 
         let conflictingLocal = await chain.addWorkContribution(
             contribution(grind, 100),
-            to: "root"
+            to: cid("root")
         )
         XCTAssertFalse(conflictingLocal.addedContribution)
         let retained = await chain.inheritedWorkSnapshot
         XCTAssertEqual(
-            retained?.sourceWork(forBlock: "future-a").work(forGrind: grind),
+            retained?.sourceWork(forBlock: cid("future-a")).work(forGrind: grind),
             UInt256(3)
         )
-        XCTAssertTrue(retained?.sourceWork(forBlock: "future-b").isEmpty ?? false)
+        XCTAssertTrue(retained?.sourceWork(forBlock: cid("future-b")).isEmpty ?? false)
     }
 
     func testOldAndEqualRevisionsMayAddNewMonotonicFacts() async {
         let chain = fork()
         _ = await chain.mergeInheritedWork(InheritedWorkSnapshot(
             revision: 5,
-            workByBlock: ["right": WorkMeasure(contribution("revision-right", 5))]
+            workByBlock: [cid("right"): WorkMeasure(
+                contribution(cid("revision-right"), 5)
+            )]
         ))
 
         let oldAddition = await chain.mergeInheritedWork(InheritedWorkSnapshot(
             revision: 4,
-            workByBlock: ["left": WorkMeasure(contribution("revision-left", 7))]
+            workByBlock: [cid("left"): WorkMeasure(
+                contribution(cid("revision-left"), 7)
+            )]
         ))
         let equalAddition = await chain.mergeInheritedWork(InheritedWorkSnapshot(
             revision: 5,
-            workByBlock: ["left": WorkMeasure(contribution("revision-left-two", 1))]
+            workByBlock: [cid("left"): WorkMeasure(
+                contribution(cid("revision-left-two"), 1)
+            )]
         ))
         let tip = await chain.getMainChainTip()
 
         XCTAssertNotNil(oldAddition)
         XCTAssertNotNil(equalAddition)
-        XCTAssertEqual(tip, "left")
+        XCTAssertEqual(tip, cid("left"))
     }
 
     func testNoncanonicalConnectedBlocksRemainInParentWorkView() async throws {
@@ -155,72 +184,82 @@ final class InheritedWorkForkChoiceTests: XCTestCase {
         let snapshotValue = await chain.parentSecuringWorkSnapshot()
         let snapshot = try XCTUnwrap(snapshotValue)
 
-        XCTAssertEqual(snapshot.blockCIDs, ["left", "right", "root"])
         XCTAssertEqual(
-            snapshot.sourceWork(forBlock: "right").grindIDs,
-            [testCID("work:right")]
+            snapshot.blockCIDs,
+            [cid("left"), cid("right"), cid("root")].sorted()
+        )
+        XCTAssertEqual(
+            snapshot.sourceWork(forBlock: cid("right")).grindIDs,
+            [testCID("work:\(cid("right"))")]
         )
     }
 
     func testCanonicalPointerDoesNotChangeWorkViewOrGhostChoice() async throws {
-        var root = makeBlockMeta(hash: "root", height: 0)
+        var root = makeBlockMeta(hash: cid("root"), height: 0)
         let left = BlockMeta(
-            blockHash: "left",
-            parentBlockHash: "root",
+            blockHash: cid("left"),
+            parentBlockHash: cid("root"),
             blockHeight: 1,
             childHashes: [],
-            workContributions: [contribution("left-work", 3)]
+            workContributions: [contribution(cid("left-work"), 3)]
         )
         let right = BlockMeta(
-            blockHash: "right",
-            parentBlockHash: "root",
+            blockHash: cid("right"),
+            parentBlockHash: cid("root"),
             blockHeight: 1,
             childHashes: [],
-            workContributions: [contribution("right-work", 5)]
+            workContributions: [contribution(cid("right-work"), 5)]
         )
-        root.childHashes = ["left", "right"]
+        root.childHashes = [cid("left"), cid("right")]
         let leftPointer = makeChain(
             blocks: [root, left, right],
-            mainChainHashes: ["root", "left"]
+            mainChainHashes: [cid("root"), cid("left")]
         )
         let rightPointer = makeChain(
             blocks: [root, left, right],
-            mainChainHashes: ["root", "right"]
+            mainChainHashes: [cid("root"), cid("right")]
         )
 
         let leftViewValue = await leftPointer.parentSecuringWorkSnapshot()
         let rightViewValue = await rightPointer.parentSecuringWorkSnapshot()
         let leftView = try XCTUnwrap(leftViewValue)
         let rightView = try XCTUnwrap(rightViewValue)
-        let leftChoice = await leftPointer.forkChoiceSnapshot(startingAt: "root")
-        let rightChoice = await rightPointer.forkChoiceSnapshot(startingAt: "root")
+        let leftChoice = await leftPointer.forkChoiceSnapshot(startingAt: cid("root"))
+        let rightChoice = await rightPointer.forkChoiceSnapshot(startingAt: cid("root"))
 
         XCTAssertEqual(leftView, rightView)
         XCTAssertEqual(leftChoice, rightChoice)
-        XCTAssertEqual(leftChoice?.tipHash, "right")
+        XCTAssertEqual(leftChoice?.tipHash, cid("right"))
     }
 
     func testDisconnectedWorkBecomesVisibleOnlyAfterSameChainAttachment() async throws {
-        var root = makeBlockMeta(hash: "root", height: 0)
-        let orphan = makeBlockMeta(hash: "orphan", previousHash: "missing", height: 2)
-        let chain = makeChain(blocks: [root, orphan], mainChainHashes: ["root"])
+        var root = makeBlockMeta(hash: cid("root"), height: 0)
+        let orphan = makeBlockMeta(
+            hash: cid("orphan"), previousHash: cid("missing"), height: 2
+        )
+        let chain = makeChain(
+            blocks: [root, orphan], mainChainHashes: [cid("root")]
+        )
 
         let beforeValue = await chain.parentSecuringWorkSnapshot()
         let before = try XCTUnwrap(beforeValue)
-        XCTAssertEqual(before.blockCIDs, ["root"])
+        XCTAssertEqual(before.blockCIDs, [cid("root")])
 
         let missing = makeBlockMeta(
-            hash: "missing",
-            previousHash: "root",
+            hash: cid("missing"),
+            previousHash: cid("root"),
             height: 1,
-            childHashes: ["orphan"]
+            childHashes: [cid("orphan")]
         )
-        root.childHashes = ["missing"]
+        root.childHashes = [cid("missing")]
         let attached = makeChain(blocks: [root, missing, orphan])
         let afterValue = await attached.parentSecuringWorkSnapshot()
         let after = try XCTUnwrap(afterValue)
 
-        XCTAssertEqual(after.blockCIDs, ["missing", "orphan", "root"])
+        XCTAssertEqual(
+            after.blockCIDs,
+            [cid("missing"), cid("orphan"), cid("root")].sorted()
+        )
     }
 
     func testRecoveryReportsEveryMissingImmediatePredecessor() async {

@@ -233,7 +233,9 @@ public struct InheritedWorkFact: Sendable, Equatable {
         grindID: String,
         work: UInt256
     ) {
-        guard work > .zero else { return nil }
+        guard work > .zero,
+              CIDIdentity.isCanonical(blockCID),
+              CIDIdentity.isCanonical(grindID) else { return nil }
         self.blockCID = blockCID
         self.grindID = grindID
         self.work = work
@@ -374,19 +376,13 @@ public struct InheritedWorkSnapshot: Codable, Sendable, Equatable {
         workByBlock
     }
 
-    /// The in-memory algebra permits opaque test and simulation identifiers.
-    /// Any identifier that parses as a CID must already use its unique
-    /// canonical text spelling. Durable and wire boundaries additionally
-    /// require every identifier to parse as a CID.
-    var hasNoCIDTextAliases: Bool {
+    /// Every consensus identity is a canonical content identifier. Opaque test
+    /// labels must not cross the inherited-work admission boundary.
+    var hasCanonicalCIDs: Bool {
         workByBlock.allSatisfy { blockCID, measure in
-            let blockEncoding = CIDIdentity.canonicalString(blockCID)
-            guard blockEncoding == nil || blockEncoding == blockCID else {
-                return false
-            }
+            guard CIDIdentity.isCanonical(blockCID) else { return false }
             return measure.entries.keys.allSatisfy { grindID in
-                let grindEncoding = CIDIdentity.canonicalString(grindID)
-                return grindEncoding == nil || grindEncoding == grindID
+                CIDIdentity.isCanonical(grindID)
             }
         }
     }
@@ -404,5 +400,3 @@ public struct InheritedWorkSnapshot: Codable, Sendable, Equatable {
         )
     }
 }
-
-public typealias InheritedWorkProvider = @Sendable () -> InheritedWorkSnapshot

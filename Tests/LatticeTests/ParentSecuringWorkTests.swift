@@ -243,9 +243,7 @@ final class ParentSecuringWorkTests: XCTestCase {
                 work: [work(testCID("provider-revision-root-work"))]
             ),
         ])
-        _ = await chain.setInheritedWorkProvider {
-            provider.withLock { $0 }
-        }
+        _ = await chain.mergeInheritedWork(provider.withLock { $0 })
         let baselineValue = await chain.parentSecuringWorkSnapshot()
         let baseline = try XCTUnwrap(baselineValue)
         provider.withLock {
@@ -259,6 +257,7 @@ final class ParentSecuringWorkTests: XCTestCase {
                 ]
             )
         }
+        _ = await chain.mergeInheritedWork(provider.withLock { $0 })
 
         let submitted = try await chain.replay(
             admission(
