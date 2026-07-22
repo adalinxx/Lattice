@@ -7,7 +7,7 @@ final class WorkMeasureTests: XCTestCase {
         VerifiedWorkContribution(id: id, work: UInt256(work))
     }
 
-    func testOneGrindCountsOnceAcrossAnyNumberOfCoverages() {
+    func testRepeatedObservationsAtOneLocationCountOnce() {
         let grind = contribution("grind", 7)
         let once = WorkMeasure(grind)
         let many = once.union(once).union(once)
@@ -68,30 +68,32 @@ final class WorkMeasureTests: XCTestCase {
         XCTAssertEqual(metadata.work, WorkSum(UInt256(24)))
     }
 
-    func testRawStrengtheningAcrossBlocksUsesThePathMaximum() async {
-        let shared = contribution("shared", 2)
-        let stronger = contribution("shared", 13)
+    func testStrengtheningAtTheSameBlockUpdatesPathOnce() async {
+        let original = contribution("strengthened", 2)
+        let stronger = contribution("strengthened", 13)
         var root = BlockMeta(
             blockHash: "root",
             parentBlockHash: nil,
             blockHeight: 0,
             childHashes: ["child"],
-            workContributions: [shared]
+            workContributions: [contribution("root-work", 1)]
         )
         let child = BlockMeta(
             blockHash: "child",
             parentBlockHash: "root",
             blockHeight: 1,
             childHashes: [],
-            workContributions: [stronger]
+            workContributions: [original]
         )
         root.childHashes = ["child"]
         let chain = makeChain(blocks: [root, child])
+        let result = await chain.addWorkContribution(stronger, to: "child")
 
         let cumulative = await chain.getCumulativeWork(forHash: "child")
         let subtree = await chain.subtreeWeight(forHash: "root")
 
-        XCTAssertEqual(cumulative, WorkSum(UInt256(13)))
-        XCTAssertEqual(subtree, WorkSum(UInt256(13)))
+        XCTAssertTrue(result.addedContribution)
+        XCTAssertEqual(cumulative, WorkSum(UInt256(14)))
+        XCTAssertEqual(subtree, WorkSum(UInt256(14)))
     }
 }

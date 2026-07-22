@@ -132,11 +132,9 @@ public struct WorkSum: Codable, Hashable, Sendable, Comparable, CustomStringConv
     }
 }
 
-/// Exact proof-of-work keyed by physical grind identity.
-///
-/// One grind may cover any number of blocks or chain levels, but contributes
-/// only once to a fork-choice comparison. If the same grind is observed at
-/// multiple accepted difficulties, its strongest verified value wins.
+/// Exact proof-of-work keyed by physical grind identity. A grind has one block
+/// location per chain, but may appear once at every level of the hierarchy.
+/// If several levels observe its difficulty, the strongest verified value wins.
 public struct WorkMeasure: Codable, Sendable, Equatable {
     private var workByGrind: [String: UInt256]
 
@@ -244,14 +242,9 @@ public struct InheritedWorkFact: Sendable, Equatable {
 
 public struct InheritedWorkSnapshot: Codable, Sendable, Equatable {
     public let revision: UInt64
-    /// The authenticated immediate-parent relation. A physical grind can have
-    /// a different observed maximum at each covered block; normalize only at
-    /// the fork-choice view, never while retaining or transporting facts.
+    /// The authenticated immediate-parent relation. Valid snapshots contain
+    /// one block location and one greatest quantity per physical grind.
     private let workByBlock: [String: WorkMeasure]
-    /// Derived once from the source relation. It is deliberately excluded from
-    /// Codable so the wire and durable representation remain only raw facts.
-    private let normalizedStrongestWorkByGrind: [String: UInt256]
-
     private enum CodingKeys: String, CodingKey {
         case revision
         case workByBlock
@@ -262,7 +255,6 @@ public struct InheritedWorkSnapshot: Codable, Sendable, Equatable {
     public init(revision: UInt64, workByBlock: [String: WorkMeasure]) {
         self.revision = revision
         self.workByBlock = workByBlock
-        normalizedStrongestWorkByGrind = Self.strongestWork(in: workByBlock)
     }
 
     public init(from decoder: Decoder) throws {
@@ -296,20 +288,32 @@ public struct InheritedWorkSnapshot: Codable, Sendable, Equatable {
     }
 
     public func work(forBlock hash: String) -> WorkMeasure {
-        (workByBlock[hash] ?? .zero).normalized(
-            using: normalizedStrongestWorkByGrind
-        )
+        workByBlock[hash] ?? .zero
     }
 
-    /// Exact source facts for one block, before a physical grind is normalized
-    /// across all covered blocks. Persistence and transport use this relation;
-    /// fork choice uses `work(forBlock:)`.
+    /// Exact source facts for one block. This spelling emphasizes that
+    /// persistence and transport retain the relation itself.
     public func sourceWork(forBlock hash: String) -> WorkMeasure {
         workByBlock[hash] ?? .zero
     }
 
     public var isEmpty: Bool {
         workByBlock.values.allSatisfy(\.isEmpty)
+    }
+
+    /// Untrusted transport and recovery bytes may represent an invalid relation;
+    /// consensus accepts only one immutable block location per physical grind.
+    public var hasUniqueGrindLocations: Bool {
+        var locations: [String: String] = [:]
+        for (blockCID, measure) in workByBlock {
+            for grindID in measure.grindIDs {
+                if let existing = locations[grindID], existing != blockCID {
+                    return false
+                }
+                locations[grindID] = blockCID
+            }
+        }
+        return true
     }
 
     /// Whether every retained inherited fact belongs to one of the supplied
@@ -325,8 +329,7 @@ public struct InheritedWorkSnapshot: Codable, Sendable, Equatable {
         workByBlock.keys.sorted()
     }
 
-    /// Retain only source facts for the supplied child blocks. Normalization is
-    /// then recomputed over exactly that retained coverage.
+    /// Retain only source facts for the supplied blocks.
     public func restricted(to blockCIDs: Set<String>) -> InheritedWorkSnapshot {
         InheritedWorkSnapshot(
             revision: revision,
@@ -353,7 +356,7 @@ public struct InheritedWorkSnapshot: Codable, Sendable, Equatable {
     }
 
     var strongestWorkByGrind: [String: UInt256] {
-        normalizedStrongestWorkByGrind
+        Self.strongestWork(in: workByBlock)
     }
 
     private static func strongestWork(
@@ -366,8 +369,7 @@ public struct InheritedWorkSnapshot: Codable, Sendable, Equatable {
         }
     }
 
-    /// Package-internal raw source relation. Consumers that make a fork-choice
-    /// decision must use `work(forBlock:)` instead.
+    /// Package-internal source relation.
     var entriesByBlock: [String: WorkMeasure] {
         workByBlock
     }
