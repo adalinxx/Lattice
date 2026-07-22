@@ -61,6 +61,55 @@ final class InheritedWorkAlgebraTests: XCTestCase {
         assertInheritedWorkMeasure(a.union(b), equals: [g1: 7, g2: 5, g3: 1])
     }
 
+    func testWorkMeasureRestrictionPartitionsAndRejoinsExactly() {
+        let g1 = testCID("restriction-g1")
+        let g2 = testCID("restriction-g2")
+        let g3 = testCID("restriction-g3")
+        let measure = WorkMeasure([
+            VerifiedWorkContribution(id: g1, work: UInt256(2)),
+            VerifiedWorkContribution(id: g2, work: UInt256(5)),
+            VerifiedWorkContribution(id: g3, work: UInt256(7)),
+        ])
+
+        let first = measure.restricted(toGrindIDs: [g1, g3])
+        let second = measure.restricted(toGrindIDs: [g2])
+
+        assertInheritedWorkMeasure(first, equals: [g1: 2, g3: 7])
+        assertInheritedWorkMeasure(second, equals: [g2: 5])
+        XCTAssertEqual(first.union(second), measure)
+        XCTAssertTrue(measure.restricted(toGrindIDs: []).isEmpty)
+    }
+
+    func testSnapshotRestrictionKeepsExactSourceScope() throws {
+        let left = testCID("restriction-left")
+        let right = testCID("restriction-right")
+        let leftGrind = testCID("restriction-left-grind")
+        let rightGrind = testCID("restriction-right-grind")
+        XCTAssertNil(InheritedWorkFact(
+            blockCID: left,
+            grindID: leftGrind,
+            work: .zero
+        ))
+        let snapshot = InheritedWorkSnapshot(revision: 7, facts: [
+            try fact(block: left, grind: leftGrind, work: 3),
+            try fact(block: right, grind: rightGrind, work: 11),
+        ])
+
+        XCTAssertEqual(snapshot.blockCIDs, [left, right].sorted())
+        XCTAssertTrue(snapshot.isScoped(to: [left, right]))
+        XCTAssertFalse(snapshot.isScoped(to: [left]))
+
+        let restricted = snapshot.restricted(to: [right])
+        XCTAssertEqual(restricted.revision, 7)
+        XCTAssertTrue(restricted.isScoped(to: [right]))
+        XCTAssertTrue(restricted.sourceWork(forBlock: left).isEmpty)
+        assertInheritedWorkMeasure(
+            restricted.sourceWork(forBlock: right),
+            equals: [rightGrind: 11]
+        )
+        XCTAssertTrue(snapshot.restricted(to: []).isEmpty)
+    }
+
     func testSnapshotRoundTripUnionAndDeltaPreserveUniqueLocations() throws {
         let left = testCID("snapshot-left")
         let right = testCID("snapshot-right")
