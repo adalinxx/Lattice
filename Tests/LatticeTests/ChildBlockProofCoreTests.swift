@@ -20,6 +20,7 @@ final class ChildBlockProofCoreTests: XCTestCase {
     }
 
     private func composedFixture() async throws -> (
+        root: Block,
         leaf: Block,
         middle: Block,
         composed: ChildBlockProof,
@@ -64,7 +65,7 @@ final class ChildBlockProofCoreTests: XCTestCase {
             childDirectory: "Leaf",
             fetcher: storage
         )
-        return (leaf, middle, firstHop.composing(hop: terminalHop), terminalHop)
+        return (root, leaf, middle, firstHop.composing(hop: terminalHop), terminalHop)
     }
 
     func test_serialize_roundTrips() throws {
@@ -240,5 +241,53 @@ final class ChildBlockProofCoreTests: XCTestCase {
         XCTAssertNil(emptyPathResult)
         XCTAssertNil(malformedEntryResult)
         XCTAssertNil(missingRootResult)
+    }
+
+    func test_schedulingTargetsDerivesOnlyContentBoundPathTargets() async throws {
+        let fixture = try await composedFixture()
+        let result = await fixture.composed.schedulingTargets(
+            root: fixture.root,
+            terminal: fixture.leaf
+        )
+        let targets = try XCTUnwrap(result)
+
+        XCTAssertEqual(targets.searchTarget, fixture.leaf.target)
+        XCTAssertEqual(
+            targets.deploymentTarget,
+            min(min(fixture.root.target, fixture.middle.target), fixture.leaf.target)
+        )
+
+        let wrongRoot = await fixture.composed.schedulingTargets(
+            root: fixture.middle,
+            terminal: fixture.leaf
+        )
+        let wrongTerminal = await fixture.composed.schedulingTargets(
+            root: fixture.root,
+            terminal: fixture.middle
+        )
+        XCTAssertNil(wrongRoot)
+        XCTAssertNil(wrongTerminal)
+
+        let padded = ChildBlockProof(
+            rootCID: fixture.composed.rootCID,
+            directoryPath: fixture.composed.directoryPath,
+            entries: fixture.composed.entries + [(testCID("unused"), Data([1]))]
+        )
+        let paddedResult = await padded.schedulingTargets(
+            root: fixture.root,
+            terminal: fixture.leaf
+        )
+        XCTAssertNil(paddedResult)
+
+        let emptyPath = ChildBlockProof(
+            rootCID: fixture.composed.rootCID,
+            directoryPath: [],
+            entries: fixture.composed.entries
+        )
+        let emptyPathResult = await emptyPath.schedulingTargets(
+            root: fixture.root,
+            terminal: fixture.leaf
+        )
+        XCTAssertNil(emptyPathResult)
     }
 }

@@ -111,11 +111,45 @@ ChainSpec = (
 )
 ```
 
+`maxBlockSize` bounds the canonical unique content bytes owned by one logical
+block. The measured closure is the block root Volume boundary (including its
+transaction and child indexes and their reference CIDs) plus every referenced
+transaction Volume and transaction body. Each CID's canonical bytes count once.
+The contents of the chain spec, wasm modules, parent blocks, all state Volumes,
+child blocks, and admission evidence are independent Volumes and do not count.
+
 **Protocol constants:**
 
 ```
 maxTargetChange = 2
+maximumVolumeDataBytes = 16 MiB
+maximumVolumeMembers = 65,535
+maximumLogicalBlockBytes = 16 MiB
+maximumChainSpecBytes = 1 MiB
+maximumStateGrowth = 16 MiB
+maximumTransactions = 16,384
+maximumWasmPolicies = 64
+maximumWithdrawalsPerBlock = 64
+maximumParentReceiptWitnessVolumes = 2 + (64 * 64) = 4,098
+maximumParentReceiptWitnessBytes = 64 MiB
 ```
+
+Every complete Volume emitted by the canonical storage planner must fit both
+the data-byte and member-count limits. A chain may choose smaller block, state,
+transaction, or policy limits; its `ChainSpec` cannot exceed this common
+availability envelope. WASM policy modules retain their independent 256 KiB
+module limit.
+
+State keys use a small consensus grammar so radix work cannot grow with
+attacker-chosen Unicode or unbounded historical prefixes. Directories are
+1...64 visible-ASCII bytes; account identifiers and general-state keys are
+1...128 visible-ASCII bytes. Derived account, deposit, and genesis keys remain
+plain text and enumerable. Receipt-state storage alone uses
+`SHA256("lattice/receipt-state/v1\0" || ReceiptKey)` as a 64-character lowercase
+hex path, because a child may need that proof from a remote same-chain peer.
+At most 64 distinct withdrawals may enter one block. Consequently the remote
+parent-receipt closure is bounded independently of history; it is validation
+witness data and remains outside `maxBlockSize` and materialized state growth.
 
 ### 3.6 Action Types
 
@@ -240,10 +274,10 @@ A genesis block `B` is valid if and only if ALL of the following hold:
     ```
     totalCredits <= premineAmount
     ```
-13. Every `GenesisAction` has a non-empty separator-free directory of at most
-    `UInt16.max` UTF-8 bytes and a canonical genesis block CID. Its child proof
-    depth must remain at most `UInt16.max`. The child process validates that
-    block's content.
+13. Every `GenesisAction` has a 1–64 byte visible-ASCII, separator-free
+    directory and a canonical genesis block CID. Its child proof depth must
+    remain at most `UInt16.max`. The child process validates that block's
+    content.
 14. **Post-state correctness**: Applying all actions to `prevState` (empty
     state) produces `postState`:
     ```
@@ -589,6 +623,11 @@ Credits (`delta > 0`) do not require signer authorization.
 
 Chain policies are content-addressed validation modules referenced by `ChainSpec.wasmPolicies`. In ABI version 1, policies are implemented as WASM modules. A policy declares a scope (`transaction` or `action`), ABI version, module CID, and exported entrypoint. The host passes a versioned canonical binary policy context containing the chain spec, chain path, and the transaction/action under validation. The policy returns `1` to accept and any other value to reject.
 
+Genesis validates every configured policy reference and entrypoint, even when
+genesis contains no transaction or Action to exercise that scope. This prevents
+an immutable spec from admitting a latent missing, oversized, nondeterministic,
+or malformed module that would fail only after deployment.
+
 Policy modules MUST export:
 
 | Export | Type | Purpose |
@@ -908,6 +947,10 @@ recovery therefore replays those already-authenticated facts idempotently throug
 Lattice's graph and fork-choice reducer. The node does not reconstruct weights,
 ancestry, or canonical choice itself.
 
+Lattice exposes staged-fact replay as its recovery authority. A serialized
+`ChainState` projection is neither a public recovery input nor protocol truth;
+diagnostic projections, if retained by tests or tooling, cannot replace replay.
+
 For inherited work, the node either retains the complete snapshot or
 reconstructs it from durable parent facts before restore. A revision watermark
 alone does not prove the complete fact set, so a marker without its snapshot fails
@@ -952,12 +995,17 @@ A `ChainSpec` is valid if:
 
 ```
 maxNumberOfTransactionsPerBlock > 0
+maxNumberOfTransactionsPerBlock <= 16,384
 maxStateGrowth > 0
+maxStateGrowth <= 16 MiB
 maxBlockSize > 0
+maxBlockSize <= 16 MiB
 targetBlockTime > 0
 initialReward > 0
 halvingInterval > 0
 retargetWindow > 0
+wasmPolicies.count <= 64
+canonicalEncodedSize <= 1 MiB
 ```
 
 `premine` is unconstrained (any `uint64`): it is a block-count offset into the emission schedule and the reward math handles any size, supply-bounded, without overflow. Premine is governed by transparency (it is fixed in the content-addressed genesis spec and provable via `premineAmount`), not by a protocol ceiling.

@@ -186,8 +186,8 @@ final class BlockMintingTests: XCTestCase {
         let block1 = try await storeBuiltBlock(built1, in: fetcher)
         let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
         let collector = AdmissionBatchCollector()
-        let stage: @Sendable (ChainAdmissionBatch) async throws -> Void = { batch in
-            await collector.append(batch)
+        let stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void = { context in
+            await collector.append(context.batch)
         }
 
         let first = try await level.admitBlockHeaderChainLocal(
@@ -204,11 +204,12 @@ final class BlockMintingTests: XCTestCase {
         XCTAssertTrue(acceptance.commit.canonicalChanged)
 
         let chain = await level.chain
-        let persisted = await chain.persist()
         let block1Hash = try BlockHeader(node: block1).rawCID
-        let live = try XCTUnwrap(persisted.blocks.first { $0.blockHash == block1Hash })
+        let liveValue = await chain.getConsensusBlock(hash: block1Hash)
+        let live = try XCTUnwrap(liveValue)
         XCTAssertEqual(live.workContributions.count, 1)
-        XCTAssertEqual(persisted.revision, acceptance.commit.revision)
+        let revision = await chain.currentRevision()
+        XCTAssertEqual(revision, acceptance.commit.revision)
 
         let staged = await collector.snapshot()
         XCTAssertEqual(staged.count, 1)
@@ -233,9 +234,9 @@ final class BlockMintingTests: XCTestCase {
             return XCTFail("duplicate contribution should not replay admission facts")
         }
         let batchesAfterDuplicate = await collector.snapshot()
-        let snapshotAfterDuplicate = await chain.persist()
+        let revisionAfterDuplicate = await chain.currentRevision()
         XCTAssertEqual(batchesAfterDuplicate.count, 1)
-        XCTAssertEqual(snapshotAfterDuplicate.revision, acceptance.commit.revision)
+        XCTAssertEqual(revisionAfterDuplicate, acceptance.commit.revision)
     }
 
     func test_validateGenesis_futureDriftTolerance() async throws {

@@ -6,6 +6,7 @@ public enum BlockBuilderError: Error {
     case missingPrevState
     case missingSpec
     case heightOverflow
+    case invalidTransactionContent
 }
 
 public struct BlockBuildResult: Sendable {
@@ -135,7 +136,10 @@ public struct BlockBuilder {
         let emptyState = LatticeState.emptyState()
         let prevState = try LatticeStateHeader(node: emptyState)
 
-        let transactionBodies = transactions.compactMap { $0.body.node }
+        let transactionBodies = try await validatedTransactionBodies(
+            transactions,
+            fetcher: fetcher
+        )
         let (postState, stateDiff) = try await computePostState(
             prevState: prevState,
             transactionBodies: transactionBodies,
@@ -236,7 +240,10 @@ public struct BlockBuilder {
         }
         let previousCID = try BlockHeader(node: previous).rawCID
 
-        let transactionBodies = transactions.compactMap { $0.body.node }
+        let transactionBodies = try await validatedTransactionBodies(
+            transactions,
+            fetcher: fetcher
+        )
         let (postState, stateDiff) = try await computePostState(
             prevState: prevState,
             transactionBodies: transactionBodies,
@@ -263,6 +270,23 @@ public struct BlockBuilder {
             stateDiff: stateDiff,
             materializedPostState: postState.node
         )
+    }
+
+    private static func validatedTransactionBodies(
+        _ transactions: [Transaction],
+        fetcher: Fetcher
+    ) async throws -> [TransactionBody] {
+        var bodies: [TransactionBody] = []
+        bodies.reserveCapacity(transactions.count)
+        for transaction in transactions {
+            guard let body = try await transaction.body.resolve(
+                fetcher: fetcher
+            ).node, body.stateAtomsAreValid() else {
+                throw BlockBuilderError.invalidTransactionContent
+            }
+            bodies.append(body)
+        }
+        return bodies
     }
 
     private static func collectAncestorTimestamps(from block: Block, count: UInt64, fetcher: Fetcher) async -> [Int64] {

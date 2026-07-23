@@ -227,13 +227,13 @@ final class ForkChoiceTests: XCTestCase {
             mainChainHashes: Set(["G", "A1", "A2", "A3"])
         )
 
-        let revisionBefore = await chain.persist().revision
+        let revisionBefore = await chain.currentRevision()
         let reorg = await chain.reevaluateForkChoice()
         XCTAssertNotNil(reorg)
         XCTAssertTrue(reorg!.mainChainBlocksAdded.keys.contains("B4"))
         XCTAssertTrue(reorg!.mainChainBlocksRemoved.contains("A3"))
         XCTAssertEqual(reorg!.revision, revisionBefore + 1)
-        let revisionAfter = await chain.persist().revision
+        let revisionAfter = await chain.currentRevision()
         XCTAssertEqual(revisionAfter, reorg!.revision)
 
         let newTip = await chain.getMainChainTip()
@@ -631,11 +631,12 @@ final class EdgeCaseTests: XCTestCase {
             revision: 1,
             workByBlock: ["G": WorkMeasure(extra)]
         ))
-        let persisted = await chain.persist()
+        let revision = await chain.currentRevision()
+        let retainedInherited = await chain.inheritedWorkSnapshot
 
         XCTAssertFalse(result.addedContribution)
         XCTAssertNil(providerCommit)
-        XCTAssertEqual(persisted.revision, .max)
-        XCTAssertNil(persisted.inheritedWorkSnapshot)
+        XCTAssertEqual(revision, .max)
+        XCTAssertNil(retainedInherited)
     }
 }

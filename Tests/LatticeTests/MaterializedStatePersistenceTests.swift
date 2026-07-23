@@ -102,7 +102,7 @@ final class MaterializedStatePersistenceTests: XCTestCase {
         )
         let receipts = try XCTUnwrap(state.receiptState.node?.allKeysAndValues())
         XCTAssertEqual(
-            receipts[ReceiptKey(receiptAction: receipt).description],
+            receipts[ReceiptKey(receiptAction: receipt).storageKey],
             buyerAddress
         )
     }

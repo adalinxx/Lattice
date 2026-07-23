@@ -99,6 +99,14 @@ proof remains inductively checked. The node authenticates the immediate-parent
 process, transports the fact, and may cache it. It proves validity, not
 canonicity, so a later parent reorganization cannot revoke it.
 
+The state proof itself remains content-addressed rather than becoming another
+parent assertion. Receipt-state keys are fixed-depth, domain-separated hashes,
+and a block carries at most 64 withdrawals, so a cold child peer can obtain the
+complete parent-receipt witness from the exact same-chain advertiser within a
+history-independent bound. The live authenticated parent is still the sole
+source of inherited work; peer-supplied Volumes provide availability, not
+consensus authority.
+
 Carrier validity here is deliberately header-only. A target-hit carrier may
 fail its own state transition, MTP/future-drift check, or proposed `nextTarget`
 and still return both that local rejection and a carrier link. Those local rules
@@ -129,8 +137,10 @@ acquire
   -> project one chain
 ```
 
-The node's stage callback is atomic: returning means the whole batch is durable;
-throwing means none of its facts became visible. An existing runtime reserves one
+The node's single stage callback receives `ChainAdmissionStagingContext`, so the
+consensus batch and its verified hierarchy links cross one atomic durability
+boundary. Returning means the whole context is durable; throwing means none of
+its facts became visible. An existing runtime reserves one
 commit revision before staging so another actor mutation cannot consume the last
 available revision while the batch is becoming durable.
 
@@ -165,7 +175,9 @@ branch must win.
 
 Nested Volumes remain independent availability units. Storing or pinning an outer
 Volume creates no implicit retention relationship with another Volume merely
-referenced by CID.
+referenced by CID. Consensus nevertheless requires every individual Volume to
+fit the shared 16 MiB data / 65,535 member availability envelope, so a valid
+object is always representable by the node and network storage layers.
 
 ## Retention
 

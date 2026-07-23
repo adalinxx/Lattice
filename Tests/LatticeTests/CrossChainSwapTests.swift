@@ -238,8 +238,10 @@ final class ReceiptStateTests: XCTestCase {
             allReceiptActions: [receiptAction], fetcher: fetcher
         )
 
-        let receiptKey = ReceiptKey(receiptAction: receiptAction).description
-        let stored: String? = try? updatedReceiptState.node?.get(key: receiptKey)
+        let receiptKey = ReceiptKey(receiptAction: receiptAction)
+        let stored: String? = try? updatedReceiptState.node?.get(
+            key: receiptKey.storageKey
+        )
         XCTAssertNotNil(stored, "Receipt should be stored in state")
         XCTAssertEqual(stored, withdrawerAddr, "Stored withdrawer should match")
     }
@@ -702,8 +704,10 @@ final class CrossChainFlowTests: XCTestCase {
                 demander: demanderAddr, amountDemanded: depositAmount, amountWithdrawn: depositAmount
             ),
             directory: "Child"
-        ).description
-        let receiptStored: String? = try? nexusFrontier1.receiptState.node?.get(key: receiptKey)
+        )
+        let receiptStored: String? = try? nexusFrontier1.receiptState.node?.get(
+            key: receiptKey.storageKey
+        )
         XCTAssertNotNil(receiptStored, "Receipt should exist in nexus state")
         XCTAssertEqual(receiptStored, withdrawerAddr, "Receipt withdrawer should match")
 
@@ -874,8 +878,10 @@ final class CrossChainFlowTests: XCTestCase {
                 demander: demanderAddr, amountDemanded: depositAmount, amountWithdrawn: depositAmount
             ),
             directory: "Child"
-        ).description
-        let storedReceipt: String? = try? nexusFrontier.receiptState.node?.get(key: receiptKey)
+        )
+        let storedReceipt: String? = try? nexusFrontier.receiptState.node?.get(
+            key: receiptKey.storageKey
+        )
         XCTAssertNotNil(storedReceipt, "Receipt should exist in nexus state")
         XCTAssertNotEqual(storedReceipt, attackerAddr,
             "Receipt withdrawer doesn't match attacker — proveExistenceAndVerifyWithdrawers rejects this at validation time")
