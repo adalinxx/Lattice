@@ -414,7 +414,7 @@ public struct BlockBuilder {
         var dict = MerkleDictionaryImpl<VolumeImpl<Transaction>>()
         for (i, tx) in transactions.enumerated() {
             let txHeader = try VolumeImpl<Transaction>(node: tx)
-            dict = (try? dict.inserting(key: String(i), value: txHeader)) ?? dict
+            dict = try dict.inserting(key: String(i), value: txHeader)
         }
         return try HeaderImpl(node: dict)
     }
@@ -431,7 +431,7 @@ public struct BlockBuilder {
         var dict = MerkleDictionaryImpl<VolumeImpl<Block>>()
         for (directory, block) in children {
             let blockHeader = try VolumeImpl<Block>(node: block)
-            dict = (try? dict.inserting(key: directory, value: blockHeader)) ?? dict
+            dict = try dict.inserting(key: directory, value: blockHeader)
         }
         return try HeaderImpl(node: dict)
     }
