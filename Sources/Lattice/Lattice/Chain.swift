@@ -43,6 +43,12 @@ public enum ChainStateRestoreError: Error, Sendable, Equatable {
     case missingBlockFact
 }
 
+/// A complete parent-work view, or the changes covered after `baseRevision`.
+public struct ParentSecuringWorkExport: Sendable, Equatable {
+    public let snapshot: InheritedWorkSnapshot
+    public let baseRevision: UInt64?
+}
+
 // MARK: - Concrete Types
 
 public struct BlockMeta: Sendable {
@@ -627,6 +633,7 @@ public actor ChainState {
     private var parentWorkChangeRevisionByGrind: [String: UInt64]
     private var parentWorkChangesByRevision: [UInt64: [String: InheritedWorkFact]]
     private var parentWorkChangeRevisions: [UInt64]
+    private var parentWorkDeltaFloor: UInt64
     /// The selected quotient path. A normal leaf extension updates only this
     /// final tail instead of rewalking the unchanged unary prefix.
     private var canonicalSegmentSpine: [CanonicalSegment]
@@ -709,6 +716,7 @@ public actor ChainState {
         self.parentWorkChangeRevisionByGrind = [:]
         self.parentWorkChangesByRevision = [:]
         self.parentWorkChangeRevisions = []
+        self.parentWorkDeltaFloor = mutationGeneration
         self.canonicalSegmentSpine = []
 #if DEBUG
         self.fullCanonicalProjectionCount = 0
@@ -869,12 +877,18 @@ public actor ChainState {
         // The node may enumerate its durable facts in any order. Replay the seed
         // batch too: its existing block/work record makes that a no-op.
         try await replay(batches[...], onto: chain)
-        await chain.raiseRevisionFloor(revisionFloor)
+        await chain.sealRecoveredParentWorkJournal(
+            revisionFloor: revisionFloor
+        )
         return chain
     }
 
-    private func raiseRevisionFloor(_ floor: UInt64) {
-        mutationGeneration = max(mutationGeneration, floor)
+    private func sealRecoveredParentWorkJournal(revisionFloor: UInt64) {
+        mutationGeneration = max(mutationGeneration, revisionFloor)
+        parentWorkDeltaFloor = mutationGeneration
+        parentWorkChangeRevisionByGrind.removeAll()
+        parentWorkChangesByRevision.removeAll()
+        parentWorkChangeRevisions.removeAll()
     }
 
     private static func replay(
@@ -1001,16 +1015,20 @@ public actor ChainState {
 
     /// Export this chain's connected work locations without child-specific
     /// topology. A physical grind has exactly one location in this chain.
-    public func parentSecuringWorkSnapshot(
+    public func parentSecuringWorkExport(
         since revision: UInt64? = nil
-    ) -> InheritedWorkSnapshot? {
-        guard let revision else {
-            return InheritedWorkSnapshot(
-                revision: mutationGeneration,
-                facts: Array(parentWorkByGrind.values)
+    ) -> ParentSecuringWorkExport {
+        guard let revision,
+              revision >= parentWorkDeltaFloor,
+              revision <= mutationGeneration else {
+            return ParentSecuringWorkExport(
+                snapshot: InheritedWorkSnapshot(
+                    revision: mutationGeneration,
+                    facts: Array(parentWorkByGrind.values)
+                ),
+                baseRevision: nil
             )
         }
-        guard revision <= mutationGeneration else { return nil }
         var low = 0
         var high = parentWorkChangeRevisions.count
         while low < high {
@@ -1027,10 +1045,20 @@ public actor ChainState {
                 changes[grindID] = fact
             }
         }
-        return InheritedWorkSnapshot(
-            revision: mutationGeneration,
-            facts: Array(changes.values)
+        return ParentSecuringWorkExport(
+            snapshot: InheritedWorkSnapshot(
+                revision: mutationGeneration,
+                facts: Array(changes.values)
+            ),
+            baseRevision: revision
         )
+    }
+
+    /// Compatibility wrapper for callers that only need the snapshot.
+    public func parentSecuringWorkSnapshot(
+        since revision: UInt64? = nil
+    ) -> InheritedWorkSnapshot? {
+        parentSecuringWorkExport(since: revision).snapshot
     }
 
     /// Join the immediate parent's unique work locations through exact direct
