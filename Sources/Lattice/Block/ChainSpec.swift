@@ -10,6 +10,24 @@ import UInt256
 /// which is the root case; the node always supplies its configured chainPath.
 public let DEFAULT_ROOT_DIRECTORY = "Nexus"
 
+/// Consensus-wide availability envelope. Chain specs may choose smaller
+/// limits, but never values that peers cannot safely exchange and validate.
+public enum ConsensusVolumeLimits {
+    public static let maximumVolumeDataBytes = 16 * 1_024 * 1_024
+    public static let maximumVolumeMembers = 65_535
+    public static let maximumLogicalBlockBytes = 16 * 1_024 * 1_024
+    public static let maximumChainSpecBytes = 1 * 1_024 * 1_024
+    public static let maximumStateGrowth = 16 * 1_024 * 1_024
+    public static let maximumTransactions = 16_384
+    public static let maximumWasmPolicies = 64
+    public static let maximumWithdrawalsPerBlock = 64
+    public static let maximumReceiptTrieDepth = 64
+    public static let maximumParentReceiptWitnessVolumes =
+        2 + maximumWithdrawalsPerBlock * maximumReceiptTrieDepth
+    public static let maximumParentReceiptWitnessBytes =
+        4 * maximumLogicalBlockBytes
+}
+
 public struct ChainSpec: Scalar {
     public let maxNumberOfTransactionsPerBlock: UInt64
     public let maxStateGrowth: Int
@@ -237,13 +255,18 @@ public extension ChainSpec {
         // protocol ceiling, governs premine. The real bound is the Int64 genesis
         // credit and the emission math, both of which remain well-defined.
         return maxNumberOfTransactionsPerBlock > 0 &&
+               maxNumberOfTransactionsPerBlock <= UInt64(ConsensusVolumeLimits.maximumTransactions) &&
                maxStateGrowth > 0 &&
+               maxStateGrowth <= ConsensusVolumeLimits.maximumStateGrowth &&
                maxBlockSize > 0 &&
+               maxBlockSize <= ConsensusVolumeLimits.maximumLogicalBlockBytes &&
                targetBlockTime > 0 &&
                initialReward > 0 &&
                halvingInterval > 0 &&
                ChainSpec.maxTargetChange > 0 &&
-               retargetWindow > 0
+               retargetWindow > 0 &&
+               wasmPolicies.count <= ConsensusVolumeLimits.maximumWasmPolicies &&
+               (toData()?.count ?? .max) <= ConsensusVolumeLimits.maximumChainSpecBytes
     }
 }
 

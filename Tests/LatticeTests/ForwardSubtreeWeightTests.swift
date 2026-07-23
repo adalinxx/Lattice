@@ -107,8 +107,8 @@ final class ForwardSubtreeWeightTests: XCTestCase {
         XCTAssertEqual(swG, fourW, "genesis subtree = G,A,B,C = 4w after out-of-order")
     }
 
-    /// A persistence round-trip rebuilds subtree weights from the installed tree.
-    func testRestoreRebuildsSubtreeWeights() async throws {
+    /// Fact replay rebuilds subtree weights from durable consensus inputs.
+    func testFactReplayRebuildsSubtreeWeights() async throws {
         let fetcher = f()
         let diff = UInt256(1000)
         let w = workForTarget(diff)
@@ -120,12 +120,15 @@ final class ForwardSubtreeWeightTests: XCTestCase {
         for blk in [a, b] {
             _ = await chain.submitTestBlock(blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
         }
-        let persisted = await chain.persist()
-        let restored = try ChainState.restore(from: persisted)
+        let restored = try await ChainState.restore(replaying: [
+            testAdmissionBatch(for: genesis),
+            testAdmissionBatch(for: a),
+            testAdmissionBatch(for: b),
+        ])
         let swG = await restored.subtreeWeight(forHash: cid(genesis))
         var threeW = WorkSum.zero; for _ in 0..<3 { threeW = threeW + w }
-        XCTAssertEqual(swG, threeW, "restore rebuilds genesis subtree = 3w")
+        XCTAssertEqual(swG, threeW, "replay rebuilds genesis subtree = 3w")
         let swTip = await restored.subtreeWeight(forHash: cid(b))
-        XCTAssertEqual(swTip, WorkSum(w), "restore: tip weighs own work")
+        XCTAssertEqual(swTip, WorkSum(w), "replay: tip weighs own work")
     }
 }

@@ -788,7 +788,8 @@ final class BlockValidationAdversarialTests: XCTestCase {
         let g = try await buildAndStoreGenesis(
             spec: tinySpec, timestamp: 1_000_000, target: UInt256(1000), fetcher: fetcher
         )
-        XCTAssertFalse(g.validateBlockSize(spec: tinySpec),
+        let validSize = try await g.validateBlockSize(spec: tinySpec, fetcher: fetcher)
+        XCTAssertFalse(validSize,
             "Block larger than 10 bytes must fail size check")
     }
 }

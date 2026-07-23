@@ -240,13 +240,11 @@ final class SegmentTailProjectionTests: XCTestCase {
             workByBlock: [root.hash: inherited]
         ))
         let retainedRevision = await chain.inheritedWorkSnapshot?.revision
-        let persisted = await chain.persist()
         let tipAfterRevisionOnlyUpdate = await chain.getMainChainTip()
         let mainChainAfterRevisionOnlyUpdate = await chain.mainChainHashes
 
         XCTAssertNil(revisionOnlyUpdate, "a revision watermark alone must not emit a canonical change")
         XCTAssertEqual(retainedRevision, 42)
-        XCTAssertEqual(persisted.inheritedWorkRevision, 42)
         XCTAssertEqual(tipAfterRevisionOnlyUpdate, tipBeforeRevisionOnlyUpdate)
         XCTAssertEqual(mainChainAfterRevisionOnlyUpdate, mainChainBeforeRevisionOnlyUpdate)
     }

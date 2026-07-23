@@ -6,7 +6,8 @@ import UInt256
 // Test-fixture parameter sets (Bitcoin-, Ethereum- and development-shaped specs)
 // formerly shipped inside the Lattice library despite having no production
 // callers — they exist purely so tests can sweep representative spec shapes.
-// Relocated to test support (wave-4); values are byte-identical.
+// Relocated to test support (wave-4); sizes remain inside Lattice's consensus
+// availability envelope.
 extension ChainSpec {
 
     static let bitcoin: ChainSpec = ChainSpec(
@@ -22,8 +23,8 @@ extension ChainSpec {
 
     static let ethereum: ChainSpec = ChainSpec(
         maxNumberOfTransactionsPerBlock: 1000,
-        maxStateGrowth: 24_000_000,
-        maxBlockSize: 30_000_000,
+        maxStateGrowth: 16_000_000,
+        maxBlockSize: 16_000_000,
         premine: 72_000_000,
         targetBlockTime: 12_000,
         initialReward: 2_000_000_000_000_000_000,

@@ -1,4 +1,48 @@
+import Foundation
 import cashew
+
+public enum BlockContentSizeError: Error, Sendable, Equatable {
+    case conflictingCID(String)
+    case overflow
+    case tooManyVolumeMembers
+    case volumeTooLarge
+    case logicalBlockTooLarge
+}
+
+actor BlockContentByteCounter: VolumeStorer {
+    private var dataByCID: [String: Data] = [:]
+    private var byteCount = 0
+
+    func store(volume: SerializedVolume) throws {
+        guard volume.entries.count <= ConsensusVolumeLimits.maximumVolumeMembers else {
+            throw BlockContentSizeError.tooManyVolumeMembers
+        }
+        var volumeByteCount = 0
+        for (cid, data) in volume.entries {
+            let volumeNext = volumeByteCount.addingReportingOverflow(data.count)
+            guard !volumeNext.overflow else { throw BlockContentSizeError.overflow }
+            volumeByteCount = volumeNext.partialValue
+            guard volumeByteCount <= ConsensusVolumeLimits.maximumVolumeDataBytes else {
+                throw BlockContentSizeError.volumeTooLarge
+            }
+            if let existing = dataByCID[cid] {
+                guard existing == data else {
+                    throw BlockContentSizeError.conflictingCID(cid)
+                }
+                continue
+            }
+            let next = byteCount.addingReportingOverflow(data.count)
+            guard !next.overflow else { throw BlockContentSizeError.overflow }
+            dataByCID[cid] = data
+            byteCount = next.partialValue
+            guard byteCount <= ConsensusVolumeLimits.maximumLogicalBlockBytes else {
+                throw BlockContentSizeError.logicalBlockTooLarge
+            }
+        }
+    }
+
+    func total() -> Int { byteCount }
+}
 
 public extension Block {
     /// Cashew resolution policy for the content carried by this block.
@@ -39,21 +83,53 @@ public extension Block {
             for action in body.withdrawalActions {
                 setPrevStatePath([DEPOSIT_STATE_PROPERTY, DepositKey(withdrawalAction: action).description])
                 if let directory = body.chainPath.last {
-                    let receiptKey = ReceiptKey(withdrawalAction: action, directory: directory).description
-                    paths[[PARENT_STATE_PROPERTY, RECEIPT_STATE_PROPERTY, receiptKey]] = .targeted
+                    let receiptKey = ReceiptKey(
+                        withdrawalAction: action,
+                        directory: directory
+                    )
+                    paths[[
+                        PARENT_STATE_PROPERTY,
+                        RECEIPT_STATE_PROPERTY,
+                        receiptKey.storageKey,
+                    ]] = .targeted
                 }
             }
             for action in body.genesisActions {
                 setPrevStatePath([GENESIS_STATE_PROPERTY, action.directory])
             }
             for action in body.receiptActions {
-                setPrevStatePath([RECEIPT_STATE_PROPERTY, ReceiptKey(receiptAction: action).description])
+                setPrevStatePath([
+                    RECEIPT_STATE_PROPERTY,
+                    ReceiptKey(receiptAction: action).storageKey,
+                ])
                 setPrevStatePath([ACCOUNT_STATE_PROPERTY, action.withdrawer])
                 setPrevStatePath([ACCOUNT_STATE_PROPERTY, action.demander])
             }
         }
 
         return paths
+    }
+
+    /// Canonical byte size owned by this logical block: its complete root
+    /// Volume boundary plus every transaction Volume below the transaction
+    /// index. CIDs shared across those boundaries are counted once. Independent
+    /// spec, policy, state, parent-block, child-block, and evidence Volumes are
+    /// deliberately excluded.
+    func logicalContentByteSize(fetcher: any Fetcher) async throws -> Int {
+        let resolved = try await VolumeImpl<Block>(node: self).resolve(
+            paths: [
+                [TRANSACTIONS_PROPERTY]: .recursive,
+                [CHILDREN_PROPERTY, ""]: .list,
+            ],
+            fetcher: fetcher
+        )
+        guard let block = resolved.node else { throw DataErrors.nodeNotAvailable }
+        let counter = BlockContentByteCounter()
+        try await VolumeImpl<Block>(node: block).store(
+            paths: [[TRANSACTIONS_PROPERTY]: .recursive],
+            storer: counter
+        )
+        return await counter.total()
     }
 }
 

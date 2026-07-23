@@ -54,13 +54,13 @@ private func buildChain(from genesis: Block, length: Int, base: Int64, fetcher: 
 }
 
 // ============================================================================
-// MARK: - Crash Recovery: Persist, Restart, Continue
+// MARK: - Crash Recovery: Replay, Restart, Continue
 // ============================================================================
 
 @MainActor
 final class CrashRecoveryTests: XCTestCase {
 
-    func testPersistRestoreContinueMining() async throws {
+    func testFactReplayRestoreContinueMining() async throws {
         let fetcher = f()
         let base = now() - 50_000
         let spec = s(premine: 0)
@@ -69,6 +69,7 @@ final class CrashRecoveryTests: XCTestCase {
             spec: spec, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
         let chain1 = ChainState.fromGenesis(block: genesis)
+        var batches = [try testAdmissionBatch(for: genesis)]
 
         var prev = genesis
         for i in 1...5 {
@@ -79,17 +80,16 @@ final class CrashRecoveryTests: XCTestCase {
             let _ = await chain1.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: b), block: b
             )
+            batches.append(try testAdmissionBatch(for: b))
             prev = b
         }
 
-        let persisted = await chain1.persist()
-
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        let data = try encoder.encode(persisted)
-        let decoded = try JSONDecoder().decode(PersistedChainState.self, from: data)
+        let data = try encoder.encode(batches)
+        let decoded = try JSONDecoder().decode([ChainAdmissionBatch].self, from: data)
 
-        let chain2 = try ChainState.restore(from: decoded)
+        let chain2 = try await ChainState.restore(replaying: decoded)
 
         let tip2 = await chain2.getMainChainTip()
         let tip1 = await chain1.getMainChainTip()
@@ -111,7 +111,7 @@ final class CrashRecoveryTests: XCTestCase {
         XCTAssertEqual(finalHeight, 6)
     }
 
-    func testPersistSerializationIsDeterministic() async throws {
+    func testFactBatchSerializationIsDeterministic() async throws {
         let fetcher = f()
         let base = now() - 20_000
         let spec = s(premine: 0)
@@ -131,11 +131,10 @@ final class CrashRecoveryTests: XCTestCase {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
 
-        let p1 = await chain.persist()
-        let p2 = await chain.persist()
-        let d1 = try encoder.encode(p1)
-        let d2 = try encoder.encode(p2)
-        XCTAssertEqual(d1, d2, "Persistence serialization must be deterministic")
+        let batch = try testAdmissionBatch(for: b1)
+        let d1 = try encoder.encode(batch)
+        let d2 = try encoder.encode(batch)
+        XCTAssertEqual(d1, d2, "Fact serialization must be deterministic")
     }
 
 }

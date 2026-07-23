@@ -358,7 +358,33 @@ extension ChainState {
     }
 }
 
-func testAdmissionStage(_ batch: ChainAdmissionBatch) async throws {}
+func testAdmissionStage(_ context: ChainAdmissionStagingContext) async throws {}
+
+func testAdmissionBatch(
+    for block: Block,
+    contribution: VerifiedWorkContribution? = nil
+) throws -> ChainAdmissionBatch {
+    let header = try BlockHeader(node: block)
+    let work = contribution ?? VerifiedWorkContribution(
+        id: header.rawCID,
+        work: workForTarget(block.target)
+    )
+    return ChainAdmissionBatch(facts: [
+        .block(ChainBlockFact(
+            blockHash: header.rawCID,
+            parentBlockHash: block.parent?.rawCID,
+            blockHeight: block.height,
+            postStateCID: block.postState.rawCID,
+            prevStateCID: block.prevState.rawCID,
+            specCID: block.spec.rawCID,
+            target: block.target.toHexString(),
+            nextTarget: block.nextTarget.toHexString(),
+            timestamp: block.timestamp,
+            stateDiff: .empty
+        )),
+        .work(ChainWorkFact(blockHash: header.rawCID, contribution: work)),
+    ])
+}
 
 func testAdmissionBatch(
     block: Block,

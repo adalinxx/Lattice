@@ -331,11 +331,38 @@ public struct InheritedWorkSnapshot: Codable, Sendable, Equatable {
         workByBlock.keys.sorted()
     }
 
+    /// The exact authenticated relation in stable order. Consumers may stream
+    /// or accumulate facts without copying the full block-indexed snapshot for
+    /// every transport fragment.
+    public var facts: [InheritedWorkFact] {
+        var result: [InheritedWorkFact] = []
+        for blockCID in blockCIDs {
+            let measure = sourceWork(forBlock: blockCID)
+            for grindID in measure.grindIDs.sorted() {
+                guard let work = measure.work(forGrind: grindID),
+                      let fact = InheritedWorkFact(
+                        blockCID: blockCID,
+                        grindID: grindID,
+                        work: work
+                      ) else { continue }
+                result.append(fact)
+            }
+        }
+        return result
+    }
+
     /// Retain only source facts for the supplied blocks.
     public func restricted(to blockCIDs: Set<String>) -> InheritedWorkSnapshot {
-        InheritedWorkSnapshot(
+        var retained: [String: WorkMeasure] = [:]
+        retained.reserveCapacity(min(blockCIDs.count, workByBlock.count))
+        for blockCID in blockCIDs {
+            if let measure = workByBlock[blockCID] {
+                retained[blockCID] = measure
+            }
+        }
+        return InheritedWorkSnapshot(
             revision: revision,
-            workByBlock: workByBlock.filter { blockCIDs.contains($0.key) }
+            workByBlock: retained
         )
     }
 

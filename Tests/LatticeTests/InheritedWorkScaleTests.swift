@@ -3,7 +3,7 @@ import UInt256
 @testable import Lattice
 
 final class InheritedWorkScaleTests: XCTestCase {
-    func testLongChainDirectWorkProjectionAndRestoreStayDepthSafe() async throws {
+    func testLongChainFactReplayAndProjectionStayDepthSafe() async throws {
         let count = 2_500
         let hashes = (0..<count).map { testCID("long-direct-block-\($0)") }
         let grinds = (0..<count).map { testCID("long-direct-grind-\($0)") }
@@ -20,8 +20,9 @@ final class InheritedWorkScaleTests: XCTestCase {
         }
         let started = ContinuousClock.now
 
-        let chain = makeChain(blocks: blocks)
-        let restored = try ChainState.restore(from: await chain.persist())
+        let restored = try await ChainState.restore(replaying: blocks.map {
+            scaleAdmission(for: $0)
+        })
         let rootWeight = await restored.subtreeWeight(forHash: hashes[0])
         let tip = await restored.getMainChainTip()
         let elapsed = started.duration(to: .now)
@@ -118,7 +119,7 @@ final class InheritedWorkScaleTests: XCTestCase {
         XCTAssertLessThan(elapsed, .seconds(15))
     }
 
-    func testForkLadderTipUpdatesTouchOnlyFenwickCells() async {
+    func testForkLadderTipUpdatesTouchOnlyQuotientAncestors() async {
         let mainCount = 1_000
         let updateCount = 128
         let main = (0..<mainCount).map { testCID("fork-ladder-main-\($0)") }
@@ -171,22 +172,36 @@ final class InheritedWorkScaleTests: XCTestCase {
             XCTAssertTrue(result.addedContribution)
         }
 
-        let segmentCount = mainCount * 2 - 1
-        var maximumCellsPerUpdate = 1
-        var power = 1
-        while power < segmentCount {
-            power <<= 1
-            maximumCellsPerUpdate += 1
-        }
         let cellsAfter = await chain.segmentWorkUpdateCellCount
         let rebuildsAfter = await chain.segmentCacheRebuildCount
         let projectionsAfter = await chain.fullCanonicalProjectionCount
         let cells = cellsAfter - cellsBefore
         XCTAssertLessThanOrEqual(
             cells,
-            UInt64(updateCount * maximumCellsPerUpdate)
+            UInt64(updateCount * (mainCount + 1))
         )
         XCTAssertEqual(rebuildsAfter, rebuildsBefore)
         XCTAssertEqual(projectionsAfter, projectionsBefore)
     }
+}
+
+private func scaleAdmission(for block: BlockMeta) -> ChainAdmissionBatch {
+    ChainAdmissionBatch(facts: [
+        .block(ChainBlockFact(
+            blockHash: block.blockHash,
+            parentBlockHash: block.parentBlockHash,
+            blockHeight: block.blockHeight,
+            postStateCID: testCID("scale-post-\(block.blockHeight)"),
+            prevStateCID: testCID("scale-prev-\(block.blockHeight)"),
+            specCID: testCID("scale-spec"),
+            target: "1",
+            nextTarget: "1",
+            timestamp: Int64(block.blockHeight),
+            stateDiff: .empty
+        )),
+        .work(ChainWorkFact(
+            blockHash: block.blockHash,
+            contribution: block.workContributions.values.first!
+        )),
+    ])
 }

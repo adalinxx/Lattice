@@ -7,7 +7,7 @@ public enum ChildProofSerializationError: Error, Sendable, Equatable {
 }
 
 enum ChildProofWireLimits {
-    static let maximumDirectoryBytes = Int(UInt16.max)
+    static let maximumDirectoryBytes = StateAtomLimits.maximumDirectoryBytes
     static let maximumDepth = Int(UInt16.max)
 }
 
@@ -86,6 +86,17 @@ public struct DirectChildEdge: Hashable, Scalar {
               hop.childCID == childCID,
               (try? hop.proof.serialize()) == proofBytes else { return nil }
         return hop
+    }
+}
+
+/// Scheduling values derived from a structurally verified descendant path.
+public struct ChildSchedulingTargets: Sendable, Equatable {
+    public let searchTarget: UInt256
+    public let deploymentTarget: UInt256?
+
+    public init(searchTarget: UInt256, deploymentTarget: UInt256?) {
+        self.searchTarget = searchTarget
+        self.deploymentTarget = deploymentTarget
     }
 }
 
@@ -240,6 +251,78 @@ public struct ChildBlockProof: Sendable {
             childCID: child.rawCID,
             parentStateCID: block.prevState.rawCID
         )
+    }
+
+    /// Validate a sparse descendant witness used only for child scheduling.
+    /// Targets are derived from content-bound blocks; callers never supply
+    /// trusted target values beside the proof.
+    public func schedulingTargets(
+        root: Block,
+        terminal: Block
+    ) async -> ChildSchedulingTargets? {
+        guard hasRepresentableDirectoryPath,
+              !directoryPath.isEmpty,
+              !entries.isEmpty,
+              let rootHeader = try? BlockHeader(node: root),
+              let terminalHeader = try? BlockHeader(node: terminal),
+              rootCID == rootHeader.rawCID else { return nil }
+
+        var proofEntries: [String: Data] = [:]
+        for entry in entries {
+            guard CIDIdentity.isCanonical(entry.cid),
+                  proofEntries.updateValue(entry.data, forKey: entry.cid) == nil else {
+                return nil
+            }
+        }
+        guard let rootData = proofEntries[rootCID],
+              contentBoundBlock(cid: rootCID, data: rootData) != nil else {
+            return nil
+        }
+
+        let fetcher = _TrackingProofFetcher(proofEntries)
+        var current = root
+        var deploymentTarget = root.target
+        var canonicalEntries: [String: Data] = [:]
+
+        for (index, directory) in directoryPath.enumerated() {
+            guard let hop = try? await Self.generate(
+                rootHeader: BlockHeader(node: current),
+                childDirectory: directory,
+                fetcher: fetcher
+            ) else { return nil }
+            for entry in hop.entries {
+                if let existing = canonicalEntries[entry.cid], existing != entry.data {
+                    return nil
+                }
+                canonicalEntries[entry.cid] = entry.data
+            }
+            guard let children = try? await current.children.resolve(
+                paths: [[directory]: .targeted],
+                fetcher: fetcher
+            ).node,
+                  let childHeader: BlockHeader = try? children.get(key: directory) else {
+                return nil
+            }
+
+            if index == directoryPath.count - 1 {
+                guard childHeader.rawCID == terminalHeader.rawCID,
+                      terminal.parentState.rawCID == current.prevState.rawCID,
+                      canonicalEntries == proofEntries else { return nil }
+                return ChildSchedulingTargets(
+                    searchTarget: terminal.target,
+                    deploymentTarget: terminal.parent == nil
+                        ? min(deploymentTarget, terminal.target)
+                        : nil
+                )
+            }
+
+            guard let data = proofEntries[childHeader.rawCID],
+                  let next = contentBoundBlock(cid: childHeader.rawCID, data: data),
+                  next.parentState.rawCID == current.prevState.rawCID else { return nil }
+            deploymentTarget = min(deploymentTarget, next.target)
+            current = next
+        }
+        return nil
     }
 
     package func verifyRootFloor(

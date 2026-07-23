@@ -20,7 +20,7 @@ final class LazyLocalWorkCacheTests: XCTestCase {
         XCTAssertEqual(tipWork, WorkSum(UInt256(21)))
     }
 
-    func testPersistKeepsDerivedLocalTotalsOutOfDurableState() async throws {
+    func testFactReplayRebuildsDerivedLocalTotalsWithoutMutatingSource() async throws {
         let (chain, hashes) = try await lazyCacheLinearChain(count: 6)
         let rootHash = hashes[0]
         let tipHash = hashes[5]
@@ -29,20 +29,22 @@ final class LazyLocalWorkCacheTests: XCTestCase {
         let rawBeforePersist = try XCTUnwrap(blocksBeforePersist[rootHash])
         XCTAssertEqual(rawBeforePersist.subtreeWeight, WorkSum(UInt256(1)))
 
-        let persisted = await chain.persist()
-        let blocksAfterPersist = await chain.hashToBlock
-        let rawAfterPersist = try XCTUnwrap(blocksAfterPersist[rootHash])
-        XCTAssertEqual(rawAfterPersist.subtreeWeight, WorkSum(UInt256(1)))
-
-        let restored = try ChainState.restore(from: persisted)
+        let restored = try await ChainState.restore(replaying: hashes.indices.map {
+            lazyCacheAdmission(
+                index: $0,
+                hash: hashes[$0],
+                parentHash: $0 == 0 ? nil : hashes[$0 - 1]
+            )
+        })
         let restoredTip = await restored.getMainChainTip()
         let restoredRootWork = await restored.subtreeWeight(forHash: rootHash)
         let restoredTipWork = await restored.getCumulativeWork(forHash: tipHash)
-        let restoredPersisted = await restored.persist()
+        let blocksAfterReplay = await chain.hashToBlock
+        let rawAfterReplay = try XCTUnwrap(blocksAfterReplay[rootHash])
         XCTAssertEqual(restoredTip, tipHash)
         XCTAssertEqual(restoredRootWork, WorkSum(UInt256(21)))
         XCTAssertEqual(restoredTipWork, WorkSum(UInt256(21)))
-        XCTAssertEqual(restoredPersisted, persisted)
+        XCTAssertEqual(rawAfterReplay.subtreeWeight, WorkSum(UInt256(1)))
     }
 }
 

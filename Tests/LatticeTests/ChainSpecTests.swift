@@ -160,6 +160,64 @@ final class ChainSpecTests: XCTestCase {
         XCTAssertTrue(smallPremine.isValid)
     }
 
+    func testValidationEnforcesConsensusAvailabilityEnvelope() {
+        func spec(
+            transactions: UInt64 = UInt64(ConsensusVolumeLimits.maximumTransactions),
+            stateGrowth: Int = ConsensusVolumeLimits.maximumStateGrowth,
+            blockSize: Int = ConsensusVolumeLimits.maximumLogicalBlockBytes,
+            policies: [WasmPolicyRef] = []
+        ) -> ChainSpec {
+            ChainSpec(
+                maxNumberOfTransactionsPerBlock: transactions,
+                maxStateGrowth: stateGrowth,
+                maxBlockSize: blockSize,
+                premine: 0,
+                targetBlockTime: 1_000,
+                initialReward: 1,
+                halvingInterval: 1_000,
+                wasmPolicies: policies
+            )
+        }
+
+        XCTAssertTrue(spec().isValid)
+        XCTAssertFalse(spec(
+            transactions: UInt64(ConsensusVolumeLimits.maximumTransactions) + 1
+        ).isValid)
+        XCTAssertFalse(spec(
+            stateGrowth: ConsensusVolumeLimits.maximumStateGrowth + 1
+        ).isValid)
+        XCTAssertFalse(spec(
+            blockSize: ConsensusVolumeLimits.maximumLogicalBlockBytes + 1
+        ).isValid)
+
+        let policy = WasmPolicyRef(
+            moduleCID: "policy",
+            scope: .transaction
+        )
+        XCTAssertTrue(spec(
+            policies: Array(
+                repeating: policy,
+                count: ConsensusVolumeLimits.maximumWasmPolicies
+            )
+        ).isValid)
+        XCTAssertFalse(spec(
+            policies: Array(
+                repeating: policy,
+                count: ConsensusVolumeLimits.maximumWasmPolicies + 1
+            )
+        ).isValid)
+        XCTAssertFalse(spec(policies: [
+            WasmPolicyRef(
+                moduleCID: "policy",
+                scope: .transaction,
+                entrypoint: String(
+                    repeating: "x",
+                    count: ConsensusVolumeLimits.maximumChainSpecBytes
+                )
+            ),
+        ]).isValid)
+    }
+
     // MARK: - Reward Calculation Tests
 
     func testRewardAtBlock() {

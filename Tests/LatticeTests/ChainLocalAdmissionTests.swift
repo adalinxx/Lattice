@@ -240,20 +240,14 @@ final class ChainLocalAdmissionTests: XCTestCase {
     private func makeLevel(
         genesis: Block,
         revision: UInt64
-    ) async throws -> (level: ChainLevel, persisted: PersistedChainState) {
-        let initial = await ChainState.fromGenesis(block: genesis).persist()
-        let persisted = PersistedChainState(
-            schemaVersion: initial.schemaVersion,
-            revision: revision,
-            inheritedWorkRevision: initial.inheritedWorkRevision,
-            inheritedWorkSnapshot: initial.inheritedWorkSnapshot,
-            chainTip: initial.chainTip,
-            mainChainHashes: initial.mainChainHashes,
-            blocks: initial.blocks
-        )
+    ) async throws -> (level: ChainLevel, seedBatch: ChainAdmissionBatch) {
+        let seedBatch = try testAdmissionBatch(for: genesis)
         return (
-            ChainLevel(testChain: try ChainState.restore(from: persisted)),
-            persisted
+            ChainLevel(testChain: try await ChainState.restore(
+                replaying: [seedBatch],
+                revisionFloor: revision
+            )),
+            seedBatch
         )
     }
 
@@ -957,7 +951,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             childPackage: fixture.package,
             validationContentStorer: fixture.fetcher,
             materializedVolumeStorer: fixture.fetcher,
-            staging: { context in await recorder.stage(context) }
+            stage: { context in await recorder.stage(context) }
         )
         let later = try await fixture.childLevel.admitBlockHeaderChainLocal(
             header,
@@ -968,7 +962,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             ),
             validationContentStorer: fixture.fetcher,
             materializedVolumeStorer: fixture.fetcher,
-            staging: { context in await recorder.stage(context) }
+            stage: { context in await recorder.stage(context) }
         )
 
         guard case .accepted = initial, case .accepted = later else {
@@ -1694,9 +1688,11 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let batches = await recorder.recordedBatches()
         XCTAssertEqual(batches.count, 1)
         let restored = try await ChainState.restore(replaying: batches)
-        let restoredSnapshot = await restored.persist()
-        let liveSnapshot = await rootChain.persist()
-        XCTAssertEqual(restoredSnapshot, liveSnapshot)
+        let restoredTip = await restored.getMainChainTip()
+        let restoredRevision = await restored.currentRevision()
+        let liveRevision = await rootChain.currentRevision()
+        XCTAssertEqual(restoredTip, rootTip)
+        XCTAssertEqual(restoredRevision, liveRevision)
     }
 
     func testGenesisBootstrapRequiresUnsignedTransactions() async throws {
@@ -3108,7 +3104,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             chain: ChainState.fromGenesis(block: fixture.leafGenesis),
             context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Middle", "Leaf"])
         )
-        let persistedGenesis = await level.chain.persist()
+        let genesisBatch = try testAdmissionBatch(for: fixture.leafGenesis)
         let recorder = AdmissionStageRecorder()
         let candidateHeader = try BlockHeader(node: fixture.candidate)
 
@@ -3136,12 +3132,11 @@ final class ChainLocalAdmissionTests: XCTestCase {
             },
             [fixture.contribution]
         )
-        let snapshotData = try JSONEncoder().encode(persistedGenesis)
+        let snapshotData = try JSONEncoder().encode(genesisBatch)
         let batchData = try JSONEncoder().encode(batches)
-        let restored = try await ChainState.restore(
-            from: try JSONDecoder().decode(PersistedChainState.self, from: snapshotData),
-            replaying: try JSONDecoder().decode([ChainAdmissionBatch].self, from: batchData)
-        )
+        let decodedGenesis = try JSONDecoder().decode(ChainAdmissionBatch.self, from: snapshotData)
+        let decodedBatches = try JSONDecoder().decode([ChainAdmissionBatch].self, from: batchData)
+        let restored = try await ChainState.restore(replaying: [decodedGenesis] + decodedBatches)
         let restoredRecord = await restored.workContribution(id: fixture.rootCID)
         XCTAssertEqual(try XCTUnwrap(restoredRecord).contribution, fixture.contribution)
 
@@ -3472,7 +3467,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             nonce: 2
         )
         let level = makeLevel(genesis: genesis)
-        let genesisSnapshot = await level.chain.persist()
+        let genesisBatch = try testAdmissionBatch(for: genesis)
         let source = DisableableAdmissionFetcher(backing: backing)
         let recorder = AdmissionStageRecorder()
         let candidateHeader = try BlockHeader(node: candidate)
@@ -3503,9 +3498,8 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertTrue(containsCandidate)
         XCTAssertEqual(stageCount, 1)
 
-        let restored = try await ChainState.restore(
-            from: genesisSnapshot,
-            replaying: await recorder.recordedBatches()
+        let restored = try await ChainState.restore(replaying:
+            [genesisBatch] + (await recorder.recordedBatches())
         )
         let restoredCandidate = await restored.contains(blockHash: candidateHeader.rawCID)
         XCTAssertTrue(restoredCandidate)
@@ -3557,12 +3551,15 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let batches = await recorder.recordedBatches()
         XCTAssertEqual(batches.count, 1)
         let restored = try await ChainState.restore(
-            from: fixture.persisted,
-            replaying: batches
+            replaying: [fixture.seedBatch] + batches,
+            revisionFloor: .max
         )
-        let restoredSnapshot = await restored.persist()
-        let liveSnapshot = await fixture.level.chain.persist()
-        XCTAssertEqual(restoredSnapshot, liveSnapshot)
+        let restoredTip = await restored.getMainChainTip()
+        let liveTip = await fixture.level.chain.getMainChainTip()
+        let restoredRevision = await restored.currentRevision()
+        let liveRevision = await fixture.level.chain.currentRevision()
+        XCTAssertEqual(restoredTip, liveTip)
+        XCTAssertEqual(restoredRevision, liveRevision)
 
         let exhausted = try await fixture.level.admitBlockHeaderChainLocal(
             siblingHeader,
@@ -3634,7 +3631,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             )
             XCTFail("a failed atomic stage must fail admission")
         } catch ChainLocalTestError.stageFailure {}
-        let revisionAfterFailure = await fixture.level.chain.persist().revision
+        let revisionAfterFailure = await fixture.level.chain.currentRevision()
         XCTAssertEqual(revisionAfterFailure, .max - 1)
 
         let accepted = try await fixture.level.admitBlockHeaderChainLocal(
@@ -3676,7 +3673,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let committed = try await level.commitPreflight(
             preflight,
             materializedVolumeStorer: materialized,
-            staging: { context in await recorder.stage(context) }
+            stage: { context in await recorder.stage(context) }
         )
 
         let containsCandidate = await level.chain.contains(blockHash: header.rawCID)
@@ -3712,8 +3709,8 @@ final class ChainLocalAdmissionTests: XCTestCase {
             _ = try await otherLevel.commitPreflight(
                 preflight,
                 materializedVolumeStorer: fetcher,
-                staging: { context in
-                    try await testAdmissionStage(context.batch)
+                stage: { context in
+                    try await testAdmissionStage(context)
                 }
             )
             XCTFail("a token must not commit on a different level")
@@ -3727,8 +3724,8 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let committed = try await level.commitPreflight(
             preflight,
             materializedVolumeStorer: fetcher,
-            staging: { context in
-                try await testAdmissionStage(context.batch)
+            stage: { context in
+                try await testAdmissionStage(context)
             }
         )
         XCTAssertNotNil(committed.commit)
@@ -3737,8 +3734,8 @@ final class ChainLocalAdmissionTests: XCTestCase {
             _ = try await level.commitPreflight(
                 preflight,
                 materializedVolumeStorer: fetcher,
-                staging: { context in
-                    try await testAdmissionStage(context.batch)
+                stage: { context in
+                    try await testAdmissionStage(context)
                 }
             )
             XCTFail("a token must not commit twice")
@@ -3788,8 +3785,8 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let firstResult = try await level.commitPreflight(
             preflight,
             materializedVolumeStorer: fetcher,
-            staging: { context in
-                try await testAdmissionStage(context.batch)
+            stage: { context in
+                try await testAdmissionStage(context)
             }
         )
 
@@ -3842,7 +3839,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let committed = try await level.commitPreflight(
             preflight,
             materializedVolumeStorer: fetcher,
-            staging: { context in await recorder.stage(context) }
+            stage: { context in await recorder.stage(context) }
         )
 
         XCTAssertNotNil(committed.commit)
@@ -3989,7 +3986,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let stagedFirst = await recorder.count(for: firstHeader.rawCID)
         let stagedSibling = await recorder.count(for: siblingHeader.rawCID)
         let revisions = [results.0, results.1].compactMap(\.commit?.revision).sorted()
-        let persistedRevision = await level.chain.persist().revision
+        let persistedRevision = await level.chain.currentRevision()
         XCTAssertTrue(containsFirst)
         XCTAssertTrue(containsSibling)
         XCTAssertEqual(revisions, [1, 2], "actor commits totally order concurrent admissions")

@@ -6,6 +6,7 @@ public enum ChainRuntimeContextError: Error, Sendable, Equatable {
     case emptyDirectory
     case rootMustBeNexus
     case directoryContainsSeparator
+    case invalidDirectory
     case directoryTooLong
     case pathTooDeep
     case zeroMinimumRootWork
@@ -28,12 +29,15 @@ public struct ChainRuntimeContext: Sendable, Equatable {
             throw ChainRuntimeContextError.pathTooDeep
         }
         guard path.allSatisfy({
-            $0.utf8.count <= ChildProofWireLimits.maximumDirectoryBytes
+            $0.utf8.count <= StateAtomLimits.maximumDirectoryBytes
         }) else {
             throw ChainRuntimeContextError.directoryTooLong
         }
         guard path.allSatisfy({ !$0.contains(DIRECTORY_KEY_SEPARATOR) }) else {
             throw ChainRuntimeContextError.directoryContainsSeparator
+        }
+        guard path.allSatisfy(StateAtomLimits.isDirectory) else {
+            throw ChainRuntimeContextError.invalidDirectory
         }
         guard minimumRootWork > .zero else {
             throw ChainRuntimeContextError.zeroMinimumRootWork

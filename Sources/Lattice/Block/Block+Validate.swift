@@ -145,10 +145,18 @@ public extension Block {
         if !validateChainPaths(transactionBodies: transactionBodies, expectedPath: chainPath) {
             return (false, .empty, nil)
         }
+        if !(try await TransactionBody.validateConfiguredPolicyModules(
+            spec: specNode,
+            fetcher: fetcher
+        )) {
+            return (false, .empty, nil)
+        }
         if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: chainPath, fetcher: fetcher)) { return (false, .empty, nil) }
         if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
-        if !validateBlockSize(spec: specNode) { return (false, .empty, nil) }
+        if try await !validateBlockSize(spec: specNode, fetcher: fetcher) {
+            return (false, .empty, nil)
+        }
         let allAccountActions = transactionBodies.flatMap { $0.accountActions }
         // R4: the per-transaction gate above (validateTransactionForGenesis)
         // rejects any genesis transaction carrying deposit, withdrawal, or
@@ -292,7 +300,9 @@ public extension Block {
         if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, fetcher: fetcher)) { return (false, .empty, nil) }
         if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
-        if !validateBlockSize(spec: specNode) { return (false, .empty, nil) }
+        if try await !validateBlockSize(spec: specNode, fetcher: fetcher) {
+            return (false, .empty, nil)
+        }
         if !validateChainPaths(transactionBodies: transactionBodies, expectedPath: expectedChainPath) { return (false, .empty, nil) }
         if !validateNoDepositsOrWithdrawalsOnRoot(transactionBodies: transactionBodies, expectedPath: expectedChainPath) { return (false, .empty, nil) }
 
@@ -350,6 +360,11 @@ public extension Block {
         }
         guard !withdrawalBodies.isEmpty else { return true }
         guard chainPath.count > 1 else { return false }
+        guard let directory = chainPath.last,
+              TransactionBody.withdrawalsFitConsensusEnvelope(
+                bodies: withdrawalBodies,
+                directory: directory
+              ) else { return false }
 
         async let prevStateFuture = prevState.resolve(fetcher: fetcher)
         async let parentStateFuture = parentState.resolve(fetcher: fetcher)
@@ -358,8 +373,7 @@ public extension Block {
             parentStateFuture
         )
         guard let prevStateNode = resolvedPrevState.node,
-              let parentStateNode = resolvedParentState.node,
-              let directory = chainPath.last else { return false }
+              let parentStateNode = resolvedParentState.node else { return false }
         return try await !withdrawalBodies.concurrentMap {
             try await $0.withdrawalsAreValid(
                 directory: directory,
@@ -530,16 +544,29 @@ public extension Block {
     }
 
     func validateStateDeltaSize(spec: ChainSpec, transactionBodies: [TransactionBody]) throws -> Bool {
-        return try transactionBodies.reduce(0) { try $0 + $1.getStateDelta() } <= spec.maxStateGrowth
+        var delta = 0
+        for body in transactionBodies {
+            guard addStateDelta(try body.getStateDelta(), to: &delta) else {
+                return false
+            }
+        }
+        return delta <= spec.maxStateGrowth
     }
 
     func validateMaxTransactionCount(spec: ChainSpec, transactionBodies: [TransactionBody]) -> Bool {
         return transactionBodies.count <= spec.maxNumberOfTransactionsPerBlock
     }
 
-    func validateBlockSize(spec: ChainSpec) -> Bool {
-        guard let blockData = toData() else { return false }
-        return blockData.count <= spec.maxBlockSize
+    func validateBlockSize(
+        spec: ChainSpec,
+        fetcher: any Fetcher
+    ) async throws -> Bool {
+        do {
+            return try await logicalContentByteSize(fetcher: fetcher)
+                <= spec.maxBlockSize
+        } catch is BlockContentSizeError {
+            return false
+        }
     }
 
     /// Deposits and withdrawals are cross-chain constructs: a deposit

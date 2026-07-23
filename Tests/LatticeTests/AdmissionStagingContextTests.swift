@@ -43,7 +43,7 @@ final class AdmissionStagingContextTests: XCTestCase {
             fetcher: fetcher,
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
-            staging: { context in
+            stage: { context in
                 await recorder.append(context)
             }
         )

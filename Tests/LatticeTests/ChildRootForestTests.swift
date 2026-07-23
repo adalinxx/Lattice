@@ -104,8 +104,16 @@ final class ChildRootForestTests: XCTestCase {
 
         let harderFirstTip = await harderFirst.getMainChainTip()
         let easierFirstTip = await easierFirst.getMainChainTip()
-        let restoredHarderFirst = try ChainState.restore(from: await harderFirst.persist())
-        let restoredEasierFirst = try ChainState.restore(from: await easierFirst.persist())
+        let restoredHarderFirst = try await ChainState.restore(replaying: [
+            testAdmissionBatch(for: genesis),
+            testAdmissionBatch(for: harder),
+            testAdmissionBatch(for: easier),
+        ])
+        let restoredEasierFirst = try await ChainState.restore(replaying: [
+            testAdmissionBatch(for: genesis),
+            testAdmissionBatch(for: easier),
+            testAdmissionBatch(for: harder),
+        ])
         let restoredHarderFirstTip = await restoredHarderFirst.getMainChainTip()
         let restoredEasierFirstTip = await restoredEasierFirst.getMainChainTip()
         XCTAssertEqual(harderFirstTip, expectedTip)
@@ -291,7 +299,7 @@ final class ChildRootForestTests: XCTestCase {
         XCTAssertEqual(snapshot?.prevStateCID, child.prevState.rawCID)
     }
 
-    func testForestPersistenceRestoresEveryRootAndCanonicalTip() async throws {
+    func testForestFactReplayRestoresEveryRootAndCanonicalTip() async throws {
         let (fetcher, incumbentRoot, sideRoot) = try await makeChildForestRoots()
         let sideChild = try await buildAndStoreBlock(
             previous: sideRoot,
@@ -306,7 +314,11 @@ final class ChildRootForestTests: XCTestCase {
         _ = await submitChildForestBlock(sideChild, to: chain)
         let canonicalTip = await chain.getMainChainTip()
 
-        let restored = try ChainState.restore(from: await chain.persist())
+        let restored = try await ChainState.restore(replaying: [
+            testAdmissionBatch(for: incumbentRoot),
+            testAdmissionBatch(for: sideRoot),
+            testAdmissionBatch(for: sideChild),
+        ])
 
         let restoredTip = await restored.getMainChainTip()
         let containsIncumbent = await restored.contains(blockHash: childForestHash(incumbentRoot))

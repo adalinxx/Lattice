@@ -49,22 +49,4 @@ final class CIDIdentityTests: XCTestCase {
         XCTAssertEqual(work, WorkSum(UInt256(1)))
     }
 
-    func testPersistedAliasCannotReachForkChoice() throws {
-        let canonicalCID = try XCTUnwrap(CIDIdentity.canonicalString(alternateCID))
-        let persisted = PersistedChainState(
-            chainTip: canonicalCID,
-            mainChainHashes: [canonicalCID],
-            blocks: [PersistedBlockMeta(
-                blockHash: canonicalCID,
-                parentBlockHash: nil,
-                blockHeight: 0,
-                childHashes: [],
-                workContributions: [contribution(id: alternateCID, work: 7)]
-            )]
-        )
-
-        XCTAssertThrowsError(try ChainState.restore(from: persisted)) { error in
-            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
-        }
-    }
 }

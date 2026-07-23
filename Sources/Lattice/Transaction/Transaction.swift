@@ -97,6 +97,7 @@ public struct Transaction {
             throw ValidationErrors.transactionNotResolved
         }
         guard signatures.isEmpty, bodyNode.signers.isEmpty else { return false }
+        if !bodyNode.stateAtomsAreValid() { return false }
         if !bodyNode.accountActionsAreValid() { return false }
         if !bodyNode.actionsAreValid() { return false }
         if !bodyNode.depositActions.isEmpty { return false }
@@ -107,6 +108,7 @@ public struct Transaction {
 
     func validateTransactionForNexus(fetcher: Fetcher) async throws -> Bool {
         guard let bodyNode = try await validateSignaturesAndResolve(fetcher: fetcher) else { return false }
+        if !bodyNode.stateAtomsAreValid() { return false }
         if !bodyNode.accountActionsAreValid() { return false }
         if !bodyNode.actionsAreValid() { return false }
         if !bodyNode.receiptActionsAreValid() { return false }
@@ -117,6 +119,7 @@ public struct Transaction {
 
     func validateTransaction(directory: String, prevState: LatticeState, parentState: LatticeState, fetcher: Fetcher) async throws -> Bool {
         guard let bodyNode = try await validateSignaturesAndResolve(fetcher: fetcher) else { return false }
+        if !bodyNode.stateAtomsAreValid() { return false }
         if !bodyNode.receiptActionsAreValid() { return false }
         if !bodyNode.accountActionsAreValid() { return false }
         if !bodyNode.actionsAreValid() { return false }

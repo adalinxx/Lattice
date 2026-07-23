@@ -31,7 +31,7 @@ not automatically inherit all Nexus hashpower or Nexus canonicity.
 | `premine` | `175,320` blocks | Front-of-schedule issuance |
 | `targetBlockTime` | `3,600,000` ms | One hour |
 | `retargetWindow` | `120` blocks | About five days |
-| `maxBlockSize` | `1,000,000` bytes | One megabyte |
+| `maxBlockSize` | `1,000,000` bytes | Unique canonical block + transaction Volume bytes |
 | `maxStateGrowth` | `3,000,000` bytes | Per block |
 | `maxNumberOfTransactionsPerBlock` | `5,000` | Per block |
 
