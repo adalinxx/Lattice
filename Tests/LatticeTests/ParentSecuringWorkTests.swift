@@ -350,25 +350,27 @@ final class ParentSecuringWorkTests: XCTestCase {
             grind: missingGrind
         ))
         XCTAssertTrue(result?.addedBlock == true)
-        let deltaValue = await chain.parentSecuringWorkSnapshot(
+        let delta = await chain.parentSecuringWorkExport(
             since: baseline.revision
         )
-        let delta = try XCTUnwrap(deltaValue)
 
-        XCTAssertEqual(Set(delta.blockCIDs), Set([missing, orphan]))
+        XCTAssertEqual(delta.baseRevision, baseline.revision)
+        XCTAssertEqual(Set(delta.snapshot.blockCIDs), Set([missing, orphan]))
         XCTAssertEqual(
-            delta.sourceWork(forBlock: missing).work(forGrind: missingGrind),
+            delta.snapshot.sourceWork(forBlock: missing)
+                .work(forGrind: missingGrind),
             UInt256(1)
         )
         XCTAssertEqual(
-            delta.sourceWork(forBlock: orphan).work(forGrind: orphanGrind),
+            delta.snapshot.sourceWork(forBlock: orphan)
+                .work(forGrind: orphanGrind),
             UInt256(1)
         )
-        let replayValue = await chain.parentSecuringWorkSnapshot(
-            since: delta.revision
+        let replay = await chain.parentSecuringWorkExport(
+            since: delta.snapshot.revision
         )
-        let replay = try XCTUnwrap(replayValue)
-        XCTAssertTrue(replay.isEmpty)
+        XCTAssertEqual(replay.baseRevision, delta.snapshot.revision)
+        XCTAssertTrue(replay.snapshot.isEmpty)
     }
 
     func testLinearProjectionIsOneFactPerGrind() async throws {

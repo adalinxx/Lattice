@@ -184,12 +184,23 @@ final class FactReplayRecoveryTests: XCTestCase {
             full.sourceWork(forBlock: genesisCID).work(forGrind: inheritedGrind),
             UInt256(3)
         )
-        let recoveredDeltaValue = await chain.parentSecuringWorkSnapshot(
-            since: 100
+        let belowFloor = await chain.parentSecuringWorkExport(since: 99)
+        XCTAssertNil(belowFloor.baseRevision)
+        XCTAssertEqual(belowFloor.snapshot.revision, 100)
+        XCTAssertEqual(
+            belowFloor.snapshot.sourceWork(forBlock: genesisCID)
+                .work(forGrind: inheritedGrind),
+            UInt256(3)
         )
-        let recoveredDelta = try XCTUnwrap(recoveredDeltaValue)
-        XCTAssertEqual(recoveredDelta.revision, 100)
-        XCTAssertTrue(recoveredDelta.isEmpty)
+
+        let recoveredDelta = await chain.parentSecuringWorkExport(since: 100)
+        XCTAssertEqual(recoveredDelta.baseRevision, 100)
+        XCTAssertEqual(recoveredDelta.snapshot.revision, 100)
+        XCTAssertTrue(recoveredDelta.snapshot.isEmpty)
+
+        let aboveCurrent = await chain.parentSecuringWorkExport(since: 101)
+        XCTAssertNil(aboveCurrent.baseRevision)
+        XCTAssertEqual(aboveCurrent.snapshot, full)
 
         let liveGrind = testCID("live-work-after-recovery")
         let addition = await chain.addWorkContribution(
@@ -197,13 +208,23 @@ final class FactReplayRecoveryTests: XCTestCase {
             to: genesisCID
         )
         XCTAssertTrue(addition.addedContribution)
-        let liveDeltaValue = await chain.parentSecuringWorkSnapshot(since: 100)
-        let liveDelta = try XCTUnwrap(liveDeltaValue)
-        XCTAssertEqual(liveDelta.revision, 101)
-        XCTAssertEqual(
-            liveDelta.sourceWork(forBlock: genesisCID).work(forGrind: liveGrind),
-            UInt256(5)
+        let strengthening = await chain.addWorkContribution(
+            VerifiedWorkContribution(id: liveGrind, work: UInt256(7)),
+            to: genesisCID
         )
+        XCTAssertTrue(strengthening.addedContribution)
+        let liveDelta = await chain.parentSecuringWorkExport(since: 100)
+        XCTAssertEqual(liveDelta.baseRevision, 100)
+        XCTAssertEqual(liveDelta.snapshot.revision, 102)
+        XCTAssertEqual(
+            liveDelta.snapshot.sourceWork(forBlock: genesisCID)
+                .work(forGrind: liveGrind),
+            UInt256(7)
+        )
+
+        let currentDelta = await chain.parentSecuringWorkExport(since: 102)
+        XCTAssertEqual(currentDelta.baseRevision, 102)
+        XCTAssertTrue(currentDelta.snapshot.isEmpty)
     }
 }
 
