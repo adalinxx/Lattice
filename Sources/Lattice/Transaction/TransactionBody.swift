@@ -74,9 +74,8 @@ public struct TransactionBody: Scalar {
             }
     }
 
-    /// Block-wide cross-chain availability bound. Receipt keys must be unique
-    /// and the complete set is capped before parent-state resolution begins.
-    public static func withdrawalsFitConsensusEnvelope(
+    /// Receipt identities must be unique within a block.
+    public static func withdrawalsHaveUniqueReceiptKeys(
         bodies: [TransactionBody],
         directory: String
     ) -> Bool {
@@ -87,10 +86,7 @@ public struct TransactionBody: Scalar {
                     withdrawalAction: action,
                     directory: directory
                 ).description
-                guard keys.insert(key).inserted,
-                      keys.count
-                        <= ConsensusVolumeLimits.maximumWithdrawalsPerBlock
-                else { return false }
+                guard keys.insert(key).inserted else { return false }
             }
         }
         return true
@@ -125,10 +121,6 @@ public struct TransactionBody: Scalar {
     /// withdrawer must sign). Consumed by block validation and by node-side
     /// admission — one definition so the two cannot drift.
     public func withdrawalActionsAreValid() -> Bool {
-        if withdrawalActions.count
-            > ConsensusVolumeLimits.maximumWithdrawalsPerBlock {
-            return false
-        }
         let signerSet = Set(signers)
         for withdrawalAction in withdrawalActions {
             if withdrawalAction.amountWithdrawn == 0 { return false }

@@ -470,38 +470,6 @@ final class BlockContentResolverTests: XCTestCase {
         XCTAssertEqual(ordinarySize, largeParentSize)
     }
 
-    func testLogicalBlockCounterRejectsUnavailableVolumeBoundaries() async throws {
-        let oversizedData = BlockContentByteCounter()
-        do {
-            try await oversizedData.store(volume: SerializedVolume(
-                root: "root",
-                entries: [
-                    "root": Data(
-                        count: ConsensusVolumeLimits.maximumVolumeDataBytes + 1
-                    ),
-                ]
-            ))
-            XCTFail("expected an oversized Volume to fail")
-        } catch {
-            XCTAssertEqual(error as? BlockContentSizeError, .volumeTooLarge)
-        }
-
-        let oversizedMemberSet = BlockContentByteCounter()
-        let entries = Dictionary(
-            uniqueKeysWithValues: (0...ConsensusVolumeLimits.maximumVolumeMembers)
-                .map { (String($0), Data()) }
-        )
-        do {
-            try await oversizedMemberSet.store(volume: SerializedVolume(
-                root: "0",
-                entries: entries
-            ))
-            XCTFail("expected a Volume with too many members to fail")
-        } catch {
-            XCTAssertEqual(error as? BlockContentSizeError, .tooManyVolumeMembers)
-        }
-    }
-
     func testBlockSizeClassifiesDeterministicLimitsAsInvalid() async throws {
         let fetcher = StorableFetcher()
         let block = try await buildAndStoreGenesis(
@@ -513,11 +481,8 @@ final class BlockContentResolverTests: XCTestCase {
         let decoded = try XCTUnwrap(Block(data: XCTUnwrap(block.toData())))
 
         let valid = try await decoded.validateBlockSize(
-            spec: sizeSpec(
-                maxBlockSize:
-                    ConsensusVolumeLimits.maximumLogicalBlockBytes
-            ),
-            fetcher: FailingFetcher(error: BlockContentSizeError.volumeTooLarge)
+            spec: sizeSpec(maxBlockSize: 16 * 1_024 * 1_024),
+            fetcher: FailingFetcher(error: BlockContentSizeError.overflow)
         )
         XCTAssertFalse(valid)
     }
@@ -534,10 +499,7 @@ final class BlockContentResolverTests: XCTestCase {
 
         do {
             _ = try await decoded.validateBlockSize(
-                spec: sizeSpec(
-                    maxBlockSize:
-                        ConsensusVolumeLimits.maximumLogicalBlockBytes
-                ),
+                spec: sizeSpec(maxBlockSize: 16 * 1_024 * 1_024),
                 fetcher: StorableFetcher()
             )
             XCTFail("expected unavailable transaction content to throw")

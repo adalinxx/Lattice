@@ -138,10 +138,6 @@ public extension Block {
         guard chainPath.first == DEFAULT_ROOT_DIRECTORY else {
             return (false, .empty, nil)
         }
-        guard (chainPath.count == 1 && specNode.parentWorkAuthorityKey == nil)
-                || (chainPath.count > 1 && specNode.parentWorkAuthorityKey != nil) else {
-            return (false, .empty, nil)
-        }
         if !validateChainPaths(transactionBodies: transactionBodies, expectedPath: chainPath) {
             return (false, .empty, nil)
         }
@@ -361,7 +357,7 @@ public extension Block {
         guard !withdrawalBodies.isEmpty else { return true }
         guard chainPath.count > 1 else { return false }
         guard let directory = chainPath.last,
-              TransactionBody.withdrawalsFitConsensusEnvelope(
+              TransactionBody.withdrawalsHaveUniqueReceiptKeys(
                 bodies: withdrawalBodies,
                 directory: directory
               ) else { return false }

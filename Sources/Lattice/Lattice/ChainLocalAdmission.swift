@@ -410,7 +410,6 @@ private enum ChainLocalAdmission {
         let proofResult = await package.proof.verify(
             child: child,
             chainPath: context.path,
-            minimumRootWork: context.minimumRootWork,
             parentCarrierLink: package.parentCarrierLink,
             parentGenesisLink: package.parentGenesisLink
         ).mapError { failure -> ChainAdmissionFailure in
@@ -435,23 +434,6 @@ private enum ChainLocalAdmission {
         validationContext: ValidationContext
     ) async -> Preparation {
         let context = level.context
-        if !context.isRoot {
-            guard let childPackage else {
-                return .result(.rejected(.crossChainEvidenceRequired(.childProof(
-                    chainPath: context.path,
-                    childCID: blockHeader.rawCID
-                ))))
-            }
-            switch childPackage.proof.verifyRootFloor(
-                minimumRootWork: context.minimumRootWork
-            ) {
-            case .success:
-                break
-            case .failure(let failure):
-                return .result(.rejected(mapProofFailure(failure)))
-            }
-        }
-
         let resolvedHeader: BlockHeader
         let block: Block
         switch await resolveBlock(blockHeader, fetcher: fetcher) {
@@ -470,9 +452,6 @@ private enum ChainLocalAdmission {
                 return .result(.rejected(.protocolInvalid))
             }
             let rootHash = block.proofOfWorkHash()
-            guard workForHash(rootHash) >= context.minimumRootWork else {
-                return .result(.rejected(.protocolInvalid))
-            }
             grindID = blockHash
             contribution = block.validateProofOfWork(nexusHash: rootHash)
                 ? VerifiedWorkContribution(
@@ -1142,9 +1121,6 @@ public extension ChainLevel {
             throw ChainAdmissionFailure.protocolInvalid
         }
         let rootHash = resolved.block.proofOfWorkHash()
-        guard workForHash(rootHash) >= context.minimumRootWork else {
-            throw ChainAdmissionFailure.protocolInvalid
-        }
         guard resolved.block.validateProofOfWork(nexusHash: rootHash) else {
             switch await ChainLocalAdmission.validateCarrierContinuity(
                 block: resolved.block,
@@ -1197,14 +1173,6 @@ public extension ChainLevel {
         stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void
     ) async throws -> ChildChainBootstrapResult {
         guard !context.isRoot else { throw ChainAdmissionFailure.protocolInvalid }
-        switch childPackage.proof.verifyRootFloor(
-            minimumRootWork: context.minimumRootWork
-        ) {
-        case .success:
-            break
-        case .failure(let failure):
-            throw mapProofFailure(failure)
-        }
         let resolved: (header: BlockHeader, block: Block)
         switch await ChainLocalAdmission.resolveBlock(genesisHeader, fetcher: fetcher) {
         case .failure(let failure): throw failure

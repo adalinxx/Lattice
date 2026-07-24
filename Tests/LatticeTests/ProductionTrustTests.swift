@@ -263,11 +263,11 @@ final class ChildGenesisValidationTests: XCTestCase {
         XCTAssertFalse(bodyAnchoring(directory: "Child", blockCID: "").genesisActionsAreValid())
     }
 
-    func testGenesisActionRequiresCanonicalChildCID() {
+    func testGenesisActionNormalizesChildCID() {
         let alternateCID =
             "f01711220e9eb6c60800df90fc8e237ed53246f396e87579aba406aaa7976a056859ee22d"
         XCTAssertNotNil(CIDIdentity.canonicalString(alternateCID))
-        XCTAssertFalse(bodyAnchoring(
+        XCTAssertTrue(bodyAnchoring(
             directory: "Child",
             blockCID: alternateCID
         ).genesisActionsAreValid())

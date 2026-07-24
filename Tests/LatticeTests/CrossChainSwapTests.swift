@@ -616,7 +616,7 @@ final class CrossChainFlowTests: XCTestCase {
         let withdrawerAddr = addr(withdrawer.publicKey)
 
         let nSpec = nexusSpec()
-        let cSpec = childSpec().withParentWorkAuthorityKey(testParentWorkAuthorityKey)
+        let cSpec = childSpec()
         let childReward = cSpec.rewardAtBlock(1)
         let nexusReward = nSpec.rewardAtBlock(1)
         let depositAmount: UInt64 = 200
@@ -777,7 +777,7 @@ final class CrossChainFlowTests: XCTestCase {
         let attacker = CryptoUtils.generateKeyPair()
         let attackerAddr = addr(attacker.publicKey)
 
-        let cSpec = childSpec().withParentWorkAuthorityKey(testParentWorkAuthorityKey)
+        let cSpec = childSpec()
         let nSpec = nexusSpec()
         let childReward = cSpec.rewardAtBlock(1)
         let nexusReward = nSpec.rewardAtBlock(1)

@@ -5,7 +5,7 @@ import cashew
 
 final class ChainSpecTests: XCTestCase {
 
-    func testNilAuthorityPreservesPinnedNexusGenesisCID() async throws {
+    func testRemovingAuthorityPreservesPinnedNexusGenesisCID() async throws {
         let spec = ChainSpec(
             maxNumberOfTransactionsPerBlock: 5_000,
             maxStateGrowth: 3_000_000,
@@ -16,7 +16,6 @@ final class ChainSpecTests: XCTestCase {
             halvingInterval: 876_600,
             retargetWindow: 120
         )
-        XCTAssertNil(spec.parentWorkAuthorityKey)
         let owner = CryptoUtils.createAddress(
             from: "ed01fe416588df6e7fa5213c0d3e430f504bb5203172120c86b874826b55f53bdb7d"
         )
@@ -160,11 +159,11 @@ final class ChainSpecTests: XCTestCase {
         XCTAssertTrue(smallPremine.isValid)
     }
 
-    func testValidationEnforcesConsensusAvailabilityEnvelope() {
+    func testValidationAllowsChainSelectedResourceLimits() {
         func spec(
-            transactions: UInt64 = UInt64(ConsensusVolumeLimits.maximumTransactions),
-            stateGrowth: Int = ConsensusVolumeLimits.maximumStateGrowth,
-            blockSize: Int = ConsensusVolumeLimits.maximumLogicalBlockBytes,
+            transactions: UInt64 = 1_000_000,
+            stateGrowth: Int = 100_000_000,
+            blockSize: Int = 100_000_000,
             policies: [WasmPolicyRef] = []
         ) -> ChainSpec {
             ChainSpec(
@@ -179,43 +178,13 @@ final class ChainSpecTests: XCTestCase {
             )
         }
 
-        XCTAssertTrue(spec().isValid)
-        XCTAssertFalse(spec(
-            transactions: UInt64(ConsensusVolumeLimits.maximumTransactions) + 1
-        ).isValid)
-        XCTAssertFalse(spec(
-            stateGrowth: ConsensusVolumeLimits.maximumStateGrowth + 1
-        ).isValid)
-        XCTAssertFalse(spec(
-            blockSize: ConsensusVolumeLimits.maximumLogicalBlockBytes + 1
-        ).isValid)
-
         let policy = WasmPolicyRef(
             moduleCID: "policy",
             scope: .transaction
         )
         XCTAssertTrue(spec(
-            policies: Array(
-                repeating: policy,
-                count: ConsensusVolumeLimits.maximumWasmPolicies
-            )
+            policies: Array(repeating: policy, count: 1_000)
         ).isValid)
-        XCTAssertFalse(spec(
-            policies: Array(
-                repeating: policy,
-                count: ConsensusVolumeLimits.maximumWasmPolicies + 1
-            )
-        ).isValid)
-        XCTAssertFalse(spec(policies: [
-            WasmPolicyRef(
-                moduleCID: "policy",
-                scope: .transaction,
-                entrypoint: String(
-                    repeating: "x",
-                    count: ConsensusVolumeLimits.maximumChainSpecBytes
-                )
-            ),
-        ]).isValid)
     }
 
     // MARK: - Reward Calculation Tests

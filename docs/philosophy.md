@@ -143,7 +143,8 @@ Lattice does not remove the basic costs of distributed consensus:
    multiplication.
 4. **Keep accepted evidence separate from canonical projection.** This prevents a
    parent pointer from becoming child authority.
-5. **Fail early and cheaply.** Check the root-work floor and structural proof
-   before expensive resolution and execution.
+5. **Fail early and cheaply.** Check content binding and structural proof before
+   expensive resolution and execution; operators may apply stricter local
+   acquisition policy.
 6. **Put lifecycle policy in the node.** Consensus should not encode one storage
    budget, process topology, or retention strategy.

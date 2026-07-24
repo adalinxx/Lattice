@@ -97,15 +97,7 @@ final class ProtocolResourceBoundTests: XCTestCase {
         )
         XCTAssertEqual(
             key.storageKey.count,
-            ConsensusVolumeLimits.maximumReceiptTrieDepth
-        )
-        XCTAssertEqual(
-            ConsensusVolumeLimits.maximumParentReceiptWitnessVolumes,
-            4_098
-        )
-        XCTAssertEqual(
-            ConsensusVolumeLimits.maximumParentReceiptWitnessBytes,
-            64 * 1_024 * 1_024
+            64
         )
 
         let fetcher = StorableFetcher()
@@ -121,7 +113,7 @@ final class ProtocolResourceBoundTests: XCTestCase {
         )
     }
 
-    func testAggregateWithdrawalEnvelopeIsExactAndRejectsDuplicates() {
+    func testAggregateWithdrawalsRejectDuplicateReceiptKeys() {
         func body(nonces: Range<Int>) -> TransactionBody {
             TransactionBody(
                 accountActions: [],
@@ -146,21 +138,21 @@ final class ProtocolResourceBoundTests: XCTestCase {
         }
 
         let exact = body(nonces: 0..<64)
-        XCTAssertTrue(TransactionBody.withdrawalsFitConsensusEnvelope(
+        XCTAssertTrue(TransactionBody.withdrawalsHaveUniqueReceiptKeys(
             bodies: [exact],
             directory: "Child"
         ))
         XCTAssertTrue(exact.withdrawalActionsAreValid())
 
         let over = body(nonces: 0..<65)
-        XCTAssertFalse(TransactionBody.withdrawalsFitConsensusEnvelope(
+        XCTAssertTrue(TransactionBody.withdrawalsHaveUniqueReceiptKeys(
             bodies: [over],
             directory: "Child"
         ))
-        XCTAssertFalse(over.withdrawalActionsAreValid())
+        XCTAssertTrue(over.withdrawalActionsAreValid())
 
         let duplicate = body(nonces: 0..<1)
-        XCTAssertFalse(TransactionBody.withdrawalsFitConsensusEnvelope(
+        XCTAssertFalse(TransactionBody.withdrawalsHaveUniqueReceiptKeys(
             bodies: [duplicate, duplicate],
             directory: "Child"
         ))
