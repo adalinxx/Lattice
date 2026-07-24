@@ -31,16 +31,19 @@ jobs:
              "Lattice/ChainLocalAdmission.swift",
              "Block/ChildBlockProof.swift"] as $critical
             | [.data[].files[]
-                | .filename as $filename
-                | select(any($critical[]; . as $path
-                    | $filename | endswith("Sources/Lattice/" + $path)))
-                | .summary.lines]
-            | if length == ($critical | length)
+                | . as $file
+                | $critical[] as $path
+                | select($file.filename | endswith("Sources/Lattice/" + $path))
+                | {path: $path, lines: $file.summary.lines}]
+            | unique_by(.path)
+            | if (map(.path) | sort) == ($critical | sort)
               then {
-                combined: ((map(.covered) | add) * 100 / (map(.count) | add)),
-                minimum: (map(.covered * 100 / .count) | min)
+                combined: ((map(.lines.covered) | add) * 100
+                  / (map(.lines.count) | add)),
+                minimum: (map(.lines.covered * 100 / .lines.count) | min)
               }
-              else error("missing consensus-critical coverage data")
+              else error("missing consensus-critical coverage data: "
+                + (($critical - map(.path)) | join(", ")))
               end
           ' "$coverage")
           critical_percent=$(printf '%s' "$critical_stats" | jq -r .combined)
