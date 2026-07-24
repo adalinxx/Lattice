@@ -30,6 +30,11 @@ sources rather than validity or fork-choice authorities.
 - `>>` -- arithmetic right shift
 - `U256` -- 256-bit unsigned integer
 
+Consensus ingress accepts only the unique canonical textual spelling of a CID,
+bounded to 128 UTF-8 bytes. Honest DAG-CBOR + SHA-256 CIDs are far below this
+ceiling; the bound prevents malformed identity strings from becoming an
+unbounded parsing or storage surface.
+
 ## 3. Data Structures
 
 ### 3.1 Block
@@ -258,7 +263,7 @@ A genesis block `B` is valid if and only if ALL of the following hold:
     ```
 13. Every `GenesisAction` has a 1–64 byte visible-ASCII, separator-free
     directory and a canonical genesis block CID. Its child proof depth must
-    remain at most `UInt16.max`. The child process validates that block's
+    remain at most 256. The child process validates that block's
     content.
 14. **Post-state correctness**: Applying all actions to `prevState` (empty
     state) produces `postState`:

@@ -115,6 +115,13 @@ Fork choice starts at an accepted height-zero root and repeatedly chooses the
 child segment base with greatest `trueCumWork`. An exact tie selects the smaller
 canonical CID bytes.
 
+Holding the incumbent on an exact tie is deliberately not part of consensus.
+It would make the result depend on arrival order or on a persisted canonical
+cache, so peers with the same facts—and the same peer before and after
+recovery—could select different tips. A miner can grind the deterministic CID
+tie-break after matching the incumbent's work, but the tie-break contributes no
+weight and any strictly heavier branch still wins.
+
 Canonicity is an output of this descent, never a filter on work. Consequently a
 grind on a connected noncanonical branch remains eligible, and moving only a
 canonical pointer cannot change any weight.

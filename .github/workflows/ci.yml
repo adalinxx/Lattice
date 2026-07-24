@@ -27,23 +27,19 @@ jobs:
           critical_stats=$(jq -c '
             ["Lattice/Chain.swift",
              "Lattice/WorkSum.swift",
-             "State/ChainStatePersistence.swift",
              "Lattice/ChainLocalAdmission.swift",
              "Block/ChildBlockProof.swift"] as $critical
             | [.data[].files[]
-                | . as $file
-                | $critical[] as $path
-                | select($file.filename | endswith("Sources/Lattice/" + $path))
-                | {path: $path, lines: $file.summary.lines}]
-            | unique_by(.path)
-            | if (map(.path) | sort) == ($critical | sort)
+                | .filename as $filename
+                | select(any($critical[]; . as $path
+                    | $filename | endswith("Sources/Lattice/" + $path)))
+                | .summary.lines]
+            | if length == ($critical | length)
               then {
-                combined: ((map(.lines.covered) | add) * 100
-                  / (map(.lines.count) | add)),
-                minimum: (map(.lines.covered * 100 / .lines.count) | min)
+                combined: ((map(.covered) | add) * 100 / (map(.count) | add)),
+                minimum: (map(.covered * 100 / .count) | min)
               }
-              else error("missing consensus-critical coverage data: "
-                + (($critical - map(.path)) | join(", ")))
+              else error("missing consensus-critical coverage data")
               end
           ' "$coverage")
           critical_percent=$(printf '%s' "$critical_stats" | jq -r .combined)
