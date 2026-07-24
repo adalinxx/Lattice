@@ -8,7 +8,8 @@ public enum ChildProofSerializationError: Error, Sendable, Equatable {
 
 enum ChildProofWireLimits {
     static let maximumDirectoryBytes = StateAtomLimits.maximumDirectoryBytes
-    static let maximumDepth = Int(UInt16.max)
+    // Protocol resource bound; UInt16 is only the encoding capacity.
+    static let maximumDepth = 256
 }
 
 /// Canonical sparse proof for the terminal parent-to-child commitment in a

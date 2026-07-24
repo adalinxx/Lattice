@@ -4,6 +4,15 @@ import UInt256
 import cashew
 
 final class ProtocolResourceBoundTests: XCTestCase {
+    func testCIDIdentityHasAConsensusTextBound() {
+        let cid = testCID("bounded-cid")
+        XCTAssertLessThanOrEqual(cid.utf8.count, CIDIdentity.maximumTextBytes)
+        XCTAssertEqual(CIDIdentity.canonicalString(cid), cid)
+        XCTAssertNil(CIDIdentity.canonicalString(
+            String(repeating: "x", count: CIDIdentity.maximumTextBytes + 1)
+        ))
+    }
+
     func testStateAtomBoundariesAndGrammar() {
         XCTAssertTrue(StateAtomLimits.isAccount(String(repeating: "a", count: 128)))
         XCTAssertFalse(StateAtomLimits.isAccount(String(repeating: "a", count: 129)))
