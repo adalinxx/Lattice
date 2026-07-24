@@ -45,7 +45,6 @@ final class BlockBuilderParentHomesteadTests: XCTestCase {
         let result = await proof.verify(
             child: childGenesis,
             chainPath: ["Nexus", "Child"],
-            minimumRootWork: UInt256(1),
             parentCarrierLink: ParentCarrierLink(
                 parentPath: ["Nexus"],
                 carrierCID: carrierHeader.rawCID,

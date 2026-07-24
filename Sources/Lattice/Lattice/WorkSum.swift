@@ -137,6 +137,9 @@ public struct WorkSum: Codable, Hashable, Sendable, Comparable, CustomStringConv
 /// If several levels observe its difficulty, the strongest verified value wins.
 public struct WorkMeasure: Codable, Sendable, Equatable {
     private var workByGrind: [String: UInt256]
+    private enum CodingKeys: String, CodingKey {
+        case workByGrind
+    }
 
     public static let zero = WorkMeasure()
 
@@ -153,6 +156,26 @@ public struct WorkMeasure: Codable, Sendable, Equatable {
         for contribution in contributions {
             insert(contribution)
         }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decoded = try container.decode(
+            [String: UInt256].self,
+            forKey: .workByGrind
+        )
+        workByGrind = [:]
+        for (id, work) in decoded {
+            let normalized = CIDIdentity.canonicalString(id) ?? id
+            if work > (workByGrind[normalized] ?? .zero) {
+                workByGrind[normalized] = work
+            }
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(workByGrind, forKey: .workByGrind)
     }
 
     public var total: WorkSum {
@@ -182,15 +205,16 @@ public struct WorkMeasure: Codable, Sendable, Equatable {
     }
 
     public func work(forGrind id: String) -> UInt256? {
-        workByGrind[id]
+        workByGrind[CIDIdentity.canonicalString(id) ?? id]
     }
 
     @discardableResult
     public mutating func insert(_ contribution: VerifiedWorkContribution) -> Bool {
-        guard contribution.work > (workByGrind[contribution.id] ?? .zero) else {
+        let id = CIDIdentity.canonicalString(contribution.id) ?? contribution.id
+        guard contribution.work > (workByGrind[id] ?? .zero) else {
             return false
         }
-        workByGrind[contribution.id] = contribution.work
+        workByGrind[id] = contribution.work
         return true
     }
 
@@ -234,8 +258,8 @@ public struct InheritedWorkFact: Sendable, Equatable {
         work: UInt256
     ) {
         guard work > .zero,
-              CIDIdentity.isCanonical(blockCID),
-              CIDIdentity.isCanonical(grindID) else { return nil }
+              let blockCID = CIDIdentity.canonicalString(blockCID),
+              let grindID = CIDIdentity.canonicalString(grindID) else { return nil }
         self.blockCID = blockCID
         self.grindID = grindID
         self.work = work
@@ -256,7 +280,11 @@ public struct InheritedWorkSnapshot: Codable, Sendable, Equatable {
 
     public init(revision: UInt64, workByBlock: [String: WorkMeasure]) {
         self.revision = revision
-        self.workByBlock = workByBlock
+        self.workByBlock = workByBlock.reduce(into: [:]) { result, entry in
+            let (blockCID, work) = entry
+            let normalized = CIDIdentity.canonicalString(blockCID) ?? blockCID
+            result[normalized] = (result[normalized] ?? .zero).union(work)
+        }
     }
 
     public init(from decoder: Decoder) throws {
@@ -290,13 +318,13 @@ public struct InheritedWorkSnapshot: Codable, Sendable, Equatable {
     }
 
     public func work(forBlock hash: String) -> WorkMeasure {
-        workByBlock[hash] ?? .zero
+        workByBlock[CIDIdentity.canonicalString(hash) ?? hash] ?? .zero
     }
 
     /// Exact source facts for one block. This spelling emphasizes that
     /// persistence and transport retain the relation itself.
     public func sourceWork(forBlock hash: String) -> WorkMeasure {
-        workByBlock[hash] ?? .zero
+        workByBlock[CIDIdentity.canonicalString(hash) ?? hash] ?? .zero
     }
 
     public var isEmpty: Bool {

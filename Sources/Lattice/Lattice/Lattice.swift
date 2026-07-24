@@ -9,15 +9,13 @@ public enum ChainRuntimeContextError: Error, Sendable, Equatable {
     case invalidDirectory
     case directoryTooLong
     case pathTooDeep
-    case zeroMinimumRootWork
 }
 
-/// Immutable Nexus-rooted identity and setup-wide proof floor for one chain process.
+/// Immutable Nexus-rooted identity for one chain process.
 public struct ChainRuntimeContext: Sendable, Equatable {
     public let path: [String]
-    public let minimumRootWork: UInt256
 
-    public init(path: [String], minimumRootWork: UInt256) throws {
+    public init(path: [String]) throws {
         guard !path.isEmpty else { throw ChainRuntimeContextError.emptyPath }
         guard path.allSatisfy({ !$0.isEmpty }) else {
             throw ChainRuntimeContextError.emptyDirectory
@@ -39,11 +37,7 @@ public struct ChainRuntimeContext: Sendable, Equatable {
         guard path.allSatisfy(StateAtomLimits.isDirectory) else {
             throw ChainRuntimeContextError.invalidDirectory
         }
-        guard minimumRootWork > .zero else {
-            throw ChainRuntimeContextError.zeroMinimumRootWork
-        }
         self.path = path
-        self.minimumRootWork = minimumRootWork
     }
 
     public var isRoot: Bool { path.count == 1 }

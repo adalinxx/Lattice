@@ -35,12 +35,11 @@ Let `R` be the mined root and `C` the candidate for this chain. A
 Validation:
 
 1. recomputes `CID(R)` and the proof-of-work hash;
-2. applies the setup-wide minimum root-work floor;
-3. verifies the sparse path and requires its terminal CID to equal `CID(C)`;
-4. verifies immediate-parent continuity and every vertical
+2. verifies the sparse path and requires its terminal CID to equal `CID(C)`;
+3. verifies immediate-parent continuity and every vertical
    `child.parentState == carrier.prevState` binding;
-5. checks the same hash against this level's target; and
-6. executes and admits `C` only when this chain's target accepts the grind.
+4. checks the same hash against this level's target; and
+5. executes and admits `C` only when this chain's target accepts the grind.
 
 A target miss at one level does not invalidate deeper candidates. It means only
 that the missed level creates no block or work location for that grind.

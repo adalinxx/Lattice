@@ -1,8 +1,6 @@
 import CID
 
-/// The one wire spelling for a content identity. CIDv1 uses canonical base32;
-/// CIDv0 retains its required base58btc spelling. Consensus must never use a
-/// presentation string as an identity key without this check.
+/// Normalizes textual CID input before it becomes a consensus identity key.
 public enum CIDIdentity {
     public static func canonicalString(_ value: String) -> String? {
         guard let parsed = try? CID(value),

@@ -106,8 +106,7 @@ ChainSpec = (
     initialReward:                  uint64,
     halvingInterval:                uint64,
     retargetWindow:                 uint64,
-    wasmPolicies:                   [WasmPolicyRef],
-    parentWorkAuthorityKey:         ParentWorkAuthorityKey? // absent on Nexus; required on descendants
+    wasmPolicies:                   [WasmPolicyRef]
 )
 ```
 
@@ -122,23 +121,14 @@ child blocks, and admission evidence are independent Volumes and do not count.
 
 ```
 maxTargetChange = 2
-maximumVolumeDataBytes = 16 MiB
-maximumVolumeMembers = 65,535
-maximumLogicalBlockBytes = 16 MiB
-maximumChainSpecBytes = 1 MiB
-maximumStateGrowth = 16 MiB
-maximumTransactions = 16,384
-maximumWasmPolicies = 64
-maximumWithdrawalsPerBlock = 64
-maximumParentReceiptWitnessVolumes = 2 + (64 * 64) = 4,098
-maximumParentReceiptWitnessBytes = 64 MiB
 ```
 
-Every complete Volume emitted by the canonical storage planner must fit both
-the data-byte and member-count limits. A chain may choose smaller block, state,
-transaction, or policy limits; its `ChainSpec` cannot exceed this common
-availability envelope. WASM policy modules retain their independent 256 KiB
-module limit.
+The positive `ChainSpec` values are chain-selected validity. Storage, transport,
+bootstrap-spec, and parent-witness ceilings are node-local acquisition policy,
+not common consensus constants. A node may decline to operate a chain whose
+committed parameters exceed its resources without proving any block invalid.
+Bounds required by a serialized field width and the deterministic WASM
+execution profile remain protocol rules.
 
 State keys use a small consensus grammar so radix work cannot grow with
 attacker-chosen Unicode or unbounded historical prefixes. Directories are
@@ -147,9 +137,10 @@ attacker-chosen Unicode or unbounded historical prefixes. Directories are
 plain text and enumerable. Receipt-state storage alone uses
 `SHA256("lattice/receipt-state/v1\0" || ReceiptKey)` as a 64-character lowercase
 hex path, because a child may need that proof from a remote same-chain peer.
-At most 64 distinct withdrawals may enter one block. Consequently the remote
-parent-receipt closure is bounded independently of history; it is validation
-witness data and remains outside `maxBlockSize` and materialized state growth.
+Withdrawal receipt identities must be unique within a transaction and their
+proofs exact. The parent-receipt closure is validation witness data outside
+`maxBlockSize` and materialized state growth; each node bounds acquisition
+before decoding it.
 
 ### 3.6 Action Types
 
@@ -197,14 +188,6 @@ GenesisAction = (
 ```
 
 ### 3.7 Keys
-
-#### ParentWorkAuthorityKey
-
-`ParentWorkAuthorityKey` is the lowercase hexadecimal encoding of exactly 32
-Ed25519 public-key bytes: 64 UTF-8 bytes with no prefix. A child chain commits
-its immediate parent's process key in its `ChainSpec`. The parent commits that
-spec transitively by recording the exact child genesis CID. Nexus has no parent,
-so its `ChainSpec.parentWorkAuthorityKey` field MUST be absent.
 
 #### DepositKey
 
@@ -263,7 +246,6 @@ A genesis block `B` is valid if and only if ALL of the following hold:
 5. `B.target >= minimumTarget` and `B.nextTarget == B.target`
 6. All transactions in `B.transactions` are fully resolvable
 7. For each transaction `tx`: `tx.validateTransactionForGenesis()` returns true
-   - `tx.signatures` and `tx.body.signers` are both empty
    - Account and general actions are structurally valid
    - No deposit, receipt, or withdrawal actions are present
 8. Every transaction's `chainPath` equals the runtime's absolute path
@@ -284,11 +266,12 @@ A genesis block `B` is valid if and only if ALL of the following hold:
     proveAndUpdateState(prevState, allActions) == postState
     ```
 
-Genesis transactions are unsigned because their containing block is authorized
-as an exact content-addressed object: Nexus by its configured genesis CID and a
-child by its parent's `GenesisAction.blockCID`. A signature would assert no
-independent fact. All later transactions remain signature-strict. The reference
-node binds `bafyreiayw4z5qz4lt2sljf2enzn7uol3qa6bebadav7qwnqz7agxkiuwhq` locally.
+Genesis authority is the exact content-addressed block: Nexus by its configured
+genesis CID and a child by its parent's `GenesisAction.blockCID`. Signature and
+declared-signer fields on genesis transactions carry no authority and are not
+shape-constrained. All later transactions remain signature-strict. The
+reference node binds
+`bafyreiayw4z5qz4lt2sljf2enzn7uol3qa6bebadav7qwnqz7agxkiuwhq` locally.
 
 ### 5.2 Nexus Block Validation
 
@@ -323,9 +306,9 @@ A non-genesis nexus block `B` with previous block `P` is valid if and only if:
 **Nexus validation does not validate child blocks.** The `children` field is
 committed by the root hash, but every child is validated by its own chain
 process. Root-chain canonical acceptance is not a prerequisite for child proof
-verification: after the setup-wide floor passes, a root that misses the nexus
-target may still be a valid carrier for a descendant. An invalid child does not
-affect the root candidate or a sibling.
+verification: a root that misses the nexus target may still be a valid carrier
+for a descendant. An invalid child does not affect the root candidate or a
+sibling.
 
 ### 5.3 Child Chain Block Validation
 
@@ -338,9 +321,9 @@ A child candidate `B` is admitted with a `ChildValidationPackage` containing:
   validated parent state anchored that exact genesis CID.
 
 The Lattice process responsible for the immediate parent path issues the carrier
-link only after verifying that exact root-to-carrier package under its own path
-and setup floor. Its own immediate-parent link makes this check inductive; the
-Nexus process is the base case and requires `rootCID == carrierCID`. A previously
+link only after verifying that exact root-to-carrier package under its own path.
+Its own immediate-parent link makes this check inductive; the Nexus process is
+the base case and requires `rootCID == carrierCID`. A previously
 accepted carrier qualifies through connected validated ancestry. Any new
 non-genesis carrier, whether its target hits or misses, must have header
 continuity from a connected validated predecessor. A parentless child genesis
@@ -365,7 +348,7 @@ different grinds for the same child.
 Let `R` be the proof root and `h = proofOfWorkHash(R)`. Validation proceeds in
 this order:
 
-1. Recompute `CID(R)` and require `workForHash(h) >= minimumRootWork`.
+1. Recompute `CID(R)` and its proof-of-work hash.
 2. Require the proof path to equal the runtime path below the outer root, consume
    every supplied proof entry, and require its terminal CID to equal `CID(B)`.
    Reject any locally impossible parentless carrier shape before requesting
@@ -418,17 +401,16 @@ proofOfWorkHash(B) = U256(SHA256(powPrefix(B) || uint64BE(B.nonce)))
 
 The absent genesis predecessor contributes the empty field between separators.
 
-For a nested tree, only the outer root's hash `h` is evaluated. Before any chain
-target, admission requires the setup-wide gate:
+For a nested tree, only the outer root's hash `h` is evaluated:
 
 ```text
 workForHash(h) = h == 0 ? U256_MAX : floor(U256_MAX / h)
-workForHash(h) >= minimumRootWork
 ```
 
-Failure rejects the whole tree. After that gate, every level compares the same
-`h` with its own target. `h <= target(B)` accepts at that level; a miss leaves the
-block as a carrier for descendants.
+Every level compares the same `h` with its own target. `h <= target(B)` accepts
+at that level; a miss leaves the block as a carrier for descendants. A node may
+apply its own root-work floor before spending resources on acquisition, but
+that is a non-punitive local preference and never changes validity.
 
 Every accepting level establishes the conservative work bound
 `floor(U256_MAX / target(B))`. For one root CID, the strongest verified bound is
@@ -604,7 +586,8 @@ For each `(publicKeyHex, signatureHex)` in an ordinary transaction's
 `tx.signatures`, one accepted Ed25519 verification MUST succeed. At least one
 signature is required. The set of addresses derived from the signing public
 keys MUST equal the set in `tx.body.signers`; extra and missing signers are both
-invalid. Genesis transactions follow the unsigned rule in section 5.1.
+invalid. Genesis transaction signature fields are non-authoritative as described
+in section 5.1.
 
 ### 7.2 Authorization
 
@@ -822,7 +805,7 @@ erase the strict ordering between two branches.
 Every external candidate enters one admission procedure:
 
 1. capture of one explicit `ValidationContext` for the attempt;
-2. root CID and setup-wide root-work-floor validation before child resolution;
+2. root CID and proof-of-work hash verification before child resolution;
 3. targeted resolution of the candidate and required package;
 4. complete structural path validation before requesting cross-chain evidence;
 5. exact-path, carrier-continuity, and chain-target checks;
@@ -995,20 +978,18 @@ A `ChainSpec` is valid if:
 
 ```
 maxNumberOfTransactionsPerBlock > 0
-maxNumberOfTransactionsPerBlock <= 16,384
 maxStateGrowth > 0
-maxStateGrowth <= 16 MiB
 maxBlockSize > 0
-maxBlockSize <= 16 MiB
 targetBlockTime > 0
 initialReward > 0
 halvingInterval > 0
 retargetWindow > 0
-wasmPolicies.count <= 64
-canonicalEncodedSize <= 1 MiB
 ```
 
 `premine` is unconstrained (any `uint64`): it is a block-count offset into the emission schedule and the reward math handles any size, supply-bounded, without overflow. Premine is governed by transparency (it is fixed in the content-addressed genesis spec and provable via `premineAmount`), not by a protocol ceiling.
+
+Before decoding a previously unknown `ChainSpec`, a node may apply its own byte
+ceiling. That decision is local capacity policy, not `ChainSpec` invalidity.
 
 ## 11. Cryptographic Primitives
 
@@ -1073,20 +1054,18 @@ state); withdrawals return it to the block-wide credit budget.
 
 ### 12.5 Fork Choice Invariants
 
-1. The setup-wide minimum root-work floor is evaluated before child resolution
-   and all chain targets
-2. Every level evaluates the same root hash against its own target
-3. Every carrier proves same-chain predecessor continuity even when its target misses
-4. A grind has exactly one terminal location per chain and is deduplicated by
+1. Every level evaluates the same root hash against its own target
+2. Every carrier proves same-chain predecessor continuity even when its target misses
+3. A grind has exactly one terminal location per chain and is deduplicated by
    root CID across local, inherited, and transitive observations at that location;
    its credited quantity is the strongest verified accepted-target bound
-5. Work measures union by grind ID before totaling, so shared work is counted once
+4. Work measures union by grind ID before totaling, so shared work is counted once
    while distinct grinds sum
-6. Effective `trueCumWork` includes one coherent monotone child-independent
+5. Effective `trueCumWork` includes one coherent monotone child-independent
    immediate-parent view, projected only through exact child-owned direct edges
-7. Equal-work segments prefer the lexicographically smaller canonical base CID;
+6. Equal-work segments prefer the lexicographically smaller canonical base CID;
    `nextTarget` and segment tips are not comparators
-8. Parent accepted work may change child fork choice; parent canonicity alone
+7. Parent accepted work may change child fork choice; parent canonicity alone
    cannot change child validity, weight, or fork choice
 9. Lattice never prunes accepted graph or verified local-work facts
 10. There is no finality threshold; a strictly heavier effective subtree may reorg at any depth

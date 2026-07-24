@@ -454,24 +454,25 @@ private struct ConsensusBlockInput: Sendable {
     }
 
     init?(fact: ChainBlockFact) {
-        guard CIDIdentity.isCanonical(fact.blockHash),
-              fact.parentBlockHash.map(CIDIdentity.isCanonical) ?? true,
-              CIDIdentity.isCanonical(fact.postStateCID),
-              CIDIdentity.isCanonical(fact.prevStateCID),
-              CIDIdentity.isCanonical(fact.specCID),
+        guard let blockHash = CIDIdentity.canonicalString(fact.blockHash),
+              let postStateCID = CIDIdentity.canonicalString(fact.postStateCID),
+              let prevStateCID = CIDIdentity.canonicalString(fact.prevStateCID),
+              let specCID = CIDIdentity.canonicalString(fact.specCID),
               let target = UInt256(fact.target, radix: 16), target > .zero,
               let nextTarget = UInt256(fact.nextTarget, radix: 16), nextTarget > .zero,
               (fact.parentBlockHash == nil) == (fact.blockHeight == 0) else {
             return nil
         }
-        blockHash = fact.blockHash
-        parentBlockHash = fact.parentBlockHash
+        let normalizedParent = fact.parentBlockHash.flatMap(CIDIdentity.canonicalString)
+        guard fact.parentBlockHash == nil || normalizedParent != nil else { return nil }
+        self.blockHash = blockHash
+        parentBlockHash = normalizedParent
         blockHeight = fact.blockHeight
         timestamp = fact.timestamp
         snapshot = TipBlockSnapshot(
-            postStateCID: fact.postStateCID,
-            prevStateCID: fact.prevStateCID,
-            specCID: fact.specCID,
+            postStateCID: postStateCID,
+            prevStateCID: prevStateCID,
+            specCID: specCID,
             target: target,
             nextTarget: nextTarget,
             tipHeight: fact.blockHeight,
@@ -503,10 +504,14 @@ private struct TrustedAdmissionBatch {
         guard workFacts.count == 1,
               let work = workFacts.first,
               work.contribution.work > .zero,
-              CIDIdentity.isCanonical(work.blockHash),
-              CIDIdentity.isCanonical(work.contribution.id) else {
+              let workBlockHash = CIDIdentity.canonicalString(work.blockHash),
+              let contributionID = CIDIdentity.canonicalString(work.contribution.id) else {
             return nil
         }
+        let contribution = VerifiedWorkContribution(
+            id: contributionID,
+            work: work.contribution.work
+        )
 
         switch blockFacts.count {
         case 0:
@@ -515,15 +520,15 @@ private struct TrustedAdmissionBatch {
         case 1:
             guard batch.facts.count == 2,
                   let input = ConsensusBlockInput(fact: blockFacts[0]),
-                  work.blockHash == input.blockHash else {
+                  workBlockHash == input.blockHash else {
                 return nil
             }
             block = input
         default:
             return nil
         }
-        workBlockHash = work.blockHash
-        contribution = work.contribution
+        self.workBlockHash = workBlockHash
+        self.contribution = contribution
     }
 }
 

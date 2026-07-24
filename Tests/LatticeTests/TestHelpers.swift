@@ -326,13 +326,9 @@ func storeWasmPolicy(
 }
 
 func testChainContext(
-    path: [String] = [DEFAULT_ROOT_DIRECTORY],
-    minimumRootWork: UInt256 = UInt256(1)
+    path: [String] = [DEFAULT_ROOT_DIRECTORY]
 ) -> ChainRuntimeContext {
-    try! ChainRuntimeContext(
-        path: path,
-        minimumRootWork: minimumRootWork
-    )
+    try! ChainRuntimeContext(path: path)
 }
 
 extension ChainLevel {
@@ -459,10 +455,6 @@ func testParentGenesisLink(
         childGenesisCID: childGenesisCID
     )
 }
-
-let testParentWorkAuthorityKey = ParentWorkAuthorityKey(
-    String(repeating: "a", count: ParentWorkAuthorityKey.encodedByteCount)
-)!
 
 @discardableResult
 func storeWasmPolicy(

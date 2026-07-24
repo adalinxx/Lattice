@@ -55,7 +55,7 @@ Each process owns:
 
 ```text
 ChainLevel
-|- ChainRuntimeContext  absolute path + setup-wide minimum root work
+|- ChainRuntimeContext  absolute chain path
 `- ChainState           accepted same-chain forest + canonical projection
 ```
 
@@ -65,7 +65,7 @@ reorganization call and no multi-chain fork-choice loop.
 ## Evidence Boundary
 
 A child candidate arrives with a sparse proof from one mined root to that exact
-candidate. Lattice first verifies the setup-wide root-work floor, then the path,
+candidate. Lattice verifies the content-bound root and work hash, then the path,
 carrier continuity, vertical state bindings, and this chain's transition.
 
 At a vertical edge, the nested child commits the carrier's `prevState` as
@@ -173,11 +173,11 @@ Storage presence is not validity. Peer identity is not validity. Authenticating 
 parent process establishes who may speak for that parent path, not which child
 branch must win.
 
-Nested Volumes remain independent availability units. Storing or pinning an outer
-Volume creates no implicit retention relationship with another Volume merely
-referenced by CID. Consensus nevertheless requires every individual Volume to
-fit the shared 16 MiB data / 65,535 member availability envelope, so a valid
-object is always representable by the node and network storage layers.
+Nested Volumes remain independent availability units. Storing or pinning an
+outer Volume creates no implicit retention relationship with another Volume
+merely referenced by CID. Operators choose acquisition, transport, and
+retention ceilings locally; exceeding one means that node declines or retries
+through another strategy, not that the content is objectively invalid.
 
 ## Retention
 
@@ -194,14 +194,13 @@ block or stored in `BlockMeta`.
 A change preserves the architecture only if all of these remain true:
 
 1. One process owns one path and never recursively runs another chain.
-2. The root-work floor is checked before child resolution.
-3. Every carrier proves same-chain continuity inductively regardless of its
+2. Every carrier proves same-chain continuity inductively regardless of its
    target or local transition outcome; an authorized parentless child genesis
    may relay without bootstrapping.
-4. Work is joined by grind identity before quantities are totaled.
-5. Accepted parent work may affect child weight; parent canonicity alone may not.
-6. Fork choice compares effective `trueCumWork`, then segment-base CID.
-7. External ingress uses one admission boundary; recovery replays durable facts.
-8. Durable facts precede visible mutation.
+3. Work is joined by grind identity before quantities are totaled.
+4. Accepted parent work may affect child weight; parent canonicity alone may not.
+5. Fork choice compares effective `trueCumWork`, then segment-base CID.
+6. External ingress uses one admission boundary; recovery replays durable facts.
+7. Durable facts precede visible mutation.
 9. Lattice retains consensus inputs; the node owns payload retention.
 10. Cross-chain interfaces carry evidence and work, never canonical-tip commands.

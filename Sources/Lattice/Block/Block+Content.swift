@@ -4,9 +4,6 @@ import cashew
 public enum BlockContentSizeError: Error, Sendable, Equatable {
     case conflictingCID(String)
     case overflow
-    case tooManyVolumeMembers
-    case volumeTooLarge
-    case logicalBlockTooLarge
 }
 
 actor BlockContentByteCounter: VolumeStorer {
@@ -14,17 +11,7 @@ actor BlockContentByteCounter: VolumeStorer {
     private var byteCount = 0
 
     func store(volume: SerializedVolume) throws {
-        guard volume.entries.count <= ConsensusVolumeLimits.maximumVolumeMembers else {
-            throw BlockContentSizeError.tooManyVolumeMembers
-        }
-        var volumeByteCount = 0
         for (cid, data) in volume.entries {
-            let volumeNext = volumeByteCount.addingReportingOverflow(data.count)
-            guard !volumeNext.overflow else { throw BlockContentSizeError.overflow }
-            volumeByteCount = volumeNext.partialValue
-            guard volumeByteCount <= ConsensusVolumeLimits.maximumVolumeDataBytes else {
-                throw BlockContentSizeError.volumeTooLarge
-            }
             if let existing = dataByCID[cid] {
                 guard existing == data else {
                     throw BlockContentSizeError.conflictingCID(cid)
@@ -35,9 +22,6 @@ actor BlockContentByteCounter: VolumeStorer {
             guard !next.overflow else { throw BlockContentSizeError.overflow }
             dataByCID[cid] = data
             byteCount = next.partialValue
-            guard byteCount <= ConsensusVolumeLimits.maximumLogicalBlockBytes else {
-                throw BlockContentSizeError.logicalBlockTooLarge
-            }
         }
     }
 

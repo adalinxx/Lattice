@@ -18,7 +18,7 @@ final class CIDIdentityTests: XCTestCase {
         )
     }
 
-    func testCanonicalCIDIdentityRejectsEquivalentAlternateMultibase() throws {
+    func testCanonicalCIDIdentityNormalizesEquivalentAlternateMultibase() throws {
         let canonicalCID = try XCTUnwrap(CIDIdentity.canonicalString(alternateCID))
 
         XCTAssertNotEqual(canonicalCID, alternateCID)
@@ -26,7 +26,7 @@ final class CIDIdentityTests: XCTestCase {
         XCTAssertFalse(CIDIdentity.isCanonical(alternateCID))
     }
 
-    func testInheritedAliasCannotReachForkChoiceAsSecondPhysicalGrind() async throws {
+    func testInheritedAliasCannotBecomeASecondPhysicalGrind() throws {
         let canonicalCID = try XCTUnwrap(CIDIdentity.canonicalString(alternateCID))
         let snapshot = InheritedWorkSnapshot(
             revision: 1,
@@ -37,16 +37,12 @@ final class CIDIdentityTests: XCTestCase {
                 ]),
             ]
         )
-        let root = makeBlockMeta(hash: "root", height: 0)
-        let chain = makeChain(blocks: [root])
-
-        XCTAssertFalse(snapshot.hasCanonicalCIDs)
-        let commit = await chain.mergeInheritedWork(snapshot)
-        let tip = await chain.getMainChainTip()
-        let work = await chain.getCumulativeWork(limit: 1)
-        XCTAssertNil(commit)
-        XCTAssertEqual(tip, "root")
-        XCTAssertEqual(work, WorkSum(UInt256(1)))
+        XCTAssertTrue(snapshot.hasCanonicalCIDs)
+        XCTAssertEqual(snapshot.blockCIDs, [canonicalCID])
+        XCTAssertEqual(
+            snapshot.work(forBlock: alternateCID).total,
+            WorkSum(UInt256(11))
+        )
     }
 
 }

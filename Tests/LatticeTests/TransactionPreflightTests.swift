@@ -221,9 +221,7 @@ final class TransactionPreflightTests: XCTestCase {
     func testChildWithdrawalNeedsCandidateParentState() async throws {
         let fetcher = StorableFetcher()
         let signer = CryptoUtils.generateKeyPair()
-        let childSpec = spec().withParentWorkAuthorityKey(
-            ParentWorkAuthorityKey(String(repeating: "a", count: 64))!
-        )
+        let childSpec = spec()
         let genesis = try await buildAndStoreGenesis(
             spec: childSpec,
             timestamp: 1_000,

@@ -124,7 +124,7 @@ public struct ChildSchedulingTargets: Sendable, Equatable {
 ///     [cidLen: UInt16 LE][cid: UTF-8]
 ///     [dataLen: UInt32 LE][data: bytes]
 ///
-/// Verification uses a sealed in-memory source, checks the root floor first, then
+/// Verification uses a sealed in-memory source, verifies the mined root, then
 /// walks `directoryPath` via targeted resolution down to the leaf CID.
 public struct ChildBlockProof: Sendable {
     /// CAS entries from the sparse path (union across all hops, root → leaf only).
@@ -135,9 +135,11 @@ public struct ChildBlockProof: Sendable {
     public let directoryPath: [String]
 
     public init(rootCID: String, directoryPath: [String], entries: [(cid: String, data: Data)]) {
-        self.rootCID = rootCID
+        self.rootCID = CIDIdentity.canonicalString(rootCID) ?? rootCID
         self.directoryPath = directoryPath
-        self.entries = entries.sorted { $0.cid < $1.cid }
+        self.entries = entries.map {
+            (CIDIdentity.canonicalString($0.cid) ?? $0.cid, $0.data)
+        }.sorted { $0.0 < $1.0 }
     }
 
     private var hasRepresentableDirectoryPath: Bool {
@@ -325,45 +327,35 @@ public struct ChildBlockProof: Sendable {
         return nil
     }
 
-    package func verifyRootFloor(
-        minimumRootWork: UInt256
-    ) -> Result<Void, ChildProofVerificationFailure> {
-        verifiedRoot(minimumRootWork: minimumRootWork).map { _ in () }
+    /// Verify only the root entry and return its exact physical work. Nodes may
+    /// use this cheap result for local admission policy before resolving the
+    /// descendant path.
+    public func verifiedRootWork() -> Result<UInt256, ChildProofVerificationFailure> {
+        verifiedRoot().map { workForHash($0.hash) }
     }
 
-    private func verifiedRoot(
-        minimumRootWork: UInt256
-    ) -> Result<(block: Block, hash: UInt256), ChildProofVerificationFailure> {
-        guard minimumRootWork > .zero else {
-            return .failure(.protocolInvalid)
-        }
+    private func verifiedRoot() -> Result<(block: Block, hash: UInt256), ChildProofVerificationFailure> {
         let rootEntries = entries.filter { $0.cid == rootCID }
         guard rootEntries.count == 1,
               let rootData = rootEntries.first?.data,
               let rootBlock = contentBoundBlock(cid: rootCID, data: rootData) else {
             return .failure(.malformedEvidence)
         }
-        let rootHash = rootBlock.proofOfWorkHash()
-        guard workForHash(rootHash) >= minimumRootWork else {
-            return .failure(.protocolInvalid)
-        }
-        return .success((rootBlock, rootHash))
+        return .success((rootBlock, rootBlock.proofOfWorkHash()))
     }
 
     /// Verify the complete root-to-child package and derive its work fact.
     ///
-    /// The setup floor is independent of every chain target. A carrier may miss
-    /// its own target and still carry an accepted descendant, so target checks are
-    /// used only to classify where this one grind is credited.
+    /// A carrier may miss its own target and still carry an accepted descendant,
+    /// so target checks only classify where this one grind is credited.
     public func verify(
         child: Block,
         chainPath: [String],
-        minimumRootWork: UInt256,
         parentCarrierLink: ParentCarrierLink?,
         parentGenesisLink: ParentGenesisLink?
     ) async -> Result<VerifiedChildEvidence, ChildProofVerificationFailure> {
         let root: (block: Block, hash: UInt256)
-        switch verifiedRoot(minimumRootWork: minimumRootWork) {
+        switch verifiedRoot() {
         case .success(let verified): root = verified
         case .failure(let failure): return .failure(failure)
         }

@@ -93,7 +93,7 @@ One `ChainLevel` combines immutable runtime context with one actor-isolated
 
 ```text
 ChainLevel
-|- ChainRuntimeContext  absolute path + setup-wide minimum root work
+|- ChainRuntimeContext  absolute chain path
 `- ChainState           one accepted forest + one canonical projection
 ```
 

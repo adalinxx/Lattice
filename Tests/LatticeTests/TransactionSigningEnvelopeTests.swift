@@ -186,6 +186,47 @@ final class TransactionSigningEnvelopeTests: XCTestCase {
         }
     }
 
+    func testSignatureHexCasingNormalizesAtDecodeBoundary() throws {
+        let key = CryptoUtils.generateKeyPair()
+        let signer = CryptoUtils.createAddress(from: key.publicKey)
+        let body = TransactionBody(
+            accountActions: [],
+            actions: [],
+            depositActions: [],
+            genesisActions: [],
+            receiptActions: [],
+            withdrawalActions: [],
+            signers: [signer],
+            fee: 0,
+            nonce: 0,
+            chainPath: ["Nexus"]
+        )
+        let bodyHeader = try HeaderImpl(node: body)
+        let signature = try XCTUnwrap(TransactionSigning.sign(
+            bodyHeader: bodyHeader,
+            privateKeyHex: key.privateKey
+        ))
+        let wire = TransactionWire(
+            signatures: [SignatureEntry(
+                key: key.publicKey.uppercased(),
+                value: signature.uppercased()
+            )],
+            body: bodyHeader
+        )
+        let transaction = try JSONDecoder().decode(
+            Transaction.self,
+            from: JSONEncoder().encode(wire)
+        )
+
+        XCTAssertEqual(transaction.signatures, [key.publicKey: signature])
+        let resolved = Transaction(
+            signatures: transaction.signatures,
+            body: bodyHeader
+        )
+        XCTAssertTrue(resolved.signaturesAreValid())
+        XCTAssertTrue(resolved.signaturesMatchSigners())
+    }
+
     func testProductionTransactionSigningIsCentralizedInEnvelopeHelper() throws {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let sources = root.appendingPathComponent("Sources/Lattice")

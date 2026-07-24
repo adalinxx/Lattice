@@ -10,8 +10,20 @@ public struct VerifiedWorkContribution: Codable, Sendable, Equatable {
     public let work: UInt256
 
     package init(id: String, work: UInt256) {
-        self.id = id
+        self.id = CIDIdentity.canonicalString(id) ?? id
         self.work = work
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedID = try container.decode(String.self, forKey: .id)
+        id = CIDIdentity.canonicalString(decodedID) ?? decodedID
+        work = try container.decode(UInt256.self, forKey: .work)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case work
     }
 }
 
@@ -30,8 +42,23 @@ public struct ParentCarrierLink: Codable, Hashable, Sendable {
         rootCID: String
     ) {
         self.parentPath = parentPath
-        self.carrierCID = carrierCID
-        self.rootCID = rootCID
+        self.carrierCID = CIDIdentity.canonicalString(carrierCID) ?? carrierCID
+        self.rootCID = CIDIdentity.canonicalString(rootCID) ?? rootCID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        parentPath = try container.decode([String].self, forKey: .parentPath)
+        let carrier = try container.decode(String.self, forKey: .carrierCID)
+        let root = try container.decode(String.self, forKey: .rootCID)
+        carrierCID = CIDIdentity.canonicalString(carrier) ?? carrier
+        rootCID = CIDIdentity.canonicalString(root) ?? root
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case parentPath
+        case carrierCID
+        case rootCID
     }
 }
 
@@ -50,7 +77,22 @@ public struct ParentGenesisLink: Codable, Hashable, Sendable {
     ) {
         self.parentPath = parentPath
         self.directory = directory
-        self.childGenesisCID = childGenesisCID
+        self.childGenesisCID =
+            CIDIdentity.canonicalString(childGenesisCID) ?? childGenesisCID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        parentPath = try container.decode([String].self, forKey: .parentPath)
+        directory = try container.decode(String.self, forKey: .directory)
+        let child = try container.decode(String.self, forKey: .childGenesisCID)
+        childGenesisCID = CIDIdentity.canonicalString(child) ?? child
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case parentPath
+        case directory
+        case childGenesisCID
     }
 }
 
