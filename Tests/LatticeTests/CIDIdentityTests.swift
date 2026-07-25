@@ -33,7 +33,7 @@ final class CIDIdentityTests: XCTestCase {
             contribution(id: alternateCID, work: 11),
         ])
 
-        XCTAssertEqual(work.grindIDs, [canonicalCID])
+        XCTAssertEqual(Set(work.entries.keys), [canonicalCID])
         XCTAssertEqual(work.total, WorkSum(UInt256(11)))
     }
 

@@ -9,19 +9,45 @@ final class WorkMeasureTests: XCTestCase {
 
     func testRepeatedObservationsAtOneLocationCountOnce() {
         let grind = contribution("grind", 7)
-        let once = WorkMeasure(grind)
-        let many = once.union(once).union(once)
+        var many = WorkMeasure([grind])
+        many.formUnion(WorkMeasure([grind]))
+        many.formUnion(WorkMeasure([grind]))
 
-        XCTAssertEqual(many.grindIDs, ["grind"])
+        XCTAssertEqual(Set(many.entries.keys), ["grind"])
         XCTAssertEqual(many.total, WorkSum(UInt256(7)))
     }
 
     func testStrongestVerifiedValueWinsForOneGrind() {
-        let weaker = WorkMeasure(contribution("grind", 7))
-        let stronger = WorkMeasure(contribution("grind", 11))
+        let weaker = WorkMeasure([contribution("grind", 7)])
+        let stronger = WorkMeasure([contribution("grind", 11)])
+        var weakThenStrong = weaker
+        var strongThenWeak = stronger
+        weakThenStrong.formUnion(stronger)
+        strongThenWeak.formUnion(weaker)
 
-        XCTAssertEqual(weaker.union(stronger).total, WorkSum(UInt256(11)))
-        XCTAssertEqual(stronger.union(weaker).total, WorkSum(UInt256(11)))
+        XCTAssertEqual(weakThenStrong.total, WorkSum(UInt256(11)))
+        XCTAssertEqual(strongThenWeak.total, WorkSum(UInt256(11)))
+    }
+
+    func testInsertReportsWhetherTheMeasureChanged() {
+        var measure = WorkMeasure.zero
+
+        XCTAssertTrue(measure.insert(contribution("grind", 11)))
+        XCTAssertFalse(measure.insert(contribution("grind", 7)))
+        XCTAssertEqual(measure.entries["grind"], UInt256(11))
+    }
+
+    func testWorkSumCodableRoundTripAndRejectsMalformedHex() throws {
+        let original = WorkSum(UInt256.max) + UInt256(1)
+        let encoded = try JSONEncoder().encode(original)
+
+        XCTAssertEqual(try JSONDecoder().decode(WorkSum.self, from: encoded), original)
+        XCTAssertEqual(WorkSum(hex: "A"), WorkSum(UInt256(10)))
+        XCTAssertNil(WorkSum(hex: ""))
+        XCTAssertNil(WorkSum(hex: "not-hex"))
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(WorkSum.self, from: Data(#""not-hex""#.utf8))
+        )
     }
 
     func testIndependentGrindsSumExactly() {
