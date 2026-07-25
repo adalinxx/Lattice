@@ -352,11 +352,6 @@ public struct ChildBlockProof: Sendable {
         child: Block,
         chainPath: [String]
     ) async -> Result<VerifiedChildEvidence, ChildProofVerificationFailure> {
-        let root: (block: Block, hash: UInt256)
-        switch verifiedRoot() {
-        case .success(let verified): root = verified
-        case .failure(let failure): return .failure(failure)
-        }
         guard chainPath.first == DEFAULT_ROOT_DIRECTORY,
               hasRepresentableDirectoryPath,
               chainPath.count == directoryPath.count + 1,
@@ -364,6 +359,11 @@ public struct ChildBlockProof: Sendable {
               !entries.isEmpty,
               !directoryPath.isEmpty else {
             return .failure(.malformedEvidence)
+        }
+        let root: (block: Block, hash: UInt256)
+        switch verifiedRoot() {
+        case .success(let verified): root = verified
+        case .failure(let failure): return .failure(failure)
         }
         guard let childCID = try? BlockHeader(node: child).rawCID else {
             return .failure(.malformedEvidence)
