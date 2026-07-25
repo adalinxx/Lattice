@@ -26,23 +26,15 @@ final class CIDIdentityTests: XCTestCase {
         XCTAssertFalse(CIDIdentity.isCanonical(alternateCID))
     }
 
-    func testInheritedAliasCannotBecomeASecondPhysicalGrind() throws {
+    func testAliasCannotBecomeASecondPhysicalGrind() throws {
         let canonicalCID = try XCTUnwrap(CIDIdentity.canonicalString(alternateCID))
-        let snapshot = InheritedWorkSnapshot(
-            revision: 1,
-            workByBlock: [
-                canonicalCID: WorkMeasure([
-                    contribution(id: canonicalCID, work: 7),
-                    contribution(id: alternateCID, work: 11),
-                ]),
-            ]
-        )
-        XCTAssertTrue(snapshot.hasCanonicalCIDs)
-        XCTAssertEqual(snapshot.blockCIDs, [canonicalCID])
-        XCTAssertEqual(
-            snapshot.work(forBlock: alternateCID).total,
-            WorkSum(UInt256(11))
-        )
+        let work = WorkMeasure([
+            contribution(id: canonicalCID, work: 7),
+            contribution(id: alternateCID, work: 11),
+        ])
+
+        XCTAssertEqual(work.grindIDs, [canonicalCID])
+        XCTAssertEqual(work.total, WorkSum(UInt256(11)))
     }
 
 }

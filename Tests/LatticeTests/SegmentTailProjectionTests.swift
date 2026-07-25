@@ -56,7 +56,7 @@ final class SegmentTailProjectionTests: XCTestCase {
         await assertSegmentTailReferenceParity(chain)
     }
 
-    func testCanonicalTailInheritedWorkUsesUnchangedSpineWithoutFullProjection() async throws {
+    func testCanonicalTailAdditionalWorkUsesUnchangedSpineWithoutFullProjection() async throws {
         let root = segmentTailBlock(name: "inherited-root", parent: nil, height: 0)
         let alternate = segmentTailBlock(
             name: "inherited-alternate", parent: root.hash, height: 1
@@ -80,15 +80,14 @@ final class SegmentTailProjectionTests: XCTestCase {
         XCTAssertEqual(tipBefore, canonicalTail.last!.hash)
 
         await chain.resetFullCanonicalProjectionCount()
-        let commit = await chain.mergeInheritedWork(InheritedWorkSnapshot(
-            revision: 1,
-            workByBlock: [
-                canonicalTail.last!.hash: WorkMeasure(VerifiedWorkContribution(
-                    id: testCID("segment-tail:inherited-canonical-grind"),
-                    work: UInt256(7)
-                )),
-            ]
-        ))
+        let contribution = VerifiedWorkContribution(
+            id: testCID("segment-tail:additional-canonical-grind"),
+            work: UInt256(7)
+        )
+        let commit = await chain.addWorkContribution(
+            contribution,
+            to: canonicalTail.last!.hash
+        ).commit
         let projectionCount = await chain.fullCanonicalProjectionCount
         let tipAfter = await chain.getMainChainTip()
         let mainChainAfter = await chain.mainChainHashes
@@ -104,7 +103,7 @@ final class SegmentTailProjectionTests: XCTestCase {
         await assertSegmentTailReferenceParity(chain)
     }
 
-    func testManyInheritedFragmentsKeepCanonicalTailIncremental() async throws {
+    func testManyWorkFactsKeepCanonicalTailIncremental() async throws {
         let root = segmentTailBlock(name: "many-inherited-root", parent: nil, height: 0)
         let alternate = segmentTailBlock(
             name: "many-inherited-alternate", parent: root.hash, height: 1
@@ -125,6 +124,11 @@ final class SegmentTailProjectionTests: XCTestCase {
         }
 
         await chain.resetFullCanonicalProjectionCount()
+        let initialBlock = await chain.hashToBlock[canonicalTail.last!.hash]
+        let initial = WorkMeasure(
+            try XCTUnwrap(initialBlock)
+                .workContributions.values
+        )
         let shared = testCID("segment-tail:many-inherited-shared")
         var contributions: [VerifiedWorkContribution] = []
         for index in 0..<512 {
@@ -135,25 +139,23 @@ final class SegmentTailProjectionTests: XCTestCase {
                 work: UInt256(index.isMultiple(of: 64) ? UInt64(index + 1) : 1)
             )
             contributions.append(contribution)
-            _ = await chain.mergeInheritedWork(InheritedWorkSnapshot(
-                revision: UInt64(index + 1),
-                workByBlock: [canonicalTail.last!.hash: WorkMeasure(contribution)]
-            ))
+            _ = await chain.addWorkContribution(
+                contribution,
+                to: canonicalTail.last!.hash
+            )
         }
 
-        let expected = InheritedWorkSnapshot(
-            revision: 512,
-            workByBlock: [canonicalTail.last!.hash: WorkMeasure(contributions)]
-        )
-        let retainedSnapshot = await chain.inheritedWorkSnapshot
-        let retained = try XCTUnwrap(retainedSnapshot)
+        var expected = initial
+        expected.formUnion(WorkMeasure(contributions))
+        let block = await chain.hashToBlock[canonicalTail.last!.hash]
+        let retained = WorkMeasure(try XCTUnwrap(block).workContributions.values)
         let projectionCount = await chain.fullCanonicalProjectionCount
 
         XCTAssertEqual(retained, expected)
         XCTAssertEqual(
             projectionCount,
             0,
-            "incremental inherited fragments must not rebuild the unchanged canonical path"
+            "incremental work facts must not rebuild the unchanged canonical path"
         )
         await assertSegmentTailReferenceParity(chain)
     }
@@ -218,36 +220,6 @@ final class SegmentTailProjectionTests: XCTestCase {
         await assertSegmentTailReferenceParity(chain)
     }
 
-    func testHigherRevisionWithIdenticalInheritedWorkRetainsWatermarkWithoutReorg() async throws {
-        let root = segmentTailBlock(name: "revision-root", parent: nil, height: 0)
-        let chain = try await ChainState.restore(replaying: [segmentTailAdmission(root)])
-        let inherited = WorkMeasure(VerifiedWorkContribution(
-            id: testCID("segment-tail:revision-grind"),
-            work: UInt256(7)
-        ))
-
-        let first = await chain.mergeInheritedWork(InheritedWorkSnapshot(
-            revision: 41,
-            workByBlock: [root.hash: inherited]
-        ))
-        XCTAssertNotNil(first)
-        XCTAssertFalse(first?.canonicalChanged ?? true)
-
-        let tipBeforeRevisionOnlyUpdate = await chain.getMainChainTip()
-        let mainChainBeforeRevisionOnlyUpdate = await chain.mainChainHashes
-        let revisionOnlyUpdate = await chain.mergeInheritedWork(InheritedWorkSnapshot(
-            revision: 42,
-            workByBlock: [root.hash: inherited]
-        ))
-        let retainedRevision = await chain.inheritedWorkSnapshot?.revision
-        let tipAfterRevisionOnlyUpdate = await chain.getMainChainTip()
-        let mainChainAfterRevisionOnlyUpdate = await chain.mainChainHashes
-
-        XCTAssertNil(revisionOnlyUpdate, "a revision watermark alone must not emit a canonical change")
-        XCTAssertEqual(retainedRevision, 42)
-        XCTAssertEqual(tipAfterRevisionOnlyUpdate, tipBeforeRevisionOnlyUpdate)
-        XCTAssertEqual(mainChainAfterRevisionOnlyUpdate, mainChainBeforeRevisionOnlyUpdate)
-    }
 }
 
 private struct SegmentTailBlock {
@@ -303,10 +275,8 @@ private func assertSegmentTailReferenceParity(
     line: UInt = #line
 ) async {
     let blocks = await chain.hashToBlock
-    let inherited = await chain.inheritedWorkSnapshot ?? .zero
     guard let reference = ChainState.referenceCanonicalProjection(
-        in: blocks,
-        inherited: inherited
+        in: blocks
     ) else {
         XCTFail("reference projection missing", file: file, line: line)
         return

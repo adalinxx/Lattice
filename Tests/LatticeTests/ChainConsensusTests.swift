@@ -78,64 +78,6 @@ func makeChain(
     )
 }
 
-/// Construct a receiving child and exercise the one-way parent view plus the
-/// child's exact direct-edge projector.
-extension ChainState {
-    func inheritedWorkSnapshot(
-        forDirectParentBindings bindings: [String: Set<String>],
-        acceptedChildPredecessorByBlock predecessors: [String: String?]? = nil
-    ) async -> InheritedWorkSnapshot? {
-        guard let parentView = parentSecuringWorkSnapshot() else { return nil }
-        let parentBlocks = Set(parentView.blockCIDs)
-        let usableBindings = bindings.compactMapValues { carriers in
-            let retained = carriers.intersection(parentBlocks)
-            return retained.isEmpty ? nil : retained
-        }
-        guard !usableBindings.isEmpty else { return nil }
-        let childBlocks = Set(bindings.keys)
-        let supplied = predecessors ?? Dictionary(
-            uniqueKeysWithValues: childBlocks.map { ($0, Optional<String>.none) }
-        )
-        guard supplied.keys.allSatisfy(childBlocks.contains) else { return nil }
-        var remaining = childBlocks
-        var heights: [String: UInt64] = [:]
-        while !remaining.isEmpty {
-            let ready = remaining.filter { block in
-                guard let parent = supplied[block] ?? nil else { return true }
-                return !childBlocks.contains(parent) || heights[parent] != nil
-            }
-            guard !ready.isEmpty else { return nil }
-            for block in ready {
-                let parent = supplied[block] ?? nil
-                heights[block] = parent.flatMap { heights[$0].map { $0 + 1 } } ?? 0
-                remaining.remove(block)
-            }
-        }
-        var children: [String: [String]] = [:]
-        for block in childBlocks {
-            if let parent = supplied[block] ?? nil {
-                guard childBlocks.contains(parent) else { continue }
-                children[parent, default: []].append(block)
-            }
-        }
-        let child = makeChain(blocks: childBlocks.map { block in
-            makeBlockMeta(
-                hash: block,
-                previousHash: (supplied[block] ?? nil).flatMap {
-                    childBlocks.contains($0) ? $0 : nil
-                },
-                height: heights[block] ?? 0,
-                childHashes: children[block] ?? []
-            )
-        })
-        return await child.inheritedWorkSnapshot(
-            from: parentView,
-            parentCarrierBlocksByChildBlock: usableBindings
-        )
-    }
-
-}
-
 func makeLinearChain(length: Int, prefix: String = "block") -> (ChainState, [BlockMeta]) {
     var blocks: [BlockMeta] = []
     for i in 0..<length {
@@ -627,16 +569,9 @@ final class EdgeCaseTests: XCTestCase {
         )
 
         let result = await chain.addWorkContribution(extra, to: "G")
-        let providerCommit = await chain.mergeInheritedWork(InheritedWorkSnapshot(
-            revision: 1,
-            workByBlock: ["G": WorkMeasure(extra)]
-        ))
         let revision = await chain.currentRevision()
-        let retainedInherited = await chain.inheritedWorkSnapshot
 
         XCTAssertFalse(result.addedContribution)
-        XCTAssertNil(providerCommit)
         XCTAssertEqual(revision, .max)
-        XCTAssertNil(retainedInherited)
     }
 }

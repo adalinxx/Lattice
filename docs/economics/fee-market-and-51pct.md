@@ -95,8 +95,8 @@ costMajorityReorg ~= c * H * t
 
 This estimates the hash spend needed to outwork an honest branch. It does not
 price hardware scarcity, market impact, opportunity cost, varying targets,
-network position, inherited work on child chains, or the deterministic CID
-tie-break. Those inputs must be modeled separately.
+network position, proof-derived work on nested child paths, or the deterministic
+CID tie-break. Those inputs must be modeled separately.
 
 ## Not A Complete Security Threshold
 

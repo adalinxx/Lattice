@@ -345,15 +345,12 @@ public struct ChildBlockProof: Sendable {
         return .success((rootBlock, rootBlock.proofOfWorkHash()))
     }
 
-    /// Verify the complete root-to-child package and derive its work fact.
-    ///
-    /// A carrier may miss its own target and still carry an accepted descendant,
-    /// so target checks only classify where this one grind is credited.
-    public func verify(
+    /// Verify the complete root-to-child directory commitment and derive its
+    /// physical work. Carrier validity, admission, connectivity, and canonicity
+    /// are intentionally outside this proof.
+    public func verifySecuringWork(
         child: Block,
-        chainPath: [String],
-        parentCarrierLink: ParentCarrierLink?,
-        parentGenesisLink: ParentGenesisLink?
+        chainPath: [String]
     ) async -> Result<VerifiedChildEvidence, ChildProofVerificationFailure> {
         let root: (block: Block, hash: UInt256)
         switch verifiedRoot() {
@@ -374,12 +371,6 @@ public struct ChildBlockProof: Sendable {
 
         let rootBlock = root.block
         let rootHash = root.hash
-
-        func validParentlessCarrier(_ block: Block) -> Bool {
-            guard block.hasCarrierContinuity(parent: nil) else { return false }
-            return !block.validateProofOfWork(nexusHash: rootHash)
-                || block.hasGenesisAdmissionShape()
-        }
 
         var proofEntries: [String: Data] = [:]
         for entry in entries {
@@ -412,58 +403,8 @@ public struct ChildBlockProof: Sendable {
                 guard consumed == Set(proofEntries.keys) else {
                     return .failure(.malformedEvidence)
                 }
-                if child.parent == nil, !validParentlessCarrier(child) {
-                    return .failure(.protocolInvalid)
-                }
-
-                for carrier in carriers {
-                    if carrier.block.parent == nil {
-                        guard validParentlessCarrier(carrier.block) else {
-                            return .failure(.protocolInvalid)
-                        }
-                    }
-                }
-
-                if child.parent == nil {
-                    guard let directory = chainPath.last else {
-                        return .failure(.malformedEvidence)
-                    }
-                    if let parentGenesisLink {
-                        guard parentGenesisLink.parentPath
-                                == Array(chainPath.dropLast()),
-                              parentGenesisLink.directory == directory,
-                              parentGenesisLink.childGenesisCID == childCID else {
-                            return .failure(.malformedEvidence)
-                        }
-                    } else {
-                        return .failure(.crossChainEvidenceRequired(.parentGenesis(
-                            parentPath: Array(chainPath.dropLast()),
-                            directory: directory,
-                            childGenesisCID: childCID
-                        )))
-                    }
-                } else if parentGenesisLink != nil {
-                    return .failure(.malformedEvidence)
-                }
-
                 guard let deepestCarrier = carriers.last else {
                     return .failure(.malformedEvidence)
-                }
-                let expectedCarrier = ParentCarrierLink(
-                    parentPath: Array(chainPath.dropLast()),
-                    carrierCID: deepestCarrier.cid,
-                    rootCID: rootCID
-                )
-                if let parentCarrierLink {
-                    guard parentCarrierLink == expectedCarrier else {
-                        return .failure(.malformedEvidence)
-                    }
-                } else {
-                    return .failure(.crossChainEvidenceRequired(.parentCarrier(
-                        parentPath: expectedCarrier.parentPath,
-                        carrierCID: expectedCarrier.carrierCID,
-                        rootCID: expectedCarrier.rootCID
-                    )))
                 }
 
                 let strongestAncestorWork = carriers.reduce(UInt256.zero) {
@@ -486,6 +427,7 @@ public struct ChildBlockProof: Sendable {
                     rootHash: rootHash,
                     strongestAncestorWork: strongestAncestorWork,
                     childCID: childCID,
+                    terminalCarrierCID: deepestCarrier.cid,
                     contribution: contribution
                 ))
             }
@@ -505,6 +447,61 @@ public struct ChildBlockProof: Sendable {
             ))
         }
         return .failure(.malformedEvidence)
+    }
+
+    /// Compatibility verifier for callers that still transport the older
+    /// carrier/genesis facts. Work verification itself does not depend on
+    /// either fact.
+    public func verify(
+        child: Block,
+        chainPath: [String],
+        parentCarrierLink: ParentCarrierLink?,
+        parentGenesisLink: ParentGenesisLink?
+    ) async -> Result<VerifiedChildEvidence, ChildProofVerificationFailure> {
+        let result = await verifySecuringWork(child: child, chainPath: chainPath)
+        guard case .success(let evidence) = result else { return result }
+
+        if child.parent == nil {
+            guard child.hasCarrierContinuity(parent: nil),
+                  child.hasGenesisAdmissionShape() else {
+                return .failure(.protocolInvalid)
+            }
+            guard let directory = chainPath.last else {
+                return .failure(.malformedEvidence)
+            }
+            guard let parentGenesisLink else {
+                return .failure(.crossChainEvidenceRequired(.parentGenesis(
+                    parentPath: Array(chainPath.dropLast()),
+                    directory: directory,
+                    childGenesisCID: evidence.childCID
+                )))
+            }
+            guard parentGenesisLink.parentPath == Array(chainPath.dropLast()),
+                  parentGenesisLink.directory == directory,
+                  parentGenesisLink.childGenesisCID == evidence.childCID else {
+                return .failure(.malformedEvidence)
+            }
+        } else if parentGenesisLink != nil {
+            return .failure(.malformedEvidence)
+        }
+
+        let expectedCarrier = ParentCarrierLink(
+            parentPath: Array(chainPath.dropLast()),
+            carrierCID: evidence.terminalCarrierCID,
+            rootCID: rootCID
+        )
+        if let parentCarrierLink {
+            guard parentCarrierLink == expectedCarrier else {
+                return .failure(.malformedEvidence)
+            }
+        } else {
+            return .failure(.crossChainEvidenceRequired(.parentCarrier(
+                parentPath: expectedCarrier.parentPath,
+                carrierCID: expectedCarrier.carrierCID,
+                rootCID: expectedCarrier.rootCID
+            )))
+        }
+        return result
     }
 
     // MARK: - Serialization
