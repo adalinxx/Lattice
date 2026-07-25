@@ -135,59 +135,24 @@ public struct WorkSum: Codable, Hashable, Sendable, Comparable, CustomStringConv
 /// Exact proof-of-work keyed by physical grind identity. A grind has one block
 /// location per chain, but may appear once at every level of the hierarchy.
 /// If several levels observe its difficulty, the strongest verified value wins.
-public struct WorkMeasure: Codable, Sendable, Equatable {
+struct WorkMeasure: Sendable, Equatable {
     private var workByGrind: [String: UInt256]
-    private enum CodingKeys: String, CodingKey {
-        case workByGrind
-    }
 
-    public static let zero = WorkMeasure()
+    static let zero = WorkMeasure()
 
-    public init() {
+    init() {
         workByGrind = [:]
     }
 
-    public init(_ contribution: VerifiedWorkContribution) {
-        workByGrind = [contribution.id: contribution.work]
-    }
-
-    public init(_ contributions: some Sequence<VerifiedWorkContribution>) {
+    init(_ contributions: some Sequence<VerifiedWorkContribution>) {
         workByGrind = [:]
         for contribution in contributions {
             insert(contribution)
         }
     }
 
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let decoded = try container.decode(
-            [String: UInt256].self,
-            forKey: .workByGrind
-        )
-        workByGrind = [:]
-        for (id, work) in decoded {
-            let normalized = CIDIdentity.canonicalString(id) ?? id
-            if work > (workByGrind[normalized] ?? .zero) {
-                workByGrind[normalized] = work
-            }
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(workByGrind, forKey: .workByGrind)
-    }
-
-    public var total: WorkSum {
+    var total: WorkSum {
         workByGrind.values.reduce(.zero) { $0 + $1 }
-    }
-
-    public var grindIDs: Set<String> {
-        Set(workByGrind.keys)
-    }
-
-    public var isEmpty: Bool {
-        workByGrind.isEmpty
     }
 
     var entries: [String: UInt256] {
@@ -204,12 +169,8 @@ public struct WorkMeasure: Codable, Sendable, Equatable {
         return result
     }
 
-    public func work(forGrind id: String) -> UInt256? {
-        workByGrind[CIDIdentity.canonicalString(id) ?? id]
-    }
-
     @discardableResult
-    public mutating func insert(_ contribution: VerifiedWorkContribution) -> Bool {
+    mutating func insert(_ contribution: VerifiedWorkContribution) -> Bool {
         let id = CIDIdentity.canonicalString(contribution.id) ?? contribution.id
         guard contribution.work > (workByGrind[id] ?? .zero) else {
             return false
@@ -218,25 +179,9 @@ public struct WorkMeasure: Codable, Sendable, Equatable {
         return true
     }
 
-    public mutating func formUnion(_ other: WorkMeasure) {
+    mutating func formUnion(_ other: WorkMeasure) {
         for (id, work) in other.workByGrind where work > (workByGrind[id] ?? .zero) {
             workByGrind[id] = work
         }
-    }
-
-    public func union(_ other: WorkMeasure) -> WorkMeasure {
-        var result = self
-        result.formUnion(other)
-        return result
-    }
-
-    /// A transport adapter can split an exact measure without exposing its
-    /// storage. Rejoining any partition with `union` recovers this measure.
-    public func restricted(toGrindIDs ids: Set<String>) -> WorkMeasure {
-        WorkMeasure(workByGrind.compactMap { id, work in
-            ids.contains(id)
-                ? VerifiedWorkContribution(id: id, work: work)
-                : nil
-        })
     }
 }
