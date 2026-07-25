@@ -319,28 +319,21 @@ sibling.
 
 A child candidate `B` is admitted with a `ChildValidationPackage` containing:
 
-- a `ChildBlockProof` for the exact sparse path from the mined root to `B`; and
-- one `ParentCarrierLink(rootCID, parentPath, carrierCID)` from `B`'s immediate
-  parent, bound to the proof root and the deepest carrier above `B`; and
-- when `B` is parentless, one immediate-parent `ParentGenesisLink` proving that
-  validated parent state anchored that exact genesis CID.
+- a `ChildBlockProof` for the exact sparse directory path from the mined root to
+  `B`;
+- when `B` is parentless, one immediate-parent `ParentGenesisLink` authorizing
+  that exact genesis CID; or
+- when `B` has a same-chain predecessor whose `parentState` differs, one
+  immediate-parent `ParentStateContinuityLink` for the exact old and new state
+  CIDs.
 
-The Lattice process responsible for the immediate parent path issues the carrier
-link only after verifying that exact root-to-carrier package under its own path.
-Its own immediate-parent link makes this check inductive; the Nexus process is
-the base case and requires `rootCID == carrierCID`. A previously
-accepted carrier qualifies through connected validated ancestry. Any new
-non-genesis carrier, whether its target hits or misses, must have header
-continuity from a connected validated predecessor. A parentless child genesis
-may relay only after its immediate parent authorized that exact genesis CID. A
-target miss then returns a carrier link, while a target hit that fails the local
-transition returns both that rejection and the link; neither creates a runtime
-or local consensus fact. An arbitrary parentless outer root cannot issue a link.
+An optional `ParentCarrierLink` may accompany older transports, but
+securing-work verification does not depend on it. If supplied, it must identify
+the proof's exact root, immediate-parent path, and deepest carrier.
 
-The node authenticates only the immediate-parent process and transports or
-caches the immutable facts. The child process binds each fact to the exact root,
-path, deepest carrier, or genesis CID. The facts grant no authority over child
-validity or fork choice.
+The node authenticates immediate-parent facts and transports or caches them.
+The child process still verifies the proof, transition, and fact fields. These
+facts grant no authority over child validity or fork choice.
 
 The vertical relationship is directional: a parent carrier commits the child in
 its `children` trie, while the child commits only the carrier's `prevState` as
@@ -356,30 +349,25 @@ this order:
 1. Recompute `CID(R)` and its proof-of-work hash.
 2. Require the proof path to equal the runtime path below the outer root, consume
    every supplied proof entry, and require its terminal CID to equal `CID(B)`.
-   Reject any locally impossible parentless carrier shape before requesting
-   parent-issued evidence. If that level accepts the grind, also enforce the
-   complete genesis shape, including `nextTarget == target`.
-3. Require exactly one immediate-parent carrier link whose `rootCID` equals
-   `CID(R)`, whose `parentPath` is `B`'s path without its final component, and
-   whose `carrierCID` is the deepest carrier above `B`. When `B` is a genesis,
-   also require its exact immediate-parent genesis link; otherwise reject any
-   supplied genesis link. The root-bound carrier link inductively attests every
-   upstream carrier's version, spec, `prevState`, height, target succession, and
-   strictly increasing timestamp. MTP/future drift, state execution, and a
-   target-miss carrier's proposed `nextTarget` do not become dependencies of
-   descendant validity.
-4. At every vertical edge, require the nested child's `parentState` to equal the
+3. At every vertical edge, require the nested child's `parentState` to equal the
    carrier's committed `prevState`.
-5. Compare the same hash `h` with each level's target. A miss makes that level a
-   carrier only; verification continues toward descendants.
-6. Require `h <= B.target` for admission into this chain.
+4. Require `h <= B.target`. Among every content-bound block on the path whose
+   target is beaten by `h`, credit the strongest target-derived quantity.
+5. For genesis, require the exact parent genesis link and the complete genesis
+   shape, including `nextTarget == target`.
+6. For non-genesis, compare the predecessor's `parentState` with `B.parentState`.
+   Equality is sufficient; otherwise require an exact continuity link proving
+   transitive forward reachability through the immediate parent's connected
+   accepted graph.
 7. Apply the ordinary genesis or non-genesis transition rules to `B`, including
    withdrawal proofs against `B.parentState`.
 
-Parent or sibling canonicity is not part of these checks. A carrier link may be
-reused only with its exact root, parent path, and carrier CID. Once this package
-derives a valid work fact, a later reorganization or unavailability in another
-process cannot revoke it.
+Intermediate carriers need not satisfy their own target, transition, timing,
+target-succession, admission, connectivity, or canonicity rules. Their exact
+bytes and directory commitments are sufficient for work verification. Parent
+or sibling canonicity is not part of these checks. Once this package derives a
+valid work fact, a later reorganization or unavailability in another process
+cannot revoke it.
 
 ### 5.4 Proof-of-Work
 
@@ -777,18 +765,16 @@ Fork-choice state contains only one chain's accepted graph:
 ```text
 accepted blocks + same-chain predecessor edges
 local unique grind locations + strongest verified quantities
-one retained immediate-parent inherited-work snapshot
 one derived canonical projection
 ```
 
-For each block, `own(B)` is the measure formed by all local grind locations on that
-block. `inherited(B)` is the retained immediate-parent measure securing it:
+For each block, `own(B)` is the measure formed by every proof-derived grind
+located at that block:
 
 ```text
 prefix(B) = own(B) union prefix(parent(B))
 
 effectiveSubtree(B) = own(B)
-                      union inherited(B)
                       union each effectiveSubtree(C)
                             for C in sameChainChildren(B)
 
@@ -796,10 +782,10 @@ cumulativeWork(B) = total(prefix(B))
 trueCumWork(B)     = total(effectiveSubtree(B))
 ```
 
-Measure union occurs before totaling. Repeated local, inherited, or transitive
-observations of one grind at the same location therefore contribute once.
-Implementations may cache local-only totals, but fork choice MUST capture one
-inherited snapshot and compute `trueCumWork` from the effective measures.
+Measure union occurs before totaling. Repeated observations of one grind at the
+same location therefore contribute once.
+Implementations may cache local totals, but the accepted graph and unique
+proof-derived work facts remain authoritative.
 
 `WorkSum` is an exact growable unsigned integer. Individual contributions remain
 `U256`, but their sums must not wrap or saturate because either behavior can
@@ -813,7 +799,8 @@ Every external candidate enters one admission procedure:
 2. root CID and proof-of-work hash verification before child resolution;
 3. targeted resolution of the candidate and required package;
 4. complete structural path validation before requesting cross-chain evidence;
-5. exact-path, carrier-continuity, and chain-target checks;
+5. exact-path, vertical state binding, chain-target, and immediate-parent
+   state-continuity checks;
 6. deterministic genesis or non-genesis state-transition validation;
 7. targeted storage of verified local content and materialized state;
 8. atomic durability of one immutable accepted-fact batch; and
@@ -835,13 +822,16 @@ graph, including after recovery, and must enter this same admission boundary. A
 carrier, duplicate, or rejected candidate that cannot yet issue its link exposes
 the exact typed predecessor requirement so the node can backfill and retry. This
 does not claim a predecessor body is unavailable. Missing cross-chain input
-instead identifies the child proof,
-root-bound immediate-parent carrier fact, or immediate-parent genesis fact that
-the node must obtain from the authenticated parent process. `parentState` is a
-state CID, not a parent-block lookup key. Consensus derives neither relationship
-by inversion. A target-hit candidate can likewise be rejected by its local
-admission rules while returning a valid header-only carrier link for descendants;
-the rejection and carrier fact are orthogonal.
+instead identifies the child proof, immediate-parent state-continuity fact, or
+immediate-parent genesis fact that the node must obtain from an authenticated
+source. For a non-genesis candidate with predecessor `P`, continuity is
+reflexive when `P.parentState == B.parentState`; otherwise the immediate
+parent's connected accepted graph must contain a transitive same-chain state
+path from `P.parentState` to `B.parentState`. Parent canonicity is irrelevant.
+`parentState` is a state CID, not a parent-block lookup key. Consensus derives
+no relationship by inversion. A target-hit candidate can likewise be rejected
+by its local admission rules while still proving real work for a descendant;
+carrier validity and securing-work validity are orthogonal.
 
 ### 9.4 Fork Choice and Reorganization
 
@@ -859,51 +849,32 @@ canonical delta identifies the new tip and exact added and removed blocks. This
 is a chain-local reorganization; Lattice sends no commands to parent, child, or
 sibling processes.
 
-Adding a grind location, strengthening a verified grind quantity, or receiving a
-newer inherited-work snapshot may make a subtree strictly heavier and trigger
-this same reorganization procedure. None replays the block's state transition.
+Adding a grind location or strengthening a verified grind quantity may make a
+subtree strictly heavier and trigger this same reorganization procedure.
+Neither replays the block's state transition.
 
 ### 9.5 Cross-Chain Evidence Independence
 
-Each chain may consume one live child-independent view from its immediate
-parent. The parent view is a relation `(parentBlock, grind, quantity)` over
-connected accepted blocks. Eligible work may come from noncanonical parent
-branches. The view contains no child topology and no canonical pointer. The
-parent receives no child data, topology, validity, work, attachment, or recovery
-state.
+Work and parent-state authority are separate.
 
-The child derives exact `parentBlock -> childBlock` bindings from validated
-content-addressed paths and joins them with the parent view. A parent fact at
-`P` becomes an inherited location at `C` only when the child has the exact edge
-`P -> C`. Parent ancestry MUST NOT create an implicit child location. Therefore
-a later parent block that does not directly commit a child candidate adds no
-weight to that child candidate.
+A `ChildBlockProof` proves work directly from content-addressed bytes. The root
+grind must beat the terminal child's target and resolve uniquely to that child
+through the sparse directory path. Intermediate carriers need not be admitted,
+connected, valid, or canonical on their own chains. Along one proof, the
+contribution is the maximum target-derived quantity beaten by that root hash;
+the terminal target must be beaten. The terminal child receives that ordinary
+work fact only after it is accepted and connected.
 
-A parent block whose accepted ancestry has not joined a valid same-chain root
-component is ineligible for export. Connection is inductive: any valid
-height-zero root is a base case, and a validated successor joins through its
-connected predecessor. This is not a Nexus or canonical-branch exception.
+The immediate parent authenticates only state continuity and child-genesis
+authorization. A continuity fact is bound to the exact parent path and
+`(fromStateCID, toStateCID)` pair. It proves transitive reachability through the
+parent's connected accepted graph, not parent canonicity and not a work total.
+The fact is immutable and may be relayed independently of its original
+transport.
 
-The transformation is recursive. A middle chain projects its immediate parent's
-facts onto its own exact locations, unions those facts with distinct local work
-at the same blocks, and publishes the resulting child-independent relation. No
-chain needs every ancestor graph.
-
-Snapshots are append-only joins. Every authenticated snapshot unions with the
-retained view and revisions combine by maximum. An older or equal revision may
-add previously unseen valid facts, but no snapshot can retract or weaken a
-fact. Revision is a source-progress watermark, not a commitment to snapshot
-contents; fact discovery may advance independently. Lattice keeps the
-retained view during a provider outage. The node may
-persist that cache according to its own restart and storage policy. A chain
-consumes only its immediate parent's rolled-up locations, so it need not track every
-ancestor process.
-
-The current parent tip and parent canonical branch are not fork-choice inputs.
-Parent accepted work and parent canonicity are orthogonal: adding accepted work
-may change child `trueCumWork`, while moving only the parent's canonical pointer
-cannot. The same root CID is unioned across local, inherited, and transitive input
-at its one chain-local location, so inherited work is never counted twice.
+The parent receives no child topology, validity, work, attachment, recovery
+state, or canonical-tip command. Moving only a parent's canonical pointer
+changes neither previously verified work nor continuity.
 
 ### 9.6 Ingress Equivalence
 
@@ -917,9 +888,8 @@ trusted canonical projection.
 ### 9.7 Consensus Graph and Node State Lifecycle
 
 Lattice retains the complete accepted consensus graph and every verified local
-grind location. It performs no age-, depth-, body-, or state-retention pruning of
-consensus inputs. Live inherited work is an immediate-parent input retained as a
-monotone snapshot, not a recursively stored copy of every ancestor graph.
+grind location. It performs no age-, depth-, body-, or state-retention pruning
+of consensus inputs.
 
 State execution may derive local lifecycle metadata, but that metadata is not a
 block commitment or a second cross-volume relationship index. The node decides
@@ -939,13 +909,10 @@ Lattice exposes staged-fact replay as its recovery authority. A serialized
 `ChainState` projection is neither a public recovery input nor protocol truth;
 diagnostic projections, if retained by tests or tooling, cannot replace replay.
 
-For inherited work, the node either retains the complete snapshot or
-reconstructs it from durable parent facts before restore. A revision watermark
-alone does not prove the complete fact set, so a marker without its snapshot fails
-closed rather than substituting zero. Restoration rejects malformed facts,
-reconstructs exact measures, captures one coherent inherited snapshot, and
-reprojects canonicality. A persisted tip is a derived cache, not protocol truth.
-Filesystem layout, payload retention, and format migration belong to the node.
+Restoration rejects malformed facts, reconstructs exact measures, and
+reprojects canonicality. A persisted tip is a derived cache, not protocol
+truth. Filesystem layout, payload retention, and format migration belong to the
+node.
 
 ## 10. Economic Model
 
@@ -1060,18 +1027,20 @@ state); withdrawals return it to the block-wide credit budget.
 ### 12.5 Fork Choice Invariants
 
 1. Every level evaluates the same root hash against its own target
-2. Every carrier proves same-chain predecessor continuity even when its target misses
+2. Directory-path work verification is independent of carrier validity,
+   admission, connectivity, and canonicity
 3. A grind has exactly one terminal location per chain and is deduplicated by
-   root CID across local, inherited, and transitive observations at that location;
+   root CID across observations at that location;
    its credited quantity is the strongest verified accepted-target bound
 4. Work measures union by grind ID before totaling, so shared work is counted once
    while distinct grinds sum
-5. Effective `trueCumWork` includes one coherent monotone child-independent
-   immediate-parent view, projected only through exact child-owned direct edges
+5. Effective `trueCumWork` contains only connected, accepted same-chain
+   locations derived from verified proof bytes
 6. Equal-work segments prefer the lexicographically smaller canonical base CID;
    `nextTarget` and segment tips are not comparators
-7. Parent accepted work may change child fork choice; parent canonicity alone
-   cannot change child validity, weight, or fork choice
+7. Parent canonicity alone cannot change child validity, weight, or fork choice
+8. A non-genesis child keeps the same parent-state reference or moves
+   transitively forward through the immediate parent's connected accepted graph
 9. Lattice never prunes accepted graph or verified local-work facts
 10. There is no finality threshold; a strictly heavier effective subtree may reorg at any depth
 11. Every successful consensus mutation has a monotonically increasing revision

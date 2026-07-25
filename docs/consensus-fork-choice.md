@@ -24,59 +24,44 @@ Fork choice asks one local question:
 > Which competing same-chain subtree contains the greatest total quantity of
 > uniquely located grinds?
 
-Parent canonicity, arrival order, segment-tip target, and unrelated parent work
-are not inputs.
+Parent canonicity, carrier validity, arrival order, and segment-tip target are
+not inputs.
 
 ## From A Root To A Candidate
 
 Let `R` be the mined root and `C` the candidate for this chain. A
 `ChildBlockProof` supplies the exact sparse path from `R` to `C`.
 
-Validation:
+Work verification:
 
 1. recomputes `CID(R)` and the proof-of-work hash;
 2. verifies the sparse path and requires its terminal CID to equal `CID(C)`;
-3. verifies immediate-parent continuity and every vertical
-   `child.parentState == carrier.prevState` binding;
-4. checks the same hash against this level's target; and
-5. executes and admits `C` only when this chain's target accepts the grind.
+3. verifies every vertical `child.parentState == carrier.prevState` binding;
+4. checks the same hash against the terminal target; and
+5. derives the strongest target-derived quantity that hash earns along the
+   committed directory path.
 
-A target miss at one level does not invalidate deeper candidates. It means only
-that the missed level creates no block or work location for that grind.
+A carrier may fail its own chain's target or validity rules and still prove real
+work for the terminal child. The work affects fork choice only after `C` is
+independently accepted and connected.
 
-## Direct Parent Inheritance
+## Parent-State Continuity
 
-The immediate parent publishes a child-independent relation:
-
-```text
-(parent block, grind, quantity)
-```
-
-It includes connected accepted blocks from canonical and noncanonical branches.
-It contains no child topology and no canonical pointer. The parent receives no
-child data.
-
-The child owns verified direct edges:
+For a non-genesis candidate `C` with same-chain predecessor `P`, define:
 
 ```text
-parent block -> child block
+old = P.parentState
+new = C.parentState
 ```
 
-It joins the two relations on the exact parent block:
+Continuity holds when `old == new`, or when the immediate parent's connected
+accepted graph contains a transitive state path from `old` to `new`. Direct
+adjacency is not required. A noncanonical parent branch may prove the fact;
+backward, sideways, unrelated, and disconnected movement cannot.
 
-```text
-(P, grind, quantity) + (P -> C) = (C, grind, quantity)
-```
-
-Parent ancestry creates no implicit child location. If `P0 -> C` is known and a
-later parent block `P1` contains another grind but no direct commitment to a
-child block, the second grind does not secure `C`.
-
-This transformation is recursive. A middle chain first projects its parent's
-facts onto its own blocks, unions them with distinct local grinds at those same
-locations, and publishes the resulting child-independent relation to its child.
-Each process therefore knows only its own accepted graph, one immediate-parent
-view, and its own incoming direct edges.
+This reachability fact is distinct from the directory proof. The configured
+immediate parent authenticates the exact parent path and state pair, but it
+asserts no work and commands no child fork choice.
 
 ## Exact Work Algebra
 
@@ -104,7 +89,6 @@ For a connected same-chain block `B`:
 
 ```text
 effectiveSubtree(B) = own(B)
-                      union inherited(B)
                       union each effectiveSubtree(C)
                             for C in sameChainChildren(B)
 
@@ -140,8 +124,6 @@ accepted height-zero root participates in GHOST or parent export. A disconnected
 accepted block retains its authenticated fact but has no route until its missing
 predecessor attaches.
 
-Persistence records the accepted graph, local work locations, the retained
-immediate-parent facts, direct incoming edges, and the revision floor. Recovery
-replays the same immutable facts and rebuilds segment caches. A persisted
-canonical tip is only a cache. A revision watermark without its facts fails
-closed because absence cannot mean zero work.
+Persistence records the accepted graph, proof-derived work locations, and
+authenticated parent-state facts. Recovery replays the same immutable facts and
+rebuilds segment caches. A persisted canonical tip is only a cache.

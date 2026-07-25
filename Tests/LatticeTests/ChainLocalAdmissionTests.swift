@@ -1133,7 +1133,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(result.failure, .providerMalformedEvidence)
     }
 
-    func testChildConsumesCarrierFactIssuedByImmediateParent() async throws {
+    func testChildWorkProofDoesNotRequireParentCarrierFact() async throws {
         let fetcher = StorableFetcher()
         let parentGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
         let childGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
@@ -1220,14 +1220,9 @@ final class ChainLocalAdmissionTests: XCTestCase {
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
         )
-        XCTAssertEqual(
-            missing.crossChainEvidenceRequirement,
-            .parentCarrier(
-                parentPath: [DEFAULT_ROOT_DIRECTORY],
-                carrierCID: proof.rootCID,
-                rootCID: proof.rootCID
-            )
-        )
+        guard case .accepted = missing else {
+            return XCTFail("proof-derived work should admit without a carrier fact")
+        }
         XCTAssertNil(missing.sameChainPredecessor)
 
         let parentLevel = makeLevel(genesis: parentGenesis)
@@ -2849,7 +2844,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             chain: ChainState.fromGenesis(block: leafGenesis),
             context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Middle", "Leaf"])
         )
-        let missingCarrierLink = try await exactPath.admitBlockHeaderChainLocal(
+        let proofOnly = try await exactPath.admitBlockHeaderChainLocal(
             candidateHeader,
             fetcher: fetcher,
             childPackage: ChildValidationPackage(proof: proof),
@@ -2857,14 +2852,9 @@ final class ChainLocalAdmissionTests: XCTestCase {
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
         )
-        XCTAssertEqual(
-            missingCarrierLink.crossChainEvidenceRequirement,
-            .parentCarrier(
-                parentPath: [DEFAULT_ROOT_DIRECTORY, "Middle"],
-                carrierCID: try BlockHeader(node: middleCarrier).rawCID,
-                rootCID: proof.rootCID
-            )
-        )
+        guard case .accepted = proofOnly else {
+            return XCTFail("the exact proof path should need no carrier fact")
+        }
 
         let surplusEvidence = try await childValidationPackage(
             proof: proof,
@@ -3022,7 +3012,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(verified.contribution.work, UInt256(16))
     }
 
-    func testMultiHopStrongestWorkSurvivesAdmissionReplayAndExport() async throws {
+    func testMultiHopStrongestWorkSurvivesAdmissionAndReplay() async throws {
         let fixture = try await verifiedMultiHopContribution(
             outerTarget: UInt256.max / UInt256(16),
             middleTarget: UInt256.max / UInt256(8),
@@ -3069,13 +3059,6 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let restored = try await ChainState.restore(replaying: [decodedGenesis] + decodedBatches)
         let restoredRecord = await restored.workContribution(id: fixture.rootCID)
         XCTAssertEqual(try XCTUnwrap(restoredRecord).contribution, fixture.contribution)
-
-        let exportedSnapshot = await restored.inheritedWorkSnapshot(
-            forDirectParentBindings: [fixture.downstreamCID: [candidateHeader.rawCID]]
-        )
-        let exported = try XCTUnwrap(exportedSnapshot).work(forBlock: fixture.downstreamCID)
-        XCTAssertEqual(exported.work(forGrind: fixture.rootCID), expectedWork)
-        XCTAssertEqual(exported.total, WorkSum(expectedWork))
     }
 
     func testMultiHopProofCreditsMiddleTargetWhenItIsStrongest() async throws {

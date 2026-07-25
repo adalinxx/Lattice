@@ -96,6 +96,41 @@ public struct ParentGenesisLink: Codable, Hashable, Sendable {
     }
 }
 
+/// A permanent immediate-parent fact that `toStateCID` is reachable from
+/// `fromStateCID` through connected, accepted, state-valid blocks on
+/// `parentPath`. Equality is reflexive and needs no link.
+public struct ParentStateContinuityLink: Codable, Hashable, Sendable {
+    public let parentPath: [String]
+    public let fromStateCID: String
+    public let toStateCID: String
+
+    package init(
+        parentPath: [String],
+        fromStateCID: String,
+        toStateCID: String
+    ) {
+        self.parentPath = parentPath
+        self.fromStateCID =
+            CIDIdentity.canonicalString(fromStateCID) ?? fromStateCID
+        self.toStateCID = CIDIdentity.canonicalString(toStateCID) ?? toStateCID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        parentPath = try container.decode([String].self, forKey: .parentPath)
+        let from = try container.decode(String.self, forKey: .fromStateCID)
+        let to = try container.decode(String.self, forKey: .toStateCID)
+        fromStateCID = CIDIdentity.canonicalString(from) ?? from
+        toStateCID = CIDIdentity.canonicalString(to) ?? to
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case parentPath
+        case fromStateCID
+        case toStateCID
+    }
+}
+
 /// The complete cross-chain evidence required to validate one child candidate.
 /// Sparse security proof and authenticated parent-issued facts remain distinct
 /// values so neither can silently stand in for the other.
@@ -103,15 +138,18 @@ public struct ChildValidationPackage: Sendable {
     public let proof: ChildBlockProof
     public let parentCarrierLink: ParentCarrierLink?
     public let parentGenesisLink: ParentGenesisLink?
+    public let parentStateContinuityLink: ParentStateContinuityLink?
 
     public init(
         proof: ChildBlockProof,
         parentCarrierLink: ParentCarrierLink? = nil,
-        parentGenesisLink: ParentGenesisLink? = nil
+        parentGenesisLink: ParentGenesisLink? = nil,
+        parentStateContinuityLink: ParentStateContinuityLink? = nil
     ) {
         self.proof = proof
         self.parentCarrierLink = parentCarrierLink
         self.parentGenesisLink = parentGenesisLink
+        self.parentStateContinuityLink = parentStateContinuityLink
     }
 }
 
@@ -122,6 +160,11 @@ public enum CrossChainEvidenceRequirement: Sendable, Equatable {
     case childProof(chainPath: [String], childCID: String)
     case parentCarrier(parentPath: [String], carrierCID: String, rootCID: String)
     case parentGenesis(parentPath: [String], directory: String, childGenesisCID: String)
+    case parentStateContinuity(
+        parentPath: [String],
+        fromStateCID: String,
+        toStateCID: String
+    )
 }
 
 public enum ChildProofVerificationFailure: Error, Sendable, Equatable {
@@ -137,6 +180,7 @@ public struct VerifiedChildEvidence: Sendable {
     public let rootHash: UInt256
     public let strongestAncestorWork: UInt256
     package let childCID: String
+    package let terminalCarrierCID: String
     package let contribution: VerifiedWorkContribution?
 
     init(
@@ -144,12 +188,14 @@ public struct VerifiedChildEvidence: Sendable {
         rootHash: UInt256,
         strongestAncestorWork: UInt256,
         childCID: String,
+        terminalCarrierCID: String,
         contribution: VerifiedWorkContribution?
     ) {
         self.grindID = grindID
         self.rootHash = rootHash
         self.strongestAncestorWork = strongestAncestorWork
         self.childCID = childCID
+        self.terminalCarrierCID = terminalCarrierCID
         self.contribution = contribution
     }
 }
