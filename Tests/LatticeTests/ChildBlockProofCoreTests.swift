@@ -243,6 +243,33 @@ final class ChildBlockProofCoreTests: XCTestCase {
         XCTAssertNil(missingRootResult)
     }
 
+    func test_targetedResolutionRejectsTamperedIntermediateBytes() async throws {
+        let fixture = try await composedFixture()
+        guard let index = fixture.composed.entries.firstIndex(where: {
+            $0.cid != fixture.composed.rootCID
+        }) else {
+            return XCTFail("fixture requires an intermediate CAS entry")
+        }
+        var entries = fixture.composed.entries
+        entries[index].data.append(0)
+        let tampered = ChildBlockProof(
+            rootCID: fixture.composed.rootCID,
+            directoryPath: fixture.composed.directoryPath,
+            entries: entries
+        )
+
+        let result = await tampered.verifySecuringWork(
+            child: fixture.leaf,
+            chainPath: [DEFAULT_ROOT_DIRECTORY]
+                + fixture.composed.directoryPath
+        )
+
+        guard case .failure(let failure) = result else {
+            return XCTFail("targeted resolution accepted bytes under the wrong CID")
+        }
+        XCTAssertEqual(failure, .malformedEvidence)
+    }
+
     func test_schedulingTargetsDerivesOnlyContentBoundPathTargets() async throws {
         let fixture = try await composedFixture()
         let result = await fixture.composed.schedulingTargets(
