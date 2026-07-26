@@ -1169,7 +1169,8 @@ final class ChainLocalAdmissionTests: XCTestCase {
                 proof: proof,
                 parentGenesisLink: testParentGenesisLink(
                     directory: "Other",
-                    childGenesisCID: try BlockHeader(node: childGenesis).rawCID
+                    childGenesisCID: try BlockHeader(node: childGenesis).rawCID,
+                    parentStateCID: childGenesis.parentState.rawCID
                 )
             ),
             validationContentStorer: fetcher,
@@ -1385,7 +1386,8 @@ final class ChainLocalAdmissionTests: XCTestCase {
             fetcher: fetcher,
             parentGenesisLink: testParentGenesisLink(
                 directory: "Child",
-                childGenesisCID: secondHeader.rawCID
+                childGenesisCID: secondHeader.rawCID,
+                parentStateCID: secondRoot.parentState.rawCID
             )
         )
 
@@ -1453,7 +1455,8 @@ final class ChainLocalAdmissionTests: XCTestCase {
             fetcher: fetcher,
             parentGenesisLink: testParentGenesisLink(
                 directory: "Child",
-                childGenesisCID: header.rawCID
+                childGenesisCID: header.rawCID,
+                parentStateCID: childGenesis.parentState.rawCID
             )
         )
 
@@ -1474,9 +1477,32 @@ final class ChainLocalAdmissionTests: XCTestCase {
                 .crossChainEvidenceRequired(.parentGenesis(
                     parentPath: [DEFAULT_ROOT_DIRECTORY],
                     directory: "Child",
-                    childGenesisCID: header.rawCID
+                    childGenesisCID: header.rawCID,
+                    parentStateCID: childGenesis.parentState.rawCID
                 ))
             )
+        }
+
+        do {
+            _ = try await ChainLevel.bootstrap(
+                context: context,
+                genesisHeader: header,
+                fetcher: fetcher,
+                childPackage: ChildValidationPackage(
+                    proof: proof,
+                    parentGenesisLink: testParentGenesisLink(
+                        directory: "Child",
+                        childGenesisCID: header.rawCID,
+                        parentStateCID: testCID("wrong-deployment-state")
+                    )
+                ),
+                validationContentStorer: fetcher,
+                materializedVolumeStorer: fetcher,
+                stage: testAdmissionStage
+            )
+            XCTFail("genesis must bind the deployment block's entering state")
+        } catch let failure as ChainAdmissionFailure {
+            XCTAssertEqual(failure, .providerMalformedEvidence)
         }
 
         do {
@@ -2021,7 +2047,8 @@ final class ChainLocalAdmissionTests: XCTestCase {
             fetcher: fetcher,
             parentGenesisLink: testParentGenesisLink(
                 directory: "Child",
-                childGenesisCID: childHeader.rawCID
+                childGenesisCID: childHeader.rawCID,
+                parentStateCID: childGenesis.parentState.rawCID
             )
         )
 
@@ -2382,7 +2409,8 @@ final class ChainLocalAdmissionTests: XCTestCase {
             fetcher: fetcher,
             parentGenesisLink: testParentGenesisLink(
                 directory: "Child",
-                childGenesisCID: header.rawCID
+                childGenesisCID: header.rawCID,
+                parentStateCID: childGenesis.parentState.rawCID
             )
         )
         let recorder = AdmissionStageRecorder()
@@ -2455,7 +2483,8 @@ final class ChainLocalAdmissionTests: XCTestCase {
                 fetcher: fetcher,
                 parentGenesisLink: testParentGenesisLink(
                     directory: "Middle",
-                    childGenesisCID: try BlockHeader(node: middle).rawCID
+                    childGenesisCID: try BlockHeader(node: middle).rawCID,
+                    parentStateCID: middle.parentState.rawCID
                 )
             ),
             validationContentStorer: fetcher,
@@ -2573,7 +2602,8 @@ final class ChainLocalAdmissionTests: XCTestCase {
                 fetcher: fetcher,
                 parentGenesisLink: testParentGenesisLink(
                     directory: "Middle",
-                    childGenesisCID: middleHeader.rawCID
+                    childGenesisCID: middleHeader.rawCID,
+                    parentStateCID: invalidMiddle.parentState.rawCID
                 )
             ),
             validationContentStorer: fetcher,
@@ -2781,10 +2811,11 @@ final class ChainLocalAdmissionTests: XCTestCase {
             parentGenesisLink: testParentGenesisLink(
                 directory: "Leaf",
                 childGenesisCID: candidateHeader.rawCID,
+                parentStateCID: candidate.parentState.rawCID,
                 parentPath: [DEFAULT_ROOT_DIRECTORY, "Middle"]
             )
         )
-        let rejectedSurplusEvidence = try await exactPath.admitBlockHeaderChainLocal(
+        let duplicateWithSurplusEvidence = try await exactPath.admitBlockHeaderChainLocal(
             candidateHeader,
             fetcher: fetcher,
             childPackage: surplusEvidence,
@@ -2792,7 +2823,9 @@ final class ChainLocalAdmissionTests: XCTestCase {
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
         )
-        XCTAssertEqual(rejectedSurplusEvidence.failure, .providerMalformedEvidence)
+        guard case .duplicate = duplicateWithSurplusEvidence else {
+            return XCTFail("known blocks must not re-request parent facts")
+        }
 
         let accepted = try await exactPath.admitBlockHeaderChainLocal(
             candidateHeader,

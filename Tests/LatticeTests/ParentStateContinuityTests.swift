@@ -40,13 +40,16 @@ final class ParentStateContinuityTests: XCTestCase {
         let b = testCID("state-b")
         let c = testCID("state-c")
         let d = testCID("state-d")
+        let e = testCID("state-e")
         let root = testCID("parent-root")
         let left = testCID("parent-left")
         let right = testCID("parent-right")
+        let leftTip = testCID("parent-left-tip")
         let chain = try await ChainState.restore(replaying: [
             batch(root, parent: nil, height: 0, from: a, to: b, nonce: 1),
             batch(left, parent: root, height: 1, from: b, to: c, nonce: 2),
             batch(right, parent: root, height: 1, from: b, to: d, nonce: 3),
+            batch(leftTip, parent: left, height: 2, from: c, to: e, nonce: 4),
         ])
 
         let reflexive = await chain.hasStateContinuity(from: b, to: b)
@@ -67,35 +70,24 @@ final class ParentStateContinuityTests: XCTestCase {
         XCTAssertEqual(transitivePath, [root, left])
         XCTAssertEqual(reflexivePath, [])
         XCTAssertNil(sidewaysPath)
-        let leftAncestry = await chain.blockAncestryPath(to: left)
-        let rightAncestry = await chain.blockAncestryPath(to: right)
-        let unknownAncestry = await chain.blockAncestryPath(
-            to: testCID("unknown")
-        )
-        XCTAssertEqual(leftAncestry, [root, left])
-        XCTAssertEqual(rightAncestry, [root, right])
-        XCTAssertNil(unknownAncestry)
 
         let level = ChainLevel(
             chain: chain,
             context: try ChainRuntimeContext(path: [DEFAULT_ROOT_DIRECTORY])
         )
-        switch await level.parentStateContinuityLink(from: a, to: c) {
+        switch await level.parentStateContinuityLink(from: a, to: e) {
         case .success(let link):
-            XCTAssertEqual(link?.parentPath, [DEFAULT_ROOT_DIRECTORY])
-            XCTAssertEqual(link?.fromStateCID, a)
-            XCTAssertEqual(link?.toStateCID, c)
+            XCTAssertEqual(link, ParentStateContinuityLink(
+                parentPath: [DEFAULT_ROOT_DIRECTORY],
+                fromStateCID: a,
+                toStateCID: e
+            ))
         case .failure(let failure):
-            XCTFail("transitive path should be issued: \(failure)")
-        }
-        switch await level.parentStateContinuityLink(from: b, to: b) {
-        case .success(let link): XCTAssertNil(link)
-        case .failure(let failure):
-            XCTFail("reflexive continuity should need no link: \(failure)")
+            XCTFail("durable transitive branch should be usable: \(failure)")
         }
         switch await level.parentStateContinuityLink(from: c, to: d) {
         case .success:
-            XCTFail("sideways movement must not be issued")
+            XCTFail("sideways movement must not become a transition fact")
         case .failure(let failure):
             XCTAssertEqual(failure, .notYetAdmissible)
         }

@@ -428,12 +428,14 @@ func childValidationPackage(
 func testParentGenesisLink(
     directory: String,
     childGenesisCID: String,
+    parentStateCID: String = testCID("parent-genesis-state"),
     parentPath: [String] = [DEFAULT_ROOT_DIRECTORY]
 ) -> ParentGenesisLink {
     ParentGenesisLink(
         parentPath: parentPath,
         directory: directory,
-        childGenesisCID: childGenesisCID
+        childGenesisCID: childGenesisCID,
+        parentStateCID: parentStateCID
     )
 }
 

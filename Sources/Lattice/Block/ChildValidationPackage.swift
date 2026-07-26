@@ -69,16 +69,20 @@ public struct ParentGenesisLink: Codable, Hashable, Sendable {
     public let parentPath: [String]
     public let directory: String
     public let childGenesisCID: String
+    public let parentStateCID: String
 
-    package init(
+    public init(
         parentPath: [String],
         directory: String,
-        childGenesisCID: String
+        childGenesisCID: String,
+        parentStateCID: String
     ) {
         self.parentPath = parentPath
         self.directory = directory
         self.childGenesisCID =
             CIDIdentity.canonicalString(childGenesisCID) ?? childGenesisCID
+        self.parentStateCID =
+            CIDIdentity.canonicalString(parentStateCID) ?? parentStateCID
     }
 
     public init(from decoder: Decoder) throws {
@@ -87,24 +91,27 @@ public struct ParentGenesisLink: Codable, Hashable, Sendable {
         directory = try container.decode(String.self, forKey: .directory)
         let child = try container.decode(String.self, forKey: .childGenesisCID)
         childGenesisCID = CIDIdentity.canonicalString(child) ?? child
+        let parentState = try container.decode(String.self, forKey: .parentStateCID)
+        parentStateCID =
+            CIDIdentity.canonicalString(parentState) ?? parentState
     }
 
     private enum CodingKeys: String, CodingKey {
         case parentPath
         case directory
         case childGenesisCID
+        case parentStateCID
     }
 }
 
-/// A permanent fact derived locally after verifying that `toStateCID` is
-/// reachable from `fromStateCID` through connected, accepted, state-valid
-/// blocks on `parentPath`. Equality is reflexive and needs no link.
-public struct ParentStateContinuityLink: Codable, Hashable, Sendable {
+/// A local fact derived from one chain's validated, connected block graph.
+/// Equality is reflexive and needs no fact.
+public struct ParentStateContinuityLink: Hashable, Sendable {
     public let parentPath: [String]
     public let fromStateCID: String
     public let toStateCID: String
 
-    package init(
+    public init(
         parentPath: [String],
         fromStateCID: String,
         toStateCID: String
@@ -114,26 +121,11 @@ public struct ParentStateContinuityLink: Codable, Hashable, Sendable {
             CIDIdentity.canonicalString(fromStateCID) ?? fromStateCID
         self.toStateCID = CIDIdentity.canonicalString(toStateCID) ?? toStateCID
     }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        parentPath = try container.decode([String].self, forKey: .parentPath)
-        let from = try container.decode(String.self, forKey: .fromStateCID)
-        let to = try container.decode(String.self, forKey: .toStateCID)
-        fromStateCID = CIDIdentity.canonicalString(from) ?? from
-        toStateCID = CIDIdentity.canonicalString(to) ?? to
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case parentPath
-        case fromStateCID
-        case toStateCID
-    }
 }
 
-/// The complete cross-chain evidence required to validate one child candidate.
-/// The proof carries portable structural/work evidence. Locally derived links
-/// carry state-validity facts that the work proof cannot establish.
+/// Structural proof plus facts derived by this node's chain processes.
+/// The facts deliberately are not Codable: peers send bytes to validate, not
+/// verdicts to decode.
 public struct ChildValidationPackage: Sendable {
     public let proof: ChildBlockProof
     public let parentGenesisLink: ParentGenesisLink?
@@ -155,7 +147,12 @@ public struct ChildValidationPackage: Sendable {
 /// state-validity fact locally before constructing this package.
 public enum CrossChainEvidenceRequirement: Sendable, Equatable {
     case childProof(chainPath: [String], childCID: String)
-    case parentGenesis(parentPath: [String], directory: String, childGenesisCID: String)
+    case parentGenesis(
+        parentPath: [String],
+        directory: String,
+        childGenesisCID: String,
+        parentStateCID: String
+    )
     case parentStateContinuity(
         parentPath: [String],
         fromStateCID: String,

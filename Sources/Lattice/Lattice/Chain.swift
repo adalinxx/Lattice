@@ -1003,22 +1003,6 @@ public actor ChainState {
         return nil
     }
 
-    /// Deterministic accepted same-chain ancestry from genesis through `tip`.
-    /// This is an acquisition hint only; another node must validate every
-    /// returned block before deriving cross-chain facts from it.
-    public func blockAncestryPath(to tip: String) -> [String]? {
-        guard let tip = CIDIdentity.canonicalString(tip),
-              hasValidatedAncestry(blockHash: tip) else { return nil }
-        var path: [String] = []
-        var current: String? = tip
-        while let blockHash = current {
-            guard let block = hashToBlock[blockHash] else { return nil }
-            path.append(blockHash)
-            current = block.parentBlockHash
-        }
-        return path.reversed()
-    }
-
     public func getMainChainTip() -> String {
         chainTip
     }
