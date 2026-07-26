@@ -114,11 +114,11 @@ beats that child's target. Those carrier-local rules do not become descendant
 dependencies.
 
 A child genesis with no same-chain predecessor may still relay descendants
-after its immediate parent authorized that exact genesis CID. Child bootstrap returns a carrier link
-on a target miss, or a rejection together with that link when a target hit fails
-the local transition, without creating a runtime or durable local consensus
-fact. A target-missing Nexus genesis has no upstream authorization and cannot
-issue a link.
+after its immediate parent authorized that exact genesis CID. Child bootstrap
+returns a carrier link on a target miss, or a rejection together with that link
+when a target hit fails the local transition, without creating a runtime or
+durable local consensus fact. Nexus bootstrap never accepts a target miss, but
+the same parentless bytes may still act as a proof-only carrier for descendants.
 
 The proof-derived contribution becomes ordinary same-chain work only after the
 terminal child is accepted and connected. See

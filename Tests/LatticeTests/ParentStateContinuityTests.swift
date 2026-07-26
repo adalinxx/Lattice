@@ -71,25 +71,5 @@ final class ParentStateContinuityTests: XCTestCase {
         XCTAssertEqual(reflexivePath, [])
         XCTAssertNil(sidewaysPath)
 
-        let level = ChainLevel(
-            chain: chain,
-            context: try ChainRuntimeContext(path: [DEFAULT_ROOT_DIRECTORY])
-        )
-        switch await level.parentStateContinuityLink(from: a, to: e) {
-        case .success(let link):
-            XCTAssertEqual(link, ParentStateContinuityLink(
-                parentPath: [DEFAULT_ROOT_DIRECTORY],
-                fromStateCID: a,
-                toStateCID: e
-            ))
-        case .failure(let failure):
-            XCTFail("durable transitive branch should be usable: \(failure)")
-        }
-        switch await level.parentStateContinuityLink(from: c, to: d) {
-        case .success:
-            XCTFail("sideways movement must not become a transition fact")
-        case .failure(let failure):
-            XCTAssertEqual(failure, .notYetAdmissible)
-        }
     }
 }

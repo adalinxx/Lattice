@@ -405,14 +405,12 @@ private func parentGenesisLinks(
 }
 
 private enum ChainLocalAdmission {
-    static func verifyChildPackage(
+    static func verifyChildProof(
         _ package: ChildValidationPackage,
         child: Block,
-        context: ChainRuntimeContext,
-        fetcher: any Fetcher,
-        requiresParentFacts: Bool
+        context: ChainRuntimeContext
     ) async -> Result<VerifiedChildEvidence, ChainAdmissionFailure> {
-        let proofResult = await package.proof.verifySecuringWork(
+        await package.proof.verifySecuringWork(
             child: child,
             chainPath: context.path
         ).mapError { failure -> ChainAdmissionFailure in
@@ -423,58 +421,61 @@ private enum ChainLocalAdmission {
             case .protocolInvalid: .protocolInvalid
             }
         }
-        guard case .success(let evidence) = proofResult else {
-            return proofResult
-        }
-        guard requiresParentFacts else { return .success(evidence) }
+    }
 
+    static func validateParentFacts(
+        _ package: ChildValidationPackage,
+        child: Block,
+        childCID: String,
+        context: ChainRuntimeContext,
+        fetcher: any Fetcher
+    ) async -> ChainAdmissionFailure? {
         let parentPath = Array(context.path.dropLast())
         if child.parent == nil {
-            guard child.hasCarrierContinuity(parent: nil),
-                  child.hasGenesisAdmissionShape() else {
-                return .failure(.protocolInvalid)
+            guard child.hasGenesisAdmissionShape() else {
+                return .protocolInvalid
             }
             guard package.parentStateContinuityLink == nil,
                   let directory = context.path.last else {
-                return .failure(.providerMalformedEvidence)
+                return .providerMalformedEvidence
             }
             guard let genesis = package.parentGenesisLink else {
-                return .failure(.crossChainEvidenceRequired(.parentGenesis(
+                return .crossChainEvidenceRequired(.parentGenesis(
                     parentPath: parentPath,
                     directory: directory,
-                    childGenesisCID: evidence.childCID,
+                    childGenesisCID: childCID,
                     parentStateCID: child.parentState.rawCID
-                )))
+                ))
             }
             guard genesis == ParentGenesisLink(
                 parentPath: parentPath,
                 directory: directory,
-                childGenesisCID: evidence.childCID,
+                childGenesisCID: childCID,
                 parentStateCID: child.parentState.rawCID
             ) else {
-                return .failure(.providerMalformedEvidence)
+                return .providerMalformedEvidence
             }
-            return .success(evidence)
+            return nil
         }
 
         guard package.parentGenesisLink == nil,
               let predecessorHeader = child.parent else {
-            return .failure(.providerMalformedEvidence)
+            return .providerMalformedEvidence
         }
         let predecessor: Block
         switch await resolveBlock(predecessorHeader, fetcher: fetcher) {
         case .success(let resolved):
             predecessor = resolved.block
         case .failure(let failure):
-            return .failure(failure)
+            return failure
         }
         let fromStateCID = predecessor.parentState.rawCID
         let toStateCID = child.parentState.rawCID
         if fromStateCID == toStateCID {
             guard package.parentStateContinuityLink == nil else {
-                return .failure(.providerMalformedEvidence)
+                return .providerMalformedEvidence
             }
-            return .success(evidence)
+            return nil
         }
 
         let expected = ParentStateContinuityLink(
@@ -483,16 +484,16 @@ private enum ChainLocalAdmission {
             toStateCID: toStateCID
         )
         guard let link = package.parentStateContinuityLink else {
-            return .failure(.crossChainEvidenceRequired(.parentStateContinuity(
+            return .crossChainEvidenceRequired(.parentStateContinuity(
                 parentPath: parentPath,
                 fromStateCID: fromStateCID,
                 toStateCID: toStateCID
-            )))
+            ))
         }
         guard link == expected else {
-            return .failure(.providerMalformedEvidence)
+            return .providerMalformedEvidence
         }
-        return .success(evidence)
+        return nil
     }
 
     static func prepare(
@@ -536,12 +537,10 @@ private enum ChainLocalAdmission {
                     childCID: blockHash
                 ))))
             }
-            switch await verifyChildPackage(
+            switch await verifyChildProof(
                 childPackage,
                 child: block,
-                context: context,
-                fetcher: fetcher,
-                requiresParentFacts: !knownBlock
+                context: context
             ) {
             case .success(let verified):
                 grindID = verified.grindID
@@ -556,37 +555,17 @@ private enum ChainLocalAdmission {
             rootCID: grindID
         )
 
-        let carrier: (
-            link: ParentCarrierLink?,
-            sameChainPredecessor: SameChainPredecessorRequirement?
-        )
-        switch await deriveCarrierLink(
+        let carrier = await deriveCarrierLink(
             candidate: carrierLink,
             blockHash: blockHash,
             block: block,
-            level: level,
-            fetcher: fetcher
-        ) {
-        case .success(let value): carrier = value
-        case .failure(let failure):
-            let predecessor = failure == .unavailableEvidence
-                ? block.parent.map {
-                    SameChainPredecessorRequirement(
-                        descendantCID: blockHash,
-                        predecessorCID: $0.rawCID
-                    )
-                }
-                : nil
-            return .result(.rejected(
-                failure,
-                sameChainPredecessor: predecessor
-            ))
-        }
+            level: level
+        )
 
         guard let contribution else {
             return .result(.carrier(
-                carrier.link,
-                sameChainPredecessor: carrier.sameChainPredecessor
+                carrier.relayLink,
+                sameChainPredecessor: nil
             ))
         }
 
@@ -618,7 +597,7 @@ private enum ChainLocalAdmission {
                 ))
             }
             return .result(.duplicate(
-                carrier.link,
+                carrier.relayLink,
                 sameChainPredecessor: carrier.sameChainPredecessor
             ))
         }
@@ -630,7 +609,7 @@ private enum ChainLocalAdmission {
                 fetcher: fetcher,
                 contribution: contribution,
                 carrierLink: carrierLink,
-                verifiedCarrierLink: carrier.link,
+                verifiedCarrierLink: carrier.issuableLink,
                 sameChainPredecessor: carrier.sameChainPredecessor,
                 kind: .evidence
             ))
@@ -661,17 +640,31 @@ private enum ChainLocalAdmission {
         case .failure(let failure):
             return .result(.rejected(
                 failure,
-                parentCarrierLink: carrier.link,
+                parentCarrierLink: carrier.relayLink,
                 sameChainPredecessor: carrier.sameChainPredecessor
             ))
         case .success(let (stateDiff, state)):
+            if !context.isRoot, let childPackage,
+               let failure = await validateParentFacts(
+                   childPackage,
+                   child: block,
+                   childCID: blockHash,
+                   context: context,
+                   fetcher: fetcher
+               ) {
+                return .result(.rejected(
+                    failure,
+                    parentCarrierLink: carrier.relayLink,
+                    sameChainPredecessor: carrier.sameChainPredecessor
+                ))
+            }
             return .ready(PreparedAdmission(
                 resolvedHeader: resolvedHeader,
                 block: block,
                 fetcher: fetcher,
                 contribution: contribution,
                 carrierLink: carrierLink,
-                verifiedCarrierLink: carrier.link,
+                verifiedCarrierLink: carrier.issuableLink,
                 sameChainPredecessor: carrier.sameChainPredecessor,
                 kind: .block(stateDiff, state)
             ))
@@ -717,61 +710,39 @@ private enum ChainLocalAdmission {
         }
     }
 
-    static func validateCarrierContinuity(
-        block: Block,
-        fetcher: any Fetcher
-    ) async -> Result<Void, ChainAdmissionFailure> {
-        guard let parentHeader = block.parent else {
-            return block.hasCarrierContinuity(parent: nil)
-                ? .success(())
-                : .failure(.protocolInvalid)
-        }
-        do {
-            guard let parent = try await parentHeader.resolve(fetcher: fetcher).node else {
-                return .failure(.unavailableEvidence)
-            }
-            return block.hasCarrierContinuity(parent: parent)
-                ? .success(())
-                : .failure(.protocolInvalid)
-        } catch {
-            return .failure(classifyResolutionFailure(error))
-        }
-    }
-
-    /// Derive the header-only fact this process may authenticate for a child.
-    /// Local transition validity is deliberately not part of this fact.
+    /// A real grind may carry descendant work even when this block is invalid
+    /// or disconnected on its own chain. Connectivity is requested separately
+    /// only so this process can still try ordinary block admission.
     static func deriveCarrierLink(
         candidate: ParentCarrierLink,
         blockHash: String,
         block: Block,
-        level: ChainLevel,
-        fetcher: any Fetcher
-    ) async -> Result<(
-        link: ParentCarrierLink?,
+        level: ChainLevel
+    ) async -> (
+        relayLink: ParentCarrierLink,
+        issuableLink: ParentCarrierLink?,
         sameChainPredecessor: SameChainPredecessorRequirement?
-    ), ChainAdmissionFailure> {
+    ) {
         if await level.chain.hasValidatedAncestry(blockHash: blockHash) {
-            return .success((candidate, nil))
-        }
-        switch await validateCarrierContinuity(block: block, fetcher: fetcher) {
-        case .failure(let failure): return .failure(failure)
-        case .success: break
+            return (candidate, candidate, nil)
         }
         guard let predecessorCID = block.parent?.rawCID else {
-            // A verified parent-genesis link authorizes an exact child genesis.
-            // The outer root has no upstream process that can do the same.
-            return .success((level.context.isRoot ? nil : candidate, nil))
+            return (
+                candidate,
+                level.context.isRoot ? nil : candidate,
+                nil
+            )
         }
         let predecessorIsConnected = await level.chain.hasValidatedAncestry(
             blockHash: predecessorCID
         )
         guard !predecessorIsConnected else {
-            return .success((candidate, nil))
+            return (candidate, candidate, nil)
         }
-        return .success((nil, SameChainPredecessorRequirement(
+        return (candidate, nil, SameChainPredecessorRequirement(
             descendantCID: blockHash,
             predecessorCID: predecessorCID
-        )))
+        ))
     }
 
     static func validateBlock(
@@ -942,77 +913,6 @@ private func classifyDataError(_ error: DataErrors) -> ChainAdmissionFailure {
 }
 
 public extension ChainLevel {
-    /// Derive one immutable transition fact from this chain's validated,
-    /// connected graph. Canonicity is deliberately irrelevant.
-    func parentStateContinuityLink(
-        from fromStateCID: String,
-        to toStateCID: String
-    ) async -> Result<ParentStateContinuityLink?, ChainAdmissionFailure> {
-        guard let from = CIDIdentity.canonicalString(fromStateCID),
-              let to = CIDIdentity.canonicalString(toStateCID) else {
-            return .failure(.protocolInvalid)
-        }
-        if from == to { return .success(nil) }
-        guard await chain.hasStateContinuity(from: from, to: to) else {
-            return .failure(.notYetAdmissible)
-        }
-        return .success(ParentStateContinuityLink(
-            parentPath: context.path,
-            fromStateCID: from,
-            toStateCID: to
-        ))
-    }
-
-    /// Produce a permanent fact that this parent chain authorized one child
-    /// genesis CID at `directory`. Parent canonicity is intentionally irrelevant;
-    /// any block in the validated parent forest may authorize a competing root.
-    func genesisLink(
-        parentBlockHeader: BlockHeader,
-        directory: String,
-        childGenesisCID: String,
-        fetcher: any Fetcher
-    ) async -> Result<ParentGenesisLink, ChainAdmissionFailure> {
-        guard !directory.isEmpty, !childGenesisCID.isEmpty else {
-            return .failure(.protocolInvalid)
-        }
-        let parentBlockCID = parentBlockHeader.rawCID
-        guard await chain.hasValidatedAncestry(blockHash: parentBlockCID) else {
-            return .failure(.unavailableEvidence)
-        }
-        let block: Block
-        switch await ChainLocalAdmission.resolveBlock(
-            parentBlockHeader,
-            fetcher: fetcher
-        ) {
-        case .success(let resolved):
-            block = resolved.block
-        case .failure(let failure):
-            return .failure(failure)
-        }
-        do {
-            let resolvedState = try await block.postState.resolve(
-                paths: [[GENESIS_STATE_PROPERTY, directory]: .targeted],
-                fetcher: fetcher
-            )
-            guard let state = resolvedState.node,
-                  let genesisState = state.genesisState.node else {
-                return .failure(.unavailableEvidence)
-            }
-            guard let stored: String = try? genesisState.get(key: directory),
-                  stored == childGenesisCID else {
-                return .failure(.protocolInvalid)
-            }
-            return .success(ParentGenesisLink(
-                parentPath: context.path,
-                directory: directory,
-                childGenesisCID: childGenesisCID,
-                parentStateCID: block.prevState.rawCID
-            ))
-        } catch {
-            return .failure(classifyValidationFailure(error))
-        }
-    }
-
     /// Verify one candidate and store its immutable validation Volumes without
     /// mutating the accepted graph. The returned token contains the exact
     /// hierarchy facts the node must make durable with the batch.
@@ -1065,15 +965,18 @@ public extension ChainLevel {
         guard let duplicate = await preflight.take(for: admissionIdentity) else {
             throw ChainAdmissionPreflightError.invalidToken
         }
-        let carrierLink = await chain.hasValidatedAncestry(
+        let isConnected = await chain.hasValidatedAncestry(
             blockHash: duplicate.carrierLink.carrierCID
-        ) ? duplicate.carrierLink : nil
+        )
         let requirement = await chain.sameChainPredecessorRequirement(
             for: duplicate.carrierLink.carrierCID
         )
         return (
-            .duplicate(carrierLink, sameChainPredecessor: requirement),
-            carrierLink == nil ? [] : duplicate.parentGenesisLinks
+            .duplicate(
+                duplicate.carrierLink,
+                sameChainPredecessor: requirement
+            ),
+            isConnected ? duplicate.parentGenesisLinks : []
         )
     }
 
@@ -1094,7 +997,7 @@ public extension ChainLevel {
         guard await chain.reserveAdmissionRevision() else {
             return .rejected(
                 .revisionExhausted,
-                parentCarrierLink: prepared.verifiedCarrierLink,
+                parentCarrierLink: prepared.carrierLink,
                 sameChainPredecessor: prepared.sameChainPredecessor
             )
         }
@@ -1118,13 +1021,12 @@ public extension ChainLevel {
             throw error
         }
         let submission = try await chain.applyReservedStaged(prepared.facts)
-        let carrierLink = stagingContext.issuedCarrierLink
         let requirement = await chain.sameChainPredecessorRequirement(
             for: prepared.resolvedHeader.rawCID
         )
         guard let submission else {
             return .duplicate(
-                carrierLink,
+                prepared.carrierLink,
                 sameChainPredecessor: requirement
             )
         }
@@ -1132,7 +1034,7 @@ public extension ChainLevel {
             for: submission,
             prepared: prepared,
             sameChainPredecessor: requirement,
-            parentCarrierLink: carrierLink
+            parentCarrierLink: prepared.carrierLink
         )
     }
 
@@ -1216,13 +1118,7 @@ public extension ChainLevel {
         }
         let rootHash = resolved.block.proofOfWorkHash()
         guard resolved.block.validateProofOfWork(nexusHash: rootHash) else {
-            switch await ChainLocalAdmission.validateCarrierContinuity(
-                block: resolved.block,
-                fetcher: fetcher
-            ) {
-            case .failure(let failure): throw failure
-            case .success: throw ChainAdmissionFailure.notAcceptedAtCurrentChain
-            }
+            throw ChainAdmissionFailure.notAcceptedAtCurrentChain
         }
         let transition: (StateDiff, LatticeState?)
         switch await ChainLocalAdmission.validateGenesis(
@@ -1276,15 +1172,22 @@ public extension ChainLevel {
             throw ChainAdmissionFailure.protocolInvalid
         }
         let evidence: VerifiedChildEvidence
-        switch await ChainLocalAdmission.verifyChildPackage(
+        switch await ChainLocalAdmission.verifyChildProof(
             childPackage,
             child: resolved.block,
-            context: context,
-            fetcher: fetcher,
-            requiresParentFacts: true
+            context: context
         ) {
         case .success(let verified): evidence = verified
         case .failure(let failure): throw failure
+        }
+        if let failure = await ChainLocalAdmission.validateParentFacts(
+            childPackage,
+            child: resolved.block,
+            childCID: evidence.childCID,
+            context: context,
+            fetcher: fetcher
+        ) {
+            throw failure
         }
         let carrierLink = ParentCarrierLink(
             parentPath: context.path,
@@ -1292,14 +1195,7 @@ public extension ChainLevel {
             rootCID: evidence.grindID
         )
         guard let contribution = evidence.contribution else {
-            switch await ChainLocalAdmission.validateCarrierContinuity(
-                block: resolved.block,
-                fetcher: fetcher
-            ) {
-            case .failure(let failure): throw failure
-            case .success:
-                return .carrier(carrierLink)
-            }
+            return .carrier(carrierLink)
         }
         let transition: (StateDiff, LatticeState?)
         switch await ChainLocalAdmission.validateGenesis(
