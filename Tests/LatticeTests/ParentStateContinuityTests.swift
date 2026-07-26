@@ -67,6 +67,14 @@ final class ParentStateContinuityTests: XCTestCase {
         XCTAssertEqual(transitivePath, [root, left])
         XCTAssertEqual(reflexivePath, [])
         XCTAssertNil(sidewaysPath)
+        let leftAncestry = await chain.blockAncestryPath(to: left)
+        let rightAncestry = await chain.blockAncestryPath(to: right)
+        let unknownAncestry = await chain.blockAncestryPath(
+            to: testCID("unknown")
+        )
+        XCTAssertEqual(leftAncestry, [root, left])
+        XCTAssertEqual(rightAncestry, [root, right])
+        XCTAssertNil(unknownAncestry)
 
         let level = ChainLevel(
             chain: chain,
