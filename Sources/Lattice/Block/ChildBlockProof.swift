@@ -449,61 +449,6 @@ public struct ChildBlockProof: Sendable {
         return .failure(.malformedEvidence)
     }
 
-    /// Compatibility verifier for callers that still transport the older
-    /// carrier/genesis facts. Work verification itself does not depend on
-    /// either fact.
-    public func verify(
-        child: Block,
-        chainPath: [String],
-        parentCarrierLink: ParentCarrierLink?,
-        parentGenesisLink: ParentGenesisLink?
-    ) async -> Result<VerifiedChildEvidence, ChildProofVerificationFailure> {
-        let result = await verifySecuringWork(child: child, chainPath: chainPath)
-        guard case .success(let evidence) = result else { return result }
-
-        if child.parent == nil {
-            guard child.hasCarrierContinuity(parent: nil),
-                  child.hasGenesisAdmissionShape() else {
-                return .failure(.protocolInvalid)
-            }
-            guard let directory = chainPath.last else {
-                return .failure(.malformedEvidence)
-            }
-            guard let parentGenesisLink else {
-                return .failure(.crossChainEvidenceRequired(.parentGenesis(
-                    parentPath: Array(chainPath.dropLast()),
-                    directory: directory,
-                    childGenesisCID: evidence.childCID
-                )))
-            }
-            guard parentGenesisLink.parentPath == Array(chainPath.dropLast()),
-                  parentGenesisLink.directory == directory,
-                  parentGenesisLink.childGenesisCID == evidence.childCID else {
-                return .failure(.malformedEvidence)
-            }
-        } else if parentGenesisLink != nil {
-            return .failure(.malformedEvidence)
-        }
-
-        let expectedCarrier = ParentCarrierLink(
-            parentPath: Array(chainPath.dropLast()),
-            carrierCID: evidence.terminalCarrierCID,
-            rootCID: rootCID
-        )
-        if let parentCarrierLink {
-            guard parentCarrierLink == expectedCarrier else {
-                return .failure(.malformedEvidence)
-            }
-        } else {
-            return .failure(.crossChainEvidenceRequired(.parentCarrier(
-                parentPath: expectedCarrier.parentPath,
-                carrierCID: expectedCarrier.carrierCID,
-                rootCID: expectedCarrier.rootCID
-            )))
-        }
-        return result
-    }
-
     // MARK: - Serialization
 
     public func serialize() throws -> Data {

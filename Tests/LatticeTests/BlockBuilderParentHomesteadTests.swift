@@ -36,25 +36,14 @@ final class BlockBuilderParentHomesteadTests: XCTestCase {
         XCTAssertNotEqual(childGenesis.parentState.rawCID, childGenesis.prevState.rawCID)
 
         let carrierHeader = try BlockHeader(node: carrier)
-        let childHeader = try BlockHeader(node: childGenesis)
         let proof = try await ChildBlockProof.generate(
             rootHeader: carrierHeader,
             childDirectory: "Child",
             fetcher: fetcher
         )
-        let result = await proof.verify(
+        let result = await proof.verifySecuringWork(
             child: childGenesis,
-            chainPath: ["Nexus", "Child"],
-            parentCarrierLink: ParentCarrierLink(
-                parentPath: ["Nexus"],
-                carrierCID: carrierHeader.rawCID,
-                rootCID: carrierHeader.rawCID
-            ),
-            parentGenesisLink: ParentGenesisLink(
-                parentPath: ["Nexus"],
-                directory: "Child",
-                childGenesisCID: childHeader.rawCID
-            )
+            chainPath: ["Nexus", "Child"]
         )
         guard case .success = result else {
             return XCTFail("the builder's parentState must satisfy the same-carrier proof")

@@ -416,30 +416,11 @@ func testWorkBatch(
 
 func childValidationPackage(
     proof: ChildBlockProof,
-    fetcher: any Fetcher,
-    parentCarrierLink: ParentCarrierLink? = nil,
+    fetcher _: any Fetcher,
     parentGenesisLink: ParentGenesisLink? = nil
 ) async throws -> ChildValidationPackage {
-    var carrierHeader = BlockHeader(rawCID: proof.rootCID)
-    for directory in proof.directoryPath.dropLast() {
-        guard let carrier = try await carrierHeader.resolve(fetcher: fetcher).node,
-              let children = try await carrier.children.resolve(
-                paths: [[directory]: .targeted],
-                fetcher: fetcher
-              ).node,
-              let next: BlockHeader = try? children.get(key: directory) else {
-            throw FetcherError.notFound(carrierHeader.rawCID)
-        }
-        carrierHeader = next
-    }
     return ChildValidationPackage(
         proof: proof,
-        parentCarrierLink: parentCarrierLink ?? ParentCarrierLink(
-            parentPath: [DEFAULT_ROOT_DIRECTORY]
-                + Array(proof.directoryPath.dropLast()),
-            carrierCID: carrierHeader.rawCID,
-            rootCID: proof.rootCID
-        ),
         parentGenesisLink: parentGenesisLink
     )
 }

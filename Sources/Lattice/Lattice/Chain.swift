@@ -947,15 +947,25 @@ public actor ChainState {
         from fromStateCID: String,
         to toStateCID: String
     ) -> Bool {
+        stateContinuityPath(from: fromStateCID, to: toStateCID) != nil
+    }
+
+    /// One deterministic accepted-block path proving forward state continuity.
+    /// The returned CIDs are hints for acquiring ordinary block Volumes; a
+    /// receiver must still validate those blocks before trusting the path.
+    public func stateContinuityPath(
+        from fromStateCID: String,
+        to toStateCID: String
+    ) -> [String]? {
         guard let from = CIDIdentity.canonicalString(fromStateCID),
               let to = CIDIdentity.canonicalString(toStateCID) else {
-            return false
+            return nil
         }
-        if from == to { return true }
+        if from == to { return [] }
 
-        var pending = Array(stateTransitionsByFromState[from] ?? []).filter {
-            segmentIndex.base(forBlock: $0) != nil
-        }
+        var pending = Array(stateTransitionsByFromState[from] ?? [])
+            .filter { segmentIndex.base(forBlock: $0) != nil }
+            .sorted(by: >)
         var visited = Set<String>()
         while let blockHash = pending.popLast() {
             guard visited.insert(blockHash).inserted,
@@ -963,8 +973,20 @@ public actor ChainState {
                   let snapshot = tipSnapshotsByHash[blockHash] else {
                 continue
             }
-            if snapshot.postStateCID == to { return true }
-            for childHash in block.childHashes {
+            if snapshot.postStateCID == to {
+                var path = [blockHash]
+                var cursor = block
+                while tipSnapshotsByHash[cursor.blockHash]?.prevStateCID != from {
+                    guard let parentHash = cursor.parentBlockHash,
+                          let parent = hashToBlock[parentHash] else {
+                        return nil
+                    }
+                    path.append(parentHash)
+                    cursor = parent
+                }
+                return path.reversed()
+            }
+            for childHash in block.childHashes.sorted(by: >) {
                 let (expectedHeight, overflow) =
                     block.blockHeight.addingReportingOverflow(1)
                 guard let child = hashToBlock[childHash],
@@ -978,7 +1000,7 @@ public actor ChainState {
                 pending.append(childHash)
             }
         }
-        return false
+        return nil
     }
 
     public func getMainChainTip() -> String {

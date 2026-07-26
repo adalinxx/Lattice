@@ -424,16 +424,6 @@ private enum ChainLocalAdmission {
         }
 
         let parentPath = Array(context.path.dropLast())
-        if let carrier = package.parentCarrierLink {
-            guard carrier == ParentCarrierLink(
-                parentPath: parentPath,
-                carrierCID: evidence.terminalCarrierCID,
-                rootCID: package.proof.rootCID
-            ) else {
-                return .failure(.providerMalformedEvidence)
-            }
-        }
-
         if child.parent == nil {
             guard child.hasCarrierContinuity(parent: nil),
                   child.hasGenesisAdmissionShape() else {
