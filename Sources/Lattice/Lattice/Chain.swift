@@ -152,6 +152,11 @@ private struct SegmentRange {
     let indices: Range<Int>
 }
 
+private struct StateTransition: Hashable {
+    let from: String
+    let to: String
+}
+
 /// Stable unary-run routing. Splitting a segment inserts one boundary instead
 /// of relabeling every block in its suffix.
 private struct SegmentIndex {
@@ -577,6 +582,7 @@ public actor ChainState {
     public private(set) var tipSnapshot: TipBlockSnapshot?
     var tipSnapshotsByHash: [String: TipBlockSnapshot]
     private var stateTransitionsByFromState: [String: Set<String>]
+    private var blocksByStateTransition: [StateTransition: Set<String>]
 
     // Restore validates this invariant; optional access keeps query paths fail-closed.
     var highestBlock: BlockMeta? { hashToBlock[chainTip] }
@@ -639,10 +645,18 @@ public actor ChainState {
             self.tipSnapshotsByHash[chainTip] = tipSnapshot
         }
         self.stateTransitionsByFromState = [:]
+        self.blocksByStateTransition = [:]
         for (blockHash, snapshot) in self.tipSnapshotsByHash
         where hashToBlock[blockHash] != nil {
             self.stateTransitionsByFromState[
                 snapshot.prevStateCID,
+                default: []
+            ].insert(blockHash)
+            self.blocksByStateTransition[
+                StateTransition(
+                    from: snapshot.prevStateCID,
+                    to: snapshot.postStateCID
+                ),
                 default: []
             ].insert(blockHash)
         }
@@ -926,19 +940,7 @@ public actor ChainState {
     /// this path-defined chain's admitted genesis roots. Parent processes issue
     /// cross-process facts only for blocks with validated ancestry.
     func hasValidatedAncestry(blockHash: String) -> Bool {
-        var visited = Set<String>()
-        var current = blockHash
-        while true {
-            guard visited.insert(current).inserted,
-                  let meta = hashToBlock[current] else { return false }
-            guard let parentHash = meta.parentBlockHash else {
-                return meta.blockHeight == 0
-            }
-            guard let parent = hashToBlock[parentHash] else { return false }
-            let (expectedHeight, overflow) = parent.blockHeight.addingReportingOverflow(1)
-            guard !overflow, expectedHeight == meta.blockHeight else { return false }
-            current = parentHash
-        }
+        segmentIndex.locationByBlock[blockHash] != nil
     }
 
     /// Whether `toStateCID` is reachable from `fromStateCID` through the
@@ -962,6 +964,13 @@ public actor ChainState {
             return nil
         }
         if from == to { return [] }
+        if let direct = blocksByStateTransition[
+            StateTransition(from: from, to: to)
+        ]?.lazy.filter({
+            self.segmentIndex.locationByBlock[$0] != nil
+        }).min() {
+            return [direct]
+        }
 
         var pending = Array(stateTransitionsByFromState[from] ?? [])
             .filter { segmentIndex.base(forBlock: $0) != nil }
@@ -1907,14 +1916,27 @@ public actor ChainState {
         blockHash: String
     ) {
         if let previous = tipSnapshotsByHash[blockHash],
-           previous.prevStateCID != snapshot.prevStateCID {
+           previous != snapshot {
             stateTransitionsByFromState[
                 previous.prevStateCID
+            ]?.remove(blockHash)
+            blocksByStateTransition[
+                StateTransition(
+                    from: previous.prevStateCID,
+                    to: previous.postStateCID
+                )
             ]?.remove(blockHash)
         }
         tipSnapshotsByHash[blockHash] = snapshot
         stateTransitionsByFromState[
             snapshot.prevStateCID,
+            default: []
+        ].insert(blockHash)
+        blocksByStateTransition[
+            StateTransition(
+                from: snapshot.prevStateCID,
+                to: snapshot.postStateCID
+            ),
             default: []
         ].insert(blockHash)
     }

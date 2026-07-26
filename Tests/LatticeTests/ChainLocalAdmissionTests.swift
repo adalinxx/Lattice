@@ -616,7 +616,10 @@ final class ChainLocalAdmissionTests: XCTestCase {
             descendantCID: candidateCID,
             predecessorCID: parentCID
         ))
-        XCTAssertNil(result.parentCarrierLink)
+        XCTAssertEqual(
+            result.parentCarrierLink?.carrierCID,
+            candidateCID
+        )
     }
 
     func testMissingPolicyModuleIsUnavailableEvidence() async throws {
@@ -756,9 +759,9 @@ final class ChainLocalAdmissionTests: XCTestCase {
                 validationContentStorer: fetcher,
                 materializedVolumeStorer: fetcher,
                 stage: testAdmissionStage
-            )
+        )
         XCTAssertEqual(disconnected.failure, .protocolInvalid)
-        XCTAssertNil(disconnected.parentCarrierLink)
+        XCTAssertEqual(disconnected.parentCarrierLink?.carrierCID, header.rawCID)
         XCTAssertEqual(
             disconnected.sameChainPredecessor,
             SameChainPredecessorRequirement(
@@ -805,7 +808,10 @@ final class ChainLocalAdmissionTests: XCTestCase {
         guard case .carrier = missResult else {
             return XCTFail("a parentless target miss is carrier data only")
         }
-        XCTAssertNil(missResult.parentCarrierLink)
+        XCTAssertEqual(
+            missResult.parentCarrierLink?.carrierCID,
+            try BlockHeader(node: targetMiss).rawCID
+        )
     }
 
     func testNotYetAdmissibleCandidateIsDeferredByTypedOutcome() async throws {
@@ -1193,7 +1199,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertNil(missing.sameChainPredecessor)
     }
 
-    func testForgedIntermediateTargetCannotProduceCarrierLink() async throws {
+    func testTargetMissIntermediateStillRelaysDescendantWork() async throws {
         let fetcher = StorableFetcher()
         let nexusGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
         let middleGenesis = try await makeGenesis(
@@ -1240,11 +1246,14 @@ final class ChainLocalAdmissionTests: XCTestCase {
             stage: testAdmissionStage
         )
 
-        XCTAssertEqual(result.failure, .protocolInvalid)
-        XCTAssertNil(result.parentCarrierLink)
+        XCTAssertNil(result.failure)
+        XCTAssertEqual(
+            result.parentCarrierLink?.carrierCID,
+            try BlockHeader(node: forgedMiddle).rawCID
+        )
     }
 
-    func testParentProcessIssuesGenesisFactFromValidatedState() async throws {
+    func testValidatedGenesisActionUpdatesParentState() async throws {
         let fetcher = StorableFetcher()
         let parentGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
         let childGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
@@ -1295,54 +1304,6 @@ final class ChainLocalAdmissionTests: XCTestCase {
         )
         XCTAssertEqual(storedChildCID, childCID)
 
-        switch await parentLevel.genesisLink(
-            parentBlockHeader: try BlockHeader(node: anchor),
-            directory: "Child",
-            childGenesisCID: childCID,
-            fetcher: fetcher
-        ) {
-        case .success(let link):
-            XCTAssertEqual(link.parentPath, [DEFAULT_ROOT_DIRECTORY])
-            XCTAssertEqual(link.childGenesisCID, childCID)
-        case .failure(let failure):
-            XCTFail("validated parent state should issue genesis fact: \(failure)")
-        }
-    }
-
-    func testGenesisLinkRejectsInlineParentHeaderCIDMismatch() async throws {
-        let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let anchor = try await makeChild(
-            of: genesis,
-            fetcher: fetcher,
-            timestamp: 2_000,
-            nonce: 1
-        )
-        let level = makeLevel(genesis: genesis)
-        _ = try await level.admitBlockHeaderChainLocal(
-            try BlockHeader(node: anchor),
-            fetcher: fetcher,
-            validationContentStorer: fetcher,
-            materializedVolumeStorer: fetcher,
-            stage: testAdmissionStage
-        )
-        let forged = BlockHeader(
-            rawCID: try BlockHeader(node: anchor).rawCID,
-            node: genesis,
-            encryptionInfo: nil
-        )
-
-        switch await level.genesisLink(
-            parentBlockHeader: forged,
-            directory: "Child",
-            childGenesisCID: testCID("child"),
-            fetcher: fetcher
-        ) {
-        case .success:
-            XCTFail("a mismatched header must not authorize a child genesis")
-        case .failure(let failure):
-            XCTAssertEqual(failure, .providerMalformedEvidence)
-        }
     }
 
     func testSecondChildRootPinsItsMaterializedVolumes() async throws {
@@ -1839,18 +1800,6 @@ final class ChainLocalAdmissionTests: XCTestCase {
         )
         let carrierHeader = try BlockHeader(node: carrier)
 
-        switch await parentLevel.genesisLink(
-            parentBlockHeader: carrierHeader,
-            directory: "Child",
-            childGenesisCID: childHeader.rawCID,
-            fetcher: fetcher
-        ) {
-        case .success:
-            XCTFail("an unadmitted carrier cannot authorize child genesis")
-        case .failure(let failure):
-            XCTAssertEqual(failure, .unavailableEvidence)
-        }
-
         let admission = try await parentLevel.admitBlockHeaderChainLocal(
             carrierHeader,
             fetcher: fetcher,
@@ -1867,29 +1816,12 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(carrierLink.carrierCID, carrierHeader.rawCID)
         XCTAssertEqual(carrierLink.rootCID, carrierHeader.rawCID)
 
-        let genesisLink: ParentGenesisLink
-        switch await parentLevel.genesisLink(
-            parentBlockHeader: carrierHeader,
+        let genesisLink = ParentGenesisLink(
+            parentPath: [DEFAULT_ROOT_DIRECTORY],
             directory: "Child",
             childGenesisCID: childHeader.rawCID,
-            fetcher: fetcher
-        ) {
-        case .success(let link): genesisLink = link
-        case .failure(let failure):
-            return XCTFail("admitted signed anchor should authorize child genesis: \(failure)")
-        }
-
-        switch await parentLevel.genesisLink(
-            parentBlockHeader: carrierHeader,
-            directory: "Child",
-            childGenesisCID: testCID("wrong-child"),
-            fetcher: fetcher
-        ) {
-        case .success:
-            XCTFail("parent-issued genesis facts must bind the anchored child CID")
-        case .failure(let failure):
-            XCTAssertEqual(failure, .protocolInvalid)
-        }
+            parentStateCID: carrier.prevState.rawCID
+        )
 
         let proof = try await ChildBlockProof.generate(
             rootHeader: carrierHeader,
@@ -1967,17 +1899,12 @@ final class ChainLocalAdmissionTests: XCTestCase {
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
         )
-        let genesisLink: ParentGenesisLink
-        switch await nexusLevel.genesisLink(
-            parentBlockHeader: rootHeader,
+        let genesisLink = ParentGenesisLink(
+            parentPath: [DEFAULT_ROOT_DIRECTORY],
             directory: "Child",
             childGenesisCID: alternateHeader.rawCID,
-            fetcher: fetcher
-        ) {
-        case .success(let link): genesisLink = link
-        case .failure(let failure):
-            return XCTFail("accepted parent must authorize alternate root: \(failure)")
-        }
+            parentStateCID: root.prevState.rawCID
+        )
         let proof = try await ChildBlockProof.generate(
             rootHeader: rootHeader,
             childDirectory: "Child",
@@ -2272,7 +2199,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(storeCalls, 0)
     }
 
-    func testDisconnectedTargetMissRequestsPredecessorThenIssuesCarrierLink() async throws {
+    func testDisconnectedTargetMissRelaysWithoutAcquiringPredecessor() async throws {
         let fetcher = StorableFetcher()
         let parentTemplate = try await makeGenesis(fetcher: fetcher, timestamp: 500)
         let childGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
@@ -2310,7 +2237,6 @@ final class ChainLocalAdmissionTests: XCTestCase {
             context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
         )
         let candidateHeader = try BlockHeader(node: candidate)
-        let predecessorHeader = try BlockHeader(node: missingPredecessor)
         let candidatePackage = try await childValidationPackage(
             proof: proof,
             fetcher: fetcher
@@ -2327,57 +2253,11 @@ final class ChainLocalAdmissionTests: XCTestCase {
         guard case .carrier = result else {
             return XCTFail("a valid target miss remains a carrier")
         }
-        XCTAssertNil(result.parentCarrierLink)
         XCTAssertEqual(
-            result.sameChainPredecessor,
-            SameChainPredecessorRequirement(
-                descendantCID: candidateHeader.rawCID,
-                predecessorCID: predecessorHeader.rawCID
-            )
+            result.parentCarrierLink?.carrierCID,
+            candidateHeader.rawCID
         )
-
-        let predecessorRoot = try await buildAndStoreGenesis(
-            spec: chainLocalSpec(),
-            children: ["Child": missingPredecessor],
-            timestamp: 3_500,
-            target: easy,
-            nonce: 4,
-            fetcher: fetcher
-        )
-        let predecessorProof = try await ChildBlockProof.generate(
-            rootHeader: try BlockHeader(node: predecessorRoot),
-            childDirectory: "Child",
-            fetcher: fetcher
-        )
-        let predecessorResult = try await level.admitBlockHeaderChainLocal(
-            predecessorHeader,
-            fetcher: fetcher,
-            childPackage: try await childValidationPackage(
-                proof: predecessorProof,
-                fetcher: fetcher
-            ),
-            validationContentStorer: fetcher,
-            materializedVolumeStorer: fetcher,
-            stage: testAdmissionStage
-        )
-        guard case .accepted = predecessorResult else {
-            return XCTFail("the requested predecessor must admit")
-        }
-
-        let retried = try await level.admitBlockHeaderChainLocal(
-            candidateHeader,
-            fetcher: fetcher,
-            childPackage: candidatePackage,
-            validationContentStorer: fetcher,
-            materializedVolumeStorer: fetcher,
-            stage: testAdmissionStage
-        )
-        guard case .carrier = retried else {
-            return XCTFail("the retried target miss must remain a carrier")
-        }
-        let issued = try XCTUnwrap(retried.parentCarrierLink)
-        XCTAssertEqual(issued.carrierCID, candidateHeader.rawCID)
-        XCTAssertNil(retried.sameChainPredecessor)
+        XCTAssertNil(result.sameChainPredecessor)
     }
 
     func testBootstrapDoesNotStageCarrierOnCurrentChainTargetMiss() async throws {
@@ -2647,7 +2527,193 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertTrue(containsLeaf)
     }
 
-    func testTargetMissStillRejectsBrokenCarrierContinuity() async throws {
+    func testMissingParentContinuityFactStillRelaysGrandchildWork() async throws {
+        let fetcher = StorableFetcher()
+        let parentGenesis = try await makeGenesis(
+            fetcher: fetcher,
+            timestamp: 500,
+            transactions: [unsignedStateChangingGenesisTransaction(
+                key: "parent-state",
+                chainPath: [DEFAULT_ROOT_DIRECTORY]
+            )]
+        )
+        XCTAssertNotEqual(
+            parentGenesis.prevState.rawCID,
+            parentGenesis.postState.rawCID
+        )
+        let middleGenesis = try await makeGenesis(
+            fetcher: fetcher,
+            timestamp: 1_000,
+            nonce: 2
+        )
+        let middlePredecessor = try await makeChild(
+            of: middleGenesis,
+            fetcher: fetcher,
+            timestamp: 1_100,
+            nonce: 3,
+            parentChainBlock: parentGenesis
+        )
+        let leafGenesis = try await makeGenesis(
+            fetcher: fetcher,
+            timestamp: 1_000,
+            nonce: 4
+        )
+        let middleTemplate = try await makeChild(
+            of: middlePredecessor,
+            fetcher: fetcher,
+            timestamp: 1_200,
+            nonce: 5
+        )
+        let leaf = try await makeChild(
+            of: leafGenesis,
+            fetcher: fetcher,
+            timestamp: 1_300,
+            nonce: 6,
+            parentChainBlock: middleTemplate
+        )
+        let validMiddle = try await buildAndStoreBlock(
+            previous: middlePredecessor,
+            children: ["Leaf": leaf],
+            timestamp: 1_200,
+            nonce: 5,
+            fetcher: fetcher
+        )
+        let invalidMiddle = Block(
+            version: validMiddle.version,
+            parent: validMiddle.parent,
+            transactions: validMiddle.transactions,
+            target: validMiddle.target,
+            nextTarget: validMiddle.nextTarget,
+            spec: validMiddle.spec,
+            parentState: parentGenesis.postState,
+            prevState: validMiddle.prevState,
+            postState: validMiddle.postState,
+            children: validMiddle.children,
+            height: validMiddle.height,
+            timestamp: validMiddle.timestamp,
+            nonce: validMiddle.nonce
+        )
+        try await storeBuiltBlock(invalidMiddle, in: fetcher)
+        let middleLevel = ChainLevel(
+            chain: ChainState.fromGenesis(block: middleGenesis),
+            context: testChainContext(
+                path: [DEFAULT_ROOT_DIRECTORY, "Middle"]
+            )
+        )
+        let predecessorRoot = try await buildAndStoreGenesis(
+            spec: chainLocalSpec(),
+            children: ["Middle": middlePredecessor],
+            timestamp: 2_000,
+            target: easy,
+            nonce: 7,
+            fetcher: fetcher
+        )
+        let predecessorProof = try await ChildBlockProof.generate(
+            rootHeader: try BlockHeader(node: predecessorRoot),
+            childDirectory: "Middle",
+            fetcher: fetcher
+        )
+        let predecessorResult = try await middleLevel
+            .admitBlockHeaderChainLocal(
+                try BlockHeader(node: middlePredecessor),
+                fetcher: fetcher,
+                childPackage: ChildValidationPackage(
+                    proof: predecessorProof
+                ),
+                validationContentStorer: fetcher,
+                materializedVolumeStorer: fetcher,
+                stage: testAdmissionStage
+            )
+        guard case .accepted = predecessorResult else {
+            return XCTFail("middle predecessor must connect")
+        }
+        let validLocal = try await validMiddle.validateNexus(
+            fetcher: fetcher,
+            chain: middleLevel.chain,
+            chainPath: [DEFAULT_ROOT_DIRECTORY, "Middle"],
+            reportTemporalFailure: true
+        )
+        XCTAssertTrue(validLocal.0)
+
+        let rootTemplate = try await buildAndStoreBlock(
+            previous: parentGenesis,
+            children: ["Middle": invalidMiddle],
+            timestamp: 2_100,
+            target: easy,
+            nonce: 8,
+            fetcher: fetcher
+        )
+        let root = try XCTUnwrap(BlockBuilder.mine(
+            block: rootTemplate,
+            target: invalidMiddle.target,
+            maxAttempts: 1_000_000
+        ))
+        try await storeBuiltBlock(root, in: fetcher)
+        let rootHop = try await ChildBlockProof.generate(
+            rootHeader: try BlockHeader(node: root),
+            childDirectory: "Middle",
+            fetcher: fetcher
+        )
+        guard case .success = await rootHop.verifySecuringWork(
+            child: invalidMiddle,
+            chainPath: [DEFAULT_ROOT_DIRECTORY, "Middle"]
+        ) else {
+            return XCTFail("structural work proof must verify")
+        }
+        let localValidation = try await invalidMiddle.validateNexus(
+            fetcher: fetcher,
+            chain: middleLevel.chain,
+            chainPath: [DEFAULT_ROOT_DIRECTORY, "Middle"],
+            reportTemporalFailure: true
+        )
+        XCTAssertTrue(localValidation.0)
+        let middleHeader = try BlockHeader(node: invalidMiddle)
+        let middleResult = try await middleLevel.admitBlockHeaderChainLocal(
+            middleHeader,
+            fetcher: fetcher,
+            childPackage: ChildValidationPackage(proof: rootHop),
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
+            stage: testAdmissionStage
+        )
+        guard case .some(
+            .crossChainEvidenceRequired(.parentStateContinuity)
+        ) = middleResult.failure else {
+            return XCTFail(
+                "missing parent-state gate must not admit: "
+                    + String(describing: middleResult.failure)
+            )
+        }
+        XCTAssertEqual(
+            middleResult.parentCarrierLink?.carrierCID,
+            middleHeader.rawCID
+        )
+
+        let leafHop = try await ChildBlockProof.generate(
+            rootHeader: middleHeader,
+            childDirectory: "Leaf",
+            fetcher: fetcher
+        )
+        let leafLevel = ChainLevel(
+            chain: ChainState.fromGenesis(block: leafGenesis),
+            context: testChainContext(
+                path: [DEFAULT_ROOT_DIRECTORY, "Middle", "Leaf"]
+            )
+        )
+        let leafResult = try await leafLevel.admitBlockHeaderChainLocal(
+            try BlockHeader(node: leaf),
+            fetcher: fetcher,
+            childPackage: ChildValidationPackage(
+                proof: rootHop.composing(hop: leafHop)
+            ),
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
+            stage: testAdmissionStage
+        )
+        XCTAssertNil(leafResult.failure)
+    }
+
+    func testBrokenCarrierContinuityStillRelaysRealWork() async throws {
         let fetcher = StorableFetcher()
         let hardTarget = UInt256(1)
         let genesis = try await buildAndStoreGenesis(
@@ -2690,18 +2756,18 @@ final class ChainLocalAdmissionTests: XCTestCase {
             stage: testAdmissionStage
         )
 
-        XCTAssertEqual(result.failure, .protocolInvalid)
+        guard case .carrier(let link, _) = result else {
+            return XCTFail("invalid same-chain structure must not erase real work")
+        }
+        XCTAssertEqual(
+            link?.carrierCID,
+            try BlockHeader(node: malformedCarrier).rawCID
+        )
     }
 
-    func testHeightOverflowFailsClosedInCarrierAndBuilder() async throws {
+    func testHeightOverflowFailsClosedInBuilder() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let child = try await makeChild(
-            of: genesis,
-            fetcher: fetcher,
-            timestamp: 2_000,
-            nonce: 1
-        )
         let overflowParent = Block(
             version: genesis.version,
             parent: genesis.parent,
@@ -2718,7 +2784,6 @@ final class ChainLocalAdmissionTests: XCTestCase {
             nonce: genesis.nonce
         )
 
-        XCTAssertFalse(child.hasCarrierContinuity(parent: overflowParent))
         do {
             _ = try await BlockBuilder.buildBlock(
                 previous: overflowParent,
@@ -3146,16 +3211,50 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let fetcher = StorableFetcher()
         let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
         let missingParent = try await makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
-        let orphan = try await makeChild(of: missingParent, fetcher: fetcher, timestamp: 3_000, nonce: 2)
+        let childGenesis = try await makeGenesis(
+            fetcher: fetcher,
+            timestamp: 1_000,
+            nonce: 9
+        )
+        let childCID = try BlockHeader(node: childGenesis).rawCID
+        let keyPair = CryptoUtils.generateKeyPair()
+        let owner = testAddress(publicKey: keyPair.publicKey)
+        let body = TransactionBody(
+            accountActions: [AccountAction(
+                owner: owner,
+                delta: Int64(chainLocalSpec().initialReward)
+            )],
+            actions: [],
+            depositActions: [],
+            genesisActions: [GenesisAction(
+                directory: "Child",
+                blockCID: childCID
+            )],
+            receiptActions: [],
+            withdrawalActions: [],
+            signers: [owner],
+            fee: 0,
+            nonce: 0,
+            chainPath: [DEFAULT_ROOT_DIRECTORY]
+        )
+        let orphan = try await buildAndStoreBlock(
+            previous: missingParent,
+            transactions: [signedTestTransaction(body, by: keyPair)],
+            timestamp: 3_000,
+            target: easy,
+            nonce: 2,
+            fetcher: fetcher
+        )
         let orphanHeader = try BlockHeader(node: orphan)
         let level = makeLevel(genesis: genesis)
+        let recorder = AdmissionStageRecorder()
 
         let result = try await level.admitBlockHeaderChainLocal(
             orphanHeader,
             fetcher: fetcher,
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
-            stage: testAdmissionStage
+            stage: { context in await recorder.stage(context) }
         )
 
         guard case .accepted = result else {
@@ -3170,18 +3269,37 @@ final class ChainLocalAdmissionTests: XCTestCase {
             )
         )
         XCTAssertNil(result.crossChainEvidenceRequirement)
+        XCTAssertEqual(result.parentCarrierLink?.carrierCID, orphanHeader.rawCID)
+        let orphanContexts = await recorder.recordedContexts()
+        let orphanContext = try XCTUnwrap(orphanContexts.first)
+        XCTAssertNil(orphanContext.issuedCarrierLink)
+        XCTAssertEqual(orphanContext.parentGenesisLinks.count, 1)
 
-        let replay = try await level.admitBlockHeaderChainLocal(
-            orphanHeader,
+        _ = try await level.admitBlockHeaderChainLocal(
+            try BlockHeader(node: missingParent),
             fetcher: fetcher,
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
         )
-        guard case .duplicate = replay else {
-            return XCTFail("replayed orphan must remain duplicate")
+        let replay = try await level.preflightBlockHeaderChainLocal(
+            orphanHeader,
+            fetcher: fetcher,
+            validationContentStorer: fetcher
+        )
+        guard case .duplicate(let preflight) = replay else {
+            return XCTFail("replayed connected orphan must remain duplicate")
         }
-        XCTAssertEqual(replay.sameChainPredecessor, result.sameChainPredecessor)
+        let promoted = try await level.resolveDuplicatePreflight(preflight)
+        XCTAssertNil(promoted.result.sameChainPredecessor)
+        XCTAssertEqual(
+            promoted.result.parentCarrierLink?.carrierCID,
+            orphanHeader.rawCID
+        )
+        XCTAssertEqual(
+            promoted.parentGenesisLinks.first?.childGenesisCID,
+            childCID
+        )
     }
 
     func testAdmissionReturnsExactChainLocalReorganization() async throws {
@@ -3394,7 +3512,10 @@ final class ChainLocalAdmissionTests: XCTestCase {
             stage: { batch in await recorder.stage(batch) }
         )
         XCTAssertEqual(orphanExhausted.failure, .revisionExhausted)
-        XCTAssertNil(orphanExhausted.parentCarrierLink)
+        XCTAssertEqual(
+            orphanExhausted.parentCarrierLink?.carrierCID,
+            orphanHeader.rawCID
+        )
         XCTAssertEqual(
             orphanExhausted.sameChainPredecessor,
             SameChainPredecessorRequirement(

@@ -493,29 +493,6 @@ public extension Block {
             && nextTarget == target
     }
 
-    /// Header-only continuity needed to carry a root grind to a descendant.
-    /// Admission-only rules (execution, MTP/future drift, and this block's proposed
-    /// next target) remain local to chains whose target accepts the grind.
-    func hasCarrierContinuity(parent: Block?) -> Bool {
-        guard version == Block.currentVersion else { return false }
-        guard let parent else {
-            return self.parent == nil
-                && height == 0
-                && prevState.rawCID == LatticeState.emptyHeader.rawCID
-        }
-        return self.parent != nil
-            && parent.version == Block.currentVersion
-            && validateSpec(parent: parent)
-            && validateState(parent: parent)
-            && validateHeight(parent: parent)
-            && (target == parent.nextTarget
-                || ChainSpec.isMinimumTargetRecovery(
-                    target: target,
-                    parentNextTarget: parent.nextTarget
-                ))
-            && timestamp > parent.timestamp
-    }
-
     /// Bitcoin-style consensus rules:
     ///   (1) timestamp strictly greater than previous block
     ///   (2) timestamp ≤ now + 2h (bounded future drift — prevents warp

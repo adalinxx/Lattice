@@ -327,10 +327,6 @@ A child candidate `B` is admitted with a `ChildValidationPackage` containing:
   immediate-parent `ParentStateContinuityLink` for the exact old and new state
   CIDs.
 
-An optional `ParentCarrierLink` may accompany older transports, but
-securing-work verification does not depend on it. If supplied, it must identify
-the proof's exact root, immediate-parent path, and deepest carrier.
-
 The node authenticates immediate-parent facts and transports or caches them.
 The child process still verifies the proof, transition, and fact fields. These
 facts grant no authority over child validity or fork choice.
@@ -819,10 +815,12 @@ explicitly retain a carrier or an exact child-link path as availability policy;
 Lattice does not enumerate an attacker-sized child trie. Unresolved same-chain
 predecessors (absent or accepted-but-unconnected) are derived from the accepted
 graph, including after recovery, and must enter this same admission boundary. A
-carrier, duplicate, or rejected candidate that cannot yet issue its link exposes
-the exact typed predecessor requirement so the node can backfill and retry. This
-does not claim a predecessor body is unavailable. Missing cross-chain input
-instead identifies the child proof, immediate-parent state-continuity fact, or
+target miss never triggers predecessor backfill because connectivity cannot make
+that grind satisfy the current chain's target. A target-hit accepted, duplicate,
+or rejected candidate may expose the exact typed predecessor requirement so the
+node can complete ordinary chain admission and issuer promotion. This does not
+claim a predecessor body is unavailable. Missing cross-chain input instead
+identifies the child proof, immediate-parent state-continuity fact, or
 immediate-parent genesis fact that the node must obtain from an authenticated
 source. For a non-genesis candidate with predecessor `P`, continuity is
 reflexive when `P.parentState == B.parentState`; otherwise the immediate
