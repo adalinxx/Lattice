@@ -61,6 +61,12 @@ final class ParentStateContinuityTests: XCTestCase {
         XCTAssertTrue(rightBranch)
         XCTAssertFalse(backward)
         XCTAssertFalse(sideways)
+        let transitivePath = await chain.stateContinuityPath(from: a, to: c)
+        let reflexivePath = await chain.stateContinuityPath(from: b, to: b)
+        let sidewaysPath = await chain.stateContinuityPath(from: c, to: d)
+        XCTAssertEqual(transitivePath, [root, left])
+        XCTAssertEqual(reflexivePath, [])
+        XCTAssertNil(sidewaysPath)
 
         let level = ChainLevel(
             chain: chain,

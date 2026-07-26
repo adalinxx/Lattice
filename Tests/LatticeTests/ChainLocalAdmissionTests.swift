@@ -461,11 +461,9 @@ final class ChainLocalAdmissionTests: XCTestCase {
             proof: proof,
             fetcher: fetcher
         )
-        let verification = await proof.verify(
+        let verification = await proof.verifySecuringWork(
             child: leaf,
-            chainPath: [DEFAULT_ROOT_DIRECTORY, "Middle", "Leaf"],
-            parentCarrierLink: package.parentCarrierLink,
-            parentGenesisLink: package.parentGenesisLink
+            chainPath: [DEFAULT_ROOT_DIRECTORY, "Middle", "Leaf"]
         )
         guard case .success(let evidence) = verification else {
             throw ChainLocalTestError.unexpectedFailure
@@ -1008,10 +1006,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             directoryPath: originalProof.directoryPath,
             entries: originalProof.entries.filter { $0.cid != originalProof.rootCID }
         )
-        let package = ChildValidationPackage(
-            proof: proofWithoutRoot,
-            parentCarrierLink: fixture.package.parentCarrierLink
-        )
+        let package = ChildValidationPackage(proof: proofWithoutRoot)
 
         let result = try await fixture.childLevel.admitBlockHeaderChainLocal(
             try BlockHeader(node: fixture.candidate),
@@ -1025,7 +1020,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(result.failure, .providerMalformedEvidence)
     }
 
-    func testChildProofRejectsCarrierLinkForDifferentRoot() async throws {
+    func testChildProofAcceptsAnyRootThatCommitsToTheChild() async throws {
         let fixture = try await makeChildProofFixture()
         let alternateCarrier = try await buildAndStoreGenesis(
             spec: chainLocalSpec(),
@@ -1040,10 +1035,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             childDirectory: "Child",
             fetcher: fixture.fetcher
         )
-        let package = ChildValidationPackage(
-            proof: alternateProof,
-            parentCarrierLink: fixture.package.parentCarrierLink
-        )
+        let package = ChildValidationPackage(proof: alternateProof)
 
         let result = try await fixture.childLevel.admitBlockHeaderChainLocal(
             try BlockHeader(node: fixture.candidate),
@@ -1054,7 +1046,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             stage: testAdmissionStage
         )
 
-        XCTAssertEqual(result.failure, .providerMalformedEvidence)
+        XCTAssertNil(result.failure)
     }
 
     func testChildProofRejectsConflictingPathEntries() async throws {
@@ -1066,10 +1058,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             directoryPath: proof.directoryPath,
             entries: proof.entries + [(first.cid, first.data + Data([0]))]
         )
-        let package = ChildValidationPackage(
-            proof: conflictingProof,
-            parentCarrierLink: fixture.package.parentCarrierLink
-        )
+        let package = ChildValidationPackage(proof: conflictingProof)
 
         let result = try await fixture.childLevel.admitBlockHeaderChainLocal(
             try BlockHeader(node: fixture.candidate),
@@ -1092,10 +1081,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             directoryPath: proof.directoryPath,
             entries: proof.entries + [first]
         )
-        let package = ChildValidationPackage(
-            proof: duplicateProof,
-            parentCarrierLink: fixture.package.parentCarrierLink
-        )
+        let package = ChildValidationPackage(proof: duplicateProof)
 
         let result = try await fixture.childLevel.admitBlockHeaderChainLocal(
             try BlockHeader(node: fixture.candidate),
@@ -1121,10 +1107,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let result = try await fixture.childLevel.admitBlockHeaderChainLocal(
             try BlockHeader(node: fixture.candidate),
             fetcher: fixture.fetcher,
-            childPackage: ChildValidationPackage(
-                proof: paddedProof,
-                parentCarrierLink: fixture.package.parentCarrierLink
-            ),
+            childPackage: ChildValidationPackage(proof: paddedProof),
             validationContentStorer: fixture.fetcher,
             materializedVolumeStorer: fixture.fetcher,
             stage: testAdmissionStage
@@ -1195,23 +1178,6 @@ final class ChainLocalAdmissionTests: XCTestCase {
         )
         XCTAssertEqual(surplusBeforeAcquisition.failure, .providerMalformedEvidence)
 
-        let wrongBinding = try await childLevel.admitBlockHeaderChainLocal(
-            try BlockHeader(node: candidate),
-            fetcher: fetcher,
-            childPackage: ChildValidationPackage(
-                proof: proof,
-                parentCarrierLink: ParentCarrierLink(
-                    parentPath: ["Wrong"],
-                    carrierCID: proof.rootCID,
-                    rootCID: proof.rootCID
-                )
-            ),
-            validationContentStorer: fetcher,
-            materializedVolumeStorer: fetcher,
-            stage: testAdmissionStage
-        )
-        XCTAssertEqual(wrongBinding.failure, .providerMalformedEvidence)
-
         let missing = try await childLevel.admitBlockHeaderChainLocal(
             try BlockHeader(node: candidate),
             fetcher: fetcher,
@@ -1224,34 +1190,6 @@ final class ChainLocalAdmissionTests: XCTestCase {
             return XCTFail("proof-derived work should admit without a carrier fact")
         }
         XCTAssertNil(missing.sameChainPredecessor)
-
-        let parentLevel = makeLevel(genesis: parentGenesis)
-        let parentResult = try await parentLevel.admitBlockHeaderChainLocal(
-            try BlockHeader(node: parentCarrier),
-            fetcher: fetcher,
-            validationContentStorer: fetcher,
-            materializedVolumeStorer: fetcher,
-            stage: testAdmissionStage
-        )
-        let link = try XCTUnwrap(parentResult.parentCarrierLink)
-        XCTAssertEqual(link.parentPath, [DEFAULT_ROOT_DIRECTORY])
-        XCTAssertEqual(link.carrierCID, proof.rootCID)
-        XCTAssertEqual(link.rootCID, proof.rootCID)
-
-        let admitted = try await childLevel.admitBlockHeaderChainLocal(
-            try BlockHeader(node: candidate),
-            fetcher: fetcher,
-            childPackage: ChildValidationPackage(
-                proof: proof,
-                parentCarrierLink: link
-            ),
-            validationContentStorer: fetcher,
-            materializedVolumeStorer: fetcher,
-            stage: testAdmissionStage
-        )
-        if case .rejected(let failure, _, _) = admitted {
-            XCTFail("authenticated carrier fact should admit child: \(failure)")
-        }
     }
 
     func testForgedIntermediateTargetCannotProduceCarrierLink() async throws {
@@ -1281,15 +1219,6 @@ final class ChainLocalAdmissionTests: XCTestCase {
             fetcher: fetcher
         )
 
-        let nexusLevel = makeLevel(genesis: nexusGenesis)
-        let rootResult = try await nexusLevel.admitBlockHeaderChainLocal(
-            try BlockHeader(node: root),
-            fetcher: fetcher,
-            validationContentStorer: fetcher,
-            materializedVolumeStorer: fetcher,
-            stage: testAdmissionStage
-        )
-        let rootLink = try XCTUnwrap(rootResult.parentCarrierLink)
         let proof = try await ChildBlockProof.generate(
             rootHeader: try BlockHeader(node: root),
             childDirectory: "Middle",
@@ -1304,10 +1233,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let result = try await middleLevel.admitBlockHeaderChainLocal(
             try BlockHeader(node: forgedMiddle),
             fetcher: fetcher,
-            childPackage: ChildValidationPackage(
-                proof: proof,
-                parentCarrierLink: rootLink
-            ),
+            childPackage: ChildValidationPackage(proof: proof),
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
@@ -1950,7 +1876,6 @@ final class ChainLocalAdmissionTests: XCTestCase {
             fetcher: fetcher,
             childPackage: ChildValidationPackage(
                 proof: proof,
-                parentCarrierLink: carrierLink,
                 parentGenesisLink: genesisLink
             ),
             validationContentStorer: fetcher,
@@ -2009,14 +1934,13 @@ final class ChainLocalAdmissionTests: XCTestCase {
 
         let nexusLevel = makeLevel(genesis: nexusGenesis)
         let rootHeader = try BlockHeader(node: root)
-        let rootResult = try await nexusLevel.admitBlockHeaderChainLocal(
+        _ = try await nexusLevel.admitBlockHeaderChainLocal(
             rootHeader,
             fetcher: fetcher,
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
         )
-        let rootLink = try XCTUnwrap(rootResult.parentCarrierLink)
         let genesisLink: ParentGenesisLink
         switch await nexusLevel.genesisLink(
             parentBlockHeader: rootHeader,
@@ -2047,7 +1971,6 @@ final class ChainLocalAdmissionTests: XCTestCase {
             fetcher: fetcher,
             childPackage: ChildValidationPackage(
                 proof: proof,
-                parentCarrierLink: rootLink,
                 parentGenesisLink: genesisLink
             ),
             validationContentStorer: fetcher,
@@ -2539,7 +2462,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
         )
-        guard case .carrier(let middleLink) = middleResult else {
+        guard case .carrier = middleResult else {
             return XCTFail("the target-miss intermediate must not require a runtime")
         }
 
@@ -2558,10 +2481,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let admitted = try await leafLevel.admitBlockHeaderChainLocal(
             try BlockHeader(node: leaf),
             fetcher: fetcher,
-            childPackage: ChildValidationPackage(
-                proof: leafProof,
-                parentCarrierLink: middleLink
-            ),
+            childPackage: ChildValidationPackage(proof: leafProof),
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
@@ -2683,8 +2603,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             try BlockHeader(node: leaf),
             fetcher: fetcher,
             childPackage: ChildValidationPackage(
-                proof: rootHop.composing(hop: leafHop),
-                parentCarrierLink: middleLink
+                proof: rootHop.composing(hop: leafHop)
             ),
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
@@ -2894,11 +2813,9 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let fixture = try await makeChildProofFixture()
         let candidate = fixture.candidate
         let proof = fixture.package.proof
-        let valid = await proof.verify(
+        let valid = await proof.verifySecuringWork(
             child: candidate,
-            chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"],
-            parentCarrierLink: fixture.package.parentCarrierLink,
-            parentGenesisLink: fixture.package.parentGenesisLink
+            chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
         )
         guard case .success(let evidence) = valid else {
             return XCTFail("fixture proof must verify")
@@ -2908,16 +2825,9 @@ final class ChainLocalAdmissionTests: XCTestCase {
             try BlockHeader(node: candidate).rawCID
         )
 
-        let carrierLink = try XCTUnwrap(fixture.package.parentCarrierLink)
-        let alternateRoot = await proof.verify(
+        let alternateRoot = await proof.verifySecuringWork(
             child: candidate,
-            chainPath: ["Other", "Child"],
-            parentCarrierLink: ParentCarrierLink(
-                parentPath: ["Other"],
-                carrierCID: carrierLink.carrierCID,
-                rootCID: carrierLink.rootCID
-            ),
-            parentGenesisLink: fixture.package.parentGenesisLink
+            chainPath: ["Other", "Child"]
         )
         guard case .failure(let alternateRootFailure) = alternateRoot else {
             return XCTFail("proof verification must reject a non-Nexus root")
@@ -2939,11 +2849,9 @@ final class ChainLocalAdmissionTests: XCTestCase {
             timestamp: candidate.timestamp,
             nonce: candidate.nonce + 1
         )
-        let mismatched = await proof.verify(
+        let mismatched = await proof.verifySecuringWork(
             child: impostor,
-            chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"],
-            parentCarrierLink: fixture.package.parentCarrierLink,
-            parentGenesisLink: fixture.package.parentGenesisLink
+            chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
         )
         guard case .failure(let failure) = mismatched else {
             return XCTFail("proof evidence must not transfer to another child")
@@ -2983,16 +2891,19 @@ final class ChainLocalAdmissionTests: XCTestCase {
             fetcher: fetcher
         )
 
-        let result = await proof.verify(
-            child: invalidChild,
-            chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"],
-            parentCarrierLink: nil,
-            parentGenesisLink: nil
+        let level = ChainLevel(
+            chain: ChainState.fromGenesis(block: validChild),
+            context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
         )
-        guard case .failure(let failure) = result else {
-            return XCTFail("an impossible genesis must not request evidence")
-        }
-        XCTAssertEqual(failure, .protocolInvalid)
+        let result = try await level.admitBlockHeaderChainLocal(
+            try BlockHeader(node: invalidChild),
+            fetcher: fetcher,
+            childPackage: ChildValidationPackage(proof: proof),
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
+            stage: testAdmissionStage
+        )
+        XCTAssertEqual(result.failure, .protocolInvalid)
     }
 
     func testMultiHopProofCreditsOuterTargetWhenItIsStrongest() async throws {
