@@ -11,8 +11,11 @@ enum ChildProofWireLimits {
     // UInt16 in the proof wire format, so this is the encoding capacity, not a
     // policy limit on how long a directory may be.
     static let maximumDirectoryBytes = Int(UInt16.max)
-    // Protocol resource bound; UInt16 is only the encoding capacity.
-    static let maximumDepth = 256
+    // Structural serialized field width: the directory path is length-prefixed
+    // with a UInt16 in the proof wire format, so this is the encoding capacity,
+    // not a policy limit on how deeply a chain may nest. A node that wants a
+    // tighter bound on proof-walk depth enforces it as a local resource choice.
+    static let maximumDepth = Int(UInt16.max)
 }
 
 /// Canonical sparse proof for the terminal parent-to-child commitment in a
