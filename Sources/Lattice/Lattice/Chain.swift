@@ -565,6 +565,7 @@ public actor ChainState {
     var segmentWorkUpdateCellCount: UInt64
     var segmentGraftCount: UInt64
     var segmentGraftBlockVisitCount: UInt64
+    var stateContinuityBlockVisitCount: UInt64
 #endif
     /// Diagnostic prefix/subtree totals are derived local views. They are not
     /// fork-choice inputs and are rebuilt only when an API exposes them.
@@ -581,8 +582,8 @@ public actor ChainState {
 
     public private(set) var tipSnapshot: TipBlockSnapshot?
     var tipSnapshotsByHash: [String: TipBlockSnapshot]
-    private var stateTransitionsByFromState: [String: Set<String>]
     private var blocksByStateTransition: [StateTransition: Set<String>]
+    private var blocksByPostState: [String: Set<String>]
 
     // Restore validates this invariant; optional access keeps query paths fail-closed.
     var highestBlock: BlockMeta? { hashToBlock[chainTip] }
@@ -632,6 +633,7 @@ public actor ChainState {
         self.segmentWorkUpdateCellCount = 0
         self.segmentGraftCount = 0
         self.segmentGraftBlockVisitCount = 0
+        self.stateContinuityBlockVisitCount = 0
 #endif
         self.localWorkCachesDirty = true
         var allByHeight = indexToBlockHash
@@ -644,19 +646,19 @@ public actor ChainState {
         if let tipSnapshot {
             self.tipSnapshotsByHash[chainTip] = tipSnapshot
         }
-        self.stateTransitionsByFromState = [:]
         self.blocksByStateTransition = [:]
+        self.blocksByPostState = [:]
         for (blockHash, snapshot) in self.tipSnapshotsByHash
         where hashToBlock[blockHash] != nil {
-            self.stateTransitionsByFromState[
-                snapshot.prevStateCID,
-                default: []
-            ].insert(blockHash)
             self.blocksByStateTransition[
                 StateTransition(
                     from: snapshot.prevStateCID,
                     to: snapshot.postStateCID
                 ),
+                default: []
+            ].insert(blockHash)
+            self.blocksByPostState[
+                snapshot.postStateCID,
                 default: []
             ].insert(blockHash)
         }
@@ -972,42 +974,35 @@ public actor ChainState {
             return [direct]
         }
 
-        var pending = Array(stateTransitionsByFromState[from] ?? [])
+        var pending = Array(blocksByPostState[to] ?? [])
             .filter { segmentIndex.base(forBlock: $0) != nil }
             .sorted(by: >)
         var visited = Set<String>()
+        var childTowardTarget: [String: String] = [:]
         while let blockHash = pending.popLast() {
             guard visited.insert(blockHash).inserted,
                   let block = hashToBlock[blockHash],
                   let snapshot = tipSnapshotsByHash[blockHash] else {
                 continue
             }
-            if snapshot.postStateCID == to {
+#if DEBUG
+            stateContinuityBlockVisitCount &+= 1
+#endif
+            if snapshot.prevStateCID == from {
                 var path = [blockHash]
-                var cursor = block
-                while tipSnapshotsByHash[cursor.blockHash]?.prevStateCID != from {
-                    guard let parentHash = cursor.parentBlockHash,
-                          let parent = hashToBlock[parentHash] else {
-                        return nil
-                    }
-                    path.append(parentHash)
-                    cursor = parent
+                while let child = childTowardTarget[path.last!] {
+                    path.append(child)
                 }
-                return path.reversed()
+                return path
             }
-            for childHash in block.childHashes.sorted(by: >) {
-                let (expectedHeight, overflow) =
-                    block.blockHeight.addingReportingOverflow(1)
-                guard let child = hashToBlock[childHash],
-                      child.parentBlockHash == blockHash,
-                      !overflow,
-                      child.blockHeight == expectedHeight,
-                      let childSnapshot = tipSnapshotsByHash[childHash],
-                      childSnapshot.prevStateCID == snapshot.postStateCID else {
-                    continue
-                }
-                pending.append(childHash)
-            }
+            guard let parentHash = block.parentBlockHash,
+                  segmentIndex.base(forBlock: parentHash) != nil,
+                  let parent = hashToBlock[parentHash],
+                  let parentSnapshot = tipSnapshotsByHash[parentHash],
+                  parentSnapshot.postStateCID == snapshot.prevStateCID
+            else { continue }
+            childTowardTarget[parentHash] = blockHash
+            pending.append(parent.blockHash)
         }
         return nil
     }
@@ -1917,26 +1912,26 @@ public actor ChainState {
     ) {
         if let previous = tipSnapshotsByHash[blockHash],
            previous != snapshot {
-            stateTransitionsByFromState[
-                previous.prevStateCID
-            ]?.remove(blockHash)
             blocksByStateTransition[
                 StateTransition(
                     from: previous.prevStateCID,
                     to: previous.postStateCID
                 )
             ]?.remove(blockHash)
+            blocksByPostState[
+                previous.postStateCID
+            ]?.remove(blockHash)
         }
         tipSnapshotsByHash[blockHash] = snapshot
-        stateTransitionsByFromState[
-            snapshot.prevStateCID,
-            default: []
-        ].insert(blockHash)
         blocksByStateTransition[
             StateTransition(
                 from: snapshot.prevStateCID,
                 to: snapshot.postStateCID
             ),
+            default: []
+        ].insert(blockHash)
+        blocksByPostState[
+            snapshot.postStateCID,
             default: []
         ].insert(blockHash)
     }

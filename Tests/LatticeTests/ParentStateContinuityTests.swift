@@ -41,15 +41,27 @@ final class ParentStateContinuityTests: XCTestCase {
         let c = testCID("state-c")
         let d = testCID("state-d")
         let e = testCID("state-e")
+        let z = testCID("state-z")
         let root = testCID("parent-root")
         let left = testCID("parent-left")
         let right = testCID("parent-right")
         let leftTip = testCID("parent-left-tip")
+        let rightTip = testCID("parent-right-tip")
+        let orphan = testCID("parent-orphan")
         let chain = try await ChainState.restore(replaying: [
             batch(root, parent: nil, height: 0, from: a, to: b, nonce: 1),
             batch(left, parent: root, height: 1, from: b, to: c, nonce: 2),
             batch(right, parent: root, height: 1, from: b, to: d, nonce: 3),
             batch(leftTip, parent: left, height: 2, from: c, to: e, nonce: 4),
+            batch(rightTip, parent: right, height: 2, from: d, to: e, nonce: 5),
+            batch(
+                orphan,
+                parent: testCID("missing-parent"),
+                height: 2,
+                from: d,
+                to: z,
+                nonce: 6
+            ),
         ])
 
         let reflexive = await chain.hasStateContinuity(from: b, to: b)
@@ -70,6 +82,21 @@ final class ParentStateContinuityTests: XCTestCase {
         XCTAssertEqual(transitivePath, [root, left])
         XCTAssertEqual(reflexivePath, [])
         XCTAssertNil(sidewaysPath)
-
+        let repeatedLeft = await chain.stateContinuityPath(from: c, to: e)
+        let repeatedRight = await chain.stateContinuityPath(from: d, to: e)
+        let disconnected = await chain.hasStateContinuity(from: d, to: z)
+        XCTAssertEqual(repeatedLeft, [leftTip])
+        XCTAssertEqual(repeatedRight, [rightTip])
+        XCTAssertFalse(disconnected)
+#if DEBUG
+        let visits = await chain.stateContinuityBlockVisitCount
+        let absent = await chain.hasStateContinuity(
+            from: a,
+            to: testCID("absent-target")
+        )
+        let visitsAfterAbsent = await chain.stateContinuityBlockVisitCount
+        XCTAssertFalse(absent)
+        XCTAssertEqual(visitsAfterAbsent, visits)
+#endif
     }
 }
