@@ -88,6 +88,18 @@ final class ParentStateContinuityTests: XCTestCase {
         XCTAssertEqual(repeatedLeft, [leftTip])
         XCTAssertEqual(repeatedRight, [rightTip])
         XCTAssertFalse(disconnected)
+        let budgetExceeded = await chain.stateContinuityPath(
+            from: a,
+            to: c,
+            maximumBlockVisits: 1
+        )
+        let boundedPath = await chain.stateContinuityPath(
+            from: a,
+            to: c,
+            maximumBlockVisits: 2
+        )
+        XCTAssertNil(budgetExceeded)
+        XCTAssertEqual(boundedPath, [root, left])
 #if DEBUG
         let visits = await chain.stateContinuityBlockVisitCount
         let absent = await chain.hasStateContinuity(
