@@ -26,15 +26,18 @@ public struct ChainRuntimeContext: Sendable, Equatable {
         guard path.dropFirst().count <= ChildProofWireLimits.maximumDepth else {
             throw ChainRuntimeContextError.pathTooDeep
         }
+        // A directory must fit the proof wire format's UInt16 length prefix so
+        // every chain path stays provable. This is a serialized field width, not
+        // a policy limit.
         guard path.allSatisfy({
-            $0.utf8.count <= StateAtomLimits.maximumDirectoryBytes
+            $0.utf8.count <= ChildProofWireLimits.maximumDirectoryBytes
         }) else {
             throw ChainRuntimeContextError.directoryTooLong
         }
         guard path.allSatisfy({ !$0.contains(DIRECTORY_KEY_SEPARATOR) }) else {
             throw ChainRuntimeContextError.directoryContainsSeparator
         }
-        guard path.allSatisfy(StateAtomLimits.isDirectory) else {
+        guard path.allSatisfy(isValidDirectoryAtom) else {
             throw ChainRuntimeContextError.invalidDirectory
         }
         self.path = path

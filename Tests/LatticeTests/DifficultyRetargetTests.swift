@@ -32,10 +32,10 @@ final class DifficultyRetargetTests: XCTestCase {
             weightedActual = weightedActual > UInt256.max - weightedSolve ? UInt256.max : weightedActual + weightedSolve
             weightSum = weightSum + weight
         }
-        guard weightedActual > .zero else { return ChainSpec.minimumTarget }
+        guard weightedActual > .zero else { return .zero }
 
         let weightedTarget = UInt256(targetBlockTime) * weightSum
-        return max(oracleMultiplyDividingSaturating(previousTarget, by: weightedActual, over: weightedTarget), ChainSpec.minimumTarget)
+        return oracleMultiplyDividingSaturating(previousTarget, by: weightedActual, over: weightedTarget)
     }
 
     private func oracleMultiplyDividingSaturating(_ value: UInt256, by numerator: UInt256, over denominator: UInt256) -> UInt256 {
@@ -91,11 +91,12 @@ final class DifficultyRetargetTests: XCTestCase {
     // MARK: - Proportional-retarget window/clamp invariant (E4.6 /
 
     /// Bound a single retarget step the way the choke point must: at most
-    /// `maxTargetChange`× in either direction, never below `minimumTarget`.
+    /// `maxTargetChange`× in either direction. There is no absolute floor — the
+    /// clamp is the only bound.
     private func clampBounds(previousTarget: UInt256) -> (lower: UInt256, upper: UInt256) {
         let factor = UInt256(UInt64(ChainSpec.maxTargetChange))
         let upper = previousTarget > UInt256.max / factor ? UInt256.max : previousTarget * factor
-        let lower = max(previousTarget / factor, ChainSpec.minimumTarget)
+        let lower = previousTarget / factor
         return (lower, upper)
     }
 
@@ -109,12 +110,10 @@ final class DifficultyRetargetTests: XCTestCase {
         let result = s.calculateWindowedTarget(previousTarget: previousTarget, ancestorTimestamps: ancestorTimestamps)
         let (lower, upper) = clampBounds(previousTarget: previousTarget)
 
-        // (1) per-retarget move bounded by maxTargetChange in either direction.
+        // Per-retarget move bounded by maxTargetChange in either direction. This
+        // clamp is the only bound: there is no absolute target floor.
         XCTAssertLessThanOrEqual(result, upper, "target rose by more than maxTargetChange×", file: file, line: line)
         XCTAssertGreaterThanOrEqual(result, lower, "target fell by more than maxTargetChange×", file: file, line: line)
-
-        // (2) never below minimumTarget.
-        XCTAssertGreaterThanOrEqual(result, ChainSpec.minimumTarget, "target dropped below minimumTarget", file: file, line: line)
     }
 
     /// A miner who grinds an enormous solve-time spread must not be able to
@@ -188,8 +187,8 @@ final class DifficultyRetargetTests: XCTestCase {
         assertRetargetInvariants(s, previousTarget: previous, ancestorTimestamps: padded)
     }
 
-    /// Property sweep: across a range of adversarial timestamp spreads the three
-    /// invariants (clamp up, clamp down, minimumTarget floor) always hold.
+    /// Property sweep: across a range of adversarial timestamp spreads the two
+    /// clamp invariants (clamp up, clamp down) always hold.
     func testRetargetInvariantsHoldAcrossAdversarialTimestamps() {
         let s = spec(window: 8, target: 1_000)
         let previousTargets: [UInt256] = [UInt256(1), UInt256(2), UInt256(1_000), UInt256(10_000), UInt256.max]
@@ -213,24 +212,25 @@ final class DifficultyRetargetTests: XCTestCase {
     }
 
     /// When the timestamp window has 0 or 1 elements no retarget interval can be
-    /// computed, so the early-return must still apply the minimumTarget floor. A
-    /// zero previousTarget on this path previously leaked straight through,
-    /// bypassing both the floor and the clamp.
-    func testRetargetFloorsZeroPreviousTargetOnEmptyOrSingleWindow() {
+    /// computed, so the early-return keeps the previous target unchanged. There is
+    /// no minimum-target floor: a zero previousTarget passes straight through. A
+    /// zero-target chain is unmineable, but that is a deployer/operator condition,
+    /// not a protocol violation the retarget invents a floor to paper over.
+    func testEmptyOrSingleWindowKeepsPreviousTargetUnchanged() {
         let s = spec(window: 8, target: 1_000)
 
         // Empty window.
-        XCTAssertGreaterThanOrEqual(
+        XCTAssertEqual(
             s.calculateWindowedTarget(previousTarget: .zero, ancestorTimestamps: []),
-            ChainSpec.minimumTarget,
-            "zero previousTarget with an empty window must be floored at minimumTarget"
+            .zero,
+            "an empty window must keep the previous target unchanged"
         )
 
         // Single-element window (still no interval available).
-        XCTAssertGreaterThanOrEqual(
+        XCTAssertEqual(
             s.calculateWindowedTarget(previousTarget: .zero, ancestorTimestamps: [10_000]),
-            ChainSpec.minimumTarget,
-            "zero previousTarget with a single timestamp must be floored at minimumTarget"
+            .zero,
+            "a single timestamp must keep the previous target unchanged"
         )
     }
 

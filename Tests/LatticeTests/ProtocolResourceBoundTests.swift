@@ -13,19 +13,23 @@ final class ProtocolResourceBoundTests: XCTestCase {
         ))
     }
 
-    func testStateAtomBoundariesAndGrammar() {
-        XCTAssertTrue(StateAtomLimits.isAccount(String(repeating: "a", count: 128)))
-        XCTAssertFalse(StateAtomLimits.isAccount(String(repeating: "a", count: 129)))
-        XCTAssertFalse(StateAtomLimits.isAccount("alice bob"))
-        XCTAssertFalse(StateAtomLimits.isAccount("alice/bob"))
-        XCTAssertFalse(StateAtomLimits.isAccount("álîce"))
+    func testStateAtomGrammarImposesNoLengthLimit() {
+        // No length limit — key size is a node storage concern, not a protocol
+        // rule. Lengths that the old caps rejected (129/65/129) are now valid.
+        XCTAssertTrue(isValidAccountAtom(String(repeating: "a", count: 129)))
+        XCTAssertTrue(isValidAccountAtom(String(repeating: "a", count: 100_000)))
+        XCTAssertTrue(isValidDirectoryAtom(String(repeating: "d", count: 65)))
+        XCTAssertTrue(isValidGeneralAtom(String(repeating: "k", count: 129)))
 
-        XCTAssertTrue(StateAtomLimits.isDirectory(String(repeating: "d", count: 64)))
-        XCTAssertFalse(StateAtomLimits.isDirectory(String(repeating: "d", count: 65)))
-        XCTAssertFalse(StateAtomLimits.isDirectory("parent/child"))
-
-        XCTAssertTrue(StateAtomLimits.isGeneralKey(String(repeating: "k", count: 128)))
-        XCTAssertFalse(StateAtomLimits.isGeneralKey(String(repeating: "k", count: 129)))
+        // The structural grammar is preserved: non-empty, visible ASCII (the
+        // trie keys by Swift String), and the "/" ban on account/directory
+        // atoms (cross-chain receipt-key injectivity).
+        XCTAssertFalse(isValidAccountAtom(""))
+        XCTAssertFalse(isValidAccountAtom("alice bob"))     // space is not visible ASCII
+        XCTAssertFalse(isValidAccountAtom("alice/bob"))     // separator banned
+        XCTAssertFalse(isValidAccountAtom("álîce"))         // non-ASCII
+        XCTAssertFalse(isValidDirectoryAtom("parent/child"))
+        XCTAssertTrue(isValidGeneralAtom("k/v"))            // general keys may contain "/"
     }
 
     func testTransactionShapeChecksEveryStateKeyAtom() {
@@ -172,7 +176,7 @@ final class ProtocolResourceBoundTests: XCTestCase {
             accountActions: [],
             actions: [
                 Action(
-                    key: String(repeating: "k", count: 129),
+                    key: "inv\u{00e1}lid",   // non-ASCII: rejected by the grammar (not a length cap)
                     oldValue: nil,
                     newValue: "value"
                 ),
