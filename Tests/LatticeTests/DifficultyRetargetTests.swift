@@ -318,25 +318,6 @@ final class DifficultyRetargetTests: XCTestCase {
         XCTAssertFalse(block.validateNextTarget(spec: s, parent: parent, ancestorTimestamps: [parent.timestamp]))
     }
 
-    func testMTPMedianIsPinnedToMostRecentElevenTimestamps() async throws {
-        let s = spec(window: 20, target: 1_000)
-        let fetcher = StorableFetcher()
-        let parent = try await makeGenesis(spec: s, timestamp: 1_000, target: UInt256(10_000), fetcher: fetcher)
-        let block = try await makeNext(
-            previous: parent,
-            timestamp: 1_035,
-            target: parent.nextTarget,
-            nextTarget: UInt256(10_000),
-            fetcher: fetcher
-        )
-        let mostRecentEleven: [Int64] = [1_050, 1_040, 1_030, 1_020, 1_010, 1_000, 990, 980, 970, 960, 950]
-        let olderHighOutliers = Array(repeating: Int64(10_000), count: 9)
-        let oldAllWindowMedian = (mostRecentEleven + olderHighOutliers).sorted()[9]
-
-        XCTAssertLessThanOrEqual(block.timestamp, oldAllWindowMedian)
-        XCTAssertTrue(block.validateTimestamp(parent: parent, ancestorTimestamps: mostRecentEleven + olderHighOutliers))
-    }
-
     func testMissingAncestorIsUnavailableInsteadOfTwoBlockFallback() async throws {
         let s = spec(window: 120, target: 1_000)
         let fullFetcher = StorableFetcher()

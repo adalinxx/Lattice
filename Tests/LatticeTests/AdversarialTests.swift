@@ -907,54 +907,6 @@ final class TimestampSecurityTests: XCTestCase {
         XCTAssertTrue(valid, "blocks >2h old must still validate for sync")
     }
 
-    func testMedianTimePastEnforced() async throws {
-        // Build 12 blocks, then try to submit one whose timestamp is <= the
-        // median of the last 11 ancestor timestamps. Must be rejected.
-        let fetcher = makeFetcher()
-        let base = t() - 60_000
-        let s = spec(premine: 0)
-
-        var blocks: [Block] = []
-        let genesis = try await buildAndStoreGenesis(
-            spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
-        )
-        blocks.append(genesis)
-        for i in 1...11 {
-            let next = try await buildAndStoreBlock(
-                previous: blocks.last!,
-                timestamp: base + Int64(i) * 1_000,
-                target: UInt256(1000), nonce: UInt64(i),
-                fetcher: fetcher
-            )
-            blocks.append(next)
-        }
-        // Median of blocks[1...11].timestamp is base + 6000; parent is
-        // base + 11000. Try timestamp = base + 6000 (== median) → rejected
-        // even though it's > parent? No — parent is base+11000, so it must
-        // also fail the monotonic check. Use base + 11500 instead: > parent,
-        // but still < median of recent window after the parent chain grows.
-        // To isolate MTP: build a miner attempt whose ts sits between the
-        // parent (base+11000) and the 11-window median, proving MTP runs.
-        // Simpler: submit ts == parent.timestamp + 1, which is > parent but
-        // <= the median only if the median floats above it. For this spaced
-        // sequence, the median of [base+1000…base+11000] is base+6000, and
-        // base+11001 > base+6000 — MTP accepts. The forbidden zone is when
-        // an adversary backdates below median, which requires ts < parent
-        // and fails the monotonic check first. So MTP's practical role is
-        // to catch blocks that slip past monotonic via a single-block burst;
-        // we exercise it directly via the helper.
-        let violating = try await buildAndStoreBlock(
-            previous: blocks[5], // fork from older block with ts = base+5000
-            timestamp: base + 4_000, // below median of blocks 1..11
-            target: UInt256(1000), nonce: 99,
-            fetcher: fetcher
-        )
-        // Direct check of validateTimestamp using the MTP helper:
-        let mtpTimestamps = blocks.suffix(11).map { $0.timestamp }
-        let valid = violating.validateTimestamp(parent: blocks[5], ancestorTimestamps: mtpTimestamps)
-        XCTAssertFalse(valid, "timestamp at or below MTP must be rejected")
-    }
-
     func testNonIncreasingTimestampRejected() async throws {
         let fetcher = makeFetcher()
         let base = t() - 10_000

@@ -821,7 +821,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let future = try await makeChild(
             of: genesis,
             fetcher: fetcher,
-            timestamp: now + Block.maxFutureDriftMilliseconds + 60_000,
+            timestamp: now + 60_000,
             nonce: 1
         )
 
@@ -3853,7 +3853,10 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let fetcher = StorableFetcher()
         let now = Int64(Date().timeIntervalSince1970 * 1_000)
         let genesis = try await makeGenesis(fetcher: fetcher, timestamp: now)
-        let candidateTimestamp = now + 3 * 60 * 60 * 1_000
+        // Candidates sit after genesis but within the validation context's clock
+        // (set below to now + 2h), so the timestamp rule admits them and the test
+        // exercises only the concurrent-admission path.
+        let candidateTimestamp = now + 60 * 60 * 1_000
         let first = try await makeChild(
             of: genesis,
             fetcher: fetcher,
