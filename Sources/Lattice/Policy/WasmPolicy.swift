@@ -4,7 +4,7 @@ import cashew
 import WasmKit
 import WasmParser
 
-public typealias WasmPolicyModuleHeader = HeaderImpl<WasmPolicyModule>
+public typealias WasmPolicyModuleHeader = VolumeImpl<WasmPolicyModule>
 
 public struct WasmPolicyModule: Scalar {
     public let bytes: Data
@@ -224,6 +224,10 @@ private struct WasmPolicyResourceLimiter: ResourceLimiter {
 
 public enum WasmPolicyEvaluator {
     public static let maxModuleBytes = 256 * 1024
+    /// Canonical JSON stores `Data` as base64; 16 bytes covers the one-field
+    /// object framing beyond the exact 4 * ceil(n / 3) payload expansion.
+    public static let maximumModuleVolumeBytes =
+        4 * ((maxModuleBytes + 2) / 3) + 16
     public static let maxMemoryBytes = 2 * 1024 * 1024
     public static let maxTableElements = 1024
     public static let executionFeatureSet: WasmFeatureSet = [.referenceTypes]

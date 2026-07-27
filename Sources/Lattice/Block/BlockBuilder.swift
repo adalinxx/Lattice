@@ -6,6 +6,7 @@ public enum BlockBuilderError: Error {
     case missingPrevState
     case missingSpec
     case heightOverflow
+    case invalidTransactionContent
 }
 
 public struct BlockBuildResult: Sendable {
@@ -56,10 +57,89 @@ public struct BlockBuilder {
         version: UInt16 = Block.currentVersion,
         fetcher: Fetcher
     ) async throws -> BlockBuildResult {
+        try await buildGenesisWithTransition(
+            spec: spec,
+            transactions: transactions,
+            children: children,
+            parentState: LatticeState.emptyHeader,
+            timestamp: timestamp,
+            target: target,
+            nonce: nonce,
+            version: version,
+            fetcher: fetcher
+        )
+    }
+
+    /// Build a child-chain genesis that commits the entering state of the
+    /// parent carrier which will contain it. The child's own `prevState` remains
+    /// empty; `parentState` is the vertical binding verified by
+    /// `ChildBlockProof`.
+    public static func buildChildGenesis(
+        spec: ChainSpec,
+        parentState: LatticeStateHeader,
+        transactions: [Transaction] = [],
+        children: [String: Block] = [:],
+        timestamp: Int64,
+        target: UInt256,
+        nonce: UInt64 = 0,
+        version: UInt16 = Block.currentVersion,
+        fetcher: Fetcher
+    ) async throws -> Block {
+        try await buildChildGenesisWithTransition(
+            spec: spec,
+            parentState: parentState,
+            transactions: transactions,
+            children: children,
+            timestamp: timestamp,
+            target: target,
+            nonce: nonce,
+            version: version,
+            fetcher: fetcher
+        ).block
+    }
+
+    public static func buildChildGenesisWithTransition(
+        spec: ChainSpec,
+        parentState: LatticeStateHeader,
+        transactions: [Transaction] = [],
+        children: [String: Block] = [:],
+        timestamp: Int64,
+        target: UInt256,
+        nonce: UInt64 = 0,
+        version: UInt16 = Block.currentVersion,
+        fetcher: Fetcher
+    ) async throws -> BlockBuildResult {
+        try await buildGenesisWithTransition(
+            spec: spec,
+            transactions: transactions,
+            children: children,
+            parentState: parentState,
+            timestamp: timestamp,
+            target: target,
+            nonce: nonce,
+            version: version,
+            fetcher: fetcher
+        )
+    }
+
+    private static func buildGenesisWithTransition(
+        spec: ChainSpec,
+        transactions: [Transaction],
+        children: [String: Block],
+        parentState: LatticeStateHeader,
+        timestamp: Int64,
+        target: UInt256,
+        nonce: UInt64,
+        version: UInt16,
+        fetcher: Fetcher
+    ) async throws -> BlockBuildResult {
         let emptyState = LatticeState.emptyState()
         let prevState = try LatticeStateHeader(node: emptyState)
 
-        let transactionBodies = transactions.compactMap { $0.body.node }
+        let transactionBodies = try await validatedTransactionBodies(
+            transactions,
+            fetcher: fetcher
+        )
         let (postState, stateDiff) = try await computePostState(
             prevState: prevState,
             transactionBodies: transactionBodies,
@@ -73,7 +153,7 @@ public struct BlockBuilder {
             target: target,
             nextTarget: target,
             spec: try VolumeImpl<ChainSpec>(node: spec),
-            parentState: prevState.removingNode(),
+            parentState: parentState.removingNode(),
             prevState: prevState.removingNode(),
             postState: postState,
             children: try buildChildrenDictionary(children),
@@ -160,7 +240,10 @@ public struct BlockBuilder {
         }
         let previousCID = try BlockHeader(node: previous).rawCID
 
-        let transactionBodies = transactions.compactMap { $0.body.node }
+        let transactionBodies = try await validatedTransactionBodies(
+            transactions,
+            fetcher: fetcher
+        )
         let (postState, stateDiff) = try await computePostState(
             prevState: prevState,
             transactionBodies: transactionBodies,
@@ -187,6 +270,23 @@ public struct BlockBuilder {
             stateDiff: stateDiff,
             materializedPostState: postState.node
         )
+    }
+
+    private static func validatedTransactionBodies(
+        _ transactions: [Transaction],
+        fetcher: Fetcher
+    ) async throws -> [TransactionBody] {
+        var bodies: [TransactionBody] = []
+        bodies.reserveCapacity(transactions.count)
+        for transaction in transactions {
+            guard let body = try await transaction.body.resolve(
+                fetcher: fetcher
+            ).node, body.stateAtomsAreValid() else {
+                throw BlockBuilderError.invalidTransactionContent
+            }
+            bodies.append(body)
+        }
+        return bodies
     }
 
     private static func collectAncestorTimestamps(from block: Block, count: UInt64, fetcher: Fetcher) async -> [Int64] {
@@ -314,7 +414,7 @@ public struct BlockBuilder {
         var dict = MerkleDictionaryImpl<VolumeImpl<Transaction>>()
         for (i, tx) in transactions.enumerated() {
             let txHeader = try VolumeImpl<Transaction>(node: tx)
-            dict = (try? dict.inserting(key: String(i), value: txHeader)) ?? dict
+            dict = try dict.inserting(key: String(i), value: txHeader)
         }
         return try HeaderImpl(node: dict)
     }
@@ -331,7 +431,7 @@ public struct BlockBuilder {
         var dict = MerkleDictionaryImpl<VolumeImpl<Block>>()
         for (directory, block) in children {
             let blockHeader = try VolumeImpl<Block>(node: block)
-            dict = (try? dict.inserting(key: directory, value: blockHeader)) ?? dict
+            dict = try dict.inserting(key: directory, value: blockHeader)
         }
         return try HeaderImpl(node: dict)
     }

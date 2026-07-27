@@ -35,8 +35,8 @@ The content graph may recurse to arbitrary depth. A Lattice runtime never does.
    child or choose its tip.
 4. **One grind, one quantity.** Coverage may grow without multiplying physical
    work.
-5. **Work is not canonicity.** Accepted parent work may matter; the parent's
-   preferred pointer does not.
+5. **Work is not canonicity.** Physical work comes from a verified directory
+   proof; no chain's preferred pointer creates or removes it.
 6. **State is not ancestry.** `parentState` commits the carrier's `prevState`; it
    is not a parent-block backlink.
 7. **The node owns operations.** Acquisition, process authentication, durability,
@@ -55,7 +55,7 @@ Each process owns:
 
 ```text
 ChainLevel
-|- ChainRuntimeContext  absolute path + setup-wide minimum root work
+|- ChainRuntimeContext  absolute chain path
 `- ChainState           accepted same-chain forest + canonical projection
 ```
 
@@ -65,22 +65,64 @@ reorganization call and no multi-chain fork-choice loop.
 ## Evidence Boundary
 
 A child candidate arrives with a sparse proof from one mined root to that exact
-candidate. Lattice first verifies the setup-wide root-work floor, then the path,
-carrier continuity, vertical state bindings, and this chain's transition.
+candidate. Lattice verifies the content-bound root and work hash, the unique
+directory path, vertical state bindings, and the terminal target. It validates
+the candidate's own transition separately.
 
 At a vertical edge, the nested child commits the carrier's `prevState` as
 `parentState`. It does not commit the carrier CID. Therefore:
 
-- same-chain predecessors are explicit block links and missing predecessors are
-  derived as holes in the accepted graph;
-- cross-chain acquisition asks the authenticated parent process for a proof or
-  parent-issued continuity fact;
+- same-chain predecessors are explicit block links and unresolved predecessors
+  (absent or accepted-but-unconnected) are derived from the accepted graph;
+- cross-chain acquisition asks only the authenticated immediate-parent process
+  for an exact parent-state continuity fact and, for genesis, a parent-issued
+  genesis fact;
 - Lattice never tries to invert `parentState` into a parent block.
 
-A parent may export rolled-up accepted work, including eligible noncanonical
-branches, through the immediate-parent provider. That work may change a child's
-weight. A parent canonical-pointer change by itself may not. See
-[Work and fork choice](consensus-fork-choice.md) for the exact model.
+### Why Parent Continuity Is Required
+
+A content address proves exact bytes, and proof of work proves effort over
+those bytes. Neither proves that a parent chain legitimately moved from the
+state referenced by one child block to the state referenced by its successor.
+For a non-genesis child candidate `C` with predecessor `P`, Lattice therefore
+requires:
+
+```text
+P.parentState == C.parentState
+or
+P.parentState -> ... -> C.parentState
+through connected accepted blocks in the immediate parent
+```
+
+This is reflexive, transitive state reachability—not direct adjacency. Without
+it, mined bytes could jump a child backward or sideways to a parent state that
+does not continue its prior dependency. The immediate-parent process answers
+the exact state-pair question from its accepted graph. A connected
+noncanonical branch is sufficient; canonicity cannot revoke the immutable
+fact. The node authenticates and may cache or relay the answer.
+
+The state proof itself remains content-addressed rather than becoming another
+parent assertion. Receipt-state keys are fixed-depth, domain-separated hashes,
+and a block carries at most 64 withdrawals, so a cold child peer can obtain the
+complete parent-receipt witness from the exact same-chain advertiser within a
+history-independent bound.
+
+Securing-work verification is deliberately independent of carrier validity. A
+carrier may fail its own target, transition, MTP/future-drift check, or proposed
+`nextTarget` while the root grind still commits uniquely to a deeper child and
+beats that child's target. Those carrier-local rules do not become descendant
+dependencies.
+
+A child genesis with no same-chain predecessor may still relay descendants
+after its immediate parent authorized that exact genesis CID. Child bootstrap
+returns a carrier link on a target miss, or a rejection together with that link
+when a target hit fails the local transition, without creating a runtime or
+durable local consensus fact. Nexus bootstrap never accepts a target miss, but
+the same parentless bytes may still act as a proof-only carrier for descendants.
+
+The proof-derived contribution becomes ordinary same-chain work only after the
+terminal child is accepted and connected. See
+[work and fork choice](consensus-fork-choice.md) for the exact model.
 
 ## Admission And Recovery
 
@@ -95,8 +137,10 @@ acquire
   -> project one chain
 ```
 
-The node's stage callback is atomic: returning means the whole batch is durable;
-throwing means none of its facts became visible. An existing runtime reserves one
+The node's single stage callback receives `ChainAdmissionStagingContext`, so the
+consensus batch and its verified hierarchy links cross one atomic durability
+boundary. Returning means the whole context is durable; throwing means none of
+its facts became visible. An existing runtime reserves one
 commit revision before staging so another actor mutation cannot consume the last
 available revision while the batch is becoming durable.
 
@@ -107,16 +151,19 @@ Root and child bootstrap expose no runtime until the genesis batch has been
 stored, staged, and restored.
 
 A target miss returns a carrier result. It creates no local consensus fact,
-executes no local transition, and causes no implicit Lattice retention. The node
-may retain the carrier or an exact child path when its availability policy calls
-for it.
+executes no local transition, and causes no implicit Lattice retention. A
+target-hit candidate can return a local rejection and a carrier link together;
+the link still creates no local consensus fact. When an explicit predecessor is
+not connected, carrier, duplicate, and rejected outcomes expose that exact typed
+backfill requirement so the node can retry link derivation. The node may retain
+the carrier or an exact child path when its availability policy calls for it.
 
 ## Ownership
 
 | Component | Owns |
 |---|---|
-| Lattice | Validation, deterministic state transitions, accepted graph, work algebra, fork choice, securing-work export, `ChainCommit` |
-| lattice-node | Acquisition, process authentication and supervision, atomic fact durability, inherited-work routing, retention, pin counts, projections, RPC |
+| Lattice | Validation, deterministic state transitions, accepted graph, proof-derived work algebra, fork choice, parent-state reachability, `ChainCommit` |
+| lattice-node | Acquisition, process authentication and supervision, atomic fact durability, retention, pin counts, projections, RPC |
 | cashew | Generic content-addressed structures and matching targeted resolve/store traversal |
 | VolumeBroker | Complete selected Volumes, node-selected pinning, and eviction |
 | Ivy | Transport, discovery, authenticated sessions, and delivery attribution |
@@ -126,9 +173,11 @@ Storage presence is not validity. Peer identity is not validity. Authenticating 
 parent process establishes who may speak for that parent path, not which child
 branch must win.
 
-Nested Volumes remain independent availability units. Storing or pinning an outer
-Volume creates no implicit retention relationship with another Volume merely
-referenced by CID.
+Nested Volumes remain independent availability units. Storing or pinning an
+outer Volume creates no implicit retention relationship with another Volume
+merely referenced by CID. Operators choose acquisition, transport, and
+retention ceilings locally; exceeding one means that node declines or retries
+through another strategy, not that the content is objectively invalid.
 
 ## Retention
 
@@ -136,7 +185,7 @@ Lattice retains the complete accepted consensus graph and verified local grind
 coverage. It does not prune consensus inputs according to a node storage budget.
 
 The node decides how long to retain block bodies, materialized state,
-`StateDiff` payloads, inherited-work caches, and CAS pins. `StateDiff` is local
+`StateDiff` payloads, proof Volumes, and CAS pins. `StateDiff` is local
 lifecycle metadata carried by the durable block fact; it is not committed in a
 block or stored in `BlockMeta`.
 
@@ -145,12 +194,14 @@ block or stored in `BlockMeta`.
 A change preserves the architecture only if all of these remain true:
 
 1. One process owns one path and never recursively runs another chain.
-2. The root-work floor is checked before child resolution.
-3. Every carrier proves same-chain continuity, even on a target miss.
-4. Work is joined by grind identity before quantities are totaled.
-5. Accepted parent work may affect child weight; parent canonicity alone may not.
-6. Fork choice compares effective `trueCumWork`, then segment-base CID.
-7. External ingress uses one admission boundary; recovery replays durable facts.
-8. Durable facts precede visible mutation.
+2. Securing work depends on a content-bound directory commitment and target
+   hit, not carrier validity or canonicity.
+3. Work is joined by grind identity before quantities are totaled.
+4. Non-genesis parent-state movement is reflexive or transitively forward
+   through the immediate parent's connected accepted graph.
+5. Fork choice compares effective `trueCumWork`, then segment-base CID.
+6. External ingress uses one admission boundary; recovery replays durable facts.
+7. Durable facts precede visible mutation.
 9. Lattice retains consensus inputs; the node owns payload retention.
-10. Cross-chain interfaces carry evidence and work, never canonical-tip commands.
+10. Cross-chain interfaces carry proofs and exact parent facts, never trusted
+    work totals or canonical-tip commands.

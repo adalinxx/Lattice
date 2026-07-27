@@ -6,6 +6,101 @@ public enum ChildProofSerializationError: Error, Sendable, Equatable {
     case valueTooLarge
 }
 
+enum ChildProofWireLimits {
+    static let maximumDirectoryBytes = StateAtomLimits.maximumDirectoryBytes
+    // Protocol resource bound; UInt16 is only the encoding capacity.
+    static let maximumDepth = 256
+}
+
+/// Canonical sparse proof for the terminal parent-to-child commitment in a
+/// potentially composed ``ChildBlockProof``.
+///
+/// This is a structural CAS fact only. It makes no claim about work,
+/// authority, admission, or canonicity.
+public struct DirectChildHop: Sendable {
+    public let proof: ChildBlockProof
+    public let childCID: String
+    public let parentStateCID: String
+
+    public func binds(child: Block) -> Bool {
+        guard let cid = try? BlockHeader(node: child).rawCID else { return false }
+        return cid == childCID && child.parentState.rawCID == parentStateCID
+    }
+}
+
+/// Content-addressed identity for one canonical direct
+/// `parent.children[directory] -> child` commitment.
+///
+/// This remains a structural CAS fact: availability does not imply work,
+/// authority, admission, or canonicity.
+public struct DirectChildEdge: Hashable, Scalar {
+    public let parentCarrierCID: String
+    public let directory: String
+    public let childCID: String
+    public let proofBytes: Data
+
+    public var edgeCID: String? {
+        try? HeaderImpl<DirectChildEdge>(node: self).rawCID
+    }
+
+    public var proof: ChildBlockProof? {
+        ChildBlockProof.deserialize(proofBytes)
+    }
+
+    /// Strip the outer root context from a complete proof and regenerate its
+    /// exact canonical terminal hop using only the sealed proof entries.
+    public static func derive(from proof: ChildBlockProof) async -> DirectChildEdge? {
+        guard let directory = proof.directoryPath.last,
+              let hop = await proof.directHop(),
+              let proofBytes = try? hop.proof.serialize(),
+              let edge = await DirectChildEdge(
+                parentCarrierCID: hop.proof.rootCID,
+                directory: directory,
+                childCID: hop.childCID,
+                proofBytes: proofBytes
+              ).validated()
+        else { return nil }
+        return edge
+    }
+
+    public func validated() async -> DirectChildEdge? {
+        guard await canonicalHop() != nil, edgeCID != nil else { return nil }
+        return self
+    }
+
+    public func validates(child: Block) async -> Bool {
+        guard let hop = await canonicalHop(), edgeCID != nil else { return false }
+        return hop.binds(child: child)
+    }
+
+    private func canonicalHop() async -> DirectChildHop? {
+        guard CIDIdentity.isCanonical(parentCarrierCID),
+              CIDIdentity.isCanonical(childCID),
+              !directory.isEmpty,
+              directory.utf8.count <= ChildProofWireLimits.maximumDirectoryBytes,
+              !directory.contains("/"),
+              let proof,
+              proof.rootCID == parentCarrierCID,
+              proof.directoryPath == [directory],
+              (try? proof.serialize()) == proofBytes,
+              let hop = await proof.directHop(),
+              hop.childCID == childCID,
+              (try? hop.proof.serialize()) == proofBytes else { return nil }
+        return hop
+    }
+}
+
+/// Scheduling values derived from a structurally verified descendant path.
+public struct ChildSchedulingTargets: Sendable, Equatable {
+    public let searchTarget: UInt256
+    public let deploymentTarget: UInt256?
+
+    public init(searchTarget: UInt256, deploymentTarget: UInt256?) {
+        self.searchTarget = searchTarget
+        self.deploymentTarget = deploymentTarget
+    }
+}
+
 // MARK: - Proof
 
 /// Sparse proof that a block is embedded under a PoW root, following the
@@ -30,7 +125,7 @@ public enum ChildProofSerializationError: Error, Sendable, Equatable {
 ///     [cidLen: UInt16 LE][cid: UTF-8]
 ///     [dataLen: UInt32 LE][data: bytes]
 ///
-/// Verification uses a sealed in-memory source, checks the root floor first, then
+/// Verification uses a sealed in-memory source, verifies the mined root, then
 /// walks `directoryPath` via targeted resolution down to the leaf CID.
 public struct ChildBlockProof: Sendable {
     /// CAS entries from the sparse path (union across all hops, root → leaf only).
@@ -41,9 +136,18 @@ public struct ChildBlockProof: Sendable {
     public let directoryPath: [String]
 
     public init(rootCID: String, directoryPath: [String], entries: [(cid: String, data: Data)]) {
-        self.rootCID = rootCID
+        self.rootCID = CIDIdentity.canonicalString(rootCID) ?? rootCID
         self.directoryPath = directoryPath
-        self.entries = entries.sorted { $0.cid < $1.cid }
+        self.entries = entries.map {
+            (CIDIdentity.canonicalString($0.cid) ?? $0.cid, $0.data)
+        }.sorted { $0.0 < $1.0 }
+    }
+
+    private var hasRepresentableDirectoryPath: Bool {
+        directoryPath.count <= ChildProofWireLimits.maximumDepth
+            && directoryPath.allSatisfy {
+                $0.utf8.count <= ChildProofWireLimits.maximumDirectoryBytes
+            }
     }
 
     // MARK: - Generation
@@ -57,6 +161,9 @@ public struct ChildBlockProof: Sendable {
         childDirectory: String,
         fetcher: Fetcher
     ) async throws -> ChildBlockProof {
+        guard childDirectory.utf8.count <= ChildProofWireLimits.maximumDirectoryBytes else {
+            throw ChildProofSerializationError.valueTooLarge
+        }
         let path: [[String]: ResolutionStrategy] = [["children", childDirectory]: .targeted]
         let resolvedRoot = try await rootHeader.resolve(paths: path, fetcher: fetcher)
         let storer = _CollectingStorer()
@@ -101,53 +208,162 @@ public struct ChildBlockProof: Sendable {
 
     // MARK: - Verification
 
-    package func verifyRootFloor(
-        minimumRootWork: UInt256
-    ) -> Result<Void, ChildProofVerificationFailure> {
-        verifiedRoot(minimumRootWork: minimumRootWork).map { _ in () }
+    /// Extract the terminal direct hop from this proof's sealed CAS entries.
+    /// The returned proof is regenerated using the same canonical generation
+    /// path as an originally single-hop proof.
+    public func directHop() async -> DirectChildHop? {
+        guard let directory = directoryPath.last,
+              CIDIdentity.isCanonical(rootCID) else { return nil }
+
+        var uniqueEntries: [String: Data] = [:]
+        for entry in entries {
+            guard CIDIdentity.isCanonical(entry.cid),
+                  uniqueEntries.updateValue(entry.data, forKey: entry.cid) == nil else {
+                return nil
+            }
+        }
+        let source = InMemoryContentSource(uniqueEntries)
+        var carrier = BlockHeader(rawCID: rootCID)
+
+        for directory in directoryPath.dropLast() {
+            guard let block = try? await carrier.resolve(fetcher: source).node,
+                  let children = try? await block.children.resolve(
+                    paths: [[directory]: .targeted],
+                    fetcher: source
+                  ).node,
+                  let next: BlockHeader = try? children.get(key: directory),
+                  CIDIdentity.isCanonical(next.rawCID) else { return nil }
+            carrier = next
+        }
+
+        guard let block = try? await carrier.resolve(fetcher: source).node,
+              let children = try? await block.children.resolve(
+                paths: [[directory]: .targeted],
+                fetcher: source
+              ).node,
+              let child: BlockHeader = try? children.get(key: directory),
+              CIDIdentity.isCanonical(child.rawCID),
+              let proof = try? await Self.generate(
+                rootHeader: carrier,
+                childDirectory: directory,
+                fetcher: source
+              ) else { return nil }
+
+        return DirectChildHop(
+            proof: proof,
+            childCID: child.rawCID,
+            parentStateCID: block.prevState.rawCID
+        )
     }
 
-    private func verifiedRoot(
-        minimumRootWork: UInt256
-    ) -> Result<(block: Block, hash: UInt256), ChildProofVerificationFailure> {
-        guard minimumRootWork > .zero else {
-            return .failure(.protocolInvalid)
+    /// Validate a sparse descendant witness used only for child scheduling.
+    /// Targets are derived from content-bound blocks; callers never supply
+    /// trusted target values beside the proof.
+    public func schedulingTargets(
+        root: Block,
+        terminal: Block
+    ) async -> ChildSchedulingTargets? {
+        guard hasRepresentableDirectoryPath,
+              !directoryPath.isEmpty,
+              !entries.isEmpty,
+              let rootHeader = try? BlockHeader(node: root),
+              let terminalHeader = try? BlockHeader(node: terminal),
+              rootCID == rootHeader.rawCID else { return nil }
+
+        var proofEntries: [String: Data] = [:]
+        for entry in entries {
+            guard CIDIdentity.isCanonical(entry.cid),
+                  proofEntries.updateValue(entry.data, forKey: entry.cid) == nil else {
+                return nil
+            }
         }
+        guard let rootData = proofEntries[rootCID],
+              contentBoundBlock(cid: rootCID, data: rootData) != nil else {
+            return nil
+        }
+
+        let fetcher = _TrackingProofFetcher(proofEntries)
+        var current = root
+        var deploymentTarget = root.target
+        var canonicalEntries: [String: Data] = [:]
+
+        for (index, directory) in directoryPath.enumerated() {
+            guard let hop = try? await Self.generate(
+                rootHeader: BlockHeader(node: current),
+                childDirectory: directory,
+                fetcher: fetcher
+            ) else { return nil }
+            for entry in hop.entries {
+                if let existing = canonicalEntries[entry.cid], existing != entry.data {
+                    return nil
+                }
+                canonicalEntries[entry.cid] = entry.data
+            }
+            guard let children = try? await current.children.resolve(
+                paths: [[directory]: .targeted],
+                fetcher: fetcher
+            ).node,
+                  let childHeader: BlockHeader = try? children.get(key: directory) else {
+                return nil
+            }
+
+            if index == directoryPath.count - 1 {
+                guard childHeader.rawCID == terminalHeader.rawCID,
+                      terminal.parentState.rawCID == current.prevState.rawCID,
+                      canonicalEntries == proofEntries else { return nil }
+                return ChildSchedulingTargets(
+                    searchTarget: terminal.target,
+                    deploymentTarget: terminal.parent == nil
+                        ? min(deploymentTarget, terminal.target)
+                        : nil
+                )
+            }
+
+            guard let data = proofEntries[childHeader.rawCID],
+                  let next = contentBoundBlock(cid: childHeader.rawCID, data: data),
+                  next.parentState.rawCID == current.prevState.rawCID else { return nil }
+            deploymentTarget = min(deploymentTarget, next.target)
+            current = next
+        }
+        return nil
+    }
+
+    /// Verify only the root entry and return its exact physical work. Nodes may
+    /// use this cheap result for local admission policy before resolving the
+    /// descendant path.
+    public func verifiedRootWork() -> Result<UInt256, ChildProofVerificationFailure> {
+        verifiedRoot().map { workForHash($0.hash) }
+    }
+
+    private func verifiedRoot() -> Result<(block: Block, hash: UInt256), ChildProofVerificationFailure> {
         let rootEntries = entries.filter { $0.cid == rootCID }
         guard rootEntries.count == 1,
               let rootData = rootEntries.first?.data,
               let rootBlock = contentBoundBlock(cid: rootCID, data: rootData) else {
             return .failure(.malformedEvidence)
         }
-        let rootHash = rootBlock.proofOfWorkHash()
-        guard workForHash(rootHash) >= minimumRootWork else {
-            return .failure(.protocolInvalid)
-        }
-        return .success((rootBlock, rootHash))
+        return .success((rootBlock, rootBlock.proofOfWorkHash()))
     }
 
-    /// Verify the complete root-to-child package and derive its work fact.
-    ///
-    /// The setup floor is independent of every chain target. A carrier may miss
-    /// its own target and still carry an accepted descendant, so target checks are
-    /// used only to classify where this one grind is credited.
-    public func verify(
+    /// Verify the complete root-to-child directory commitment and derive its
+    /// physical work. Carrier validity, admission, connectivity, and canonicity
+    /// are intentionally outside this proof.
+    public func verifySecuringWork(
         child: Block,
-        chainPath: [String],
-        minimumRootWork: UInt256,
-        parentContinuityLinks: [ParentContinuityLink],
-        parentGenesisLinks: [ParentGenesisLink]
+        chainPath: [String]
     ) async -> Result<VerifiedChildEvidence, ChildProofVerificationFailure> {
-        let root: (block: Block, hash: UInt256)
-        switch verifiedRoot(minimumRootWork: minimumRootWork) {
-        case .success(let verified): root = verified
-        case .failure(let failure): return .failure(failure)
-        }
-        guard chainPath.count == directoryPath.count + 1,
+        guard chainPath.first == DEFAULT_ROOT_DIRECTORY,
+              hasRepresentableDirectoryPath,
+              chainPath.count == directoryPath.count + 1,
               directoryPath == Array(chainPath.dropFirst()),
               !entries.isEmpty,
               !directoryPath.isEmpty else {
             return .failure(.malformedEvidence)
+        }
+        let root: (block: Block, hash: UInt256)
+        switch verifiedRoot() {
+        case .success(let verified): root = verified
+        case .failure(let failure): return .failure(failure)
         }
         guard let childCID = try? BlockHeader(node: child).rawCID else {
             return .failure(.malformedEvidence)
@@ -156,34 +372,16 @@ public struct ChildBlockProof: Sendable {
         let rootBlock = root.block
         let rootHash = root.hash
 
-        func validParentlessCarrier(_ block: Block) -> Bool {
-            guard block.hasCarrierContinuity(parent: nil) else { return false }
-            return !block.validateProofOfWork(nexusHash: rootHash)
-                || block.hasGenesisAdmissionShape()
-        }
-
         var proofEntries: [String: Data] = [:]
         for entry in entries {
             guard proofEntries.updateValue(entry.data, forKey: entry.cid) == nil else {
                 return .failure(.malformedEvidence)
             }
         }
-        var linksBySuccessor: [String: ParentContinuityLink] = [:]
-        for link in parentContinuityLinks {
-            if linksBySuccessor.updateValue(link, forKey: link.successorCID) != nil {
-                return .failure(.malformedEvidence)
-            }
-        }
-        var genesisLinksByChild: [String: ParentGenesisLink] = [:]
-        for link in parentGenesisLinks {
-            if genesisLinksByChild.updateValue(link, forKey: link.childGenesisCID) != nil {
-                return .failure(.malformedEvidence)
-            }
-        }
         let fetcher = _TrackingProofFetcher(proofEntries)
         var directlyConsumed = Set([rootCID])
-        var carriers: [(block: Block, cid: String, path: [String])] = [
-            (rootBlock, rootCID, Array(chainPath.prefix(1)))
+        var carriers: [(block: Block, cid: String)] = [
+            (rootBlock, rootCID)
         ]
         var currentBlock = rootBlock
 
@@ -205,98 +403,8 @@ public struct ChildBlockProof: Sendable {
                 guard consumed == Set(proofEntries.keys) else {
                     return .failure(.malformedEvidence)
                 }
-                if child.parent == nil, !validParentlessCarrier(child) {
-                    return .failure(.protocolInvalid)
-                }
-
-                var expectedContinuity: [String: ParentContinuityLink] = [:]
-                var expectedGenesis: [String: ParentGenesisLink] = [:]
-                var requirements: [CrossChainEvidenceRequirement] = []
-
-                for carrier in carriers {
-                    if carrier.block.parent == nil {
-                        guard validParentlessCarrier(carrier.block) else {
-                            return .failure(.protocolInvalid)
-                        }
-                        guard carrier.path.count > 1 else { continue }
-                        guard let directory = carrier.path.last else {
-                            return .failure(.malformedEvidence)
-                        }
-                        let link = ParentGenesisLink(
-                            parentPath: Array(carrier.path.dropLast()),
-                            directory: directory,
-                            childGenesisCID: carrier.cid
-                        )
-                        guard expectedGenesis.updateValue(
-                            link,
-                            forKey: carrier.cid
-                        ) == nil else {
-                            return .failure(.malformedEvidence)
-                        }
-                        requirements.append(.parentGenesis(
-                            parentPath: link.parentPath,
-                            directory: link.directory,
-                            childGenesisCID: link.childGenesisCID
-                        ))
-                    } else {
-                        let link = ParentContinuityLink(
-                            parentPath: carrier.path,
-                            successorCID: carrier.cid
-                        )
-                        guard expectedContinuity.updateValue(
-                            link,
-                            forKey: carrier.cid
-                        ) == nil else {
-                            return .failure(.malformedEvidence)
-                        }
-                        requirements.append(.parentContinuity(
-                            parentPath: link.parentPath,
-                            successorCID: link.successorCID
-                        ))
-                    }
-                }
-
-                if child.parent == nil {
-                    guard let directory = chainPath.last else {
-                        return .failure(.malformedEvidence)
-                    }
-                    let link = ParentGenesisLink(
-                        parentPath: Array(chainPath.dropLast()),
-                        directory: directory,
-                        childGenesisCID: childCID
-                    )
-                    guard expectedGenesis.updateValue(
-                        link,
-                        forKey: childCID
-                    ) == nil else {
-                        return .failure(.malformedEvidence)
-                    }
-                    requirements.append(.parentGenesis(
-                        parentPath: link.parentPath,
-                        directory: link.directory,
-                        childGenesisCID: link.childGenesisCID
-                    ))
-                }
-
-                guard linksBySuccessor.allSatisfy({
-                    expectedContinuity[$0.key] == $0.value
-                }), genesisLinksByChild.allSatisfy({
-                    expectedGenesis[$0.key] == $0.value
-                }) else {
+                guard let deepestCarrier = carriers.last else {
                     return .failure(.malformedEvidence)
-                }
-
-                for requirement in requirements {
-                    switch requirement {
-                    case .parentContinuity(_, let successorCID)
-                    where linksBySuccessor[successorCID] == nil:
-                        return .failure(.crossChainEvidenceRequired(requirement))
-                    case .parentGenesis(_, _, let childGenesisCID)
-                    where genesisLinksByChild[childGenesisCID] == nil:
-                        return .failure(.crossChainEvidenceRequired(requirement))
-                    default:
-                        continue
-                    }
                 }
 
                 let strongestAncestorWork = carriers.reduce(UInt256.zero) {
@@ -319,6 +427,7 @@ public struct ChildBlockProof: Sendable {
                     rootHash: rootHash,
                     strongestAncestorWork: strongestAncestorWork,
                     childCID: childCID,
+                    terminalCarrierCID: deepestCarrier.cid,
                     contribution: contribution
                 ))
             }
@@ -334,8 +443,7 @@ public struct ChildBlockProof: Sendable {
             currentBlock = next
             carriers.append((
                 currentBlock,
-                childHeader.rawCID,
-                Array(chainPath.prefix(index + 2))
+                childHeader.rawCID
             ))
         }
         return .failure(.malformedEvidence)
@@ -347,7 +455,7 @@ public struct ChildBlockProof: Sendable {
         var out = Data()
         let rootCIDBytes = Data(rootCID.utf8)
         guard rootCIDBytes.count <= Int(UInt16.max),
-              directoryPath.count <= Int(UInt16.max),
+              hasRepresentableDirectoryPath,
               entries.count <= Int(UInt16.max) else {
             throw ChildProofSerializationError.valueTooLarge
         }
@@ -356,9 +464,6 @@ public struct ChildBlockProof: Sendable {
         writeU16(&out, UInt16(directoryPath.count))
         for dir in directoryPath {
             let db = Data(dir.utf8)
-            guard db.count <= Int(UInt16.max) else {
-                throw ChildProofSerializationError.valueTooLarge
-            }
             writeU16(&out, UInt16(db.count))
             out.append(db)
         }

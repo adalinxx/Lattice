@@ -104,14 +104,12 @@ public extension Block {
 
     func validateGenesis(
         fetcher: Fetcher,
-        directory: String?,
-        chainPath: [String]? = nil,
+        chainPath: [String],
         reportTemporalFailure: Bool = false,
         validationContext: ValidationContext = .current
     ) async throws -> (Bool, StateDiff) {
         let transition = try await validateGenesisTransition(
             fetcher: fetcher,
-            directory: directory,
             chainPath: chainPath,
             reportTemporalFailure: reportTemporalFailure,
             validationContext: validationContext
@@ -123,8 +121,7 @@ public extension Block {
     /// the verified post-state before exposing a consensus mutation.
     internal func validateGenesisTransition(
         fetcher: Fetcher,
-        directory: String?,
-        chainPath: [String]? = nil,
+        chainPath: [String],
         reportTemporalFailure: Bool = false,
         validationContext: ValidationContext
     ) async throws -> (Bool, StateDiff, LatticeState?) {
@@ -138,19 +135,24 @@ public extension Block {
         }) else { return (false, .empty, nil) }
         guard let specNode = try await spec.resolve(fetcher: fetcher).node else { return (false, .empty, nil) }
         guard specNode.isValid else { return (false, .empty, nil) }
-        // Directory is positional: it comes from the anchor context (the name the
-        // genesis is registered under), not from the spec. `directory` nil ⇒ root.
-        // An explicitly-empty chainPath has no root and is rejected (fail closed)
-        // rather than silently degrading to root semantics.
-        let expectedChainPath = chainPath ?? [directory ?? DEFAULT_ROOT_DIRECTORY]
-        if expectedChainPath.isEmpty { return (false, .empty, nil) }
-        if !validateChainPaths(transactionBodies: transactionBodies, expectedPath: expectedChainPath) {
+        guard chainPath.first == DEFAULT_ROOT_DIRECTORY else {
             return (false, .empty, nil)
         }
-        if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, fetcher: fetcher)) { return (false, .empty, nil) }
+        if !validateChainPaths(transactionBodies: transactionBodies, expectedPath: chainPath) {
+            return (false, .empty, nil)
+        }
+        if !(try await TransactionBody.validateConfiguredPolicyModules(
+            spec: specNode,
+            fetcher: fetcher
+        )) {
+            return (false, .empty, nil)
+        }
+        if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: chainPath, fetcher: fetcher)) { return (false, .empty, nil) }
         if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
-        if !validateBlockSize(spec: specNode) { return (false, .empty, nil) }
+        if try await !validateBlockSize(spec: specNode, fetcher: fetcher) {
+            return (false, .empty, nil)
+        }
         let allAccountActions = transactionBodies.flatMap { $0.accountActions }
         // R4: the per-transaction gate above (validateTransactionForGenesis)
         // rejects any genesis transaction carrying deposit, withdrawal, or
@@ -252,6 +254,10 @@ public extension Block {
         reportTemporalFailure: Bool = false,
         validationContext: ValidationContext = .current
     ) async throws -> (Bool, StateDiff, LatticeState?) {
+        let expectedChainPath = chainPath ?? [DEFAULT_ROOT_DIRECTORY]
+        guard expectedChainPath.first == DEFAULT_ROOT_DIRECTORY else {
+            return (false, .empty, nil)
+        }
         if version != Block.currentVersion { return (false, .empty, nil) }
         async let parentFuture = parent?.resolve(fetcher: fetcher)
         async let specFuture = spec.resolve(fetcher: fetcher)
@@ -286,32 +292,21 @@ public extension Block {
         guard let transactionBodies = try await txBodiesFuture else { return (false, .empty, nil) }
 
         // Directory is positional (the anchor context / chainPath), not in the
-        // spec; nil chainPath ⇒ root. An explicitly-empty chainPath has no root
-        // and is rejected (fail closed) rather than silently degrading to root.
-        let expectedChainPath = chainPath ?? [DEFAULT_ROOT_DIRECTORY]
-        if expectedChainPath.isEmpty { return (false, .empty, nil) }
+        // spec; nil chainPath ⇒ root.
         if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, fetcher: fetcher)) { return (false, .empty, nil) }
         if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
-        if !validateBlockSize(spec: specNode) { return (false, .empty, nil) }
+        if try await !validateBlockSize(spec: specNode, fetcher: fetcher) {
+            return (false, .empty, nil)
+        }
         if !validateChainPaths(transactionBodies: transactionBodies, expectedPath: expectedChainPath) { return (false, .empty, nil) }
         if !validateNoDepositsOrWithdrawalsOnRoot(transactionBodies: transactionBodies, expectedPath: expectedChainPath) { return (false, .empty, nil) }
 
-        // Check that withdrawals have corresponding deposits in prevState AND
-        // receipts in parentState. Resolves prevState and parentState only when
-        // the block actually contains withdrawals.
-        let withdrawalBodies = transactionBodies.filter { !$0.withdrawalActions.isEmpty }
-        if !withdrawalBodies.isEmpty {
-            async let prevStateFuture = prevState.resolve(fetcher: fetcher)
-            async let parentStateFuture = parentState.resolve(fetcher: fetcher)
-            let (resolvedPrevState, resolvedParentState) = try await (prevStateFuture, parentStateFuture)
-            guard let prevStateNode = resolvedPrevState.node,
-                  let parentStateNode = resolvedParentState.node else {
-                return (false, .empty, nil)
-            }
-            let ownDirectory = expectedChainPath.last ?? DEFAULT_ROOT_DIRECTORY
-            if try await withdrawalBodies.concurrentMap({ try await $0.withdrawalsAreValid(directory: ownDirectory, prevState: prevStateNode, parentState: parentStateNode, fetcher: fetcher) }).contains(false) { return (false, .empty, nil) }
-        }
+        if try await !validateWithdrawals(
+            transactionBodies: transactionBodies,
+            fetcher: fetcher,
+            chainPath: expectedChainPath
+        ) { return (false, .empty, nil) }
 
         let allAccountActions = transactionBodies.flatMap { $0.accountActions }
         let allDepositActions = transactionBodies.flatMap { $0.depositActions }
@@ -328,6 +323,61 @@ public extension Block {
         let (postStateValid, diff, materializedPostState) = try await validatePostState(transactionBodies: transactionBodies, allAccountActions: allAccountActions, allActions: transactionBodies.flatMap { $0.actions }, allDepositActions: allDepositActions, allGenesisActions: transactionBodies.flatMap { $0.genesisActions }, allReceiptActions: allReceiptActions, allWithdrawalActions: allWithdrawalActions, fetcher: fetcher)
         if !postStateValid { return (false, .empty, nil) }
         return (true, diff, materializedPostState)
+    }
+
+    /// Preflight the state-dependent withdrawal rule used by full validation.
+    /// Mining uses this to omit transactions that cannot settle against the
+    /// exact entering parent state without repeating unrelated block checks.
+    func validateWithdrawals(
+        fetcher: Fetcher,
+        chainPath: [String]
+    ) async throws -> Bool {
+        guard chainPath.first == DEFAULT_ROOT_DIRECTORY,
+              let transactionBodies = try await resolveTransactionBodies(
+                fetcher: fetcher,
+                validator: { transaction in
+                    try await transaction.validateTransactionForNexus(fetcher: fetcher)
+                }
+              ) else { return false }
+        return try await validateWithdrawals(
+            transactionBodies: transactionBodies,
+            fetcher: fetcher,
+            chainPath: chainPath
+        )
+    }
+
+    private func validateWithdrawals(
+        transactionBodies: [TransactionBody],
+        fetcher: Fetcher,
+        chainPath: [String]
+    ) async throws -> Bool {
+        let withdrawalBodies = transactionBodies.filter {
+            !$0.withdrawalActions.isEmpty
+        }
+        guard !withdrawalBodies.isEmpty else { return true }
+        guard chainPath.count > 1 else { return false }
+        guard let directory = chainPath.last,
+              TransactionBody.withdrawalsHaveUniqueReceiptKeys(
+                bodies: withdrawalBodies,
+                directory: directory
+              ) else { return false }
+
+        async let prevStateFuture = prevState.resolve(fetcher: fetcher)
+        async let parentStateFuture = parentState.resolve(fetcher: fetcher)
+        let (resolvedPrevState, resolvedParentState) = try await (
+            prevStateFuture,
+            parentStateFuture
+        )
+        guard let prevStateNode = resolvedPrevState.node,
+              let parentStateNode = resolvedParentState.node else { return false }
+        return try await !withdrawalBodies.concurrentMap {
+            try await $0.withdrawalsAreValid(
+                directory: directory,
+                prevState: prevStateNode,
+                parentState: parentStateNode,
+                fetcher: fetcher
+            )
+        }.contains(false)
     }
 
     func validateProofOfWork(nexusHash: UInt256) -> Bool {
@@ -443,29 +493,6 @@ public extension Block {
             && nextTarget == target
     }
 
-    /// Header-only continuity needed to carry a root grind to a descendant.
-    /// Admission-only rules (execution, MTP/future drift, and this block's proposed
-    /// next target) remain local to chains whose target accepts the grind.
-    func hasCarrierContinuity(parent: Block?) -> Bool {
-        guard version == Block.currentVersion else { return false }
-        guard let parent else {
-            return self.parent == nil
-                && height == 0
-                && prevState.rawCID == LatticeState.emptyHeader.rawCID
-        }
-        return self.parent != nil
-            && parent.version == Block.currentVersion
-            && validateSpec(parent: parent)
-            && validateState(parent: parent)
-            && validateHeight(parent: parent)
-            && (target == parent.nextTarget
-                || ChainSpec.isMinimumTargetRecovery(
-                    target: target,
-                    parentNextTarget: parent.nextTarget
-                ))
-            && timestamp > parent.timestamp
-    }
-
     /// Bitcoin-style consensus rules:
     ///   (1) timestamp strictly greater than previous block
     ///   (2) timestamp ≤ now + 2h (bounded future drift — prevents warp
@@ -490,16 +517,29 @@ public extension Block {
     }
 
     func validateStateDeltaSize(spec: ChainSpec, transactionBodies: [TransactionBody]) throws -> Bool {
-        return try transactionBodies.reduce(0) { try $0 + $1.getStateDelta() } <= spec.maxStateGrowth
+        var delta = 0
+        for body in transactionBodies {
+            guard addStateDelta(try body.getStateDelta(), to: &delta) else {
+                return false
+            }
+        }
+        return delta <= spec.maxStateGrowth
     }
 
     func validateMaxTransactionCount(spec: ChainSpec, transactionBodies: [TransactionBody]) -> Bool {
         return transactionBodies.count <= spec.maxNumberOfTransactionsPerBlock
     }
 
-    func validateBlockSize(spec: ChainSpec) -> Bool {
-        guard let blockData = toData() else { return false }
-        return blockData.count <= spec.maxBlockSize
+    func validateBlockSize(
+        spec: ChainSpec,
+        fetcher: any Fetcher
+    ) async throws -> Bool {
+        do {
+            return try await logicalContentByteSize(fetcher: fetcher)
+                <= spec.maxBlockSize
+        } catch is BlockContentSizeError {
+            return false
+        }
     }
 
     /// Deposits and withdrawals are cross-chain constructs: a deposit
@@ -507,10 +547,8 @@ public extension Block {
     /// requires a receipt in the parent chain's state. The root chain
     /// (chainPath length 1) has no parent, so a deposit there burns value with
     /// no withdrawal path and a withdrawal there has no receipt to settle
-    /// against. The mempool already rejects both
-    /// (TransactionValidator.depositOrWithdrawalOnNexus); this mirrors that
-    /// rule at consensus so a malicious miner cannot place such actions
-    /// directly in a root-chain block.
+    /// against. Consensus rejects both so a producer cannot place them directly
+    /// in a root-chain block.
     func validateNoDepositsOrWithdrawalsOnRoot(transactionBodies: [TransactionBody], expectedPath: [String]) -> Bool {
         guard expectedPath.count == 1 else { return true }
         for body in transactionBodies {

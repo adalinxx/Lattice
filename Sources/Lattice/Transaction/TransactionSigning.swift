@@ -37,15 +37,27 @@ public enum TransactionSigning {
     }
 
     public static func verify(body: TransactionBody, bodyCID: String, signature: String, publicKeyHex: String) -> Bool {
+        // Writers emit the versioned envelope. Validators also accept the
+        // historical body-CID input under CryptoUtils's unchanged outer domain;
+        // the CID still commits path and nonce.
         CryptoUtils.verify(
             message: preimage(body: body, bodyCID: bodyCID),
+            signature: signature,
+            publicKeyHex: publicKeyHex
+        ) || CryptoUtils.verify(
+            message: bodyCID,
             signature: signature,
             publicKeyHex: publicKeyHex
         )
     }
 
     public static func verify(bodyHeader: HeaderImpl<TransactionBody>, signature: String, publicKeyHex: String) -> Bool {
-        guard let signingPreimage = preimage(bodyHeader: bodyHeader) else { return false }
-        return CryptoUtils.verify(message: signingPreimage, signature: signature, publicKeyHex: publicKeyHex)
+        guard let body = bodyHeader.node else { return false }
+        return verify(
+            body: body,
+            bodyCID: bodyHeader.rawCID,
+            signature: signature,
+            publicKeyHex: publicKeyHex
+        )
     }
 }

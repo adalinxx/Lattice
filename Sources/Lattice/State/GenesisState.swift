@@ -1,9 +1,7 @@
 import cashew
 
-// The committed genesis state records, per directory, the IDENTITY (CID) of the
-// child chain's genesis block — not its content. The genesis block's content is
-// validated by the child chain it belongs to during admission, not by the parent that
-// anchors it here.
+// The committed genesis state records each child chain's genesis CID. Resolving
+// that content reveals the child spec, including its parent-work authority.
 public typealias GenesisState = VolumeMerkleDictionaryImpl<String>
 public typealias GenesisStateHeader = VolumeImpl<GenesisState>
 

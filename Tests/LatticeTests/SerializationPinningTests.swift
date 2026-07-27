@@ -133,6 +133,38 @@ final class SerializationPinningTests: XCTestCase {
         let dict2 = try BlockBuilder.buildChildrenDictionary(["Child": child])
         XCTAssertEqual(dict1.rawCID, dict2.rawCID,
             "children dict with same content must have identical CID")
+        XCTAssertEqual(
+            try dict1.node?.allKeysAndValues()["Child"]?.rawCID,
+            try VolumeImpl<Block>(node: child).rawCID
+        )
+    }
+
+    func testTransactionDictionaryCommitsEveryInput() throws {
+        let body = TransactionBody(
+            accountActions: [],
+            actions: [],
+            depositActions: [],
+            genesisActions: [],
+            receiptActions: [],
+            withdrawalActions: [],
+            signers: [],
+            fee: 0,
+            nonce: 0,
+            chainPath: ["Nexus"]
+        )
+        let transaction = Transaction(
+            signatures: [:],
+            body: try HeaderImpl(node: body)
+        )
+        let dictionary = try BlockBuilder.buildTransactionsDictionary([
+            transaction,
+        ])
+
+        XCTAssertEqual(dictionary.node?.count, 1)
+        XCTAssertEqual(
+            try dictionary.node?.allKeysAndValues()["0"]?.rawCID,
+            try VolumeImpl<Transaction>(node: transaction).rawCID
+        )
     }
 
     // MARK: - Block with child blocks has stable preimage

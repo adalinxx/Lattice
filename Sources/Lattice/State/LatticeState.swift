@@ -109,28 +109,22 @@ public struct LatticeState: Node {
 
 public typealias LatticeStateHeader = VolumeImpl<LatticeState>
 
-private func collectMaterializedVolumePaths(
+private func collectMaterializedVolumes(
     from volume: any Volume,
     selecting cids: Set<String>,
-    at path: [String] = [],
-    into paths: inout [[String]: StorageStrategy],
-    found: inout Set<String>
+    into volumes: inout [String: any Volume]
 ) {
     guard let node = volume.node else { return }
     for property in node.properties() {
         guard let child = node.get(property: property) as? any Volume,
               child.node != nil else { continue }
-        let childPath = path + [property]
         if cids.contains(child.rawCID) {
-            paths[childPath] = .targeted
-            found.insert(child.rawCID)
+            volumes[child.rawCID] = child
         }
-        collectMaterializedVolumePaths(
+        collectMaterializedVolumes(
             from: child,
             selecting: cids,
-            at: childPath,
-            into: &paths,
-            found: &found
+            into: &volumes
         )
     }
 }
@@ -142,15 +136,18 @@ extension VolumeImpl where NodeType == LatticeState {
         })
         created.remove(rawCID)
 
-        var paths: [[String]: StorageStrategy] = [:]
-        var found = Set<String>()
-        collectMaterializedVolumePaths(
+        var volumes: [String: any Volume] = [:]
+        collectMaterializedVolumes(
             from: self,
             selecting: created,
-            into: &paths,
-            found: &found
+            into: &volumes
         )
-        guard found == created else { throw DataErrors.nodeNotAvailable }
-        try await store(paths: paths, storer: storer)
+        guard Set(volumes.keys) == created else {
+            throw DataErrors.nodeNotAvailable
+        }
+        try await store(storer: storer)
+        for cid in volumes.keys.sorted() {
+            try await volumes[cid]?.store(storer: storer)
+        }
     }
 }

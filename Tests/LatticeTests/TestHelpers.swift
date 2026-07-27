@@ -10,6 +10,7 @@ import WAT
 
 final class StorableFetcher: Fetcher, Storer, VolumeStorer, Sendable {
     private let state = OSAllocatedUnfairLock<[String: Data]>(initialState: [:])
+    private let roots = OSAllocatedUnfairLock<Set<String>>(initialState: [])
 
     func store(rawCid: String, data: Data) {
         state.withLock { $0[rawCid] = data }
@@ -20,7 +21,12 @@ final class StorableFetcher: Fetcher, Storer, VolumeStorer, Sendable {
     }
 
     func store(volume: SerializedVolume) async {
+        roots.withLock { _ = $0.insert(volume.root) }
         state.withLock { $0.merge(volume.entries) { _, new in new } }
+    }
+
+    func volumeRoots() -> Set<String> {
+        roots.withLock { $0 }
     }
 
     func contains(rawCid: String) -> Bool {
@@ -81,7 +87,7 @@ func storeBuiltBlock(
     in fetcher: any Fetcher & Storer
 ) async throws -> Block {
     let header = try BlockHeader(node: block)
-    try await header.storeBlockContent(storer: fetcher)
+    try await header.store(paths: Block.contentResolutionPaths, storer: fetcher)
     if let children = block.children.node {
         var childPaths = ArrayTrie<ResolutionStrategy>()
         for directory in try children.allKeysAndValues().keys {
@@ -189,13 +195,17 @@ func buildPremineGenesis(
         genesisActions: [],
         receiptActions: [],
         withdrawalActions: [],
-        signers: [ownerAddress],
+        signers: [],
         fee: 0,
-        nonce: 0
+        nonce: 0,
+        chainPath: ["Nexus"]
     )
     let result = try await BlockBuilder.buildGenesisWithTransition(
         spec: spec,
-        transactions: [signedTestTransaction(body, by: owner)],
+        transactions: [Transaction(
+            signatures: [:],
+            body: try HeaderImpl<TransactionBody>(node: body)
+        )],
         timestamp: timestamp,
         target: target,
         fetcher: fetcher
@@ -316,10 +326,9 @@ func storeWasmPolicy(
 }
 
 func testChainContext(
-    path: [String] = [DEFAULT_ROOT_DIRECTORY],
-    minimumRootWork: UInt256 = UInt256(1)
+    path: [String] = [DEFAULT_ROOT_DIRECTORY]
 ) -> ChainRuntimeContext {
-    try! ChainRuntimeContext(path: path, minimumRootWork: minimumRootWork)
+    try! ChainRuntimeContext(path: path)
 }
 
 extension ChainLevel {
@@ -345,7 +354,33 @@ extension ChainState {
     }
 }
 
-func testAdmissionStage(_ batch: ChainAdmissionBatch) async throws {}
+func testAdmissionStage(_ context: ChainAdmissionStagingContext) async throws {}
+
+func testAdmissionBatch(
+    for block: Block,
+    contribution: VerifiedWorkContribution? = nil
+) throws -> ChainAdmissionBatch {
+    let header = try BlockHeader(node: block)
+    let work = contribution ?? VerifiedWorkContribution(
+        id: header.rawCID,
+        work: workForTarget(block.target)
+    )
+    return ChainAdmissionBatch(facts: [
+        .block(ChainBlockFact(
+            blockHash: header.rawCID,
+            parentBlockHash: block.parent?.rawCID,
+            blockHeight: block.height,
+            postStateCID: block.postState.rawCID,
+            prevStateCID: block.prevState.rawCID,
+            specCID: block.spec.rawCID,
+            target: block.target.toHexString(),
+            nextTarget: block.nextTarget.toHexString(),
+            timestamp: block.timestamp,
+            stateDiff: .empty
+        )),
+        .work(ChainWorkFact(blockHash: header.rawCID, contribution: work)),
+    ])
+}
 
 func testAdmissionBatch(
     block: Block,
@@ -381,27 +416,26 @@ func testWorkBatch(
 
 func childValidationPackage(
     proof: ChildBlockProof,
-    fetcher: any Fetcher,
-    parentContinuityLinks: [ParentContinuityLink] = [],
-    parentGenesisLinks: [ParentGenesisLink] = []
+    fetcher _: any Fetcher,
+    parentGenesisLink: ParentGenesisLink? = nil
 ) async throws -> ChildValidationPackage {
-    _ = fetcher
     return ChildValidationPackage(
         proof: proof,
-        parentContinuityLinks: parentContinuityLinks,
-        parentGenesisLinks: parentGenesisLinks
+        parentGenesisLink: parentGenesisLink
     )
 }
 
 func testParentGenesisLink(
     directory: String,
     childGenesisCID: String,
+    parentStateCID: String = testCID("parent-genesis-state"),
     parentPath: [String] = [DEFAULT_ROOT_DIRECTORY]
 ) -> ParentGenesisLink {
     ParentGenesisLink(
         parentPath: parentPath,
         directory: directory,
-        childGenesisCID: childGenesisCID
+        childGenesisCID: childGenesisCID,
+        parentStateCID: parentStateCID
     )
 }
 

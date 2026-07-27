@@ -6,16 +6,11 @@ public struct GenesisConfig: Sendable {
     public let spec: ChainSpec
     public let timestamp: Int64
     public let target: UInt256
-    // The chain's directory (name). Directory is positional and NOT stored in the
-    // content-addressed `ChainSpec`; for a node this is operator config (the root
-    // chain's name), not consensus data. Defaults to the conventional root name.
-    public let directory: String
 
-    public init(spec: ChainSpec, timestamp: Int64, target: UInt256, directory: String = DEFAULT_ROOT_DIRECTORY) {
+    public init(spec: ChainSpec, timestamp: Int64, target: UInt256) {
         self.spec = spec
         self.timestamp = timestamp
         self.target = target
-        self.directory = directory
     }
 
     public static func standard(spec: ChainSpec) -> GenesisConfig {

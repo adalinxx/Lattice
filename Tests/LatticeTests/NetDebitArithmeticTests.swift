@@ -9,7 +9,8 @@ final class NetDebitArithmeticTests: XCTestCase {
     ) -> TransactionBody {
         TransactionBody(
             accountActions: account, actions: [], depositActions: [], genesisActions: [],
-            receiptActions: receipts, withdrawalActions: [], signers: [], fee: fee, nonce: 0
+            receiptActions: receipts, withdrawalActions: [], signers: [], fee: fee, nonce: 0,
+            chainPath: ["Nexus"]
         )
     }
 

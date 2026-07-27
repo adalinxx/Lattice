@@ -31,7 +31,6 @@ public struct ChainSpec: Scalar {
     }
     public let retargetWindow: UInt64
     public let wasmPolicies: [WasmPolicyRef]
-
     enum CodingKeys: String, CodingKey {
         case maxNumberOfTransactionsPerBlock
         case maxStateGrowth

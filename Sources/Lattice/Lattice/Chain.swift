@@ -18,7 +18,7 @@ public func workForHash(_ hash: UInt256) -> UInt256 {
 /// Stable tie-break for equal-work segment bases. Compare the CID bytes rather
 /// than an encoded presentation string; malformed values remain deterministic
 /// so persistence validation can reject them without order-dependent behavior.
-func forkChoicePrefersSegmentBase(
+public func forkChoicePrefersSegmentBase(
     _ candidateHash: String,
     over currentHash: String
 ) -> Bool {
@@ -38,6 +38,11 @@ func forkChoicePrefersSegmentBase(
 
 public typealias BlockHeader = VolumeImpl<Block>
 
+public enum ChainStateRestoreError: Error, Sendable, Equatable {
+    case corruptConsensusGraph
+    case missingBlockFact
+}
+
 // MARK: - Concrete Types
 
 public struct BlockMeta: Sendable {
@@ -49,18 +54,15 @@ public struct BlockMeta: Sendable {
     public private(set) var workContributions: [String: VerifiedWorkContribution]
 
     /// Backward cumulative proof-of-work prefix measure from genesis through
-    /// this block. A physical grind appearing at several covered blocks counts
-    /// once.
+    /// this block. Each physical grind has one block location in this chain.
     ///
-    /// Stored so it remains exact across persistence round-trips.
-    ///
-    /// Mutable so out-of-order delivery and new grind coverage can rebuild the
-    /// exact deduplicated prefix.
+    /// This is a derived diagnostic, rebuilt on demand from durable block work
+    /// facts after recovery. It is never a fork-choice input or persisted
+    /// source of truth.
     public private(set) var cumulativeWork: WorkSum
 
     /// The forward same-chain subtree measure, deduplicated by physical grind.
-    /// This cache is local; live inherited work is unioned only while making a
-    /// fork-choice decision and is never persisted here.
+    /// This derived diagnostic is rebuilt on demand from accepted work facts.
     public private(set) var subtreeWeight: WorkSum
 
     package init(
@@ -115,13 +117,232 @@ public struct BlockMeta: Sendable {
 }
 
 struct WorkContributionRecord: Sendable, Equatable {
-    var blockHashes: Set<String>
+    let blockHash: String
     var contribution: VerifiedWorkContribution
+    var isRouted: Bool
+
+    init(
+        blockHash: String,
+        contribution: VerifiedWorkContribution,
+        isRouted: Bool = false
+    ) {
+        self.blockHash = blockHash
+        self.contribution = contribution
+        self.isRouted = isRouted
+    }
 }
 
-private struct WorkAdjustment {
-    var added: WorkSum = .zero
-    var removed: WorkSum = .zero
+private struct BlockRunLocation {
+    let origin: String
+    let index: Int
+}
+
+private struct SegmentPartition {
+    let startIndex: Int
+    let base: String
+}
+
+private struct SegmentOrigin {
+    var blocks: [String]
+    var partitions: [SegmentPartition]
+}
+
+private struct SegmentRange {
+    let origin: String
+    let indices: Range<Int>
+}
+
+private struct StateTransition: Hashable {
+    let from: String
+    let to: String
+}
+
+/// Stable unary-run routing. Splitting a segment inserts one boundary instead
+/// of relabeling every block in its suffix.
+private struct SegmentIndex {
+    var locationByBlock: [String: BlockRunLocation] = [:]
+    var origins: [String: SegmentOrigin] = [:]
+    var parentBaseByBase: [String: String] = [:]
+    var childrenByBase: [String: Set<String>] = [:]
+    var tailByBase: [String: String] = [:]
+
+    func base(forBlock blockHash: String) -> String? {
+        guard let location = locationByBlock[blockHash],
+              let partitions = origins[location.origin]?.partitions
+        else { return nil }
+        var low = 0
+        var high = partitions.count
+        while low < high {
+            let middle = low + (high - low) / 2
+            if partitions[middle].startIndex <= location.index {
+                low = middle + 1
+            } else {
+                high = middle
+            }
+        }
+        return low > 0 ? partitions[low - 1].base : nil
+    }
+
+    func range(forBase base: String) -> SegmentRange? {
+        guard let location = locationByBlock[base],
+              let origin = origins[location.origin] else { return nil }
+        var low = 0
+        var high = origin.partitions.count
+        while low < high {
+            let middle = low + (high - low) / 2
+            if origin.partitions[middle].startIndex < location.index {
+                low = middle + 1
+            } else {
+                high = middle
+            }
+        }
+        guard low < origin.partitions.count,
+              origin.partitions[low].base == base else { return nil }
+        let partition = low
+        let end = partition + 1 < origin.partitions.count
+            ? origin.partitions[partition + 1].startIndex
+            : origin.blocks.count
+        return SegmentRange(
+            origin: location.origin,
+            indices: location.index..<end
+        )
+    }
+}
+
+private struct OriginWorkIndex {
+    private var tree: [WorkSum] = [.zero]
+
+    init(count: Int) {
+        self.init(values: Array(repeating: .zero, count: count))
+    }
+
+    init(values: [WorkSum]) {
+        tree = [.zero] + values
+        for index in 1..<tree.count {
+            let parent = index + (index & -index)
+            if parent < tree.count {
+                tree[parent] = tree[parent] + tree[index]
+            }
+        }
+    }
+
+    mutating func append() {
+        let index = tree.count
+        let lowerBound = index - (index & -index)
+        tree.append(prefix(index - 1).subtracting(prefix(lowerBound))!)
+    }
+
+    mutating func add(_ delta: WorkSum, at position: Int) -> Int? {
+        guard position >= 0, position + 1 < tree.count else { return nil }
+        var index = position + 1
+        var updated = 0
+        while index < tree.count {
+            tree[index] = tree[index] + delta
+            updated += 1
+            index += index & -index
+        }
+        return updated
+    }
+
+    func sum(in range: Range<Int>) -> WorkSum? {
+        guard range.lowerBound >= 0,
+              range.upperBound < tree.count else { return nil }
+        return prefix(range.upperBound)
+            .subtracting(prefix(range.lowerBound))
+    }
+
+    private func prefix(_ count: Int) -> WorkSum {
+        var result = WorkSum.zero
+        var index = count
+        while index > 0 {
+            result = result + tree[index]
+            index -= index & -index
+        }
+        return result
+    }
+}
+
+/// Exact subtree sums over the dynamic segment quotient. Direct work remains
+/// indexed by stable unary-run position so a split never walks its block suffix.
+private struct SegmentWorkIndex {
+    var directWorkByOrigin: [String: OriginWorkIndex] = [:]
+    var subtreeWorkByBase: [String: WorkSum] = [:]
+
+    static var empty: SegmentWorkIndex {
+        SegmentWorkIndex()
+    }
+
+    mutating func add(
+        _ delta: WorkSum,
+        atBlock blockHash: String,
+        index: SegmentIndex
+    ) -> Int? {
+        guard let location = index.locationByBlock[blockHash],
+              let base = index.base(forBlock: blockHash),
+              let directCells = directWorkByOrigin[location.origin]?.add(
+                  delta,
+                  at: location.index
+              )
+        else { return nil }
+        var updated = directCells
+        var current: String? = base
+        while let base = current {
+            subtreeWorkByBase[base, default: .zero] =
+                subtreeWorkByBase[base, default: .zero] + delta
+            updated += 1
+            current = index.parentBaseByBase[base]
+        }
+        return updated
+    }
+
+    mutating func addOrigin(_ origin: String, count: Int) {
+        directWorkByOrigin[origin] = OriginWorkIndex(count: count)
+    }
+
+    mutating func appendBlock(toOrigin origin: String) -> Bool {
+        guard directWorkByOrigin[origin] != nil else { return false }
+        directWorkByOrigin[origin]!.append()
+        return true
+    }
+
+    mutating func addLeafBase(
+        _ base: String,
+        index: SegmentIndex
+    ) -> Bool {
+        guard index.childrenByBase[base]?.isEmpty == true,
+              let range = index.range(forBase: base),
+              let direct = directWorkByOrigin[range.origin]?.sum(
+                  in: range.indices
+              )
+        else { return false }
+        subtreeWorkByBase[base] = direct
+        return true
+    }
+
+    mutating func splitBase(
+        _ childBase: String,
+        from parentBase: String,
+        index: SegmentIndex
+    ) -> Bool {
+        guard let oldTotal = subtreeWorkByBase[parentBase],
+              let retainedRange = index.range(forBase: parentBase),
+              let retainedDirect = directWorkByOrigin[retainedRange.origin]?.sum(
+                  in: retainedRange.indices
+              ),
+              let childTotal = oldTotal.subtracting(retainedDirect)
+        else { return false }
+        subtreeWorkByBase[childBase] = childTotal
+        return true
+    }
+
+    func subtreeWork(forBase base: String) -> WorkSum? {
+        subtreeWorkByBase[base]
+    }
+}
+
+private struct CanonicalSegment: Equatable {
+    var base: String
+    var tail: String
 }
 
 public struct SubmissionResult: Sendable {
@@ -231,24 +452,25 @@ private struct ConsensusBlockInput: Sendable {
     }
 
     init?(fact: ChainBlockFact) {
-        guard (try? CID(fact.blockHash)) != nil,
-              fact.parentBlockHash.map({ (try? CID($0)) != nil }) ?? true,
-              (try? CID(fact.postStateCID)) != nil,
-              (try? CID(fact.prevStateCID)) != nil,
-              (try? CID(fact.specCID)) != nil,
+        guard let blockHash = CIDIdentity.canonicalString(fact.blockHash),
+              let postStateCID = CIDIdentity.canonicalString(fact.postStateCID),
+              let prevStateCID = CIDIdentity.canonicalString(fact.prevStateCID),
+              let specCID = CIDIdentity.canonicalString(fact.specCID),
               let target = UInt256(fact.target, radix: 16), target > .zero,
               let nextTarget = UInt256(fact.nextTarget, radix: 16), nextTarget > .zero,
               (fact.parentBlockHash == nil) == (fact.blockHeight == 0) else {
             return nil
         }
-        blockHash = fact.blockHash
-        parentBlockHash = fact.parentBlockHash
+        let normalizedParent = fact.parentBlockHash.flatMap(CIDIdentity.canonicalString)
+        guard fact.parentBlockHash == nil || normalizedParent != nil else { return nil }
+        self.blockHash = blockHash
+        parentBlockHash = normalizedParent
         blockHeight = fact.blockHeight
         timestamp = fact.timestamp
         snapshot = TipBlockSnapshot(
-            postStateCID: fact.postStateCID,
-            prevStateCID: fact.prevStateCID,
-            specCID: fact.specCID,
+            postStateCID: postStateCID,
+            prevStateCID: prevStateCID,
+            specCID: specCID,
             target: target,
             nextTarget: nextTarget,
             tipHeight: fact.blockHeight,
@@ -280,10 +502,14 @@ private struct TrustedAdmissionBatch {
         guard workFacts.count == 1,
               let work = workFacts.first,
               work.contribution.work > .zero,
-              (try? CID(work.blockHash)) != nil,
-              (try? CID(work.contribution.id)) != nil else {
+              let workBlockHash = CIDIdentity.canonicalString(work.blockHash),
+              let contributionID = CIDIdentity.canonicalString(work.contribution.id) else {
             return nil
         }
+        let contribution = VerifiedWorkContribution(
+            id: contributionID,
+            work: work.contribution.work
+        )
 
         switch blockFacts.count {
         case 0:
@@ -292,15 +518,15 @@ private struct TrustedAdmissionBatch {
         case 1:
             guard batch.facts.count == 2,
                   let input = ConsensusBlockInput(fact: blockFacts[0]),
-                  work.blockHash == input.blockHash else {
+                  workBlockHash == input.blockHash else {
                 return nil
             }
             block = input
         default:
             return nil
         }
-        workBlockHash = work.blockHash
-        contribution = work.contribution
+        self.workBlockHash = workBlockHash
+        self.contribution = contribution
     }
 }
 
@@ -324,11 +550,26 @@ public actor ChainState {
     var indexToBlockHash: [UInt64: Set<String>]
     var hashToBlock: [String: BlockMeta]
     var workByGrind: [String: WorkContributionRecord]
-    var forkChoiceWorkByGrind: [String: WorkContributionRecord]
-    var forkChoiceWeights: [String: WorkSum]
-
-    var inheritedWorkProvider: InheritedWorkProvider?
-    var inheritedWorkSnapshot: InheritedWorkSnapshot?
+    /// Derived GHOST weights exist only where a choice can be made: genesis
+    /// roots and children of a same-chain fork. Per-block facts remain the
+    /// source of truth because scalar weights cannot preserve grind identity.
+    private var segmentWorkIndex: SegmentWorkIndex
+    private var segmentIndex: SegmentIndex
+    /// The selected quotient path. A normal leaf extension updates only this
+    /// final tail instead of rewalking the unchanged unary prefix.
+    private var canonicalSegmentSpine: [CanonicalSegment]
+#if DEBUG
+    /// Test-visible diagnostic for a whole-block canonical materialization.
+    var fullCanonicalProjectionCount: UInt64
+    var segmentCacheRebuildCount: UInt64
+    var segmentWorkUpdateCellCount: UInt64
+    var segmentGraftCount: UInt64
+    var segmentGraftBlockVisitCount: UInt64
+    var stateContinuityBlockVisitCount: UInt64
+#endif
+    /// Diagnostic prefix/subtree totals are derived local views. They are not
+    /// fork-choice inputs and are rebuilt only when an API exposes them.
+    private var localWorkCachesDirty: Bool
 
     var mainChainBlockAtIndex: [UInt64: String]
     var blockTimestamps: [String: Int64]
@@ -341,6 +582,8 @@ public actor ChainState {
 
     public private(set) var tipSnapshot: TipBlockSnapshot?
     var tipSnapshotsByHash: [String: TipBlockSnapshot]
+    private var blocksByStateTransition: [StateTransition: Set<String>]
+    private var blocksByPostState: [String: Set<String>]
 
     // Restore validates this invariant; optional access keeps query paths fail-closed.
     var highestBlock: BlockMeta? { hashToBlock[chainTip] }
@@ -354,9 +597,7 @@ public actor ChainState {
         blockTimestamps: [String: Int64] = [:],
         tipSnapshot: TipBlockSnapshot? = nil,
         tipSnapshotsByHash: [String: TipBlockSnapshot] = [:],
-        mutationGeneration: UInt64 = 0,
-        inheritedWorkProvider: InheritedWorkProvider? = nil,
-        inheritedWorkSnapshot: InheritedWorkSnapshot? = nil
+        mutationGeneration: UInt64 = 0
     ) throws {
         self.chainTip = chainTip
         self.mainChainHashes = mainChainHashes
@@ -383,19 +624,45 @@ public actor ChainState {
         }
         self.hashToBlock = hashToBlock
         self.workByGrind = [:]
-        self.forkChoiceWorkByGrind = [:]
-        self.forkChoiceWeights = [:]
+        self.segmentWorkIndex = .empty
+        self.segmentIndex = SegmentIndex()
+        self.canonicalSegmentSpine = []
+#if DEBUG
+        self.fullCanonicalProjectionCount = 0
+        self.segmentCacheRebuildCount = 0
+        self.segmentWorkUpdateCellCount = 0
+        self.segmentGraftCount = 0
+        self.segmentGraftBlockVisitCount = 0
+        self.stateContinuityBlockVisitCount = 0
+#endif
+        self.localWorkCachesDirty = true
         var allByHeight = indexToBlockHash
         for meta in hashToBlock.values {
             allByHeight[meta.blockHeight, default: []].insert(meta.blockHash)
         }
         self.indexToBlockHash = allByHeight
-        self.inheritedWorkProvider = inheritedWorkProvider
-        self.inheritedWorkSnapshot = inheritedWorkSnapshot ?? inheritedWorkProvider?()
         self.tipSnapshot = tipSnapshot
         self.tipSnapshotsByHash = tipSnapshotsByHash
         if let tipSnapshot {
             self.tipSnapshotsByHash[chainTip] = tipSnapshot
+        }
+        self.blocksByStateTransition = [:]
+        self.blocksByPostState = [:]
+        for (blockHash, snapshot) in self.tipSnapshotsByHash
+        where hashToBlock[blockHash] != nil {
+            self.blocksByStateTransition[
+                StateTransition(
+                    from: snapshot.prevStateCID,
+                    to: snapshot.postStateCID
+                ),
+                default: []
+            ].insert(blockHash)
+            if snapshot.prevStateCID != snapshot.postStateCID {
+                self.blocksByPostState[
+                    snapshot.postStateCID,
+                    default: []
+                ].insert(blockHash)
+            }
         }
         self.blockTimestamps = blockTimestamps
         self.mutationGeneration = mutationGeneration
@@ -408,17 +675,19 @@ public actor ChainState {
                 throw ChainStateRestoreError.corruptConsensusGraph
             }
         }
-        Self.normalizeWorkContributions(in: &self.hashToBlock)
-        Self.recomputeWorkCaches(in: &self.hashToBlock)
+        guard Self.hasUniqueWorkLocations(in: self.hashToBlock) else {
+            throw ChainStateRestoreError.corruptConsensusGraph
+        }
+        self.segmentIndex = Self.makeSegmentIndex(in: self.hashToBlock)
         self.workByGrind = Self.workIndex(in: self.hashToBlock)
-        let inherited = self.inheritedWorkSnapshot ?? .zero
-        self.forkChoiceWorkByGrind = Self.workIndex(
-            in: self.hashToBlock,
-            inherited: inherited
+        self.segmentWorkIndex = Self.buildSegmentWorkIndex(
+            index: self.segmentIndex,
+            workByGrind: &self.workByGrind
         )
-        self.forkChoiceWeights = Self.effectiveSubtreeWeights(
+        self.canonicalSegmentSpine = Self.segmentSpine(
+            endingAt: chainTip,
             in: self.hashToBlock,
-            inherited: inherited
+            index: self.segmentIndex
         )
         for hash in mainChainHashes {
             guard let height = self.hashToBlock[hash]?.blockHeight,
@@ -496,11 +765,11 @@ public actor ChainState {
     }
 
     /// Restore a child process whose staged genesis batch reached durable storage
-    /// before the in-memory actor was created.
+    /// before the in-memory actor was created. The durable revision is a final
+    /// lower bound, applied after replay so restarts do not create revisions.
     public static func restore(
         replaying batches: [ChainAdmissionBatch],
-        revisionFloor: UInt64 = 0,
-        inheritedWorkProvider: InheritedWorkProvider? = nil
+        revisionFloor: UInt64 = 0
     ) async throws -> ChainState {
         let genesis = batches.compactMap(TrustedAdmissionBatch.init).filter {
             $0.block?.parentBlockHash == nil && $0.block?.blockHeight == 0
@@ -513,29 +782,17 @@ public actor ChainState {
         let chain = try fromTrustedGenesis(
             input: input,
             contribution: trusted.contribution,
-            mutationGeneration: revisionFloor
+            mutationGeneration: 0
         )
         // The node may enumerate its durable facts in any order. Replay the seed
         // batch too: its existing block/work record makes that a no-op.
         try await replay(batches[...], onto: chain)
-        _ = await chain.setInheritedWorkProvider(inheritedWorkProvider)
+        await chain.sealRecovery(revisionFloor: revisionFloor)
         return chain
     }
 
-    /// Restore a snapshot and then replay durable admission batches that may have
-    /// reached node storage immediately before a crash. Replaying all retained
-    /// batches is safe: duplicate facts are idempotent.
-    public static func restore(
-        from persisted: PersistedChainState,
-        replaying batches: [ChainAdmissionBatch],
-        inheritedWorkProvider: InheritedWorkProvider? = nil
-    ) async throws -> ChainState {
-        let chain = try restore(
-            from: persisted,
-            inheritedWorkProvider: inheritedWorkProvider
-        )
-        try await replay(batches[...], onto: chain)
-        return chain
+    private func sealRecovery(revisionFloor: UInt64) {
+        mutationGeneration = max(mutationGeneration, revisionFloor)
     }
 
     private static func replay(
@@ -588,29 +845,6 @@ public actor ChainState {
         return left.contribution.id < right.contribution.id
     }
 
-    static func snapshot(from block: PersistedBlockMeta) -> TipBlockSnapshot? {
-        guard let postStateCID = block.postStateCID,
-              let prevStateCID = block.prevStateCID,
-              let specCID = block.specCID,
-              let targetHex = block.target,
-              let nextTargetHex = block.nextTarget,
-              let timestamp = block.timestamp,
-              let target = UInt256(targetHex, radix: 16),
-              let nextTarget = UInt256(nextTargetHex, radix: 16)
-        else {
-            return nil
-        }
-        return TipBlockSnapshot(
-            postStateCID: postStateCID,
-            prevStateCID: prevStateCID,
-            specCID: specCID,
-            target: target,
-            nextTarget: nextTarget,
-            tipHeight: block.blockHeight,
-            timestamp: timestamp
-        )
-    }
-
     private static func snapshot(for block: Block) -> TipBlockSnapshot {
         TipBlockSnapshot(
             postStateCID: block.postState.rawCID,
@@ -625,190 +859,68 @@ public actor ChainState {
 
     // MARK: - Queries
 
-    /// Install the node's coherent immediate-parent view and immediately make
-    /// this chain's canonical projection agree with it.
-    @discardableResult
-    public func setInheritedWorkProvider(
-        _ provider: InheritedWorkProvider?
-    ) -> ChainCommit? {
-        inheritedWorkProvider = provider
-        return reevaluateForkChoice()
-    }
-
-    /// Re-read a live provider whose cached snapshot changed.
+    /// Recompute canonical projection after local simulation/test mutation.
     @discardableResult
     public func reevaluateForkChoice() -> ChainCommit? {
         guard hasUnreservedMutationCapacity else { return nil }
-        let inheritedChanged = refreshInheritedWork()
         let canonicalChange = projectCanonicalChain()
-        guard inheritedChanged || canonicalChange != nil else { return nil }
+        guard canonicalChange != nil else { return nil }
         mutationGeneration += 1
         return (canonicalChange ?? ChainCommit(tipHash: chainTip))
             .atRevision(mutationGeneration)
-    }
-
-    /// Atomically export the parent-side work securing each child block. The node
-    /// supplies bindings already verified from content-addressed paths; Lattice
-    /// stores no cross-process parent/child relationship index.
-    public func inheritedWorkSnapshot(
-        forChildCoverage verifiedParentBlocksByChildBlock: [String: Set<String>]
-    ) -> InheritedWorkSnapshot? {
-        let requestedParentBlocks = Set(
-            verifiedParentBlocksByChildBlock.values.joined()
-        )
-        guard let acceptedAncestry = acceptedAncestry(
-            of: requestedParentBlocks
-        ) else { return nil }
-        let rootsByChildBlock = minimalSubtreeRoots(
-            for: verifiedParentBlocksByChildBlock,
-            within: acceptedAncestry
-        )
-        let inherited = retainedInheritedWork
-        let strongestWork = Self.strongestWorkByGrind(
-            in: hashToBlock,
-            inherited: inherited
-        )
-        let requestedRoots = Set(rootsByChildBlock.values.joined())
-        let traversalRoots = minimalSubtreeRoots(
-            for: ["export": requestedRoots],
-            within: acceptedAncestry
-        )["export"] ?? []
-        let measuresByParentBlock = Self.effectiveSubtreeMeasures(
-            startingAt: traversalRoots,
-            retaining: requestedRoots,
-            in: hashToBlock,
-            inherited: inherited,
-            strongestWork: strongestWork
-        )
-        var workByChildBlock: [String: WorkMeasure] = [:]
-        for childBlockHash in verifiedParentBlocksByChildBlock.keys {
-            let roots = rootsByChildBlock[childBlockHash] ?? []
-            workByChildBlock[childBlockHash] = roots.reduce(
-                into: WorkMeasure.zero
-            ) { result, hash in
-                if let measure = measuresByParentBlock[hash] {
-                    result.formUnion(measure)
-                }
-            }
-        }
-        return InheritedWorkSnapshot(
-            revision: mutationGeneration,
-            workByBlock: workByChildBlock
-        )
-    }
-
-    private func acceptedAncestry(
-        of blockHashes: Set<String>
-    ) -> Set<String>? {
-        var valid = Set<String>()
-        for startHash in blockHashes {
-            var currentHash = startHash
-            var path: [String] = []
-            var visiting = Set<String>()
-            while !valid.contains(currentHash) {
-                guard visiting.insert(currentHash).inserted,
-                      let current = hashToBlock[currentHash] else { return nil }
-                path.append(currentHash)
-                guard let parentHash = current.parentBlockHash else {
-                    guard current.blockHeight == 0 else { return nil }
-                    break
-                }
-                guard let parent = hashToBlock[parentHash],
-                      parent.childHashes.contains(currentHash) else { return nil }
-                let (expectedHeight, overflow) = parent.blockHeight.addingReportingOverflow(1)
-                guard !overflow, current.blockHeight == expectedHeight else { return nil }
-                currentHash = parentHash
-            }
-            valid.formUnion(path)
-        }
-        return valid
-    }
-
-    private func minimalSubtreeRoots(
-        for coverageByChildBlock: [String: Set<String>],
-        within ancestry: Set<String>
-    ) -> [String: [String]] {
-        var childBlocksByParentBlock: [String: [String]] = [:]
-        var rootsByChildBlock = Dictionary(
-            uniqueKeysWithValues: coverageByChildBlock.keys.map { ($0, [String]()) }
-        )
-        for (childBlockHash, parentBlockHashes) in coverageByChildBlock {
-            for parentBlockHash in parentBlockHashes {
-                childBlocksByParentBlock[parentBlockHash, default: []]
-                    .append(childBlockHash)
-            }
-        }
-
-        let localRoots = ancestry.compactMap { hash -> BlockMeta? in
-            guard let meta = hashToBlock[hash],
-                  meta.parentBlockHash == nil else { return nil }
-            return meta
-        }.sorted { $0.blockHash < $1.blockHash }
-        var activeChildBlocks = Set<String>()
-        for root in localRoots {
-            var pending: [(hash: String, exiting: Bool, selected: [String])] = [
-                (root.blockHash, false, []),
-            ]
-            while let frame = pending.popLast() {
-                if frame.exiting {
-                    activeChildBlocks.subtract(frame.selected)
-                    continue
-                }
-                guard let meta = hashToBlock[frame.hash] else { continue }
-                var selected: [String] = []
-                for childBlockHash in childBlocksByParentBlock[frame.hash] ?? []
-                where activeChildBlocks.insert(childBlockHash).inserted {
-                    rootsByChildBlock[childBlockHash, default: []].append(frame.hash)
-                    selected.append(childBlockHash)
-                }
-                pending.append((frame.hash, true, selected))
-                for childHash in meta.childHashes.reversed()
-                where ancestry.contains(childHash) {
-                    pending.append((childHash, false, []))
-                }
-            }
-        }
-        return rootsByChildBlock
-    }
-
-    private var retainedInheritedWork: InheritedWorkSnapshot {
-        inheritedWorkSnapshot ?? .zero
-    }
-
-    @discardableResult
-    private func refreshInheritedWork() -> Bool {
-        guard let candidate = inheritedWorkProvider?() else { return false }
-        let current = retainedInheritedWork
-        let merged = current.union(candidate)
-        guard merged != current else { return false }
-        for (blockHash, measure) in merged.entriesByBlock {
-            let previous = current.work(forBlock: blockHash)
-            for (id, work) in measure.entries
-            where work > (previous.work(forGrind: id) ?? .zero) {
-                applyForkChoiceContribution(
-                    VerifiedWorkContribution(id: id, work: work),
-                    to: blockHash
-                )
-            }
-        }
-        inheritedWorkSnapshot = merged
-        return true
     }
 
     public func contains(blockHash: String) -> Bool {
         hashToBlock[blockHash] != nil
     }
 
-    /// Same-chain acquisition needs are holes in the accepted graph, not
-    /// separately persisted relationship state.
-    public func missingSameChainPredecessors() -> [SameChainPredecessorRequirement] {
-        hashToBlock.values.compactMap { sameChainPredecessorRequirement(for: $0) }
-            .sorted {
-                if $0.descendantCID != $1.descendantCID {
-                    return $0.descendantCID < $1.descendantCID
-                }
-                return $0.predecessorCID < $1.predecessorCID
+    public func currentRevision() -> UInt64 {
+        mutationGeneration
+    }
+
+    /// Same-chain acquisition needs are every unresolved immediate edge:
+    /// absent predecessors and accepted-but-unconnected predecessors alike.
+    /// Height order makes this linear after the deterministic sort, rather
+    /// than walking the same orphan suffix once per descendant.
+    public func unresolvedSameChainPredecessors() -> [SameChainPredecessorRequirement] {
+        let ordered = hashToBlock.sorted {
+            if $0.value.blockHeight != $1.value.blockHeight {
+                return $0.value.blockHeight < $1.value.blockHeight
             }
+            return $0.key < $1.key
+        }
+        var connected = Set<String>()
+        connected.reserveCapacity(ordered.count)
+        for (key, block) in ordered {
+            guard let predecessor = block.parentBlockHash else {
+                if block.blockHeight == 0 {
+                    connected.insert(key)
+                }
+                continue
+            }
+            guard let parent = hashToBlock[predecessor] else { continue }
+            let (expectedHeight, overflow) = parent.blockHeight
+                .addingReportingOverflow(1)
+            if !overflow,
+               expectedHeight == block.blockHeight,
+               connected.contains(predecessor)
+            {
+                connected.insert(key)
+            }
+        }
+        return hashToBlock.values.compactMap { block in
+            guard let predecessor = block.parentBlockHash,
+                  !connected.contains(predecessor) else { return nil }
+            return SameChainPredecessorRequirement(
+                descendantCID: block.blockHash,
+                predecessorCID: predecessor
+            )
+        }.sorted {
+            if $0.descendantCID != $1.descendantCID {
+                return $0.descendantCID < $1.descendantCID
+            }
+            return $0.predecessorCID < $1.predecessorCID
+        }
     }
 
     func sameChainPredecessorRequirement(
@@ -821,7 +933,7 @@ public actor ChainState {
         for block: BlockMeta
     ) -> SameChainPredecessorRequirement? {
         guard let parent = block.parentBlockHash,
-              hashToBlock[parent] == nil else { return nil }
+              !hasValidatedAncestry(blockHash: parent) else { return nil }
         return SameChainPredecessorRequirement(
             descendantCID: block.blockHash,
             predecessorCID: parent
@@ -832,23 +944,96 @@ public actor ChainState {
     /// this path-defined chain's admitted genesis roots. Parent processes issue
     /// cross-process facts only for blocks with validated ancestry.
     func hasValidatedAncestry(blockHash: String) -> Bool {
-        var visited = Set<String>()
-        var current = blockHash
-        while true {
-            guard visited.insert(current).inserted,
-                  let meta = hashToBlock[current] else { return false }
-            guard let parentHash = meta.parentBlockHash else {
-                return meta.blockHeight == 0
-            }
-            guard let parent = hashToBlock[parentHash] else { return false }
-            let (expectedHeight, overflow) = parent.blockHeight.addingReportingOverflow(1)
-            guard !overflow, expectedHeight == meta.blockHeight else { return false }
-            current = parentHash
+        segmentIndex.locationByBlock[blockHash] != nil
+    }
+
+    /// Whether `toStateCID` is reachable from `fromStateCID` through the
+    /// connected accepted state-transition graph. Fork choice is irrelevant.
+    public func hasStateContinuity(
+        from fromStateCID: String,
+        to toStateCID: String,
+        maximumBlockVisits: Int = .max
+    ) -> Bool {
+        stateContinuityPath(
+            from: fromStateCID,
+            to: toStateCID,
+            maximumBlockVisits: maximumBlockVisits
+        ) != nil
+    }
+
+    /// One deterministic accepted-block path proving forward state continuity.
+    /// The returned CIDs are hints for acquiring ordinary block Volumes; a
+    /// receiver must still validate those blocks before trusting the path.
+    public func stateContinuityPath(
+        from fromStateCID: String,
+        to toStateCID: String,
+        maximumBlockVisits: Int = .max
+    ) -> [String]? {
+        precondition(maximumBlockVisits > 0)
+        guard let from = CIDIdentity.canonicalString(fromStateCID),
+              let to = CIDIdentity.canonicalString(toStateCID) else {
+            return nil
         }
+        if from == to { return [] }
+        var remainingVisits = maximumBlockVisits
+        if let directCandidates = blocksByStateTransition[
+            StateTransition(from: from, to: to)
+        ] {
+            guard directCandidates.count <= remainingVisits else { return nil }
+            remainingVisits -= directCandidates.count
+            if let direct = directCandidates.lazy.filter({
+                self.segmentIndex.locationByBlock[$0] != nil
+            }).min() {
+                return [direct]
+            }
+        }
+
+        let targetCandidates = blocksByPostState[to] ?? []
+        guard targetCandidates.count <= remainingVisits else { return nil }
+        var pending = Array(targetCandidates)
+            .filter { segmentIndex.base(forBlock: $0) != nil }
+            .sorted(by: >)
+        var visited = Set<String>()
+        var childTowardTarget: [String: String] = [:]
+        while let blockHash = pending.popLast() {
+            guard remainingVisits > 0 else { return nil }
+            remainingVisits -= 1
+            guard visited.insert(blockHash).inserted,
+                  let block = hashToBlock[blockHash],
+                  let snapshot = tipSnapshotsByHash[blockHash] else {
+                continue
+            }
+#if DEBUG
+            stateContinuityBlockVisitCount &+= 1
+#endif
+            if snapshot.prevStateCID == from {
+                var path = [blockHash]
+                while let child = childTowardTarget[path.last!] {
+                    path.append(child)
+                }
+                return path
+            }
+            guard let parentHash = block.parentBlockHash,
+                  segmentIndex.base(forBlock: parentHash) != nil,
+                  let parent = hashToBlock[parentHash],
+                  let parentSnapshot = tipSnapshotsByHash[parentHash],
+                  parentSnapshot.postStateCID == snapshot.prevStateCID
+            else { continue }
+            childTowardTarget[parentHash] = blockHash
+            pending.append(parent.blockHash)
+        }
+        return nil
     }
 
     public func getMainChainTip() -> String {
         chainTip
+    }
+
+    /// One coherent canonical context for transaction preflight. Keeping the
+    /// tip and its snapshot in one actor read lets callers reject a result if
+    /// the canonical tip changes while content is being resolved.
+    func transactionPreflightTip() -> (cid: String, snapshot: TipBlockSnapshot?) {
+        (chainTip, tipSnapshot)
     }
 
     public func isOnMainChain(hash: String) -> Bool {
@@ -859,11 +1044,15 @@ public actor ChainState {
     /// Sum work for up to `limit` ancestors from the current tip.
     public func getCumulativeWork(limit: UInt64) -> WorkSum {
         var measure = WorkMeasure.zero
+        let strongestWork = Self.strongestWorkByGrind(in: hashToBlock)
         var current: String? = chainTip
         var walked: UInt64 = 0
         while let hash = current, walked <= limit {
             guard let meta = hashToBlock[hash] else { break }
-            measure.formUnion(WorkMeasure(meta.workContributions.values))
+            measure.formUnion(
+                WorkMeasure(meta.workContributions.values)
+                    .normalized(using: strongestWork)
+            )
             current = meta.parentBlockHash
             walked += 1
         }
@@ -872,33 +1061,29 @@ public actor ChainState {
 
     /// Exact total proof-of-work from genesis to the current chain tip.
     public func getTipCumulativeWork() -> WorkSum {
-        highestBlock?.cumulativeWork ?? .zero
+        materializeLocalWorkCachesIfNeeded()
+        return highestBlock?.cumulativeWork ?? .zero
     }
 
     /// Exact genesis-relative cumulative work at a specific block, or nil if the
     /// block is unknown.
     public func getCumulativeWork(forHash hash: String) -> WorkSum? {
-        hashToBlock[hash]?.cumulativeWork
+        guard hashToBlock[hash] != nil else { return nil }
+        materializeLocalWorkCachesIfNeeded()
+        return hashToBlock[hash]?.cumulativeWork
     }
 
-    /// The local-only same-chain subtree measure of `hash`, deduplicated by grind
-    /// identity. Live inherited work is joined only during fork-choice projection.
+    /// The same-chain subtree measure of `hash`, deduplicated by grind identity.
     public func subtreeWeight(forHash hash: String) -> WorkSum? {
-        hashToBlock[hash]?.subtreeWeight
-    }
-
-    /// Test-facing (via `@testable`): the projected heaviest leaf below `hash`
-    /// and its durable local cumulative work.
-    func heaviestDescent(fromHash hash: String) -> (tipHash: String, cumulativeWork: WorkSum)? {
-        guard let start = hashToBlock[hash] else { return nil }
-        let descent = chainWithMostWork(startingBlock: start)
-        guard let work = hashToBlock[descent.tipHash]?.cumulativeWork else { return nil }
-        return (descent.tipHash, work)
+        guard hashToBlock[hash] != nil else { return nil }
+        materializeLocalWorkCachesIfNeeded()
+        return hashToBlock[hash]?.subtreeWeight
     }
 
     /// Public simulator/test view of the real local fork-choice descent.
     public func forkChoiceSnapshot(startingAt hash: String) -> ForkChoiceSnapshot? {
-        guard let meta = hashToBlock[hash] else { return nil }
+        guard let meta = hashToBlock[hash],
+              segmentIndex.base(forBlock: hash) != nil else { return nil }
         let choice = chainWithMostWork(startingBlock: meta)
         return ForkChoiceSnapshot(
             startingHash: hash,
@@ -909,16 +1094,27 @@ public actor ChainState {
     }
 
     public func getConsensusBlock(hash: String) -> BlockMeta? {
-        hashToBlock[hash]
+        guard hashToBlock[hash] != nil else { return nil }
+        materializeLocalWorkCachesIfNeeded()
+        return hashToBlock[hash]
     }
 
     public func getHighestBlock() -> BlockMeta? {
-        highestBlock
+        materializeLocalWorkCachesIfNeeded()
+        return highestBlock
     }
 
     public func getHighestBlockHeight() -> UInt64 {
         highestBlockHeight
     }
+
+#if DEBUG
+    /// Test-only seam for asserting that a no-reorg update did not materialize
+    /// the unchanged unary canonical path.
+    func resetFullCanonicalProjectionCount() {
+        fullCanonicalProjectionCount = 0
+    }
+#endif
 
     public func getMainChainBlockHash(atIndex index: UInt64) -> String? {
         mainChainBlockAtIndex[index]
@@ -972,22 +1168,32 @@ public actor ChainState {
             return .discarded()
         }
 
+        guard acceptsLocation(of: contribution.id, at: blockHash) else {
+            return .discarded()
+        }
+
         if hashToBlock[blockHash] != nil {
             return addWorkContribution(contribution, to: blockHash)
         }
 
         guard hasUnreservedMutationCapacity else { return .discarded() }
+        let graftsExistingComponent = connectsExistingSubtreeToSegmentIndex(input)
 
         let result = insertBlock(
             input: input,
             contributions: [contribution],
-            addedContribution: true
+            addedContribution: true,
+            graftsExistingComponent: graftsExistingComponent
         )
         if !result.addedBlock { return result }
         mutationGeneration += 1
-        _ = refreshInheritedWork()
 
-        let canonicalChange = projectCanonicalChain()
+        let canonicalChange: ChainCommit?
+        if canAppendCanonicalTip(blockHash, parentHash: input.parentBlockHash, oldTip: oldTip) {
+            canonicalChange = appendCanonicalTip(blockHash)
+        } else {
+            canonicalChange = projectCanonicalChain()
+        }
         let extendsMainChain = input.parentBlockHash == oldTip
             && mainChainHashes.contains(blockHash)
         return SubmissionResult(
@@ -1004,7 +1210,8 @@ public actor ChainState {
     private func insertBlock(
         input: ConsensusBlockInput,
         contributions: [VerifiedWorkContribution],
-        addedContribution: Bool
+        addedContribution: Bool,
+        graftsExistingComponent: Bool
     ) -> SubmissionResult {
         let blockHash = input.blockHash
         guard !contributions.isEmpty,
@@ -1017,41 +1224,54 @@ public actor ChainState {
         addToBlockIndex(hash: blockHash, blockHeight: input.blockHeight)
 
         let childHashes = findChildren(hash: blockHash, blockHeight: input.blockHeight)
-        let canUpdateIncrementally = childHashes.isEmpty
+        let parentChildCount = input.parentBlockHash.flatMap {
+            hashToBlock[$0]?.childHashes.count
+        } ?? 0
         let meta = BlockMeta(
             blockHash: blockHash,
             parentBlockHash: input.parentBlockHash,
             blockHeight: input.blockHeight,
             childHashes: childHashes,
-            workContributions: canUpdateIncrementally ? [] : contributions,
-            cumulativeWork: input.parentBlockHash.flatMap {
-                hashToBlock[$0]?.cumulativeWork
-            } ?? .zero,
-            subtreeWeight: canUpdateIncrementally ? .zero : nil
+            workContributions: [],
+            cumulativeWork: .zero,
+            subtreeWeight: .zero
         )
 
         hashToBlock[blockHash] = meta
         blockTimestamps[blockHash] = input.timestamp
-        tipSnapshotsByHash[blockHash] = input.snapshot
+        indexStateTransition(input.snapshot, blockHash: blockHash)
         if let prevHash = input.parentBlockHash,
            hashToBlock[prevHash]?.childHashes.contains(blockHash) == false {
             hashToBlock[prevHash]?.childHashes.append(blockHash)
         }
+        for contribution in contributions {
+            applyLocalContribution(contribution, to: blockHash)
+        }
+        if graftsExistingComponent {
+            // These graph and work-location invariants were validated before
+            // this private reducer. Never continue with a partial consensus
+            // index if an internal invariant is broken.
+            precondition(
+                graftConnectedComponent(
+                    rootedAt: blockHash,
+                    parentChildCount: parentChildCount
+                ),
+                "validated orphan component could not be routed"
+            )
+        } else if childHashes.isEmpty {
+            precondition(
+                extendSegmentIndex(
+                    for: blockHash,
+                    parentChildCount: parentChildCount
+                ),
+                "validated leaf could not be routed"
+            )
+        }
 
-        if canUpdateIncrementally {
-            forkChoiceWeights[blockHash] = .zero
+        if !graftsExistingComponent {
             for contribution in contributions {
-                applyLocalContribution(contribution, to: blockHash)
                 applyForkChoiceContribution(contribution, to: blockHash)
             }
-            for (id, work) in retainedInheritedWork.work(forBlock: blockHash).entries {
-                applyForkChoiceContribution(
-                    VerifiedWorkContribution(id: id, work: work),
-                    to: blockHash
-                )
-            }
-        } else {
-            rebuildWorkIndexesAndCaches()
         }
 
         guard let previousBlockCID = input.parentBlockHash else {
@@ -1082,6 +1302,19 @@ public actor ChainState {
     nonisolated static func recomputeWorkCaches(
         in blocks: inout [String: BlockMeta]
     ) {
+        // Quantity is a property of the physical grind, not of the segment
+        // containing its one location.
+        var strongestWork: [String: UInt256] = [:]
+        for contribution in blocks.values.flatMap(\.workContributions.values)
+        where contribution.work > (strongestWork[contribution.id] ?? .zero) {
+            strongestWork[contribution.id] = contribution.work
+        }
+        func normalized(_ contribution: VerifiedWorkContribution) -> VerifiedWorkContribution {
+            VerifiedWorkContribution(
+                id: contribution.id,
+                work: strongestWork[contribution.id] ?? contribution.work
+            )
+        }
         let ascending = blocks.values.sorted {
             if $0.blockHeight != $1.blockHeight { return $0.blockHeight < $1.blockHeight }
             return $0.blockHash < $1.blockHash
@@ -1090,30 +1323,47 @@ public actor ChainState {
             meta.parentBlockHash.flatMap { blocks[$0] } == nil
         }
         for root in roots {
-            var activeCounts: [String: Int] = [:]
+            var activeCounts: [String: [UInt256: Int]] = [:]
             var activeWork = WorkSum.zero
+            func adjustActiveWork(
+                _ contribution: VerifiedWorkContribution,
+                by delta: Int
+            ) {
+                let id = contribution.id
+                let oldWork = activeCounts[id]?.keys.max() ?? .zero
+                var counts = activeCounts[id] ?? [:]
+                let count = counts[contribution.work, default: 0] + delta
+                if count == 0 {
+                    counts.removeValue(forKey: contribution.work)
+                } else {
+                    counts[contribution.work] = count
+                }
+                if counts.isEmpty {
+                    activeCounts.removeValue(forKey: id)
+                } else {
+                    activeCounts[id] = counts
+                }
+                let newWork = counts.keys.max() ?? .zero
+                guard oldWork != newWork else { return }
+                if oldWork > .zero {
+                    activeWork = activeWork.subtracting(WorkSum(oldWork))!
+                }
+                if newWork > .zero {
+                    activeWork = activeWork + newWork
+                }
+            }
             var pending: [(hash: String, exiting: Bool)] = [(root.blockHash, false)]
             while let frame = pending.popLast() {
                 guard let meta = blocks[frame.hash] else { continue }
                 if frame.exiting {
                     for contribution in meta.workContributions.values {
-                        guard let count = activeCounts[contribution.id] else { continue }
-                        if count == 1 {
-                            activeCounts.removeValue(forKey: contribution.id)
-                            activeWork = activeWork.subtracting(
-                                WorkSum(contribution.work)
-                            )!
-                        } else {
-                            activeCounts[contribution.id] = count - 1
-                        }
+                        adjustActiveWork(normalized(contribution), by: -1)
                     }
                     continue
                 }
 
                 for contribution in meta.workContributions.values {
-                    let count = activeCounts[contribution.id, default: 0]
-                    if count == 0 { activeWork = activeWork + contribution.work }
-                    activeCounts[contribution.id] = count + 1
+                    adjustActiveWork(normalized(contribution), by: 1)
                 }
                 blocks[meta.blockHash]?.setCumulativeWork(activeWork)
                 pending.append((meta.blockHash, true))
@@ -1155,48 +1405,49 @@ public actor ChainState {
                 }
             }
             for (id, contribution) in meta.workContributions {
-                insert(id: id, work: contribution.work, into: &accumulator)
+                insert(
+                    id: id,
+                    work: strongestWork[id] ?? contribution.work,
+                    into: &accumulator
+                )
             }
             blocks[meta.blockHash]?.setSubtreeWeight(accumulator.total)
             subtreeAccumulators[meta.blockHash] = accumulator
         }
     }
 
-    nonisolated static func normalizeWorkContributions(
-        in blocks: inout [String: BlockMeta]
-    ) {
-        var strongest: [String: VerifiedWorkContribution] = [:]
-        for contribution in blocks.values.flatMap(\.workContributions.values) {
-            if contribution.work > (strongest[contribution.id]?.work ?? .zero) {
-                strongest[contribution.id] = contribution
+    nonisolated private static func hasUniqueWorkLocations(
+        in blocks: [String: BlockMeta]
+    ) -> Bool {
+        var locationByGrind: [String: String] = [:]
+        func observe(_ grindID: String, at blockHash: String) -> Bool {
+            guard locationByGrind[grindID].map({ $0 == blockHash }) ?? true else {
+                return false
+            }
+            locationByGrind[grindID] = blockHash
+            return true
+        }
+        for (blockHash, block) in blocks {
+            for grindID in block.workContributions.keys
+            where !observe(grindID, at: blockHash) {
+                return false
             }
         }
-        for hash in blocks.keys {
-            guard let contributions = blocks[hash]?.workContributions.values else {
-                continue
-            }
-            for contribution in contributions {
-                if let strongest = strongest[contribution.id] {
-                    _ = blocks[hash]?.setWorkContribution(strongest)
-                }
-            }
-        }
+        return true
     }
 
     nonisolated static func workIndex(
-        in blocks: [String: BlockMeta],
-        inherited: InheritedWorkSnapshot = .zero
+        in blocks: [String: BlockMeta]
     ) -> [String: WorkContributionRecord] {
         var result: [String: WorkContributionRecord] = [:]
-        func observe(_ contribution: VerifiedWorkContribution, at hash: String?) {
+        func observe(_ contribution: VerifiedWorkContribution, at hash: String) {
             var record = result[contribution.id] ?? WorkContributionRecord(
-                blockHashes: [],
+                blockHash: hash,
                 contribution: contribution
             )
             if contribution.work > record.contribution.work {
                 record.contribution = contribution
             }
-            if let hash, blocks[hash] != nil { record.blockHashes.insert(hash) }
             result[contribution.id] = record
         }
 
@@ -1205,151 +1456,274 @@ public actor ChainState {
                 observe(contribution, at: hash)
             }
         }
-        for (hash, measure) in inherited.entriesByBlock {
-            for (id, work) in measure.entries {
-                observe(VerifiedWorkContribution(id: id, work: work), at: hash)
-            }
-        }
         return result
     }
 
-    private func rebuildWorkIndexesAndCaches() {
-        Self.normalizeWorkContributions(in: &hashToBlock)
-        Self.recomputeWorkCaches(in: &hashToBlock)
-        workByGrind = Self.workIndex(in: hashToBlock)
-        forkChoiceWorkByGrind = Self.workIndex(
-            in: hashToBlock,
-            inherited: retainedInheritedWork
+    /// Extend or split the dynamic segment quotient. A split inserts one
+    /// boundary into a stable unary run; no existing block is relabeled.
+    @discardableResult
+    private func extendSegmentIndex(
+        for blockHash: String,
+        parentChildCount: Int
+    ) -> Bool {
+        guard let block = hashToBlock[blockHash] else { return false }
+        guard let parentHash = block.parentBlockHash else {
+            guard block.blockHeight == 0 else { return false }
+            segmentIndex.locationByBlock[blockHash] = BlockRunLocation(
+                origin: blockHash,
+                index: 0
+            )
+            segmentIndex.origins[blockHash] = SegmentOrigin(
+                blocks: [blockHash],
+                partitions: [SegmentPartition(startIndex: 0, base: blockHash)]
+            )
+            segmentIndex.parentBaseByBase.removeValue(forKey: blockHash)
+            segmentIndex.childrenByBase[blockHash] = []
+            segmentIndex.tailByBase[blockHash] = blockHash
+            segmentWorkIndex.addOrigin(blockHash, count: 1)
+            return segmentWorkIndex.addLeafBase(blockHash, index: segmentIndex)
+        }
+        // A disconnected component stays unrouted until an admitted ancestor
+        // grafts the whole component into the quotient.
+        guard hashToBlock[parentHash] != nil else { return true }
+        guard let parentBase = segmentIndex.base(forBlock: parentHash),
+              let parentLocation = segmentIndex.locationByBlock[parentHash]
+        else { return true }
+
+        if parentChildCount == 0 {
+            guard segmentIndex.tailByBase[parentBase] == parentHash,
+                  var origin = segmentIndex.origins[parentLocation.origin],
+                  parentLocation.index + 1 == origin.blocks.count,
+                  segmentWorkIndex.appendBlock(toOrigin: parentLocation.origin)
+            else { return false }
+            let location = BlockRunLocation(
+                origin: parentLocation.origin,
+                index: origin.blocks.count
+            )
+            origin.blocks.append(blockHash)
+            segmentIndex.origins[parentLocation.origin] = origin
+            segmentIndex.locationByBlock[blockHash] = location
+            segmentIndex.tailByBase[parentBase] = blockHash
+            return true
+        }
+
+        if parentChildCount == 1,
+           !splitParentSegment(at: parentHash, excluding: blockHash) {
+            return false
+        }
+
+        segmentIndex.locationByBlock[blockHash] = BlockRunLocation(
+            origin: blockHash,
+            index: 0
         )
-        forkChoiceWeights = Self.effectiveSubtreeWeights(
-            in: hashToBlock,
-            inherited: retainedInheritedWork
+        segmentIndex.origins[blockHash] = SegmentOrigin(
+            blocks: [blockHash],
+            partitions: [SegmentPartition(startIndex: 0, base: blockHash)]
         )
+        segmentIndex.parentBaseByBase[blockHash] = parentBase
+        segmentIndex.childrenByBase[parentBase, default: []].insert(blockHash)
+        segmentIndex.childrenByBase[blockHash] = []
+        segmentIndex.tailByBase[blockHash] = blockHash
+        segmentWorkIndex.addOrigin(blockHash, count: 1)
+        return segmentWorkIndex.addLeafBase(blockHash, index: segmentIndex)
     }
 
-    private func ancestorClosure(of coverage: Set<String>) -> Set<String> {
-        var result = Set<String>()
-        var pending = Array(coverage)
-        while let hash = pending.popLast() {
-            guard let meta = hashToBlock[hash], result.insert(hash).inserted else {
-                continue
-            }
-            if let parentHash = meta.parentBlockHash { pending.append(parentHash) }
+    /// Turn the old unary suffix after `parentHash` into its own quotient base.
+    /// Ordinary sibling admission and bulk orphan grafting deliberately share
+    /// this operation.
+    private func splitParentSegment(
+        at parentHash: String,
+        excluding newChildHash: String
+    ) -> Bool {
+        guard let parentBase = segmentIndex.base(forBlock: parentHash),
+              let parentLocation = segmentIndex.locationByBlock[parentHash],
+              let oldChild = hashToBlock[parentHash]?.childHashes.first(
+                  where: { $0 != newChildHash }
+              )
+        else { return false }
+        // A previous orphan graft may already have left a transparent
+        // one-child boundary at this parent.
+        if let oldChildBase = segmentIndex.base(forBlock: oldChild),
+           segmentIndex.tailByBase[parentBase] == parentHash,
+           segmentIndex.parentBaseByBase[oldChildBase] == parentBase {
+            return true
         }
-        return result
+        guard let oldChildLocation = segmentIndex.locationByBlock[oldChild],
+              oldChildLocation.origin == parentLocation.origin,
+              oldChildLocation.index == parentLocation.index + 1,
+              var origin = segmentIndex.origins[parentLocation.origin],
+              let oldTail = segmentIndex.tailByBase[parentBase]
+        else { return false }
+
+        let movedChildren = segmentIndex.childrenByBase[parentBase] ?? []
+        var low = 0
+        var high = origin.partitions.count
+        while low < high {
+            let middle = low + (high - low) / 2
+            if origin.partitions[middle].startIndex < oldChildLocation.index {
+                low = middle + 1
+            } else {
+                high = middle
+            }
+        }
+        guard low == origin.partitions.count
+                || origin.partitions[low].startIndex != oldChildLocation.index
+        else { return false }
+        origin.partitions.insert(SegmentPartition(
+            startIndex: oldChildLocation.index,
+            base: oldChild
+        ), at: low)
+        segmentIndex.origins[parentLocation.origin] = origin
+        segmentIndex.parentBaseByBase[oldChild] = parentBase
+        segmentIndex.childrenByBase[oldChild] = movedChildren
+        for child in movedChildren {
+            segmentIndex.parentBaseByBase[child] = oldChild
+        }
+        segmentIndex.childrenByBase[parentBase] = [oldChild]
+        segmentIndex.tailByBase[parentBase] = parentHash
+        segmentIndex.tailByBase[oldChild] = oldTail
+        guard segmentWorkIndex.splitBase(
+            oldChild,
+            from: parentBase,
+            index: segmentIndex
+        ) else { return false }
+
+        if let selected = canonicalSegmentSpine.firstIndex(of:
+            CanonicalSegment(base: parentBase, tail: oldTail)
+        ) {
+            canonicalSegmentSpine.replaceSubrange(
+                selected...selected,
+                with: [
+                    CanonicalSegment(base: parentBase, tail: parentHash),
+                    CanonicalSegment(base: oldChild, tail: oldTail),
+                ]
+            )
+        }
+        return true
     }
 
-    private func strengthenLocalCaches(
-        by delta: WorkSum,
-        coverage: Set<String>
-    ) {
-        var visited = Set<String>()
-        var pending = Array(coverage)
+    /// Route one newly connected orphan component without touching unrelated
+    /// history. The component builds its own quotient once, then contributes
+    /// one subtree total to each already-routed ancestor base.
+    private func graftConnectedComponent(
+        rootedAt rootHash: String,
+        parentChildCount: Int
+    ) -> Bool {
+        var pending = [rootHash]
+        var componentHashes = Set<String>()
         while let hash = pending.popLast() {
-            guard let meta = hashToBlock[hash], visited.insert(hash).inserted else {
-                continue
+            guard segmentIndex.locationByBlock[hash] == nil,
+                  componentHashes.insert(hash).inserted,
+                  let block = hashToBlock[hash] else { continue }
+            pending.append(contentsOf: block.childHashes)
+        }
+        guard !componentHashes.isEmpty else { return false }
+
+        var componentBlocks: [String: BlockMeta] = [:]
+        componentBlocks.reserveCapacity(componentHashes.count)
+        for hash in componentHashes {
+            guard let block = hashToBlock[hash] else { return false }
+            componentBlocks[hash] = block
+        }
+        var componentIndex = Self.makeSegmentIndex(
+            in: componentBlocks,
+            roots: [rootHash]
+        )
+        var componentWorkByGrind = Self.workIndex(in: componentBlocks)
+        let componentWorkIndex = Self.buildSegmentWorkIndex(
+            index: componentIndex,
+            workByGrind: &componentWorkByGrind
+        )
+        guard componentIndex.base(forBlock: rootHash) == rootHash,
+              let componentTotal = componentWorkIndex.subtreeWork(forBase: rootHash)
+        else { return false }
+
+        var routedParentBase: String?
+        if let parentHash = hashToBlock[rootHash]?.parentBlockHash {
+            guard segmentIndex.base(forBlock: parentHash) != nil else {
+                return false
             }
-            hashToBlock[hash]?.setCumulativeWork(meta.cumulativeWork + delta)
-            pending.append(contentsOf: meta.childHashes)
+            if parentChildCount == 1,
+               !splitParentSegment(at: parentHash, excluding: rootHash) {
+                return false
+            }
+            guard let parentBase = segmentIndex.base(forBlock: parentHash) else {
+                return false
+            }
+            routedParentBase = parentBase
+            componentIndex.parentBaseByBase[rootHash] = parentBase
+        } else if hashToBlock[rootHash]?.blockHeight != 0 {
+            return false
         }
 
-        visited.removeAll(keepingCapacity: true)
-        pending = Array(coverage)
-        while let hash = pending.popLast() {
-            guard let meta = hashToBlock[hash], visited.insert(hash).inserted else {
-                continue
-            }
-            hashToBlock[hash]?.setSubtreeWeight(meta.subtreeWeight + delta)
-            if let parentHash = meta.parentBlockHash { pending.append(parentHash) }
+        for (hash, location) in componentIndex.locationByBlock {
+            segmentIndex.locationByBlock[hash] = location
         }
-    }
-
-    private func addLocalCoverage(
-        _ work: UInt256,
-        at blockHash: String,
-        priorCoverage: Set<String>
-    ) {
-        var cursor: String? = blockHash
-        var prefixAlreadyCovered = false
-        while let hash = cursor, let meta = hashToBlock[hash] {
-            if priorCoverage.contains(hash) {
-                prefixAlreadyCovered = true
-                break
-            }
-            cursor = meta.parentBlockHash
+        for (origin, run) in componentIndex.origins {
+            segmentIndex.origins[origin] = run
+        }
+        for (base, parent) in componentIndex.parentBaseByBase {
+            segmentIndex.parentBaseByBase[base] = parent
+        }
+        for (base, children) in componentIndex.childrenByBase {
+            segmentIndex.childrenByBase[base] = children
+        }
+        for (base, tail) in componentIndex.tailByBase {
+            segmentIndex.tailByBase[base] = tail
+        }
+        if let routedParentBase {
+            segmentIndex.childrenByBase[routedParentBase, default: []].insert(rootHash)
         }
 
-        if !prefixAlreadyCovered {
-            var visited = Set<String>()
-            var pending = [blockHash]
-            while let hash = pending.popLast() {
-                guard !priorCoverage.contains(hash),
-                      let meta = hashToBlock[hash],
-                      visited.insert(hash).inserted else { continue }
-                hashToBlock[hash]?.setCumulativeWork(meta.cumulativeWork + work)
-                pending.append(contentsOf: meta.childHashes)
-            }
+        for (origin, direct) in componentWorkIndex.directWorkByOrigin {
+            segmentWorkIndex.directWorkByOrigin[origin] = direct
+        }
+        for (base, work) in componentWorkIndex.subtreeWorkByBase {
+            segmentWorkIndex.subtreeWorkByBase[base] = work
         }
 
-        let priorAncestors = ancestorClosure(of: priorCoverage)
-        cursor = blockHash
-        var visited = Set<String>()
-        while let hash = cursor,
-              !priorAncestors.contains(hash),
-              let meta = hashToBlock[hash],
-              visited.insert(hash).inserted {
-            hashToBlock[hash]?.setSubtreeWeight(meta.subtreeWeight + work)
-            cursor = meta.parentBlockHash
+        var updatedAncestors = 0
+        var ancestor = routedParentBase
+        while let base = ancestor {
+            segmentWorkIndex.subtreeWorkByBase[base, default: .zero] =
+                segmentWorkIndex.subtreeWorkByBase[base, default: .zero]
+                + componentTotal
+            updatedAncestors += 1
+            ancestor = segmentIndex.parentBaseByBase[base]
         }
+
+        for (grindID, record) in componentWorkByGrind {
+            workByGrind[grindID] = record
+        }
+#if DEBUG
+        segmentGraftCount += 1
+        segmentGraftBlockVisitCount += UInt64(componentHashes.count)
+        segmentWorkUpdateCellCount += UInt64(updatedAncestors)
+#endif
+        return true
     }
 
     private func applyLocalContribution(
         _ contribution: VerifiedWorkContribution,
         to blockHash: String
     ) {
-        let id = contribution.id
-        if workByGrind[id] == nil {
-            workByGrind[id] = WorkContributionRecord(
-                blockHashes: [],
-                contribution: contribution
-            )
+        guard hashToBlock[blockHash]?.setWorkContribution(contribution) == true else {
+            return
         }
-        if let existing = workByGrind[id],
-           contribution.work > existing.contribution.work {
-            let delta = WorkSum(contribution.work)
-                .subtracting(WorkSum(existing.contribution.work))!
-            for hash in existing.blockHashes {
-                _ = hashToBlock[hash]?.setWorkContribution(contribution)
-            }
-            strengthenLocalCaches(by: delta, coverage: existing.blockHashes)
-            workByGrind[id]?.contribution = contribution
-        }
-
-        guard workByGrind[id]?.blockHashes.contains(blockHash) == false,
-              let strongest = workByGrind[id]?.contribution else { return }
-        _ = hashToBlock[blockHash]?.setWorkContribution(strongest)
-        addLocalCoverage(
-            strongest.work,
-            at: blockHash,
-            priorCoverage: workByGrind[id]?.blockHashes ?? []
-        )
-        workByGrind[id]?.blockHashes.insert(blockHash)
+        localWorkCachesDirty = true
     }
 
-    private func strengthenForkChoiceWeights(
-        by delta: WorkSum,
-        coverage: Set<String>
-    ) {
-        var visited = Set<String>()
-        var pending = Array(coverage)
-        while let hash = pending.popLast() {
-            guard let meta = hashToBlock[hash], visited.insert(hash).inserted else {
-                continue
-            }
-            forkChoiceWeights[hash, default: .zero] =
-                forkChoiceWeights[hash, default: .zero] + delta
-            if let parentHash = meta.parentBlockHash { pending.append(parentHash) }
-        }
+    private func acceptsLocation(of grindID: String, at blockHash: String) -> Bool {
+        return workByGrind[grindID]
+            .map { $0.blockHash == blockHash } ?? true
+    }
+
+    /// Rebuild non-consensus diagnostic totals lazily. Fork choice always uses
+    /// the identity-aware segment cache instead.
+    func materializeLocalWorkCachesIfNeeded() {
+        guard localWorkCachesDirty else { return }
+        Self.recomputeWorkCaches(in: &hashToBlock)
+        localWorkCachesDirty = false
     }
 
     private func applyForkChoiceContribution(
@@ -1357,37 +1731,44 @@ public actor ChainState {
         to blockHash: String
     ) {
         let id = contribution.id
-        if forkChoiceWorkByGrind[id] == nil {
-            forkChoiceWorkByGrind[id] = WorkContributionRecord(
-                blockHashes: [],
+        if workByGrind[id] == nil {
+            workByGrind[id] = WorkContributionRecord(
+                blockHash: blockHash,
                 contribution: contribution
             )
         }
-        if let existing = forkChoiceWorkByGrind[id],
-           contribution.work > existing.contribution.work {
-            let delta = WorkSum(contribution.work)
-                .subtracting(WorkSum(existing.contribution.work))!
-            strengthenForkChoiceWeights(by: delta, coverage: existing.blockHashes)
-            forkChoiceWorkByGrind[id]?.contribution = contribution
+        guard let existing = workByGrind[id],
+              existing.blockHash == blockHash else { return }
+        if contribution.work > existing.contribution.work {
+            if existing.isRouted {
+                let delta = WorkSum(contribution.work)
+                    .subtracting(WorkSum(existing.contribution.work))!
+                guard let updatedCells = segmentWorkIndex.add(
+                        delta,
+                        atBlock: blockHash,
+                        index: segmentIndex
+                      ) else { return }
+#if DEBUG
+                segmentWorkUpdateCellCount += UInt64(updatedCells)
+#endif
+            }
+            workByGrind[id]?.contribution = contribution
         }
 
         guard hashToBlock[blockHash] != nil,
-              forkChoiceWorkByGrind[id]?.blockHashes.contains(blockHash) == false,
-              let strongest = forkChoiceWorkByGrind[id]?.contribution else { return }
-        let priorAncestors = ancestorClosure(
-            of: forkChoiceWorkByGrind[id]?.blockHashes ?? []
-        )
-        var cursor: String? = blockHash
-        var visited = Set<String>()
-        while let hash = cursor,
-              !priorAncestors.contains(hash),
-              let meta = hashToBlock[hash],
-              visited.insert(hash).inserted {
-            forkChoiceWeights[hash, default: .zero] =
-                forkChoiceWeights[hash, default: .zero] + strongest.work
-            cursor = meta.parentBlockHash
+              workByGrind[id]?.isRouted == false,
+              let strongest = workByGrind[id]?.contribution else { return }
+        guard let updatedCells = segmentWorkIndex.add(
+                WorkSum(strongest.work),
+                atBlock: blockHash,
+                index: segmentIndex
+              ) else {
+            return
         }
-        forkChoiceWorkByGrind[id]?.blockHashes.insert(blockHash)
+#if DEBUG
+        segmentWorkUpdateCellCount += UInt64(updatedCells)
+#endif
+        workByGrind[id]?.isRouted = true
     }
 
     // MARK: - Additional proof facts
@@ -1396,16 +1777,18 @@ public actor ChainState {
         _ contribution: VerifiedWorkContribution,
         to blockHash: String
     ) -> SubmissionResult {
-        guard hashToBlock[blockHash] != nil else { return .discarded() }
-        let existing = workContribution(id: contribution.id)
-        let addsCoverage = existing?.blockHashes.contains(blockHash) != true
-        let strengthensGrind = contribution.work > (existing?.contribution.work ?? .zero)
-        guard addsCoverage || strengthensGrind else { return .discarded() }
+        guard hashToBlock[blockHash] != nil,
+              acceptsLocation(of: contribution.id, at: blockHash) else {
+            return .discarded()
+        }
+        if let existing = workContribution(id: contribution.id, at: blockHash),
+           existing.work >= contribution.work {
+            return .discarded()
+        }
         guard hasUnreservedMutationCapacity else { return .discarded() }
         applyLocalContribution(contribution, to: blockHash)
         applyForkChoiceContribution(contribution, to: blockHash)
         mutationGeneration += 1
-        _ = refreshInheritedWork()
 
         let canonicalChange = projectCanonicalChain()
         if canonicalChange != nil {
@@ -1422,6 +1805,13 @@ public actor ChainState {
 
     func workContribution(id: String) -> WorkContributionRecord? {
         workByGrind[id]
+    }
+
+    func workContribution(
+        id: String,
+        at blockHash: String
+    ) -> VerifiedWorkContribution? {
+        hashToBlock[blockHash]?.workContributions[id]
     }
 
     /// Apply one already-durable, locally authenticated admission batch. Live
@@ -1442,9 +1832,10 @@ public actor ChainState {
                       }) ?? true else {
                     throw ChainStateRestoreError.corruptConsensusGraph
                 }
-                if let existingRecord = workContribution(id: trusted.contribution.id),
-                   existingRecord.blockHashes.contains(input.blockHash),
-                   existingRecord.contribution.work >= trusted.contribution.work {
+                if let existing = workContribution(
+                    id: trusted.contribution.id,
+                    at: input.blockHash
+                ), existing.work >= trusted.contribution.work {
                     hydrateMetadata(from: input)
                     return nil
                 }
@@ -1472,11 +1863,11 @@ public actor ChainState {
         guard hashToBlock[blockHash] != nil else {
             throw ChainStateRestoreError.missingBlockFact
         }
-        if let existingRecord = workContribution(id: trusted.contribution.id) {
-            if existingRecord.blockHashes.contains(blockHash),
-               existingRecord.contribution.work >= trusted.contribution.work {
-                return nil
-            }
+        if let existing = workContribution(
+            id: trusted.contribution.id,
+            at: blockHash
+        ), existing.work >= trusted.contribution.work {
+            return nil
         }
         let submission = addWorkContribution(trusted.contribution, to: blockHash)
         guard submission.addedContribution else {
@@ -1527,13 +1918,60 @@ public actor ChainState {
 
     private func hydrateMetadata(from input: ConsensusBlockInput) {
         blockTimestamps[input.blockHash] = input.timestamp
-        tipSnapshotsByHash[input.blockHash] = input.snapshot
+        indexStateTransition(input.snapshot, blockHash: input.blockHash)
         if chainTip == input.blockHash {
             tipSnapshot = input.snapshot
         }
     }
 
+    private func indexStateTransition(
+        _ snapshot: TipBlockSnapshot,
+        blockHash: String
+    ) {
+        if let previous = tipSnapshotsByHash[blockHash],
+           previous != snapshot {
+            blocksByStateTransition[
+                StateTransition(
+                    from: previous.prevStateCID,
+                    to: previous.postStateCID
+                )
+            ]?.remove(blockHash)
+            if previous.prevStateCID != previous.postStateCID {
+                blocksByPostState[
+                    previous.postStateCID
+                ]?.remove(blockHash)
+            }
+        }
+        tipSnapshotsByHash[blockHash] = snapshot
+        blocksByStateTransition[
+            StateTransition(
+                from: snapshot.prevStateCID,
+                to: snapshot.postStateCID
+            ),
+            default: []
+        ].insert(blockHash)
+        if snapshot.prevStateCID != snapshot.postStateCID {
+            blocksByPostState[
+                snapshot.postStateCID,
+                default: []
+            ].insert(blockHash)
+        }
+    }
+
     // MARK: - Index Management
+
+    private func connectsExistingSubtreeToSegmentIndex(
+        _ input: ConsensusBlockInput
+    ) -> Bool {
+        guard !findChildren(
+            hash: input.blockHash,
+            blockHeight: input.blockHeight
+        ).isEmpty else { return false }
+        guard let parentHash = input.parentBlockHash else {
+            return input.blockHeight == 0
+        }
+        return segmentIndex.locationByBlock[parentHash] != nil
+    }
 
     func addToBlockIndex(hash: String, blockHeight: UInt64) {
         indexToBlockHash[blockHeight, default: []].insert(hash)
@@ -1548,13 +1986,14 @@ public actor ChainState {
     // MARK: - Fork Choice
 
     nonisolated private static func strongestWorkByGrind(
-        in blocks: [String: BlockMeta],
-        inherited: InheritedWorkSnapshot
+        in blocks: [String: BlockMeta]
     ) -> [String: UInt256] {
-        var strongestWork = inherited.strongestWorkByGrind
-        for contribution in blocks.values.flatMap(\.workContributions.values)
-        where contribution.work > (strongestWork[contribution.id] ?? .zero) {
-            strongestWork[contribution.id] = contribution.work
+        var strongestWork: [String: UInt256] = [:]
+        for block in blocks.values {
+            for contribution in block.workContributions.values
+            where contribution.work > (strongestWork[contribution.id] ?? .zero) {
+                strongestWork[contribution.id] = contribution.work
+            }
         }
         return strongestWork
     }
@@ -1563,7 +2002,6 @@ public actor ChainState {
         startingAt startHashes: [String],
         retaining retainedHashes: Set<String>,
         in blocks: [String: BlockMeta],
-        inherited: InheritedWorkSnapshot,
         strongestWork: [String: UInt256]
     ) -> [String: WorkMeasure] {
         var order: [String] = []
@@ -1596,80 +2034,153 @@ public actor ChainState {
                 WorkMeasure(meta.workContributions.values)
                     .normalized(using: strongestWork)
             )
-            measure.formUnion(
-                inherited.work(forBlock: hash).normalized(using: strongestWork)
-            )
             if retainedHashes.contains(hash) { retained[hash] = measure }
             accumulators[hash] = measure
         }
         return retained
     }
 
-    nonisolated private static func effectiveSubtreeWeights(
+    /// Rebuild stable origins from maximal unary segments. Live splits may keep
+    /// multiple partitions in one origin; recovery can choose fresh origins
+    /// because only the represented quotient is consensus-relevant.
+    nonisolated private static func makeSegmentIndex(
+        in blocks: [String: BlockMeta]
+    ) -> SegmentIndex {
+        let roots = blocks.values
+            .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
+            .map(\.blockHash)
+            .sorted()
+        return makeSegmentIndex(in: blocks, roots: roots)
+    }
+
+    /// Build maximal unary runs below explicit roots. Live orphan grafting
+    /// supplies its newly connected component root even though that block's
+    /// parent lives in the existing quotient.
+    nonisolated private static func makeSegmentIndex(
         in blocks: [String: BlockMeta],
-        inherited: InheritedWorkSnapshot
-    ) -> [String: WorkSum] {
-        // Replace each inherited grind's local ancestor coverage with its
-        // globally strongest quantity over the unioned ancestor coverage.
-        // Grouping equal coverage keeps the walk proportional to input shape.
-        var weights = blocks.mapValues(\.subtreeWeight)
-        guard !inherited.isEmpty else { return weights }
-
-        let inheritedStrongest = inherited.strongestWorkByGrind
-        var inheritedCoverage: [String: Set<String>] = [:]
-        for (hash, measure) in inherited.entriesByBlock where blocks[hash] != nil {
-            for id in measure.entries.keys {
-                inheritedCoverage[id, default: []].insert(hash)
+        roots: [String]
+    ) -> SegmentIndex {
+        var index = SegmentIndex()
+        var pending = roots.reversed().map { (base: $0, parentBase: nil as String?) }
+        while let frame = pending.popLast() {
+            var run: [String] = []
+            var current = frame.base
+            while let block = blocks[current] {
+                run.append(current)
+                guard block.childHashes.count == 1,
+                      let child = block.childHashes.first,
+                      blocks[child] != nil else { break }
+                current = child
+            }
+            guard !run.isEmpty else { continue }
+            index.origins[frame.base] = SegmentOrigin(
+                blocks: run,
+                partitions: [SegmentPartition(startIndex: 0, base: frame.base)]
+            )
+            for (position, blockHash) in run.enumerated() {
+                index.locationByBlock[blockHash] = BlockRunLocation(
+                    origin: frame.base,
+                    index: position
+                )
+            }
+            index.tailByBase[frame.base] = run.last!
+            index.childrenByBase[frame.base] = []
+            if let parentBase = frame.parentBase {
+                index.parentBaseByBase[frame.base] = parentBase
+                index.childrenByBase[parentBase, default: []].insert(frame.base)
+            }
+            for child in (blocks[run.last!]?.childHashes ?? []).sorted().reversed() {
+                pending.append((base: child, parentBase: frame.base))
             }
         }
+        return index
+    }
 
-        var localCoverage: [String: Set<String>] = [:]
-        var localWork: [String: UInt256] = [:]
-        for (hash, meta) in blocks {
-            for (id, contribution) in meta.workContributions
-            where inheritedStrongest[id] != nil {
-                localCoverage[id, default: []].insert(hash)
-                if contribution.work > (localWork[id] ?? .zero) {
-                    localWork[id] = contribution.work
+    /// Compress the supplied canonical path once while constructing a chain.
+    /// Later steady-state projections use `segmentGhostSpine` and do not walk
+    /// unary blocks unless the selected quotient path changes.
+    nonisolated private static func segmentSpine(
+        endingAt tipHash: String,
+        in blocks: [String: BlockMeta],
+        index: SegmentIndex
+    ) -> [CanonicalSegment] {
+        var reversePath: [String] = []
+        var currentHash: String? = tipHash
+        var visited = Set<String>()
+        while let hash = currentHash,
+              visited.insert(hash).inserted,
+              let block = blocks[hash] {
+            reversePath.append(hash)
+            currentHash = block.parentBlockHash
+        }
+
+        var spine: [CanonicalSegment] = []
+        var base: String?
+        var tail: String?
+        for hash in reversePath.reversed() {
+            let nextBase = index.base(forBlock: hash) ?? hash
+            if nextBase != base {
+                if let base, let tail {
+                    spine.append(CanonicalSegment(base: base, tail: tail))
                 }
+                base = nextBase
+            }
+            tail = hash
+        }
+        if let base, let tail {
+            spine.append(CanonicalSegment(base: base, tail: tail))
+        }
+        return spine
+    }
+
+    /// Build the complete derived GHOST cache from identity-aware locations.
+    /// Recovery uses this linear builder; every live mutation is incremental.
+    nonisolated private static func buildSegmentWorkIndex(
+        index: SegmentIndex,
+        workByGrind: inout [String: WorkContributionRecord]
+    ) -> SegmentWorkIndex {
+        var result = SegmentWorkIndex()
+        var directWorkByBlock: [String: WorkSum] = [:]
+        for grindID in workByGrind.keys {
+            guard var record = workByGrind[grindID] else { continue }
+            let routed = index.base(forBlock: record.blockHash) != nil
+            record.isRouted = routed
+            workByGrind[grindID] = record
+            if routed {
+                directWorkByBlock[record.blockHash, default: .zero] =
+                    directWorkByBlock[record.blockHash, default: .zero]
+                    + record.contribution.work
             }
         }
-
-        var adjustments: [Set<String>: WorkAdjustment] = [:]
-        for (id, inheritedQuantity) in inheritedStrongest {
-            let inheritedBlocks = inheritedCoverage[id] ?? []
-            let localBlocks = localCoverage[id] ?? []
-            guard !inheritedBlocks.isEmpty || !localBlocks.isEmpty else { continue }
-            let globalWork = max(inheritedQuantity, localWork[id] ?? .zero)
-            let unionKey = inheritedBlocks.union(localBlocks)
-            var unionAdjustment = adjustments[unionKey] ?? WorkAdjustment()
-            unionAdjustment.added = unionAdjustment.added + globalWork
-            adjustments[unionKey] = unionAdjustment
-
-            if let localQuantity = localWork[id], !localBlocks.isEmpty {
-                let localKey = localBlocks
-                var localAdjustment = adjustments[localKey] ?? WorkAdjustment()
-                localAdjustment.removed = localAdjustment.removed + localQuantity
-                adjustments[localKey] = localAdjustment
-            }
+        for (origin, run) in index.origins {
+            result.directWorkByOrigin[origin] = OriginWorkIndex(
+                values: run.blocks.map { directWorkByBlock[$0] ?? .zero }
+            )
+        }
+        for base in index.childrenByBase.keys {
+            guard let range = index.range(forBase: base),
+                  let direct = result.directWorkByOrigin[range.origin]?.sum(
+                    in: range.indices
+                  ) else { continue }
+            result.subtreeWorkByBase[base] = direct
         }
 
-        for (coverage, adjustment) in adjustments {
-            var ancestors = Set<String>()
-            var pending = Array(coverage)
-            while let hash = pending.popLast() {
-                guard let meta = blocks[hash],
-                      ancestors.insert(hash).inserted else { continue }
-                if let parentHash = meta.parentBlockHash {
-                    pending.append(parentHash)
-                }
+        var remainingChildren = index.childrenByBase.mapValues(\.count)
+        var leaves = Array(remainingChildren.compactMap { base, count in
+            count == 0 ? base : nil
+        }.sorted().reversed())
+        while let base = leaves.popLast() {
+            guard let parent = index.parentBaseByBase[base],
+                  let work = result.subtreeWorkByBase[base],
+                  let count = remainingChildren[parent], count > 0 else {
+                continue
             }
-            for hash in ancestors {
-                let withAdded = (weights[hash] ?? .zero) + adjustment.added
-                weights[hash] = withAdded.subtracting(adjustment.removed)!
-            }
+            result.subtreeWorkByBase[parent, default: .zero] =
+                result.subtreeWorkByBase[parent, default: .zero] + work
+            remainingChildren[parent] = count - 1
+            if count == 1 { leaves.append(parent) }
         }
-        return weights
+        return result
     }
 
     nonisolated private static func preferred(
@@ -1691,22 +2202,144 @@ public actor ChainState {
         return selected
     }
 
-    /// GHOST descent chooses the child with greatest deduplicated local and
-    /// inherited work. Equal work prefers the smaller segment-base CID.
+    nonisolated private static func preferred(
+        among hashes: [String],
+        workIndex: SegmentWorkIndex
+    ) -> String? {
+        guard var selected = hashes.first,
+              workIndex.subtreeWork(forBase: selected) != nil else { return nil }
+        for candidate in hashes.dropFirst() {
+            guard let candidateWork = workIndex.subtreeWork(forBase: candidate),
+                  let selectedWork = workIndex.subtreeWork(forBase: selected)
+            else { continue }
+            if candidateWork > selectedWork
+                || (candidateWork == selectedWork
+                    && forkChoicePrefersSegmentBase(candidate, over: selected)) {
+                selected = candidate
+            }
+        }
+        return selected
+    }
+
+    /// GHOST descent chooses the child with greatest deduplicated verified
+    /// work. Equal work prefers the smaller segment-base CID.
     func chainWithMostWork(
         startingBlock: BlockMeta
     ) -> (subtreeWork: WorkSum, tipHash: String, blocks: Set<String>) {
         let start = hashToBlock[startingBlock.blockHash] ?? startingBlock
-        let descent = Self.ghostDescent(
+        if let descent = Self.segmentGhostDescent(
             from: start.blockHash,
             in: hashToBlock,
-            weights: forkChoiceWeights
+            index: segmentIndex,
+            workIndex: segmentWorkIndex
+        ) {
+            let baseWeight = segmentWorkIndex.subtreeWork(
+                forBase: start.blockHash
+            )
+                ?? effectiveSubtreeWork(for: start.blockHash)
+            return (baseWeight, descent.tipHash, descent.blocks)
+        }
+        let direct = Self.referenceGhostDescent(
+            from: start.blockHash,
+            in: hashToBlock
         )
-        let baseWeight = forkChoiceWeights[start.blockHash] ?? .zero
-        return (baseWeight, descent.tipHash, descent.blocks)
+        return (
+            effectiveSubtreeWork(for: start.blockHash),
+            direct.tipHash,
+            direct.blocks
+        )
     }
 
-    nonisolated private static func ghostDescent(
+    private func effectiveSubtreeWork(for blockHash: String) -> WorkSum {
+        let measure = Self.effectiveSubtreeMeasures(
+            startingAt: [blockHash],
+            retaining: [blockHash],
+            in: hashToBlock,
+            strongestWork: Self.strongestWorkByGrind(in: hashToBlock)
+        )
+        return measure[blockHash]?.total ?? .zero
+    }
+
+    /// Select GHOST by jumping from a segment base to its tail. This is the
+    /// cheap steady-state projection: no unary block path is materialized.
+    nonisolated private static func segmentGhostSpine(
+        from startHash: String,
+        in blocksByHash: [String: BlockMeta],
+        index: SegmentIndex,
+        workIndex: SegmentWorkIndex
+    ) -> [CanonicalSegment]? {
+        var currentHash = startHash
+        var spine: [CanonicalSegment] = []
+        var visitedBases = Set<String>()
+        while true {
+            guard let base = index.base(forBlock: currentHash),
+                  visitedBases.insert(base).inserted,
+                  let tail = index.tailByBase[base]
+            else { return nil }
+            spine.append(CanonicalSegment(base: base, tail: tail))
+
+            let children = blocksByHash[tail]?.childHashes ?? []
+            guard !children.isEmpty else {
+                return spine
+            }
+            if children.count == 1 {
+                let next = children[0]
+                guard index.base(forBlock: next) != base else { return nil }
+                currentHash = next
+            } else {
+                guard let next = preferred(among: children, workIndex: workIndex)
+                else { return nil }
+                currentHash = next
+            }
+        }
+    }
+
+    /// Select by quotient segment bases and materialize only the chosen path.
+    /// A malformed route returns nil so the actor can take its slow independent
+    /// fallback without changing the steady-state segment index.
+    nonisolated private static func segmentGhostDescent(
+        from startHash: String,
+        in blocksByHash: [String: BlockMeta],
+        index: SegmentIndex,
+        workIndex: SegmentWorkIndex,
+        spine suppliedSpine: [CanonicalSegment]? = nil
+    ) -> (tipHash: String, blocks: Set<String>, spine: [CanonicalSegment])? {
+        guard let spine = suppliedSpine ?? segmentGhostSpine(
+            from: startHash,
+            in: blocksByHash,
+            index: index,
+            workIndex: workIndex
+        ) else { return nil }
+
+        var selectedBlocks = Set<String>()
+        var segmentStart = startHash
+        for (offset, segment) in spine.enumerated() {
+            var segmentHash = segmentStart
+            while true {
+                guard selectedBlocks.insert(segmentHash).inserted else {
+                    return nil
+                }
+                if segmentHash == segment.tail { break }
+                guard let children = blocksByHash[segmentHash]?.childHashes,
+                      children.count == 1 else {
+                    return nil
+                }
+                segmentHash = children[0]
+            }
+            if offset + 1 < spine.count {
+                let nextBase = spine[offset + 1].base
+                guard blocksByHash[segment.tail]?.childHashes.contains(nextBase) == true else {
+                    return nil
+                }
+                segmentStart = nextBase
+            }
+        }
+        return (spine.last!.tail, selectedBlocks, spine)
+    }
+
+    /// Slow direct GHOST walk kept separate from the quotient implementation
+    /// so differential tests can detect a routing-cache bug.
+    nonisolated private static func referenceGhostDescent(
         from startHash: String,
         in blocksByHash: [String: BlockMeta],
         weights: [String: WorkSum]
@@ -1714,25 +2347,103 @@ public actor ChainState {
         var currentHash = startHash
         var blocks: Set<String> = [currentHash]
         while let children = blocksByHash[currentHash]?.childHashes, !children.isEmpty {
-            guard let next = preferred(among: children, weights: weights),
+            let next: String?
+            if children.count == 1 {
+                next = children[0]
+            } else {
+                next = preferred(among: children, weights: weights)
+            }
+            guard let next,
                   blocks.insert(next).inserted else { break }
             currentHash = next
         }
         return (currentHash, blocks)
     }
 
-    nonisolated static func canonicalProjection(
-        in blocksByHash: [String: BlockMeta],
-        inherited: InheritedWorkSnapshot
-    ) -> (chainTip: String, mainChainHashes: Set<String>)? {
-        let weights = effectiveSubtreeWeights(
+    /// Expensive cache-independent fallback used only when derived segment
+    /// routing is malformed. It recomputes the exact direct comparison weights
+    /// from raw work facts rather than trusting a potentially stale cache.
+    nonisolated private static func referenceGhostDescent(
+        from startHash: String,
+        in blocksByHash: [String: BlockMeta]
+    ) -> (tipHash: String, blocks: Set<String>) {
+        let measures = effectiveSubtreeMeasures(
+            startingAt: [startHash],
+            retaining: Set(blocksByHash.keys),
             in: blocksByHash,
-            inherited: inherited
+            strongestWork: strongestWorkByGrind(in: blocksByHash)
         )
-        return canonicalProjection(in: blocksByHash, weights: weights)
+        return referenceGhostDescent(
+            from: startHash,
+            in: blocksByHash,
+            weights: measures.mapValues(\.total)
+        )
+    }
+
+    nonisolated static func canonicalProjection(
+        in blocksByHash: [String: BlockMeta]
+    ) -> (chainTip: String, mainChainHashes: Set<String>)? {
+        var workByGrind = workIndex(in: blocksByHash)
+        let index = makeSegmentIndex(in: blocksByHash)
+        let workIndex = buildSegmentWorkIndex(
+            index: index,
+            workByGrind: &workByGrind
+        )
+        return canonicalProjection(
+            in: blocksByHash,
+            index: index,
+            workIndex: workIndex
+        )
+    }
+
+    /// Slow, exact per-block reference used only by differential tests. The
+    /// normal restore validator intentionally uses the compact cache builder.
+    nonisolated static func referenceCanonicalProjection(
+        in blocksByHash: [String: BlockMeta]
+    ) -> (chainTip: String, mainChainHashes: Set<String>)? {
+        let roots = blocksByHash.values
+            .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
+            .map(\.blockHash)
+        let measures = effectiveSubtreeMeasures(
+            startingAt: roots,
+            retaining: Set(blocksByHash.keys),
+            in: blocksByHash,
+            strongestWork: strongestWorkByGrind(in: blocksByHash)
+        )
+        return referenceCanonicalProjection(
+            in: blocksByHash,
+            weights: measures.mapValues(\.total)
+        )
     }
 
     nonisolated private static func canonicalProjection(
+        in blocksByHash: [String: BlockMeta],
+        index: SegmentIndex,
+        workIndex: SegmentWorkIndex
+    ) -> (chainTip: String, mainChainHashes: Set<String>)? {
+        let roots = blocksByHash.values
+            .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
+            .map(\.blockHash)
+        guard let root = preferred(among: roots, workIndex: workIndex) else {
+            return nil
+        }
+        let descent = segmentGhostDescent(
+            from: root,
+            in: blocksByHash,
+            index: index,
+            workIndex: workIndex
+        )
+        if let descent {
+            return (descent.tipHash, descent.blocks)
+        }
+        let direct = referenceGhostDescent(
+            from: root,
+            in: blocksByHash
+        )
+        return (direct.tipHash, direct.blocks)
+    }
+
+    nonisolated private static func referenceCanonicalProjection(
         in blocksByHash: [String: BlockMeta],
         weights: [String: WorkSum]
     ) -> (chainTip: String, mainChainHashes: Set<String>)? {
@@ -1740,7 +2451,7 @@ public actor ChainState {
             .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
             .map(\.blockHash)
         guard let root = preferred(among: roots, weights: weights) else { return nil }
-        let descent = ghostDescent(
+        let descent = referenceGhostDescent(
             from: root,
             in: blocksByHash,
             weights: weights
@@ -1748,23 +2459,82 @@ public actor ChainState {
         return (descent.tipHash, descent.blocks)
     }
 
-    private func projectCanonicalChain() -> ChainCommit? {
+    private func canAppendCanonicalTip(
+        _ blockHash: String,
+        parentHash: String?,
+        oldTip: String
+    ) -> Bool {
+        guard parentHash == oldTip,
+              mainChainHashes.contains(oldTip),
+              let block = hashToBlock[blockHash],
+              block.childHashes.isEmpty,
+              let parent = hashToBlock[oldTip],
+              mainChainBlockAtIndex[parent.blockHeight] == oldTip,
+              parent.childHashes.count == 1,
+              parent.childHashes[0] == blockHash,
+              let base = segmentIndex.base(forBlock: oldTip),
+              segmentIndex.base(forBlock: blockHash) == base,
+              segmentIndex.tailByBase[base] == blockHash,
+              canonicalSegmentSpine.last == CanonicalSegment(base: base, tail: oldTip)
+        else { return false }
+
+        return true
+    }
+
+    private func appendCanonicalTip(_ blockHash: String) -> ChainCommit {
+        let block = hashToBlock[blockHash]!
+        chainTip = blockHash
+        mainChainHashes.insert(blockHash)
+        mainChainBlockAtIndex[block.blockHeight] = blockHash
+        canonicalSegmentSpine[canonicalSegmentSpine.count - 1].tail = blockHash
+        tipSnapshot = tipSnapshotsByHash[blockHash]
+        return ChainCommit(
+            tipHash: blockHash,
+            mainChainBlocksAdded: [blockHash: block.blockHeight]
+        )
+    }
+
+    private func projectCanonicalChain(forceFull: Bool = false) -> ChainCommit? {
         let roots = Array(indexToBlockHash[0] ?? []).filter {
             hashToBlock[$0]?.parentBlockHash == nil
         }
-        guard let root = Self.preferred(among: roots, weights: forkChoiceWeights)
+        guard let root = Self.preferred(among: roots, workIndex: segmentWorkIndex)
         else { return nil }
-        let descent = Self.ghostDescent(
+        let spine = Self.segmentGhostSpine(
             from: root,
             in: hashToBlock,
-            weights: forkChoiceWeights
+            index: segmentIndex,
+            workIndex: segmentWorkIndex
         )
+        if !forceFull,
+           let spine,
+           spine == canonicalSegmentSpine {
+            return nil
+        }
+
+#if DEBUG
+        fullCanonicalProjectionCount += 1
+#endif
+        let descent = Self.segmentGhostDescent(
+            from: root,
+            in: hashToBlock,
+            index: segmentIndex,
+            workIndex: segmentWorkIndex,
+            spine: spine
+        ) ?? {
+            let direct = Self.referenceGhostDescent(
+                from: root,
+                in: hashToBlock
+            )
+            return (direct.tipHash, direct.blocks, [])
+        }()
         let projection = (
             chainTip: descent.tipHash,
             mainChainHashes: descent.blocks
         )
         let newHashes = projection.mainChainHashes
         let newTip = projection.chainTip
+        canonicalSegmentSpine = descent.spine
         guard newTip != chainTip || newHashes != mainChainHashes else { return nil }
 
         let removed = mainChainHashes.subtracting(newHashes)

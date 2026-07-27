@@ -1,8 +1,55 @@
 import XCTest
 @testable import Lattice
 import UInt256
+import cashew
 
 final class ChainSpecTests: XCTestCase {
+
+    func testRemovingAuthorityPreservesPinnedNexusGenesisCID() async throws {
+        let spec = ChainSpec(
+            maxNumberOfTransactionsPerBlock: 5_000,
+            maxStateGrowth: 3_000_000,
+            maxBlockSize: 1_000_000,
+            premine: 175_320,
+            targetBlockTime: 3_600_000,
+            initialReward: 1_048_576,
+            halvingInterval: 876_600,
+            retargetWindow: 120
+        )
+        let owner = CryptoUtils.createAddress(
+            from: "ed01fe416588df6e7fa5213c0d3e430f504bb5203172120c86b874826b55f53bdb7d"
+        )
+        let body = TransactionBody(
+            accountActions: [AccountAction(
+                owner: owner,
+                delta: Int64(spec.premineAmount())
+            )],
+            actions: [],
+            depositActions: [],
+            genesisActions: [],
+            receiptActions: [],
+            withdrawalActions: [],
+            signers: [],
+            fee: 0,
+            nonce: 0,
+            chainPath: [DEFAULT_ROOT_DIRECTORY]
+        )
+        let transaction = Transaction(
+            signatures: [:],
+            body: try HeaderImpl<TransactionBody>(node: body)
+        )
+        let block = try await BlockBuilder.buildGenesis(
+            spec: spec,
+            transactions: [transaction],
+            timestamp: 0,
+            target: UInt256.max,
+            fetcher: StorableFetcher()
+        )
+        XCTAssertEqual(
+            try BlockHeader(node: block).rawCID,
+            "bafyreiayw4z5qz4lt2sljf2enzn7uol3qa6bebadav7qwnqz7agxkiuwhq"
+        )
+    }
 
     // MARK: - Basic Properties Tests
 
@@ -110,6 +157,34 @@ final class ChainSpecTests: XCTestCase {
 
         let smallPremine = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 9_999, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000)
         XCTAssertTrue(smallPremine.isValid)
+    }
+
+    func testValidationAllowsChainSelectedResourceLimits() {
+        func spec(
+            transactions: UInt64 = 1_000_000,
+            stateGrowth: Int = 100_000_000,
+            blockSize: Int = 100_000_000,
+            policies: [WasmPolicyRef] = []
+        ) -> ChainSpec {
+            ChainSpec(
+                maxNumberOfTransactionsPerBlock: transactions,
+                maxStateGrowth: stateGrowth,
+                maxBlockSize: blockSize,
+                premine: 0,
+                targetBlockTime: 1_000,
+                initialReward: 1,
+                halvingInterval: 1_000,
+                wasmPolicies: policies
+            )
+        }
+
+        let policy = WasmPolicyRef(
+            moduleCID: "policy",
+            scope: .transaction
+        )
+        XCTAssertTrue(spec(
+            policies: Array(repeating: policy, count: 1_000)
+        ).isValid)
     }
 
     // MARK: - Reward Calculation Tests
