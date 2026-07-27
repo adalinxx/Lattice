@@ -1180,6 +1180,11 @@ public extension ChainLevel {
         case .success(let verified): evidence = verified
         case .failure(let failure): throw failure
         }
+        let carrierLink = ParentCarrierLink(
+            parentPath: context.path,
+            carrierCID: resolved.header.rawCID,
+            rootCID: evidence.grindID
+        )
         if let failure = await ChainLocalAdmission.validateParentFacts(
             childPackage,
             child: resolved.block,
@@ -1187,13 +1192,8 @@ public extension ChainLevel {
             context: context,
             fetcher: fetcher
         ) {
-            throw failure
+            return .rejected(failure, parentCarrierLink: carrierLink)
         }
-        let carrierLink = ParentCarrierLink(
-            parentPath: context.path,
-            carrierCID: resolved.header.rawCID,
-            rootCID: evidence.grindID
-        )
         guard let contribution = evidence.contribution else {
             return .carrier(carrierLink)
         }

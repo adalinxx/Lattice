@@ -1421,50 +1421,44 @@ final class ChainLocalAdmissionTests: XCTestCase {
             )
         )
 
-        do {
-            _ = try await ChainLevel.bootstrap(
-                context: context,
-                genesisHeader: header,
-                fetcher: fetcher,
-                childPackage: ChildValidationPackage(proof: proof),
-                validationContentStorer: fetcher,
-                materializedVolumeStorer: fetcher,
-                stage: testAdmissionStage
-            )
-            XCTFail("child genesis must wait for its parent-issued fact")
-        } catch let failure as ChainAdmissionFailure {
-            XCTAssertEqual(
-                failure,
-                .crossChainEvidenceRequired(.parentGenesis(
-                    parentPath: [DEFAULT_ROOT_DIRECTORY],
+        let missingFact = try await ChainLevel.bootstrap(
+            context: context,
+            genesisHeader: header,
+            fetcher: fetcher,
+            childPackage: ChildValidationPackage(proof: proof),
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
+            stage: testAdmissionStage
+        )
+        XCTAssertEqual(
+            missingFact.failure,
+            .crossChainEvidenceRequired(.parentGenesis(
+                parentPath: [DEFAULT_ROOT_DIRECTORY],
+                directory: "Child",
+                childGenesisCID: header.rawCID,
+                parentStateCID: childGenesis.parentState.rawCID
+            ))
+        )
+        XCTAssertEqual(missingFact.parentCarrierLink.carrierCID, header.rawCID)
+
+        let wrongFact = try await ChainLevel.bootstrap(
+            context: context,
+            genesisHeader: header,
+            fetcher: fetcher,
+            childPackage: ChildValidationPackage(
+                proof: proof,
+                parentGenesisLink: testParentGenesisLink(
                     directory: "Child",
                     childGenesisCID: header.rawCID,
-                    parentStateCID: childGenesis.parentState.rawCID
-                ))
-            )
-        }
-
-        do {
-            _ = try await ChainLevel.bootstrap(
-                context: context,
-                genesisHeader: header,
-                fetcher: fetcher,
-                childPackage: ChildValidationPackage(
-                    proof: proof,
-                    parentGenesisLink: testParentGenesisLink(
-                        directory: "Child",
-                        childGenesisCID: header.rawCID,
-                        parentStateCID: testCID("wrong-deployment-state")
-                    )
-                ),
-                validationContentStorer: fetcher,
-                materializedVolumeStorer: fetcher,
-                stage: testAdmissionStage
-            )
-            XCTFail("genesis must bind the deployment block's entering state")
-        } catch let failure as ChainAdmissionFailure {
-            XCTAssertEqual(failure, .providerMalformedEvidence)
-        }
+                    parentStateCID: testCID("wrong-deployment-state")
+                )
+            ),
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
+            stage: testAdmissionStage
+        )
+        XCTAssertEqual(wrongFact.failure, .providerMalformedEvidence)
+        XCTAssertEqual(wrongFact.parentCarrierLink.carrierCID, header.rawCID)
 
         do {
             _ = try await ChainLevel.bootstrap(
