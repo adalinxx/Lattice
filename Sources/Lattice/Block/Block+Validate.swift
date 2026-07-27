@@ -490,15 +490,7 @@ public extension Block {
     }
 
     func validateNextTarget(spec: ChainSpec, parent: Block, ancestorTimestamps: [Int64] = []) -> Bool {
-        if target != parent.nextTarget &&
-            !ChainSpec.isMinimumTargetRecovery(target: target, parentNextTarget: parent.nextTarget) {
-            return false
-        }
-        // Accept the minimum target floor for chains recovering from a
-        // zero-target bug (UInt256 division by 1 returned 0).
-        if ChainSpec.isMinimumTargetRecovery(target: target, parentNextTarget: parent.nextTarget) {
-            return nextTarget == target
-        }
+        if target != parent.nextTarget { return false }
         let (parentDepth, overflow) = parent.height.addingReportingOverflow(1)
         guard !overflow else { return false }
         let requiredRetargetDepth = min(spec.retargetWindow, parentDepth)
@@ -523,7 +515,6 @@ public extension Block {
             && parent == nil
             && height == 0
             && prevState.rawCID == LatticeState.emptyHeader.rawCID
-            && target >= ChainSpec.minimumTarget
             && nextTarget == target
     }
 
