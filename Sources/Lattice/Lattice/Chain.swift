@@ -951,9 +951,14 @@ public actor ChainState {
     /// connected accepted state-transition graph. Fork choice is irrelevant.
     public func hasStateContinuity(
         from fromStateCID: String,
-        to toStateCID: String
+        to toStateCID: String,
+        maximumBlockVisits: Int = .max
     ) -> Bool {
-        stateContinuityPath(from: fromStateCID, to: toStateCID) != nil
+        stateContinuityPath(
+            from: fromStateCID,
+            to: toStateCID,
+            maximumBlockVisits: maximumBlockVisits
+        ) != nil
     }
 
     /// One deterministic accepted-block path proving forward state continuity.
@@ -961,27 +966,38 @@ public actor ChainState {
     /// receiver must still validate those blocks before trusting the path.
     public func stateContinuityPath(
         from fromStateCID: String,
-        to toStateCID: String
+        to toStateCID: String,
+        maximumBlockVisits: Int = .max
     ) -> [String]? {
+        precondition(maximumBlockVisits > 0)
         guard let from = CIDIdentity.canonicalString(fromStateCID),
               let to = CIDIdentity.canonicalString(toStateCID) else {
             return nil
         }
         if from == to { return [] }
-        if let direct = blocksByStateTransition[
+        var remainingVisits = maximumBlockVisits
+        if let directCandidates = blocksByStateTransition[
             StateTransition(from: from, to: to)
-        ]?.lazy.filter({
-            self.segmentIndex.locationByBlock[$0] != nil
-        }).min() {
-            return [direct]
+        ] {
+            guard directCandidates.count <= remainingVisits else { return nil }
+            remainingVisits -= directCandidates.count
+            if let direct = directCandidates.lazy.filter({
+                self.segmentIndex.locationByBlock[$0] != nil
+            }).min() {
+                return [direct]
+            }
         }
 
-        var pending = Array(blocksByPostState[to] ?? [])
+        let targetCandidates = blocksByPostState[to] ?? []
+        guard targetCandidates.count <= remainingVisits else { return nil }
+        var pending = Array(targetCandidates)
             .filter { segmentIndex.base(forBlock: $0) != nil }
             .sorted(by: >)
         var visited = Set<String>()
         var childTowardTarget: [String: String] = [:]
         while let blockHash = pending.popLast() {
+            guard remainingVisits > 0 else { return nil }
+            remainingVisits -= 1
             guard visited.insert(blockHash).inserted,
                   let block = hashToBlock[blockHash],
                   let snapshot = tipSnapshotsByHash[blockHash] else {
