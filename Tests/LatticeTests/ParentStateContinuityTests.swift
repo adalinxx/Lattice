@@ -99,4 +99,42 @@ final class ParentStateContinuityTests: XCTestCase {
         XCTAssertEqual(visitsAfterAbsent, visits)
 #endif
     }
+
+    func testContinuityReverseSearchSkipsNoOpStateTransitions() async throws {
+        let a = testCID("state-a")
+        let b = testCID("state-b")
+        let root = testCID("parent-root")
+        var batches = [
+            batch(root, parent: nil, height: 0, from: a, to: b, nonce: 1)
+        ]
+        var parent = root
+        for height in 1...100 {
+            let block = testCID("parent-no-op-\(height)")
+            batches.append(batch(
+                block,
+                parent: parent,
+                height: UInt64(height),
+                from: b,
+                to: b,
+                nonce: Int64(height + 1)
+            ))
+            parent = block
+        }
+        let chain = try await ChainState.restore(replaying: batches)
+
+        let reflexive = await chain.hasStateContinuity(from: b, to: b)
+        XCTAssertTrue(reflexive)
+#if DEBUG
+        let visits = await chain.stateContinuityBlockVisitCount
+#endif
+        let unrelated = await chain.hasStateContinuity(
+            from: testCID("unrelated-state"),
+            to: b
+        )
+        XCTAssertFalse(unrelated)
+#if DEBUG
+        let visitsAfterQuery = await chain.stateContinuityBlockVisitCount
+        XCTAssertEqual(visitsAfterQuery - visits, 1)
+#endif
+    }
 }
