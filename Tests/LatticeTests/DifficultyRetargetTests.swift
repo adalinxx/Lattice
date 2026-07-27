@@ -94,7 +94,7 @@ final class DifficultyRetargetTests: XCTestCase {
     /// `maxTargetChange`× in either direction. There is no absolute floor — the
     /// clamp is the only bound.
     private func clampBounds(previousTarget: UInt256) -> (lower: UInt256, upper: UInt256) {
-        let factor = UInt256(UInt64(ChainSpec.maxTargetChange))
+        let factor = UInt256(UInt64(ChainSpec.defaultMaxTargetChange))
         let upper = previousTarget > UInt256.max / factor ? UInt256.max : previousTarget * factor
         let lower = previousTarget / factor
         return (lower, upper)
@@ -132,10 +132,10 @@ final class DifficultyRetargetTests: XCTestCase {
             newestFirstTimestamps: timestamps
         )
         // Sanity: without a clamp the LWMA blows past the 2× ceiling.
-        XCTAssertGreaterThan(unclampedOracle, previous * UInt256(UInt64(ChainSpec.maxTargetChange)))
+        XCTAssertGreaterThan(unclampedOracle, previous * UInt256(UInt64(ChainSpec.defaultMaxTargetChange)))
 
         let result = s.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: timestamps)
-        XCTAssertEqual(result, previous * UInt256(UInt64(ChainSpec.maxTargetChange)), "easing must saturate at maxTargetChange×")
+        XCTAssertEqual(result, previous * UInt256(UInt64(ChainSpec.defaultMaxTargetChange)), "easing must saturate at maxTargetChange×")
         assertRetargetInvariants(s, previousTarget: previous, ancestorTimestamps: timestamps)
     }
 
@@ -148,7 +148,7 @@ final class DifficultyRetargetTests: XCTestCase {
         let timestamps: [Int64] = [5_000, 5_000, 5_000, 5_000, 5_000]
 
         let result = s.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: timestamps)
-        XCTAssertEqual(result, previous / UInt256(UInt64(ChainSpec.maxTargetChange)), "hardening must saturate at previous / maxTargetChange")
+        XCTAssertEqual(result, previous / UInt256(UInt64(ChainSpec.defaultMaxTargetChange)), "hardening must saturate at previous / maxTargetChange")
         assertRetargetInvariants(s, previousTarget: previous, ancestorTimestamps: timestamps)
     }
 
@@ -251,7 +251,7 @@ final class DifficultyRetargetTests: XCTestCase {
                 previousTarget: previous,
                 ancestorTimestamps: [.max, .min]
             ),
-            previous * UInt256(UInt64(ChainSpec.maxTargetChange))
+            previous * UInt256(UInt64(ChainSpec.defaultMaxTargetChange))
         )
     }
 
