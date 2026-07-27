@@ -657,10 +657,12 @@ public actor ChainState {
                 ),
                 default: []
             ].insert(blockHash)
-            self.blocksByPostState[
-                snapshot.postStateCID,
-                default: []
-            ].insert(blockHash)
+            if snapshot.prevStateCID != snapshot.postStateCID {
+                self.blocksByPostState[
+                    snapshot.postStateCID,
+                    default: []
+                ].insert(blockHash)
+            }
         }
         self.blockTimestamps = blockTimestamps
         self.mutationGeneration = mutationGeneration
@@ -1918,9 +1920,11 @@ public actor ChainState {
                     to: previous.postStateCID
                 )
             ]?.remove(blockHash)
-            blocksByPostState[
-                previous.postStateCID
-            ]?.remove(blockHash)
+            if previous.prevStateCID != previous.postStateCID {
+                blocksByPostState[
+                    previous.postStateCID
+                ]?.remove(blockHash)
+            }
         }
         tipSnapshotsByHash[blockHash] = snapshot
         blocksByStateTransition[
@@ -1930,10 +1934,12 @@ public actor ChainState {
             ),
             default: []
         ].insert(blockHash)
-        blocksByPostState[
-            snapshot.postStateCID,
-            default: []
-        ].insert(blockHash)
+        if snapshot.prevStateCID != snapshot.postStateCID {
+            blocksByPostState[
+                snapshot.postStateCID,
+                default: []
+            ].insert(blockHash)
+        }
     }
 
     // MARK: - Index Management
