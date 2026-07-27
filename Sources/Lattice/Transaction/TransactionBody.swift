@@ -46,31 +46,32 @@ public struct TransactionBody: Scalar {
     }
 
     /// Consensus grammar for every semantic atom used as a state-trie key.
-    /// Keeping raw keys short visible ASCII bounds compressed-radix proof depth
-    /// and avoids Unicode-version-dependent `Character` segmentation.
+    /// Imposes no length limit — key size is a node storage concern. Visible
+    /// ASCII avoids Unicode-version-dependent `Character` segmentation while the
+    /// trie keys by `String`; the `/` ban preserves receipt-key injectivity.
     public func stateAtomsAreValid() -> Bool {
-        signers.allSatisfy(StateAtomLimits.isAccount)
-            && chainPath.allSatisfy(StateAtomLimits.isDirectory)
+        signers.allSatisfy(isValidAccountAtom)
+            && chainPath.allSatisfy(isValidDirectoryAtom)
             && accountActions.allSatisfy {
-                StateAtomLimits.isAccount($0.owner)
+                isValidAccountAtom($0.owner)
             }
             && actions.allSatisfy {
-                StateAtomLimits.isGeneralKey($0.key)
+                isValidGeneralAtom($0.key)
             }
             && depositActions.allSatisfy {
-                StateAtomLimits.isAccount($0.demander)
+                isValidAccountAtom($0.demander)
             }
             && genesisActions.allSatisfy {
-                StateAtomLimits.isDirectory($0.directory)
+                isValidDirectoryAtom($0.directory)
             }
             && receiptActions.allSatisfy {
-                StateAtomLimits.isAccount($0.withdrawer)
-                    && StateAtomLimits.isAccount($0.demander)
-                    && StateAtomLimits.isDirectory($0.directory)
+                isValidAccountAtom($0.withdrawer)
+                    && isValidAccountAtom($0.demander)
+                    && isValidDirectoryAtom($0.directory)
             }
             && withdrawalActions.allSatisfy {
-                StateAtomLimits.isAccount($0.withdrawer)
-                    && StateAtomLimits.isAccount($0.demander)
+                isValidAccountAtom($0.withdrawer)
+                    && isValidAccountAtom($0.demander)
             }
     }
 
@@ -183,7 +184,7 @@ public struct TransactionBody: Scalar {
             return false
         }
         for genesisAction in genesisActions {
-            if !StateAtomLimits.isDirectory(genesisAction.directory) { return false }
+            if !isValidDirectoryAtom(genesisAction.directory) { return false }
             if !CIDIdentity.isCanonical(genesisAction.blockCID) { return false }
         }
         return true

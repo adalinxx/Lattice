@@ -28,10 +28,6 @@ public struct GenesisResult: Sendable {
     }
 }
 
-public enum GenesisCeremonyError: Error, Sendable, Equatable {
-    case invalidTarget
-}
-
 public enum GenesisCeremony {
 
     /// Build a deterministic root-genesis candidate. Runtime creation belongs to
@@ -40,9 +36,6 @@ public enum GenesisCeremony {
         config: GenesisConfig,
         fetcher: Fetcher
     ) async throws -> GenesisResult {
-        guard config.target >= ChainSpec.minimumTarget else {
-            throw GenesisCeremonyError.invalidTarget
-        }
         let block = try await BlockBuilder.buildGenesis(
             spec: config.spec,
             timestamp: config.timestamp,
@@ -54,7 +47,6 @@ public enum GenesisCeremony {
     }
 
     public static func verify(block: Block, config: GenesisConfig) -> Bool {
-        guard config.target >= ChainSpec.minimumTarget else { return false }
         guard block.hasGenesisAdmissionShape() else { return false }
         guard block.timestamp == config.timestamp else { return false }
         guard block.spec.node != nil else { return false }

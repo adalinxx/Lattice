@@ -19,16 +19,6 @@ public struct ChainSpec: Scalar {
     public let initialReward: UInt64
     public let halvingInterval: UInt64
     public static let maxTargetChange: UInt8 = 2
-    // Zero-recovery fallback. If an adjustment round produces a zero target
-    // (UInt256 division bottoming out from target=1 / 2), the chain would
-    // be unmineable; we floor at 1 so the adjustment loop can recover.
-    public static let minimumTarget: UInt256 = UInt256(1)
-
-    /// Permit the minimum target only when recovering from an underflowed
-    /// scheduled target.
-    static func isMinimumTargetRecovery(target: UInt256, parentNextTarget: UInt256) -> Bool {
-        target == minimumTarget && parentNextTarget < minimumTarget
-    }
     public let retargetWindow: UInt64
     public let wasmPolicies: [WasmPolicyRef]
     enum CodingKeys: String, CodingKey {
@@ -239,15 +229,17 @@ public extension ChainSpec {
     }
 
     private func calculatePairTarget(previousTarget: UInt256, actualTime: UInt64) -> UInt256 {
-        guard actualTime > 0 else { return ChainSpec.minimumTarget }
+        // Zero elapsed time is rejected at block validation (strictly increasing
+        // timestamps), so this is unreachable in consensus; keep the target
+        // unchanged for the degenerate direct-call case.
+        guard actualTime > 0 else { return previousTarget }
         let actual = UInt256(actualTime)
         let target = UInt256(targetBlockTime)
-        let adjusted = multiplyDividingSaturating(previousTarget, by: actual, over: target)
-        return max(adjusted, ChainSpec.minimumTarget)
+        return multiplyDividingSaturating(previousTarget, by: actual, over: target)
     }
 
     func calculatePairTarget(previousTarget: UInt256, actualTime: Int64) -> UInt256 {
-        guard actualTime > 0 else { return ChainSpec.minimumTarget }
+        guard actualTime > 0 else { return previousTarget }
         return calculatePairTarget(previousTarget: previousTarget, actualTime: UInt64(actualTime))
     }
 
@@ -265,9 +257,8 @@ public extension ChainSpec {
             : availableIntervals
         guard intervalCount > 0 else {
             // No retarget interval can be computed (0 or 1 timestamp): keep the
-            // previous difficulty, but still apply the minimumTarget floor so a
-            // zero previousTarget cannot bypass the lower bound.
-            return max(previousTarget, ChainSpec.minimumTarget)
+            // previous difficulty unchanged.
+            return previousTarget
         }
 
         var weightedActual = UInt256.zero
@@ -284,9 +275,9 @@ public extension ChainSpec {
             weightSum = weightSum > UInt256.max - weight ? UInt256.max : weightSum + weight
         }
         // Zero total solve time = maximally-fast window = maximally harder.
-        // Route it through the clamp (proposed 0 saturates to the lower bound)
-        // rather than collapsing straight to minimumTarget, so a timestamp grind
-        // cannot harden difficulty by more than maxTargetChange× in one step.
+        // Route it through the clamp (proposed 0 saturates to the lower bound of
+        // previousTarget / maxTargetChange) so a timestamp grind cannot harden
+        // difficulty by more than maxTargetChange× in one step.
         let adjusted: UInt256
         if weightedActual > UInt256.zero {
             let target = UInt256(targetBlockTime)
@@ -302,15 +293,16 @@ public extension ChainSpec {
 
     /// Bound a single retarget step to at most `maxTargetChange`× in either
     /// direction so a miner cannot grind timestamps to swing difficulty by an
-    /// unbounded factor in one window. The result is also floored at
-    /// `minimumTarget`. Applied at the single retarget choke point so the block
-    /// builder and admission validator agree on the clamped value.
+    /// unbounded factor in one window. Applied at the single retarget choke point
+    /// so the block builder and admission validator agree on the clamped value.
+    /// This `maxTargetChange×` clamp is the only bound: there is no absolute
+    /// target floor, and reaching a zero target would require difficulty to climb
+    /// past every physical limit for hundreds of consecutive windows.
     private func clampTargetChange(previousTarget: UInt256, proposed: UInt256) -> UInt256 {
         let factor = UInt256(UInt64(ChainSpec.maxTargetChange))
         let upperBound = previousTarget > UInt256.max / factor ? UInt256.max : previousTarget * factor
-        let lowerBound = max(previousTarget / factor, ChainSpec.minimumTarget)
-        let clamped = min(max(proposed, lowerBound), upperBound)
-        return max(clamped, ChainSpec.minimumTarget)
+        let lowerBound = previousTarget / factor
+        return min(max(proposed, lowerBound), upperBound)
     }
 
     func validateTransactionCount(_ transactionCount: UInt64) -> Bool {

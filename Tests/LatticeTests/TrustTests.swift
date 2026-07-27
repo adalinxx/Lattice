@@ -1177,27 +1177,29 @@ final class DifficultyManipulationTests: XCTestCase {
         let spec = s()
         let target = UInt256(1000)
 
-        // Very fast block lowers the target, floored at minimumTarget.
+        // Very fast block lowers the target proportionally (no floor).
         let fast = spec.calculatePairTarget(previousTarget: target, actualTime: 1)
-        XCTAssertEqual(fast, ChainSpec.minimumTarget)
+        XCTAssertEqual(fast, UInt256(1))
 
         // Slow blocks raise the target proportionally under the LWMA retarget model.
         let slow = spec.calculatePairTarget(previousTarget: target, actualTime: 100_000)
         XCTAssertEqual(slow, target * UInt256(100))
     }
 
-    func testZeroTimeDifficultyBounded() {
+    func testZeroTimeKeepsPreviousTarget() {
+        // Zero elapsed time is rejected at block validation, so the retarget
+        // helper keeps the previous target unchanged for the degenerate case.
         let spec = s()
         let target = UInt256(1000)
         let result = spec.calculatePairTarget(previousTarget: target, actualTime: 0)
-        XCTAssertEqual(result, ChainSpec.minimumTarget)
+        XCTAssertEqual(result, target)
     }
 
-    func testNegativeTimeDifficultyBounded() {
+    func testNegativeTimeKeepsPreviousTarget() {
         let spec = s()
         let target = UInt256(1000)
         let result = spec.calculatePairTarget(previousTarget: target, actualTime: -100)
-        XCTAssertEqual(result, ChainSpec.minimumTarget)
+        XCTAssertEqual(result, target)
     }
 }
 

@@ -151,8 +151,7 @@ final class ChainSpecFuzzTests: XCTestCase {
             let scaledQuotient = quotient > UInt256.max / actual ? UInt256.max : quotient * actual
             let scaledRemainderProduct = remainder > UInt256.max / actual ? UInt256.max : remainder * actual
             let scaledRemainder = scaledRemainderProduct / target
-            let ratio = scaledQuotient > UInt256.max - scaledRemainder ? UInt256.max : scaledQuotient + scaledRemainder
-            let expected = max(ratio, ChainSpec.minimumTarget)
+            let expected = scaledQuotient > UInt256.max - scaledRemainder ? UInt256.max : scaledQuotient + scaledRemainder
             XCTAssertEqual(newDiff, expected, "Difficulty must follow exact target ratio: \(prevDiff), delta=\(delta)ms")
         }
     }
