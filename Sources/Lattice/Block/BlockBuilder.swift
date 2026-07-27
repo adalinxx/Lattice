@@ -215,7 +215,7 @@ public struct BlockBuilder {
             parentState = previous.parentState
         }
 
-        let blockTarget = target ?? max(previous.nextTarget, ChainSpec.minimumTarget)
+        let blockTarget = target ?? previous.nextTarget
         let blockNextTarget: UInt256
         if let nextTarget {
             blockNextTarget = nextTarget
