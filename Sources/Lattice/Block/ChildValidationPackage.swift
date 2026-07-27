@@ -140,6 +140,24 @@ public struct ChildValidationPackage: Sendable {
         self.parentGenesisLink = parentGenesisLink
         self.parentStateContinuityLink = parentStateContinuityLink
     }
+
+    /// Verify only the structural work carrier. Parent facts are intentionally
+    /// outside this operation because they gate child admission, not relay.
+    public func verifiedCarrierLink(
+        child: Block,
+        chainPath: [String]
+    ) async -> Result<ParentCarrierLink, ChildProofVerificationFailure> {
+        await proof.verifySecuringWork(
+            child: child,
+            chainPath: chainPath
+        ).map {
+            ParentCarrierLink(
+                parentPath: chainPath,
+                carrierCID: $0.childCID,
+                rootCID: $0.grindID
+            )
+        }
+    }
 }
 
 /// Node-owned acquisition needed before child-chain admission can continue.

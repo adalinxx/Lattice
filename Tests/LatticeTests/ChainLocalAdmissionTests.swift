@@ -2922,6 +2922,19 @@ final class ChainLocalAdmissionTests: XCTestCase {
             evidence.childCID,
             try BlockHeader(node: candidate).rawCID
         )
+        let carrier = await fixture.package.verifiedCarrierLink(
+            child: candidate,
+            chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
+        )
+        guard case .success(let carrierLink) = carrier else {
+            return XCTFail("verified proof must expose its relay link")
+        }
+        XCTAssertEqual(
+            carrierLink.parentPath,
+            [DEFAULT_ROOT_DIRECTORY, "Child"]
+        )
+        XCTAssertEqual(carrierLink.carrierCID, evidence.childCID)
+        XCTAssertEqual(carrierLink.rootCID, proof.rootCID)
 
         let alternateRoot = await proof.verifySecuringWork(
             child: candidate,
