@@ -4,6 +4,40 @@ import cashew
 import UInt256
 import CollectionConcurrencyKit
 
+// MARK: - State-trie key grammar (consensus)
+//
+// The grammar for every semantic atom used as a state-trie key, enforced on the
+// block-validation path (`TransactionBody.stateAtomsAreValid` /
+// `genesisActionsAreValid`, chain-path construction, account-state reads).
+//
+// There is intentionally NO length/count limit here — key size is a node
+// storage concern, not a protocol rule. Two structural constraints remain, and
+// neither is a "limit":
+//   * Visible ASCII (0x21…0x7e): the state trie keys by Swift `String`, whose
+//     Unicode canonical equivalence would otherwise let byte-distinct keys
+//     collide and serialize nondeterministically across nodes. This dissolves
+//     once cashew keys tries by raw bytes.
+//   * No `DIRECTORY_KEY_SEPARATOR` ("/") in account/directory atoms: preserves
+//     receipt-key injectivity across chains (a `/` would let a withdrawal settle
+//     against the wrong chain's receipt).
+
+func isDeterministicKeyAtom(_ value: String) -> Bool {
+    let bytes = value.utf8
+    return !bytes.isEmpty && bytes.allSatisfy { (0x21...0x7e).contains($0) }
+}
+
+func isValidAccountAtom(_ value: String) -> Bool {
+    isDeterministicKeyAtom(value) && !value.contains(DIRECTORY_KEY_SEPARATOR)
+}
+
+func isValidDirectoryAtom(_ value: String) -> Bool {
+    isDeterministicKeyAtom(value) && !value.contains(DIRECTORY_KEY_SEPARATOR)
+}
+
+func isValidGeneralAtom(_ value: String) -> Bool {
+    isDeterministicKeyAtom(value)
+}
+
 /// A validation result whose truth may change only as the supplied wall-clock
 /// context advances. It is deliberately separate from a permanent protocol
 /// violation and from unavailable evidence.

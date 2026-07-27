@@ -7,7 +7,10 @@ public enum ChildProofSerializationError: Error, Sendable, Equatable {
 }
 
 enum ChildProofWireLimits {
-    static let maximumDirectoryBytes = StateAtomLimits.maximumDirectoryBytes
+    // Structural serialized field width: a directory is length-prefixed with a
+    // UInt16 in the proof wire format, so this is the encoding capacity, not a
+    // policy limit on how long a directory may be.
+    static let maximumDirectoryBytes = Int(UInt16.max)
     // Protocol resource bound; UInt16 is only the encoding capacity.
     static let maximumDepth = 256
 }
