@@ -64,7 +64,10 @@ final class HomesteadContinuityTests: XCTestCase {
         try await LatticeState.emptyHeader.storeRecursively(storer: fetcher)
         try await storeBlock(forged, to: fetcher)
 
-        let (valid, _) = try await forged.validateGenesis(fetcher: fetcher, directory: "Payments")
+        let (valid, _) = try await forged.validateGenesis(
+            fetcher: fetcher,
+            chainPath: [DEFAULT_ROOT_DIRECTORY, "Payments"]
+        )
         XCTAssertFalse(valid, "Genesis with non-zero height must be rejected by validateGenesis")
     }
 
@@ -87,7 +90,8 @@ final class HomesteadContinuityTests: XCTestCase {
                 accountActions: [AccountAction(owner: ownerAddr, delta: Int64(nexusSpec.rewardAtBlock(1)))],
                 actions: [], depositActions: [], genesisActions: [],
                 receiptActions: [], withdrawalActions: [],
-                signers: [ownerAddr], fee: 0, nonce: 0
+                signers: [ownerAddr], fee: 0, nonce: 0,
+                chainPath: ["Nexus"]
             ), kp)],
             timestamp: ts1, target: target, fetcher: fetcher
         )
@@ -110,7 +114,10 @@ final class HomesteadContinuityTests: XCTestCase {
         try await storeBlock(nexusBlock1, to: fetcher)
         try await storeBlock(forged, to: fetcher)
 
-        let (valid, _) = try await forged.validateGenesis(fetcher: fetcher, directory: "Payments")
+        let (valid, _) = try await forged.validateGenesis(
+            fetcher: fetcher,
+            chainPath: [DEFAULT_ROOT_DIRECTORY, "Payments"]
+        )
         XCTAssertFalse(valid, "Genesis with non-empty prevState must be rejected by validateGenesis")
     }
 

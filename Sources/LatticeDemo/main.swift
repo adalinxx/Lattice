@@ -67,10 +67,7 @@ Task {
     print()
 
     let chain = ChainState.fromGenesis(block: genesis)
-    let context = try ChainRuntimeContext(
-        path: [DEFAULT_ROOT_DIRECTORY],
-        minimumRootWork: UInt256(1)
-    )
+    let context = try ChainRuntimeContext(path: [DEFAULT_ROOT_DIRECTORY])
     let level = ChainLevel(chain: chain, context: context)
 
     print("Building a 5-block chain...")
@@ -89,7 +86,8 @@ Task {
         let result = try await level.admitBlockHeaderChainLocal(
             header,
             fetcher: fetcher,
-            storer: fetcher,
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
             stage: { _ in }
         )
         print("  Block \(i): CID=\(String(header.rawCID.prefix(20)))... canonical=\(canonicalized(result))")
@@ -119,7 +117,8 @@ Task {
         let result = try await level.admitBlockHeaderChainLocal(
             header,
             fetcher: fetcher,
-            storer: fetcher,
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
             stage: { _ in }
         )
         print("  Fork block \(i): canonical=\(canonicalized(result))")

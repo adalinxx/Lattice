@@ -32,7 +32,8 @@ private func premineGenesis(
     let body = TransactionBody(
         accountActions: [AccountAction(owner: addr, delta: Int64(spec.premineAmount()))],
         actions: [], depositActions: [], genesisActions: [],
-        receiptActions: [], withdrawalActions: [], signers: [addr], fee: 0, nonce: 0
+        receiptActions: [], withdrawalActions: [], signers: [addr], fee: 0, nonce: 0,
+        chainPath: ["Nexus"]
     )
     return try await buildAndStoreGenesis(
         spec: spec, transactions: [tx(body, kp)],
@@ -53,13 +54,13 @@ private func buildChain(from genesis: Block, length: Int, base: Int64, fetcher: 
 }
 
 // ============================================================================
-// MARK: - Crash Recovery: Persist, Restart, Continue
+// MARK: - Crash Recovery: Replay, Restart, Continue
 // ============================================================================
 
 @MainActor
 final class CrashRecoveryTests: XCTestCase {
 
-    func testPersistRestoreContinueMining() async throws {
+    func testFactReplayRestoreContinueMining() async throws {
         let fetcher = f()
         let base = now() - 50_000
         let spec = s(premine: 0)
@@ -68,6 +69,7 @@ final class CrashRecoveryTests: XCTestCase {
             spec: spec, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
         let chain1 = ChainState.fromGenesis(block: genesis)
+        var batches = [try testAdmissionBatch(for: genesis)]
 
         var prev = genesis
         for i in 1...5 {
@@ -78,17 +80,16 @@ final class CrashRecoveryTests: XCTestCase {
             let _ = await chain1.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: b), block: b
             )
+            batches.append(try testAdmissionBatch(for: b))
             prev = b
         }
 
-        let persisted = await chain1.persist()
-
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        let data = try encoder.encode(persisted)
-        let decoded = try JSONDecoder().decode(PersistedChainState.self, from: data)
+        let data = try encoder.encode(batches)
+        let decoded = try JSONDecoder().decode([ChainAdmissionBatch].self, from: data)
 
-        let chain2 = try ChainState.restore(from: decoded)
+        let chain2 = try await ChainState.restore(replaying: decoded)
 
         let tip2 = await chain2.getMainChainTip()
         let tip1 = await chain1.getMainChainTip()
@@ -110,7 +111,7 @@ final class CrashRecoveryTests: XCTestCase {
         XCTAssertEqual(finalHeight, 6)
     }
 
-    func testPersistSerializationIsDeterministic() async throws {
+    func testFactBatchSerializationIsDeterministic() async throws {
         let fetcher = f()
         let base = now() - 20_000
         let spec = s(premine: 0)
@@ -130,11 +131,10 @@ final class CrashRecoveryTests: XCTestCase {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
 
-        let p1 = await chain.persist()
-        let p2 = await chain.persist()
-        let d1 = try encoder.encode(p1)
-        let d2 = try encoder.encode(p2)
-        XCTAssertEqual(d1, d2, "Persistence serialization must be deterministic")
+        let batch = try testAdmissionBatch(for: b1)
+        let d1 = try encoder.encode(batch)
+        let d2 = try encoder.encode(batch)
+        XCTAssertEqual(d1, d2, "Fact serialization must be deterministic")
     }
 
 }
@@ -235,30 +235,84 @@ final class TwoNodeConvergenceTests: XCTestCase {
 final class ChildGenesisValidationTests: XCTestCase {
     // testChildGenesisWithWrongDirectoryRejected removed: spec.directory no longer exists, so a directory mismatch is structurally impossible.
 
-    private func bodyAnchoring(directory: String, blockCID: String) -> TransactionBody {
+    private func bodyAnchoring(
+        directory: String,
+        blockCID: String,
+        chainPath: [String] = [DEFAULT_ROOT_DIRECTORY]
+    ) -> TransactionBody {
         TransactionBody(
             accountActions: [], actions: [], depositActions: [],
-            genesisActions: [GenesisAction(directory: directory, blockCID: blockCID)],
+            genesisActions: [GenesisAction(
+                directory: directory,
+                blockCID: blockCID
+            )],
             receiptActions: [], withdrawalActions: [],
-            signers: [], fee: 0, nonce: 0, chainPath: ["Nexus"]
+            signers: [], fee: 0, nonce: 0, chainPath: chainPath
         )
     }
 
     func testGenesisActionAcceptsWellFormedAnchor() {
-        XCTAssertTrue(bodyAnchoring(directory: "Child", blockCID: "bafyvalidcid").genesisActionsAreValid())
+        XCTAssertTrue(bodyAnchoring(
+            directory: "Child",
+            blockCID: testCID("child")
+        ).genesisActionsAreValid())
     }
 
     func testGenesisActionRejectsEmptyDirectoryOrCID() {
-        XCTAssertFalse(bodyAnchoring(directory: "", blockCID: "bafycid").genesisActionsAreValid())
+        XCTAssertFalse(bodyAnchoring(directory: "", blockCID: testCID("child")).genesisActionsAreValid())
         XCTAssertFalse(bodyAnchoring(directory: "Child", blockCID: "").genesisActionsAreValid())
+    }
+
+    func testGenesisActionNormalizesChildCID() {
+        let alternateCID =
+            "f01711220e9eb6c60800df90fc8e237ed53246f396e87579aba406aaa7976a056859ee22d"
+        XCTAssertNotNil(CIDIdentity.canonicalString(alternateCID))
+        XCTAssertTrue(bodyAnchoring(
+            directory: "Child",
+            blockCID: alternateCID
+        ).genesisActionsAreValid())
+    }
+
+    func testGenesisActionEnforcesProofWireDirectoryAndDepthBounds() {
+        let cid = testCID("child")
+        let maximumDirectory = String(
+            repeating: "x",
+            count: ChildProofWireLimits.maximumDirectoryBytes
+        )
+        XCTAssertTrue(bodyAnchoring(
+            directory: maximumDirectory,
+            blockCID: cid
+        ).genesisActionsAreValid())
+        XCTAssertFalse(bodyAnchoring(
+            directory: maximumDirectory + "x",
+            blockCID: cid
+        ).genesisActionsAreValid())
+
+        XCTAssertTrue(bodyAnchoring(
+            directory: "Child",
+            blockCID: cid,
+            chainPath: [DEFAULT_ROOT_DIRECTORY] + Array(
+                repeating: "Parent",
+                count: ChildProofWireLimits.maximumDepth - 1
+            )
+        ).genesisActionsAreValid())
+        XCTAssertFalse(bodyAnchoring(
+            directory: "Child",
+            blockCID: cid,
+            chainPath: [DEFAULT_ROOT_DIRECTORY] + Array(
+                repeating: "Parent",
+                count: ChildProofWireLimits.maximumDepth
+            )
+        ).genesisActionsAreValid())
     }
 
     func testGenesisActionRejectsDirectoryWithKeySeparator() {
         // A "/" in the directory would break ReceiptKey injectivity (two distinct
         // (directory, demander) pairs could encode to the same receipt key), so it
         // must be rejected at anchor creation — the single entry for directory names.
-        XCTAssertFalse(bodyAnchoring(directory: "evil/x", blockCID: "bafycid").genesisActionsAreValid())
-        XCTAssertFalse(bodyAnchoring(directory: "a/b/c", blockCID: "bafycid").genesisActionsAreValid())
+        let cid = testCID("child")
+        XCTAssertFalse(bodyAnchoring(directory: "evil/x", blockCID: cid).genesisActionsAreValid())
+        XCTAssertFalse(bodyAnchoring(directory: "a/b/c", blockCID: cid).genesisActionsAreValid())
     }
 }
 
@@ -292,7 +346,8 @@ final class ClaimSecurityTests: XCTestCase {
             actions: [],
             depositActions: [childSwap],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 1
+            signers: [kpAddr], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let childBlock1 = try await buildAndStoreBlock(
             previous: childGenesis, transactions: [tx(swapBody, kp)],
@@ -304,7 +359,8 @@ final class ClaimSecurityTests: XCTestCase {
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: 500, directory: "Child")],
             withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 0
+            signers: [kpAddr], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
         let nexusBlock1 = try await buildAndStoreBlock(
             previous: nexusGenesis, transactions: [tx(settleBody, kp)],
@@ -319,7 +375,8 @@ final class ClaimSecurityTests: XCTestCase {
             withdrawalActions: [
                 WithdrawalAction(withdrawer: kpAddr, nonce: 99, demander: kpAddr, amountDemanded: 500, amountWithdrawn: 500)
             ],
-            signers: [kpAddr], fee: 0, nonce: 2
+            signers: [kpAddr], fee: 0, nonce: 2,
+            chainPath: ["Nexus"]
         )
 
         do {
@@ -359,7 +416,8 @@ final class ClaimSecurityTests: XCTestCase {
             actions: [],
             depositActions: [childSwap],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 1
+            signers: [kpAddr], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let childBlock1 = try await buildAndStoreBlock(
             previous: childGenesis, transactions: [tx(swapBody, kp)],
@@ -371,7 +429,8 @@ final class ClaimSecurityTests: XCTestCase {
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: 500, directory: "Child")],
             withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 0
+            signers: [kpAddr], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
         let nexusBlock1 = try await buildAndStoreBlock(
             previous: nexusGenesis, transactions: [tx(settleBody, kp)],
@@ -386,7 +445,8 @@ final class ClaimSecurityTests: XCTestCase {
             withdrawalActions: [
                 WithdrawalAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: 9999, amountWithdrawn: 9999)
             ],
-            signers: [kpAddr], fee: 0, nonce: 2
+            signers: [kpAddr], fee: 0, nonce: 2,
+            chainPath: ["Nexus"]
         )
 
         do {
@@ -470,7 +530,8 @@ final class DustAttackTests: XCTestCase {
             spec: tinySpec, transactions: [tx(TransactionBody(
                 accountActions: [AccountAction(owner: funderAddr, delta: Int64(premine))],
                 actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [], signers: [funderAddr], fee: 0, nonce: 0
+                receiptActions: [], withdrawalActions: [], signers: [funderAddr], fee: 0, nonce: 0,
+                chainPath: ["Nexus"]
             ), funder)],
             timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
@@ -486,7 +547,8 @@ final class DustAttackTests: XCTestCase {
             accountActions: [AccountAction(owner: funderAddr, delta: Int64(reward))],
             actions: kvActions, depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [funderAddr], fee: 0, nonce: 1
+            signers: [funderAddr], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [tx(body, funder)],
@@ -564,7 +626,8 @@ final class CrossChainBalanceConservationTests: XCTestCase {
             actions: [],
             depositActions: [childSwap],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 1
+            signers: [kpAddr], fee: 0, nonce: 1,
+            chainPath: ["Nexus"]
         )
         let _ = try await buildAndStoreBlock(
             previous: childGenesis, transactions: [tx(swapBody, kp)],

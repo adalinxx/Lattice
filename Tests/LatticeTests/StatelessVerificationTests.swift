@@ -210,7 +210,8 @@ final class StatelessChildChainVerificationTests: XCTestCase {
             transactions: [sign(TransactionBody(
                 accountActions: [AccountAction(owner: ownerAddr, delta: Int64(childSpec.premineAmount()))],
                 actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [], signers: [ownerAddr], fee: 0, nonce: 0
+                receiptActions: [], withdrawalActions: [], signers: [ownerAddr], fee: 0, nonce: 0,
+                chainPath: ["Nexus"]
             ), kp)],
             timestamp: now - 30_000, target: target, fetcher: producerFetcher
         )
@@ -228,7 +229,10 @@ final class StatelessChildChainVerificationTests: XCTestCase {
             transactions: [sign(TransactionBody(
                 accountActions: [AccountAction(owner: ownerAddr, delta: Int64(nexusSpec.rewardAtBlock(1)))],
                 actions: [], depositActions: [],
-                genesisActions: [GenesisAction(directory: "Payments", blockCID: try VolumeImpl<Block>(node: childGenesis).rawCID)],
+                genesisActions: [GenesisAction(
+                    directory: "Payments",
+                    blockCID: try VolumeImpl<Block>(node: childGenesis).rawCID
+                )],
                 receiptActions: [], withdrawalActions: [], signers: [ownerAddr], fee: 0, nonce: 0,
                 chainPath: ["Nexus"]
             ), kp)],

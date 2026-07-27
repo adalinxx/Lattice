@@ -153,7 +153,8 @@ final class PremineUncappedTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [AccountAction(owner: addr, delta: Int64(premine > UInt64(Int64.max) ? UInt64(Int64.max) : premine))],
             actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [addr], fee: 0, nonce: 0
+            receiptActions: [], withdrawalActions: [], signers: [addr], fee: 0, nonce: 0,
+            chainPath: ["Nexus"]
         )
         let bodyHeader = try! HeaderImpl<TransactionBody>(node: body)
         let sig = try XCTUnwrap(TransactionSigning.sign(bodyHeader: bodyHeader, privateKeyHex: owner.privateKey))
@@ -216,19 +217,21 @@ final class PremineUncappedTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [AccountAction(owner: addr, delta: Int64(premine))],
             actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [addr], fee: 0,
+            receiptActions: [], withdrawalActions: [], signers: [], fee: 0,
             nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
         let bodyHeader = try! HeaderImpl<TransactionBody>(node: body)
-        let sig = try XCTUnwrap(TransactionSigning.sign(bodyHeader: bodyHeader, privateKeyHex: owner.privateKey))
-        let genesisTx = Transaction(signatures: [owner.publicKey: sig], body: bodyHeader)
+        let genesisTx = Transaction(signatures: [:], body: bodyHeader)
 
         let genesis = try await buildAndStoreGenesis(
             spec: s, transactions: [genesisTx],
             timestamp: Int64(Date().timeIntervalSince1970 * 1000) - 20_000,
             target: UInt256(1000), fetcher: fetcher
         )
-        let (valid, _) = try await genesis.validateGenesis(fetcher: fetcher, directory: "Nexus")
+        let (valid, _) = try await genesis.validateGenesis(
+            fetcher: fetcher,
+            chainPath: [DEFAULT_ROOT_DIRECTORY]
+        )
         XCTAssertTrue(valid, "a genesis crediting a multi-halving premine must validate (conservation holds)")
 
         // Over-crediting beyond premineAmount must still be rejected — the cap
@@ -236,18 +239,20 @@ final class PremineUncappedTests: XCTestCase {
         let overBody = TransactionBody(
             accountActions: [AccountAction(owner: addr, delta: Int64(premine + 1))],
             actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [addr], fee: 0,
+            receiptActions: [], withdrawalActions: [], signers: [], fee: 0,
             nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
         let overHeader = try! HeaderImpl<TransactionBody>(node: overBody)
-        let overSig = try XCTUnwrap(TransactionSigning.sign(bodyHeader: overHeader, privateKeyHex: owner.privateKey))
-        let overTx = Transaction(signatures: [owner.publicKey: overSig], body: overHeader)
+        let overTx = Transaction(signatures: [:], body: overHeader)
         let overGenesis = try await buildAndStoreGenesis(
             spec: s, transactions: [overTx],
             timestamp: Int64(Date().timeIntervalSince1970 * 1000) - 20_000,
             target: UInt256(1000), fetcher: fetcher
         )
-        let (overValid, _) = try await overGenesis.validateGenesis(fetcher: fetcher, directory: "Nexus")
+        let (overValid, _) = try await overGenesis.validateGenesis(
+            fetcher: fetcher,
+            chainPath: [DEFAULT_ROOT_DIRECTORY]
+        )
         XCTAssertFalse(overValid, "crediting more than premineAmount must still fail conservation")
     }
 }

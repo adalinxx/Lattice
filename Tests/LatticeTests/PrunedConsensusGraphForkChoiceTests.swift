@@ -4,8 +4,8 @@ import XCTest
 import cashew
 import UInt256
 
-final class ConsensusGraphPersistenceTests: XCTestCase {
-    func testCompleteConsensusGraphAndRevisionSurviveRestore() async throws {
+final class ConsensusGraphRecoveryTests: XCTestCase {
+    func testCompleteConsensusGraphAndRevisionSurviveFactReplay() async throws {
         let fetcher = StorableFetcher()
         let target = UInt256(1_000)
         let base = Int64(Date().timeIntervalSince1970 * 1_000) - 30_000
@@ -56,27 +56,44 @@ final class ConsensusGraphPersistenceTests: XCTestCase {
         let secondHash = try BlockHeader(node: second).rawCID
         let descendantHash = try BlockHeader(node: descendant).rawCID
         let expectedHashes = Set([genesisHash, firstHash, secondHash, descendantHash])
-        let snapshot = await chain.persist()
-        let root = try XCTUnwrap(snapshot.blocks.first { $0.blockHash == genesisHash })
-        let branch = try XCTUnwrap(snapshot.blocks.first { $0.blockHash == secondHash })
+        let rootValue = await chain.getConsensusBlock(hash: genesisHash)
+        let branchValue = await chain.getConsensusBlock(hash: secondHash)
+        let root = try XCTUnwrap(rootValue)
+        let branch = try XCTUnwrap(branchValue)
 
-        XCTAssertEqual(snapshot.revision, 3)
-        XCTAssertEqual(Set(snapshot.blocks.map(\.blockHash)), expectedHashes)
+        let revision = await chain.currentRevision()
+        XCTAssertEqual(revision, 3)
+        for hash in expectedHashes {
+            let contains = await chain.contains(blockHash: hash)
+            XCTAssertTrue(contains)
+        }
         XCTAssertEqual(Set(root.childHashes), [firstHash, secondHash])
         XCTAssertEqual(branch.childHashes, [descendantHash])
 
-        let restored = try ChainState.restore(from: snapshot)
-        let restoredSnapshot = await restored.persist()
+        let restored = try await ChainState.restore(replaying: [
+            testAdmissionBatch(for: genesis),
+            testAdmissionBatch(for: first),
+            testAdmissionBatch(for: second),
+            testAdmissionBatch(for: descendant),
+        ])
         let originalRootWork = await chain.subtreeWeight(forHash: genesisHash)
         let restoredRootWork = await restored.subtreeWeight(forHash: genesisHash)
         let originalTip = await chain.getMainChainTip()
         let restoredTip = await restored.getMainChainTip()
 
-        XCTAssertEqual(restoredSnapshot.revision, snapshot.revision)
-        XCTAssertEqual(Set(restoredSnapshot.blocks.map(\.blockHash)), expectedHashes)
+        let restoredRevision = await restored.currentRevision()
+        XCTAssertEqual(restoredRevision, revision)
+        for hash in expectedHashes {
+            let contains = await restored.contains(blockHash: hash)
+            XCTAssertTrue(contains)
+        }
         XCTAssertEqual(restoredTip, originalTip)
         XCTAssertEqual(restoredRootWork, originalRootWork)
-        XCTAssertTrue(restoredSnapshot.blocks.allSatisfy { !$0.workContributions.isEmpty })
+        for hash in expectedHashes {
+            let value = await restored.getConsensusBlock(hash: hash)
+            let meta = try XCTUnwrap(value)
+            XCTAssertFalse(meta.workContributions.isEmpty)
+        }
     }
 }
 

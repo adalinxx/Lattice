@@ -19,12 +19,6 @@ private func bucketSpec() -> ChainSpec {
     )
 }
 
-private func bucketContribution(_ id: String, work: UInt256 = UInt256(1)) -> VerifiedWorkContribution {
-    VerifiedWorkContribution(id: testCID(id), work: work)
-}
-
-private let persistedGenesisCID = "bafyreieonsjxgx7d7cnbebfixgzcdoxopsbrfbbgujnqp74przhtmmbn5a"
-
 final class ConsensusForkChoiceBucketATests: XCTestCase {
     private var forkMainSet: Set<String> { ["G", "M1", "M2"] }
 
@@ -78,104 +72,4 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
         XCTAssertGreaterThan(cumulativeWork, WorkSum(UInt256.max))
     }
 
-    func testRestoreRejectsUndecodableTarget() {
-        let block = PersistedBlockMeta(
-            blockHash: persistedGenesisCID,
-            parentBlockHash: nil,
-            blockHeight: 0,
-            childHashes: [],
-            workContributions: [bucketContribution("grind:G")],
-            cumulativeWork: UInt256(1).toHexString(),
-            target: "not-hex"
-        )
-        let persisted = PersistedChainState(
-            chainTip: persistedGenesisCID,
-            mainChainHashes: [persistedGenesisCID],
-            blocks: [block]
-        )
-
-        XCTAssertThrowsError(try ChainState.restore(from: persisted)) { error in
-            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
-        }
-    }
-
-    func testRestoreRejectsUndecodableNextTarget() {
-        let block = PersistedBlockMeta(
-            blockHash: persistedGenesisCID,
-            parentBlockHash: nil,
-            blockHeight: 0,
-            childHashes: [],
-            workContributions: [bucketContribution("grind:G")],
-            cumulativeWork: UInt256(1).toHexString(),
-            nextTarget: "not-hex"
-        )
-        let persisted = PersistedChainState(
-            chainTip: persistedGenesisCID,
-            mainChainHashes: [persistedGenesisCID],
-            blocks: [block]
-        )
-
-        XCTAssertThrowsError(try ChainState.restore(from: persisted)) { error in
-            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
-        }
-    }
-
-    func testRestoreAllowsAbsentTargetWhenWorkContributionIsPresent() throws {
-        let block = PersistedBlockMeta(
-            blockHash: persistedGenesisCID,
-            parentBlockHash: nil,
-            blockHeight: 0,
-            childHashes: [],
-            workContributions: [bucketContribution("grind:G")],
-            cumulativeWork: UInt256(1).toHexString()
-        )
-        let persisted = PersistedChainState(
-            chainTip: persistedGenesisCID,
-            mainChainHashes: [persistedGenesisCID],
-            blocks: [block]
-        )
-
-        XCTAssertNoThrow(try ChainState.restore(from: persisted))
-    }
-
-    func testRestoreRejectsMalformedBlockCID() {
-        let block = PersistedBlockMeta(
-            blockHash: "G",
-            parentBlockHash: nil,
-            blockHeight: 0,
-            childHashes: [],
-            workContributions: [bucketContribution("grind:G")],
-            cumulativeWork: UInt256(1).toHexString()
-        )
-        let persisted = PersistedChainState(
-            chainTip: "G",
-            mainChainHashes: ["G"],
-            blocks: [block]
-        )
-
-        XCTAssertThrowsError(try ChainState.restore(from: persisted)) { error in
-            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
-        }
-    }
-
-    func testRestoreRejectsUnsupportedPersistenceSchema() {
-        let block = PersistedBlockMeta(
-            blockHash: persistedGenesisCID,
-            parentBlockHash: nil,
-            blockHeight: 0,
-            childHashes: [],
-            workContributions: [bucketContribution("grind:G")],
-            cumulativeWork: UInt256(1).toHexString()
-        )
-        let persisted = PersistedChainState(
-            schemaVersion: PersistedChainState.currentSchemaVersion + 1,
-            chainTip: persistedGenesisCID,
-            mainChainHashes: [persistedGenesisCID],
-            blocks: [block]
-        )
-
-        XCTAssertThrowsError(try ChainState.restore(from: persisted)) { error in
-            XCTAssertEqual(error as? ChainStateRestoreError, .corruptConsensusGraph)
-        }
-    }
 }

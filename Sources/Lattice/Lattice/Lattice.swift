@@ -1,26 +1,43 @@
+import Foundation
 import UInt256
 
 public enum ChainRuntimeContextError: Error, Sendable, Equatable {
     case emptyPath
     case emptyDirectory
-    case zeroMinimumRootWork
+    case rootMustBeNexus
+    case directoryContainsSeparator
+    case invalidDirectory
+    case directoryTooLong
+    case pathTooDeep
 }
 
-/// Immutable identity and setup-wide proof floor for one chain process.
+/// Immutable Nexus-rooted identity for one chain process.
 public struct ChainRuntimeContext: Sendable, Equatable {
     public let path: [String]
-    public let minimumRootWork: UInt256
 
-    public init(path: [String], minimumRootWork: UInt256) throws {
+    public init(path: [String]) throws {
         guard !path.isEmpty else { throw ChainRuntimeContextError.emptyPath }
         guard path.allSatisfy({ !$0.isEmpty }) else {
             throw ChainRuntimeContextError.emptyDirectory
         }
-        guard minimumRootWork > .zero else {
-            throw ChainRuntimeContextError.zeroMinimumRootWork
+        guard path.first == DEFAULT_ROOT_DIRECTORY else {
+            throw ChainRuntimeContextError.rootMustBeNexus
+        }
+        guard path.dropFirst().count <= ChildProofWireLimits.maximumDepth else {
+            throw ChainRuntimeContextError.pathTooDeep
+        }
+        guard path.allSatisfy({
+            $0.utf8.count <= StateAtomLimits.maximumDirectoryBytes
+        }) else {
+            throw ChainRuntimeContextError.directoryTooLong
+        }
+        guard path.allSatisfy({ !$0.contains(DIRECTORY_KEY_SEPARATOR) }) else {
+            throw ChainRuntimeContextError.directoryContainsSeparator
+        }
+        guard path.allSatisfy(StateAtomLimits.isDirectory) else {
+            throw ChainRuntimeContextError.invalidDirectory
         }
         self.path = path
-        self.minimumRootWork = minimumRootWork
     }
 
     public var isRoot: Bool { path.count == 1 }
@@ -32,6 +49,7 @@ public struct ChainRuntimeContext: Sendable, Equatable {
 public actor ChainLevel {
     public let chain: ChainState
     public nonisolated let context: ChainRuntimeContext
+    let admissionIdentity = UUID()
 
     public init(chain: ChainState, context: ChainRuntimeContext) {
         self.chain = chain

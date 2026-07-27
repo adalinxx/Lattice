@@ -19,7 +19,8 @@ final class BlockContentResolverTests: XCTestCase {
             withdrawalActions: [],
             signers: ["alice"],
             fee: 0,
-            nonce: 0
+            nonce: 0,
+            chainPath: ["Nexus"]
         )
         let transaction = Transaction(
             signatures: ["alice": "sig"],
@@ -79,15 +80,26 @@ final class BlockContentResolverTests: XCTestCase {
 
         let paths = Block.validationPaths(transactionBodies: [body])
         XCTAssertEqual(
-            paths.get([PREV_STATE_PROPERTY, RECEIPT_STATE_PROPERTY, ReceiptKey(receiptAction: receipt).description]),
+            paths[[
+                PREV_STATE_PROPERTY,
+                RECEIPT_STATE_PROPERTY,
+                ReceiptKey(receiptAction: receipt).storageKey,
+            ]],
             .targeted
         )
         XCTAssertEqual(
-            paths.get([PARENT_STATE_PROPERTY, RECEIPT_STATE_PROPERTY, ReceiptKey(withdrawalAction: withdrawal, directory: "Child").description]),
+            paths[[
+                PARENT_STATE_PROPERTY,
+                RECEIPT_STATE_PROPERTY,
+                ReceiptKey(
+                    withdrawalAction: withdrawal,
+                    directory: "Child"
+                ).storageKey,
+            ]],
             .targeted
         )
-        XCTAssertNil(paths.get([PREV_STATE_PROPERTY, RECEIPT_STATE_PROPERTY, ""]))
-        XCTAssertNil(paths.get([PARENT_STATE_PROPERTY, RECEIPT_STATE_PROPERTY, ""]))
+        XCTAssertNil(paths[[PREV_STATE_PROPERTY, RECEIPT_STATE_PROPERTY, ""]])
+        XCTAssertNil(paths[[PARENT_STATE_PROPERTY, RECEIPT_STATE_PROPERTY, ""]])
     }
 
     func testResolveBlockContentIncludesTransactionsAndSpecButLeavesChildrenIndependent() async throws {
@@ -98,7 +110,10 @@ final class BlockContentResolverTests: XCTestCase {
             target: UInt256.max,
             fetcher: fetcher
         )
-        try await VolumeImpl<Block>(node: parent).storeBlockContent(storer: fetcher)
+        try await VolumeImpl<Block>(node: parent).store(
+            paths: Block.contentResolutionPaths,
+            storer: fetcher
+        )
 
         let txBody = TransactionBody(
             accountActions: [AccountAction(owner: "alice", delta: 10)],
@@ -109,7 +124,8 @@ final class BlockContentResolverTests: XCTestCase {
             withdrawalActions: [],
             signers: ["alice"],
             fee: 0,
-            nonce: 0
+            nonce: 0,
+            chainPath: ["Nexus"]
         )
         let tx = Transaction(signatures: ["alice": "sig"], body: try! HeaderImpl(node: txBody))
         let child = try await buildAndStoreGenesis(
@@ -128,7 +144,10 @@ final class BlockContentResolverTests: XCTestCase {
             fetcher: fetcher
         )
         let contentOnly = TestVolumeFetcher()
-        try await VolumeImpl<Block>(node: block).storeBlockContent(storer: contentOnly)
+        try await VolumeImpl<Block>(node: block).store(
+            paths: Block.contentResolutionPaths,
+            storer: contentOnly
+        )
 
         let header = VolumeImpl<Block>(rawCID: try! VolumeImpl<Block>(node: block).rawCID)
         let resolved = try await header.resolveBlockContent(fetcher: contentOnly)
@@ -176,15 +195,23 @@ final class BlockContentResolverTests: XCTestCase {
             withdrawalActions: [],
             signers: ["alice"],
             fee: 0,
-            nonce: 0
+            nonce: 0,
+            chainPath: ["Nexus"]
         )
         let transaction = Transaction(
             signatures: ["alice": "sig"],
             body: try HeaderImpl(node: body)
         )
+        let child = try await buildAndStoreGenesis(
+            spec: testSpec(directory: "Child"),
+            timestamp: 1,
+            target: UInt256.max,
+            fetcher: source
+        )
         let block = try await buildAndStoreBlock(
             previous: genesis,
             transactions: [transaction],
+            children: ["Child": child],
             timestamp: 2,
             target: UInt256.max,
             nonce: 0,
@@ -204,8 +231,15 @@ final class BlockContentResolverTests: XCTestCase {
 
         XCTAssertEqual(nodeDestination.entries, decodedDestination.entries)
         XCTAssertEqual(nodeDestination.entries, unresolvedDestination.entries)
+        XCTAssertTrue(nodeDestination.volumeRoots.contains(cid))
+        XCTAssertTrue(nodeDestination.volumeRoots.contains(block.spec.rawCID))
+        XCTAssertTrue(nodeDestination.volumeRoots.contains(block.prevState.rawCID))
+        XCTAssertTrue(nodeDestination.volumeRoots.contains(try VolumeImpl<Transaction>(node: transaction).rawCID))
         XCTAssertFalse(nodeDestination.contains(rawCid: block.postState.rawCID))
         XCTAssertFalse(nodeDestination.contains(rawCid: try XCTUnwrap(block.parent).rawCID))
+        XCTAssertFalse(nodeDestination.volumeRoots.contains(block.postState.rawCID))
+        XCTAssertFalse(nodeDestination.volumeRoots.contains(try XCTUnwrap(block.parent).rawCID))
+        XCTAssertFalse(nodeDestination.volumeRoots.contains(try VolumeImpl<Block>(node: child).rawCID))
 
         let copied = try await VolumeImpl<Block>(rawCID: cid).resolveBlockContent(fetcher: decodedDestination)
         XCTAssertNotNil(copied.node?.transactions.node)
@@ -264,15 +298,226 @@ final class BlockContentResolverTests: XCTestCase {
 
         try await header.storeBlock(fetcher: source, storer: destination)
         XCTAssertTrue(destination.contains(rawCid: policy.moduleCID))
+        let roots = destination.volumeRoots()
+        XCTAssertTrue(roots.contains(header.rawCID))
+        XCTAssertTrue(roots.contains(policy.moduleCID))
+        XCTAssertTrue(roots.contains(LatticeState.emptyHeader.rawCID))
+        let emptyState = try XCTUnwrap(LatticeState.emptyHeader.node)
+        XCTAssertTrue(roots.contains(emptyState.accountState.rawCID))
+        XCTAssertTrue(roots.contains(emptyState.generalState.rawCID))
+        XCTAssertTrue(roots.contains(emptyState.depositState.rawCID))
+        XCTAssertTrue(roots.contains(emptyState.genesisState.rawCID))
+        XCTAssertTrue(roots.contains(emptyState.receiptState.rawCID))
 
         let copied = try await VolumeImpl<Block>(rawCID: header.rawCID)
             .resolveBlockContent(fetcher: destination)
         let block = try XCTUnwrap(copied.node)
         let (valid, _) = try await block.validateGenesis(
             fetcher: destination,
-            directory: "Nexus"
+            chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
         XCTAssertTrue(valid)
+    }
+
+    func testLogicalBlockSizeUsesExactConsensusLimitForGenesisAndOrdinaryBlocks() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await buildAndStoreGenesis(
+            spec: testSpec(directory: "Nexus"),
+            timestamp: 1,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+        let block = try await buildAndStoreBlock(
+            previous: genesis,
+            timestamp: 2,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+
+        for candidate in [genesis, block] {
+            let size = try await candidate.logicalContentByteSize(fetcher: fetcher)
+            let exact = sizeSpec(maxBlockSize: size)
+            let oneOver = sizeSpec(maxBlockSize: size - 1)
+            let exactValid = try await candidate.validateBlockSize(spec: exact, fetcher: fetcher)
+            let oneOverValid = try await candidate.validateBlockSize(spec: oneOver, fetcher: fetcher)
+            XCTAssertTrue(exactValid)
+            XCTAssertFalse(oneOverValid)
+        }
+    }
+
+    func testLogicalBlockSizeCountsSharedTransactionContentOnce() async throws {
+        let fetcher = StorableFetcher()
+        let transaction = contentTransaction(nonce: 0, payloadBytes: 20_000)
+        let one = try await buildAndStoreGenesis(
+            spec: testSpec(directory: "Nexus"),
+            transactions: [transaction],
+            timestamp: 1,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+        let duplicate = try await buildAndStoreGenesis(
+            spec: testSpec(directory: "Nexus"),
+            transactions: [transaction, transaction],
+            timestamp: 2,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+
+        let oneSize = try await one.logicalContentByteSize(fetcher: fetcher)
+        let duplicateSize = try await duplicate.logicalContentByteSize(fetcher: fetcher)
+        XCTAssertGreaterThan(duplicateSize, oneSize)
+        XCTAssertLessThan(duplicateSize - oneSize, 20_000)
+    }
+
+    func testLogicalBlockSizeIsIndependentOfTransactionOrder() async throws {
+        let fetcher = StorableFetcher()
+        let first = contentTransaction(nonce: 1, payloadBytes: 256)
+        let second = contentTransaction(nonce: 2, payloadBytes: 256)
+        let forward = try await buildAndStoreGenesis(
+            spec: testSpec(directory: "Nexus"),
+            transactions: [first, second],
+            timestamp: 1,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+        let reverse = try await buildAndStoreGenesis(
+            spec: testSpec(directory: "Nexus"),
+            transactions: [second, first],
+            timestamp: 2,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+
+        let forwardSize = try await forward.logicalContentByteSize(fetcher: fetcher)
+        let reverseSize = try await reverse.logicalContentByteSize(fetcher: fetcher)
+        XCTAssertEqual(forwardSize, reverseSize)
+    }
+
+    func testLogicalBlockSizeExcludesSpecContentsAndChildBlockContents() async throws {
+        let fetcher = StorableFetcher()
+        let base = try await buildAndStoreGenesis(
+            spec: testSpec(directory: "Nexus"),
+            timestamp: 1,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+        let module = try WasmPolicyModuleHeader(node: WasmPolicyModule(
+            bytes: Data(repeating: 0x7f, count: 20_000)
+        ))
+        try await module.storeRecursively(storer: fetcher)
+        let policy = WasmPolicyRef(
+            moduleCID: module.rawCID,
+            scope: .transaction
+        )
+        let largeSpec = ChainSpec(
+            maxNumberOfTransactionsPerBlock: 100,
+            maxStateGrowth: 100_000,
+            premine: 0,
+            targetBlockTime: 1_000,
+            initialReward: 1,
+            halvingInterval: 1_000,
+            wasmPolicies: Array(repeating: policy, count: 1_000)
+        )
+        let withLargeSpec = base.set(properties: [
+            SPEC_PROPERTY: try VolumeImpl<ChainSpec>(node: largeSpec),
+        ])
+        let baseSize = try await base.logicalContentByteSize(fetcher: fetcher)
+        let largeSpecSize = try await withLargeSpec.logicalContentByteSize(fetcher: fetcher)
+        XCTAssertEqual(baseSize, largeSpecSize)
+
+        let stateCarrier = try await buildAndStoreGenesis(
+            spec: testSpec(directory: "Nexus"),
+            transactions: [stateContentTransaction(payloadBytes: 20_000)],
+            timestamp: 2,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+        let withLargeState = base.set(properties: [
+            POST_STATE_PROPERTY: stateCarrier.postState,
+        ])
+        let largeStateSize = try await withLargeState.logicalContentByteSize(fetcher: fetcher)
+        XCTAssertEqual(baseSize, largeStateSize)
+
+        let child = try await buildAndStoreGenesis(
+            spec: testSpec(directory: "Child"),
+            transactions: [contentTransaction(nonce: 0, payloadBytes: 20_000)],
+            timestamp: 2,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+        let parent = try await buildAndStoreGenesis(
+            spec: testSpec(directory: "Nexus"),
+            children: ["Child": child],
+            timestamp: 3,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+        let parentSize = try await parent.logicalContentByteSize(fetcher: fetcher)
+        let childSize = try await child.logicalContentByteSize(fetcher: fetcher)
+        XCTAssertLessThan(parentSize - baseSize, childSize)
+
+        let ordinary = try await buildAndStoreBlock(
+            previous: base,
+            timestamp: 4,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+        let withLargeParent = ordinary.set(properties: [
+            PARENT_PROPERTY: try VolumeImpl<Block>(node: child),
+        ])
+        let ordinarySize = try await ordinary.logicalContentByteSize(fetcher: fetcher)
+        let largeParentSize = try await withLargeParent.logicalContentByteSize(fetcher: fetcher)
+        XCTAssertEqual(ordinarySize, largeParentSize)
+    }
+
+    func testBlockSizeClassifiesDeterministicLimitsAsInvalid() async throws {
+        let fetcher = StorableFetcher()
+        let block = try await buildAndStoreGenesis(
+            spec: testSpec(directory: "Nexus"),
+            timestamp: 1,
+            target: UInt256.max,
+            fetcher: fetcher
+        )
+        let decoded = try XCTUnwrap(Block(data: XCTUnwrap(block.toData())))
+
+        let valid = try await decoded.validateBlockSize(
+            spec: sizeSpec(maxBlockSize: 16 * 1_024 * 1_024),
+            fetcher: FailingFetcher(error: BlockContentSizeError.overflow)
+        )
+        XCTAssertFalse(valid)
+    }
+
+    func testBlockSizePropagatesUnavailableContent() async throws {
+        let source = StorableFetcher()
+        let block = try await buildAndStoreGenesis(
+            spec: testSpec(directory: "Nexus"),
+            timestamp: 1,
+            target: UInt256.max,
+            fetcher: source
+        )
+        let decoded = try XCTUnwrap(Block(data: XCTUnwrap(block.toData())))
+
+        do {
+            _ = try await decoded.validateBlockSize(
+                spec: sizeSpec(maxBlockSize: 16 * 1_024 * 1_024),
+                fetcher: StorableFetcher()
+            )
+            XCTFail("expected unavailable transaction content to throw")
+        } catch is BlockContentSizeError {
+            XCTFail("missing content must not be classified as oversized")
+        } catch {
+            // Availability failures remain retryable by the node.
+        }
+    }
+
+    func testStateDeltaAccumulationRejectsIntegerOverflow() {
+        var positive = Int.max
+        XCTAssertFalse(addStateDelta(1, to: &positive))
+        XCTAssertEqual(positive, .max)
+
+        var negative = Int.min
+        XCTAssertFalse(addStateDelta(-1, to: &negative))
+        XCTAssertEqual(negative, .min)
     }
 }
 
@@ -291,15 +536,80 @@ private func testSpec(
     )
 }
 
+private func sizeSpec(maxBlockSize: Int) -> ChainSpec {
+    ChainSpec(
+        maxNumberOfTransactionsPerBlock: 100,
+        maxStateGrowth: 100_000,
+        maxBlockSize: maxBlockSize,
+        premine: 0,
+        targetBlockTime: 1_000,
+        initialReward: 1,
+        halvingInterval: 1_000
+    )
+}
+
+private func contentTransaction(nonce: UInt64, payloadBytes: Int) -> Transaction {
+    let body = TransactionBody(
+        accountActions: [],
+        actions: [],
+        depositActions: [],
+        genesisActions: [],
+        receiptActions: [],
+        withdrawalActions: [],
+        signers: [],
+        fee: 0,
+        nonce: nonce,
+        chainPath: ["Nexus"]
+    )
+    return Transaction(
+        signatures: ["fixture": String(repeating: "x", count: payloadBytes)],
+        body: try! HeaderImpl(node: body)
+    )
+}
+
+private func stateContentTransaction(payloadBytes: Int) -> Transaction {
+    let body = TransactionBody(
+        accountActions: [],
+        actions: [Action(
+            key: "large-state",
+            oldValue: nil,
+            newValue: String(repeating: "s", count: payloadBytes)
+        )],
+        depositActions: [],
+        genesisActions: [],
+        receiptActions: [],
+        withdrawalActions: [],
+        signers: [],
+        fee: 0,
+        nonce: 0,
+        chainPath: ["Nexus"]
+    )
+    return Transaction(signatures: [:], body: try! HeaderImpl(node: body))
+}
+
+private struct FailingFetcher: Fetcher {
+    let error: BlockContentSizeError
+
+    func fetch(rawCid _: String) async throws -> Data {
+        throw error
+    }
+}
+
 /// A flat in-memory CAS: stores every node by CID and fetches it back. cashew
 /// 3.x resolution is per-CID over a plain `Fetcher`; there is no `VolumeAware`
 /// enter/exit side-channel, so a content-by-CID dictionary is all that
 /// `resolveBlockContent` needs.
-private final class TestVolumeFetcher: Fetcher, Storer, @unchecked Sendable {
+private final class TestVolumeFetcher: Fetcher, Storer, VolumeStorer, @unchecked Sendable {
     private let state = OSAllocatedUnfairLock(initialState: [String: Data]())
+    private let roots = OSAllocatedUnfairLock(initialState: Set<String>())
 
     func store(entries: [String: Data]) async {
         state.withLock { $0.merge(entries) { _, new in new } }
+    }
+
+    func store(volume: SerializedVolume) async {
+        roots.withLock { _ = $0.insert(volume.root) }
+        state.withLock { $0.merge(volume.entries) { _, new in new } }
     }
 
     func contains(rawCid: String) -> Bool {
@@ -308,6 +618,10 @@ private final class TestVolumeFetcher: Fetcher, Storer, @unchecked Sendable {
 
     var entries: [String: Data] {
         state.withLock { $0 }
+    }
+
+    var volumeRoots: Set<String> {
+        roots.withLock { $0 }
     }
 
     func fetch(rawCid: String) async throws -> Data {

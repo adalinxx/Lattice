@@ -131,6 +131,9 @@ public extension AccountStateHeader {
     /// Public read API over the floor rule: resolve `account`'s stored nonce
     /// from this account-state trie and return the next expected nonce.
     func nextExpectedNonce(for account: String, fetcher: Fetcher) async throws -> UInt64 {
+        guard StateAtomLimits.isAccount(account) else {
+            throw StateErrors.conflictingActions
+        }
         let nonceKey = Self.nonceTrackingKey(account)
         let resolved = try await resolve(paths: [[nonceKey]: ResolutionStrategy.targeted], fetcher: fetcher)
         let currentNonce: UInt64? = resolved.node.flatMap { try? $0.get(key: nonceKey) }

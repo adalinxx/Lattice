@@ -1,180 +1,129 @@
 # Hierarchical Work And Fork Choice
 
-This document explains how one physical grind can secure many blocks without
-being counted many times. [Specification section 9](spec.md#9-consensus) is
-normative; [Architecture](foundational-architecture.md) defines the process and
-node boundary.
+[Specification section 9](spec.md#9-consensus) is normative. This document
+explains the model operationally.
 
-## The Question
+## The Rule
+
+A physical grind has one identity, one quantity, and exactly one terminal
+location in each chain it reaches:
+
+```text
+identity = CID(root)
+quantity = strongest verified accepted-target bound
+location = exact terminal block in this chain
+```
+
+One block may contain many independent grinds. One grind cannot be placed at
+two blocks in the same chain. Ordinary same-chain ancestry makes work at a
+descendant support that descendant's ancestors; the grind is not copied to
+those ancestors.
 
 Fork choice asks one local question:
 
-> Which competing same-chain subtree has the greatest `trueCumWork`, after
-> observations are joined by grind identity?
+> Which competing same-chain subtree contains the greatest total quantity of
+> uniquely located grinds?
 
-It does not ask which parent branch is canonical. It does not compare segment
-tips. It does not multiply one grind because that grind covers more content.
+Parent canonicity, carrier validity, arrival order, and segment-tip target are
+not inputs.
 
-## From One Root To One Candidate
+## From A Root To A Candidate
 
-Let `R` be the mined root, `h = proofOfWorkHash(R)`, and `C` the candidate for
-this chain process. A `ChildBlockProof` supplies the exact sparse path from `R`
-to `C`.
+Let `R` be the mined root and `C` the candidate for this chain. A
+`ChildBlockProof` supplies the exact sparse path from `R` to `C`.
 
-Verification proceeds from cheap, global checks to chain-local work:
+Work verification:
 
-1. recompute `CID(R)` and `h`;
-2. require `workForHash(h) >= minimumRootWork` before resolving child content;
-3. consume the exact sparse path and require its terminal CID to equal `CID(C)`;
-4. verify every carrier's same-chain continuity and every vertical
-   `child.parentState == carrier.prevState` binding;
-5. compare the same hash `h` with each level's target;
-6. execute and admit `C` only if this chain's target accepts the grind.
+1. recomputes `CID(R)` and the proof-of-work hash;
+2. verifies the sparse path and requires its terminal CID to equal `CID(C)`;
+3. verifies every vertical `child.parentState == carrier.prevState` binding;
+4. checks the same hash against the terminal target; and
+5. derives the strongest target-derived quantity that hash earns along the
+   committed directory path.
 
-The setup-wide floor rejects inadequate work for the entire package. A target
-miss is narrower:
+A carrier may fail its own chain's target or validity rules and still prove real
+work for the terminal child. The work affects fork choice only after `C` is
+independently accepted and connected.
 
-```text
-h <= target(level)  -> this level accepts the grind
-h >  target(level)  -> carrier only; descendants may still accept
-```
+## Parent-State Continuity
 
-A carrier still has to prove continuity. A level that misses does not execute a
-transition or create a local work fact.
-
-## Grind Identity, Quantity, And Coverage
-
-A verified root grind has three independent properties:
+For a non-genesis candidate `C` with same-chain predecessor `P`, define:
 
 ```text
-identity = CID(R)
-quantity = strongest verified workForTarget among accepting levels
-coverage = blocks proven secured by R
+old = P.parentState
+new = C.parentState
 ```
 
-Identity never changes. Quantity may strengthen. Coverage may grow. A single
-grind may cover arbitrary content and any number of blocks; it still contributes
-one quantity.
+Continuity holds when `old == new`, or when the immediate parent's connected
+accepted graph contains a transitive state path from `old` to `new`. Direct
+adjacency is not required. A noncanonical parent branch may prove the fact;
+backward, sideways, unrelated, and disconnected movement cannot.
 
-`WorkMeasure` is a set-like map from grind ID to quantity:
+This reachability fact is distinct from the directory proof. The configured
+immediate parent authenticates the exact parent path and state pair, but it
+asserts no work and commands no child fork choice.
+
+## Exact Work Algebra
+
+`WorkMeasure` is a map from grind identity to quantity:
 
 ```text
 (A union B)[id] = max(A[id], B[id])
 total(A)        = exactSum(A.values)
 ```
 
-Union is associative, commutative, and idempotent. Therefore repeated coverage
-does not create work, shared work is neutral across a fork, and independent
-grinds sum exactly. The exact sum uses `WorkSum`; it cannot wrap or saturate away
-an ordering.
+Union is associative, commutative, and idempotent. It combines duplicate
+observations of the same grind at the same location and prevents recursive
+inheritance from counting the same physical work twice. A snapshot that places
+one identity at different blocks in the same chain is invalid and is rejected
+atomically.
 
-## Worked Fork
+Snapshots join monotonically. New unique facts and stronger quantities at the
+same location may be added; facts cannot be retracted or moved. Revision is a
+progress watermark, so an older or equal revision may still carry a previously
+unseen monotonic fact.
 
-Suppose one chain has competing segment bases `A` and `B`:
+## GHOST
 
-```text
-        G
-       / \
-      A   B
-```
-
-The accepted coverage is:
-
-| Grind | Quantity | Covers |
-|---|---:|---|
-| `shared` | 10 | `A`, `B` |
-| `local-A` | 4 | `A` |
-| `local-B` | 3 | `B` |
-| `parent-B` | 2 | `B` |
-
-`parent-B` came from a connected, accepted parent branch. That source branch may
-be noncanonical; acceptance and coverage matter, not the parent's preferred
-pointer.
+For a connected same-chain block `B`:
 
 ```text
-measure(A) = {shared: 10, local-A: 4}               -> 14
-measure(B) = {shared: 10, local-B: 3, parent-B: 2} -> 15
-```
-
-`B` wins. `shared` contributes once to each comparison and is neutral between
-the branches.
-
-Now suppose another proof verifies `shared` at quantity 12, but that observation
-arrives through only one branch. Lattice first normalizes the strongest known
-quantity for that identity across all existing coverage:
-
-```text
-measure(A) = {shared: 12, local-A: 4}               -> 16
-measure(B) = {shared: 12, local-B: 3, parent-B: 2} -> 17
-```
-
-The stronger observation benefits both covered branches and does not create a
-false preference for the branch where it arrived.
-
-If the totals tie exactly, Lattice compares the canonical CID bytes of `A` and
-`B` and chooses the smaller. These are the segment bases. Their descendant tips,
-their `nextTarget` values, arrival order, and the parent's canonical pointer are
-not tie-break inputs.
-
-## Inherited Work
-
-For each covered child block, the immediate parent exports only connected,
-accepted work whose validated binding covers that child. Eligible work may come
-from noncanonical parent branches; unrelated parent work is excluded. The node
-authenticates and routes that parent process and supplies a coherent
-`InheritedWorkSnapshot`.
-
-The child does not retain every ancestor graph. Each parent snapshot already
-contains transitive securing work, deduplicated by root CID.
-
-Snapshots join monotonically:
-
-- new coverage may be added;
-- a quantity for one grind may strengthen;
-- no later snapshot may delete or weaken a retained fact;
-- an unknown or disconnected parent block is unavailable, not zero work.
-
-A snapshot revision is a source-progress watermark, not a hash of its contents.
-An older or equal revision may still reveal valid coverage and must still join.
-
-Parent work and parent canonicity are orthogonal. New accepted work may change a
-child's fork choice. Moving only the parent's canonical pointer may not.
-
-## GHOST Projection
-
-For a same-chain block `B`:
-
-```text
-prefix(B) = own(B) union prefix(parent(B))
-
 effectiveSubtree(B) = own(B)
-                      union inherited(B)
                       union each effectiveSubtree(C)
                             for C in sameChainChildren(B)
 
-cumulativeWork(B) = total(prefix(B))
-trueCumWork(B)     = total(effectiveSubtree(B))
+trueCumWork(B) = total(effectiveSubtree(B))
 ```
 
-Fork choice captures one inherited snapshot and performs GHOST descent:
+Fork choice starts at an accepted height-zero root and repeatedly chooses the
+child segment base with greatest `trueCumWork`. An exact tie selects the smaller
+canonical CID bytes.
 
-1. choose the accepted genesis root with greatest `trueCumWork`;
-2. at each fork choose the child segment base with greatest `trueCumWork`;
-3. on an exact tie choose the lexicographically smaller canonical base CID.
+Holding the incumbent on an exact tie is deliberately not part of consensus.
+It would make the result depend on arrival order or on a persisted canonical
+cache, so peers with the same facts—and the same peer before and after
+recovery—could select different tips. A miner can grind the deterministic CID
+tie-break after matching the incumbent's work, but the tie-break contributes no
+weight and any strictly heavier branch still wins.
 
-The deterministic tie makes arrival and replay order irrelevant. Its grindable
-security tradeoff is quantified in the
-[TRE-134 adversarial report](consensus/tre-134-adversarial-report.md).
+Canonicity is an output of this descent, never a filter on work. Consequently a
+grind on a connected noncanonical branch remains eligible, and moving only a
+canonical pointer cannot change any weight.
 
-## Admission And Persistence
+The implementation compresses maximal unary runs into segments. A newly
+accepted work location updates only the segment containing it and the ancestor
+fork segments that can compare it. The common tip-extension case has one such
+segment, so it does not scan chain history. Cost grows with fork depth, not
+linear-chain height. The immutable block graph and unique grind locations remain
+the source of truth; segment weights are rebuildable caches.
 
-Admission stores targeted verified content, atomically stages one immutable
-`ChainAdmissionBatch`, then applies that exact batch to the graph. Work facts
-are logically keyed by `(blockHash, grindID)`: weaker or equal replays are no-ops,
-while a stronger verified observation remains durable.
+## Connectivity And Recovery
 
-Persistence records the accepted local graph, local grind coverage, the retained
-inherited snapshot, and the revision floor. Recovery replays already-authenticated
-batches through the same reducer and reprojects the chain. A persisted tip is a
-cache, not protocol truth. A revision marker without the inherited snapshot fails
-closed because absence cannot be interpreted as zero work.
+Only a block connected through validated same-chain predecessor edges to an
+accepted height-zero root participates in GHOST or parent export. A disconnected
+accepted block retains its authenticated fact but has no route until its missing
+predecessor attaches.
+
+Persistence records the accepted graph, proof-derived work locations, and
+authenticated parent-state facts. Recovery replays the same immutable facts and
+rebuilds segment caches. A persisted canonical tip is only a cache.

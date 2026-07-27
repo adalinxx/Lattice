@@ -49,7 +49,7 @@ final class CumulativeWorkPrefixSumTests: XCTestCase {
         }
     }
 
-    func testPrefixSumSurvivesPersistRestore() async throws {
+    func testPrefixSumSurvivesFactReplay() async throws {
         let fetcher = StorableFetcher()
         let base = Int64(Date().timeIntervalSince1970 * 1_000) - 50_000
         let target = UInt256(1_000)
@@ -60,6 +60,7 @@ final class CumulativeWorkPrefixSumTests: XCTestCase {
             fetcher: fetcher
         )
         let chain = ChainState.fromGenesis(block: genesis)
+        var batches = [try testAdmissionBatch(for: genesis)]
         var previous = genesis
         for height in 1...4 {
             let block = try await buildAndStoreBlock(
@@ -70,13 +71,12 @@ final class CumulativeWorkPrefixSumTests: XCTestCase {
                 fetcher: fetcher
             )
             _ = await chain.submitTestBlock(blockHeader: try BlockHeader(node: block), block: block)
+            batches.append(try testAdmissionBatch(for: block))
             previous = block
         }
 
         let before = await chain.getTipCumulativeWork()
-        let encoded = try JSONEncoder().encode(await chain.persist())
-        let decoded = try JSONDecoder().decode(PersistedChainState.self, from: encoded)
-        let restored = try ChainState.restore(from: decoded)
+        let restored = try await ChainState.restore(replaying: batches)
 
         let after = await restored.getTipCumulativeWork()
         XCTAssertEqual(after, before)

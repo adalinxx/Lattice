@@ -1,4 +1,6 @@
 import cashew
+import Foundation
+import Multikey
 
 let TRANSACTION_BODY_PROPERTY = "body"
 let TRANSACTION_PROPERTIES = Set([TRANSACTION_BODY_PROPERTY])
@@ -13,7 +15,7 @@ public struct Transaction {
     public let body: HeaderImpl<TransactionBody>
 
     public init(signatures: [String: String], body: HeaderImpl<TransactionBody>) {
-        self.signatures = signatures
+        self.signatures = Self.normalized(signatures) ?? signatures
         self.body = body
     }
 
@@ -34,30 +36,50 @@ public struct Transaction {
         let entries = try container.decode([SignatureEntry].self, forKey: .signatures)
         var decodedSignatures: [String: String] = [:]
         for entry in entries {
-            if decodedSignatures[entry.key] != nil {
+            let key = Self.normalizedPublicKey(entry.key)
+            let value = Data(hex: entry.value)?.hexString ?? entry.value
+            if decodedSignatures[key] != nil {
                 throw DecodingError.dataCorruptedError(
                     forKey: .signatures,
                     in: container,
                     debugDescription: "duplicate signature key"
                 )
             }
-            decodedSignatures[entry.key] = entry.value
+            decodedSignatures[key] = value
         }
         signatures = decodedSignatures
         body = try container.decode(HeaderImpl<TransactionBody>.self, forKey: .body)
     }
 
-    /// THE consensus signature rule: every attached signature must verify over
-    /// the body CID, and at least one signature must be present. Consumed by
-    /// block validation (validateTransaction*) and by node-side admission —
-    /// one definition so the two cannot drift. Requires a resolved body.
+    private static func normalizedPublicKey(_ value: String) -> String {
+        (try? Multikey.decode(fromHex: value))?.hexEncoded ?? value
+    }
+
+    private static func normalized(
+        _ signatures: [String: String]
+    ) -> [String: String]? {
+        var result: [String: String] = [:]
+        for (rawKey, rawSignature) in signatures {
+            let key = normalizedPublicKey(rawKey)
+            guard result[key] == nil else { return nil }
+            result[key] = Data(hex: rawSignature)?.hexString ?? rawSignature
+        }
+        return result
+    }
+
+    /// The consensus signature rule: every attached signature must verify over
+    /// the current envelope or historical body-CID preimage, and at least one
+    /// signature must be present. Requires a resolved body.
     public func signaturesAreValid() -> Bool {
         guard let bodyNode = body.node else { return false }
         return signaturesAreValid(bodyNode)
     }
 
     private func signaturesAreValid(_ bodyNode: TransactionBody) -> Bool {
-        if signatures.isEmpty { return false }
+        guard let signatures = Self.normalized(signatures),
+              !signatures.isEmpty else {
+            return false
+        }
         for (publicKeyHex, signature) in signatures {
             if !TransactionSigning.verify(body: bodyNode, bodyCID: body.rawCID, signature: signature, publicKeyHex: publicKeyHex) {
                 return false
@@ -76,20 +98,31 @@ public struct Transaction {
     }
 
     private func signaturesMatchSigners(_ bodyNode: TransactionBody) -> Bool {
-        let signatureHashes = Set(signatures.keys.map { CryptoUtils.createAddress(from: $0) })
+        guard let signatures = Self.normalized(signatures) else { return false }
+        let signatureHashes = Set(signatures.keys.map {
+            CryptoUtils.createAddress(from: $0)
+        })
         let signerSet = Set(bodyNode.signers)
         return signatureHashes == signerSet
     }
 
-    private func validateSignaturesAndResolve(fetcher: Fetcher) async throws -> TransactionBody? {
+    private func validateSignaturesAndResolve(
+        fetcher: Fetcher
+    ) async throws -> TransactionBody? {
         let resolvedBody = try await body.resolve(fetcher: fetcher)
         guard let bodyNode = resolvedBody.node else { throw ValidationErrors.transactionNotResolved }
-        if !signaturesAreValid(bodyNode) || !signaturesMatchSigners(bodyNode) { return nil }
+        if !signaturesAreValid(bodyNode) || !signaturesMatchSigners(bodyNode) {
+            return nil
+        }
         return bodyNode
     }
 
     func validateTransactionForGenesis(fetcher: Fetcher) async throws -> Bool {
-        guard let bodyNode = try await validateSignaturesAndResolve(fetcher: fetcher) else { return false }
+        let resolvedBody = try await body.resolve(fetcher: fetcher)
+        guard let bodyNode = resolvedBody.node else {
+            throw ValidationErrors.transactionNotResolved
+        }
+        if !bodyNode.stateAtomsAreValid() { return false }
         if !bodyNode.accountActionsAreValid() { return false }
         if !bodyNode.actionsAreValid() { return false }
         if !bodyNode.depositActions.isEmpty { return false }
@@ -100,6 +133,7 @@ public struct Transaction {
 
     func validateTransactionForNexus(fetcher: Fetcher) async throws -> Bool {
         guard let bodyNode = try await validateSignaturesAndResolve(fetcher: fetcher) else { return false }
+        if !bodyNode.stateAtomsAreValid() { return false }
         if !bodyNode.accountActionsAreValid() { return false }
         if !bodyNode.actionsAreValid() { return false }
         if !bodyNode.receiptActionsAreValid() { return false }
@@ -110,6 +144,7 @@ public struct Transaction {
 
     func validateTransaction(directory: String, prevState: LatticeState, parentState: LatticeState, fetcher: Fetcher) async throws -> Bool {
         guard let bodyNode = try await validateSignaturesAndResolve(fetcher: fetcher) else { return false }
+        if !bodyNode.stateAtomsAreValid() { return false }
         if !bodyNode.receiptActionsAreValid() { return false }
         if !bodyNode.accountActionsAreValid() { return false }
         if !bodyNode.actionsAreValid() { return false }

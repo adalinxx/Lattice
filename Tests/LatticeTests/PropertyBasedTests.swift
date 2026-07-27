@@ -319,7 +319,8 @@ final class BalanceConservationPropertyTests: XCTestCase {
                 withdrawalActions: [],
                 signers: [],
                 fee: 0,
-                nonce: 0
+                nonce: 0,
+                chainPath: ["Nexus"]
             )
             XCTAssertFalse(body.accountActionsAreValid(),
                            "Debit without signer should be invalid")
@@ -333,7 +334,8 @@ final class BalanceConservationPropertyTests: XCTestCase {
                 withdrawalActions: [],
                 signers: [owner],
                 fee: 0,
-                nonce: 0
+                nonce: 0,
+                chainPath: ["Nexus"]
             )
             XCTAssertTrue(bodyWithSigner.accountActionsAreValid(),
                           "Debit with matching signer should be valid")
@@ -357,7 +359,8 @@ final class BalanceConservationPropertyTests: XCTestCase {
                 withdrawalActions: [],
                 signers: [],
                 fee: 0,
-                nonce: 0
+                nonce: 0,
+                chainPath: ["Nexus"]
             )
             XCTAssertTrue(body.accountActionsAreValid(),
                           "Credit without signer should be valid")
@@ -529,7 +532,8 @@ final class StateDeltaPropertyTests: XCTestCase {
             withdrawalActions: [],
             signers: [],
             fee: 0,
-            nonce: 0
+            nonce: 0,
+            chainPath: ["Nexus"]
         )
 
         let totalDelta = try! body.getStateDelta()

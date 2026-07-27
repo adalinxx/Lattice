@@ -27,7 +27,6 @@ jobs:
           critical_stats=$(jq -c '
             ["Lattice/Chain.swift",
              "Lattice/WorkSum.swift",
-             "State/ChainStatePersistence.swift",
              "Lattice/ChainLocalAdmission.swift",
              "Block/ChildBlockProof.swift"] as $critical
             | [.data[].files[]

@@ -75,7 +75,10 @@ final class BlockVersionPoWTests: XCTestCase {
         let fetcher = StorableFetcher()
         let badGenesis = try await genesis(version: Block.currentVersion + 1, fetcher: fetcher)
 
-        let genesisResult = try await badGenesis.validateGenesis(fetcher: fetcher, directory: "Nexus")
+        let genesisResult = try await badGenesis.validateGenesis(
+            fetcher: fetcher,
+            chainPath: [DEFAULT_ROOT_DIRECTORY]
+        )
         XCTAssertFalse(genesisResult.0, "genesis validation must reject unsupported block versions")
 
         let nexusResult = try await badGenesis.validateNexus(fetcher: fetcher)

@@ -3,6 +3,13 @@ import CollectionConcurrencyKit
 import Foundation
 import UInt256
 
+func addStateDelta(_ value: Int, to total: inout Int) -> Bool {
+    let next = total.addingReportingOverflow(value)
+    guard !next.overflow else { return false }
+    total = next.partialValue
+    return true
+}
+
 public enum AccountBalanceDelta: Sendable, Equatable {
     case credit(UInt64)
     case debit(UInt64)
@@ -25,7 +32,7 @@ public struct TransactionBody: Scalar {
     public let nonce: UInt64
     public let chainPath: [String]
 
-    public init(accountActions: [AccountAction], actions: [Action], depositActions: [DepositAction], genesisActions: [GenesisAction], receiptActions: [ReceiptAction], withdrawalActions: [WithdrawalAction], signers: [String], fee: UInt64, nonce: UInt64, chainPath: [String] = []) {
+    public init(accountActions: [AccountAction], actions: [Action], depositActions: [DepositAction], genesisActions: [GenesisAction], receiptActions: [ReceiptAction], withdrawalActions: [WithdrawalAction], signers: [String], fee: UInt64, nonce: UInt64, chainPath: [String]) {
         self.accountActions = accountActions
         self.actions = actions
         self.depositActions = depositActions
@@ -36,6 +43,53 @@ public struct TransactionBody: Scalar {
         self.fee = fee
         self.nonce = nonce
         self.chainPath = chainPath
+    }
+
+    /// Consensus grammar for every semantic atom used as a state-trie key.
+    /// Keeping raw keys short visible ASCII bounds compressed-radix proof depth
+    /// and avoids Unicode-version-dependent `Character` segmentation.
+    public func stateAtomsAreValid() -> Bool {
+        signers.allSatisfy(StateAtomLimits.isAccount)
+            && chainPath.allSatisfy(StateAtomLimits.isDirectory)
+            && accountActions.allSatisfy {
+                StateAtomLimits.isAccount($0.owner)
+            }
+            && actions.allSatisfy {
+                StateAtomLimits.isGeneralKey($0.key)
+            }
+            && depositActions.allSatisfy {
+                StateAtomLimits.isAccount($0.demander)
+            }
+            && genesisActions.allSatisfy {
+                StateAtomLimits.isDirectory($0.directory)
+            }
+            && receiptActions.allSatisfy {
+                StateAtomLimits.isAccount($0.withdrawer)
+                    && StateAtomLimits.isAccount($0.demander)
+                    && StateAtomLimits.isDirectory($0.directory)
+            }
+            && withdrawalActions.allSatisfy {
+                StateAtomLimits.isAccount($0.withdrawer)
+                    && StateAtomLimits.isAccount($0.demander)
+            }
+    }
+
+    /// Receipt identities must be unique within a block.
+    public static func withdrawalsHaveUniqueReceiptKeys(
+        bodies: [TransactionBody],
+        directory: String
+    ) -> Bool {
+        var keys = Set<String>()
+        for body in bodies {
+            for action in body.withdrawalActions {
+                let key = ReceiptKey(
+                    withdrawalAction: action,
+                    directory: directory
+                ).description
+                guard keys.insert(key).inserted else { return false }
+            }
+        }
+        return true
     }
 
     /// THE consensus shape rule for deposit actions (non-zero amounts, demander
@@ -109,10 +163,10 @@ public struct TransactionBody: Scalar {
         return true
     }
 
-    /// THE consensus shape rule for genesis actions: an anchor must name a
-    /// non-empty directory and a non-empty genesis block CID. The parent only
-    /// RECORDS the anchor (directory → genesis CID); the genesis block's CONTENT
-    /// is validated by the child chain it belongs to during admission, not here.
+    /// THE consensus shape rule for genesis actions: an anchor must fit the
+    /// child-proof wire format and name a canonical genesis block CID. The
+    /// parent only RECORDS the anchor (directory → genesis CID); the genesis
+    /// block's CONTENT is validated by its child chain during admission.
     /// Consumed by block validation and by node-side admission — one definition
     /// so the two cannot drift.
     ///
@@ -124,10 +178,13 @@ public struct TransactionBody: Scalar {
     /// the single consensus entry point for new directory names — keeps every
     /// directory in any chainPath separator-free.
     public func genesisActionsAreValid() -> Bool {
+        if !genesisActions.isEmpty,
+           chainPath.count > ChildProofWireLimits.maximumDepth {
+            return false
+        }
         for genesisAction in genesisActions {
-            if genesisAction.directory.isEmpty { return false }
-            if genesisAction.directory.contains(DIRECTORY_KEY_SEPARATOR) { return false }
-            if genesisAction.blockCID.isEmpty { return false }
+            if !StateAtomLimits.isDirectory(genesisAction.directory) { return false }
+            if !CIDIdentity.isCanonical(genesisAction.blockCID) { return false }
         }
         return true
     }
@@ -225,12 +282,17 @@ public struct TransactionBody: Scalar {
 
     func getStateDelta() throws -> Int {
         var delta = 0
-        for a in accountActions { delta += a.stateDelta() }
-        for a in actions { delta += a.stateDelta() }
-        for a in depositActions { delta += a.stateDelta() }
-        for a in genesisActions { delta += a.stateDelta() }
-        for a in receiptActions { delta += a.stateDelta() }
-        for a in withdrawalActions { delta += a.stateDelta() }
+        func add(_ value: Int) throws {
+            guard addStateDelta(value, to: &delta) else {
+                throw StateErrors.stateDeltaOverflow
+            }
+        }
+        for a in accountActions { try add(a.stateDelta()) }
+        for a in actions { try add(a.stateDelta()) }
+        for a in depositActions { try add(a.stateDelta()) }
+        for a in genesisActions { try add(a.stateDelta()) }
+        for a in receiptActions { try add(a.stateDelta()) }
+        for a in withdrawalActions { try add(a.stateDelta()) }
         return delta
     }
 
@@ -241,28 +303,19 @@ public struct TransactionBody: Scalar {
         fetcher: Fetcher,
         scopes: Set<WasmPolicyRef.Scope>? = nil
     ) async throws -> Bool {
+        guard chainPath.first == DEFAULT_ROOT_DIRECTORY else { return false }
         let policies = scopes.map { allowedScopes in
             spec.wasmPolicies.filter { allowedScopes.contains($0.scope) }
         } ?? spec.wasmPolicies
         guard !policies.isEmpty else { return true }
 
-        var moduleBytesByCID: [String: Data] = [:]
-        for policy in policies {
-            guard policy.abiVersion == WasmPolicyRef.currentABIVersion else { return false }
-            if moduleBytesByCID[policy.moduleCID] == nil {
-                let moduleHeader = WasmPolicyModuleHeader(rawCID: policy.moduleCID)
-                let moduleNode: WasmPolicyModule
-                do {
-                    guard let resolved = try await moduleHeader.resolve(fetcher: fetcher).node else {
-                        throw WasmPolicyError.missingModule(policy.moduleCID)
-                    }
-                    moduleNode = resolved
-                } catch is FetcherError {
-                    throw WasmPolicyError.missingModule(policy.moduleCID)
-                }
-                moduleBytesByCID[policy.moduleCID] = moduleNode.bytes
-            }
-        }
+        guard policies.allSatisfy({
+            $0.abiVersion == WasmPolicyRef.currentABIVersion
+        }) else { return false }
+        let moduleBytesByCID = try await policyModuleBytes(
+            policies: policies,
+            fetcher: fetcher
+        )
 
         func evaluate(_ policy: WasmPolicyRef, _ context: WasmPolicyContext) throws -> Bool {
             guard let moduleBytes = moduleBytesByCID[policy.moduleCID] else {
@@ -298,5 +351,57 @@ public struct TransactionBody: Scalar {
             }
         }
         return true
+    }
+
+    /// Genesis admits the immutable policy program set, so every configured
+    /// entrypoint must be valid even when genesis has no matching context.
+    public static func validateConfiguredPolicyModules(
+        spec: ChainSpec,
+        fetcher: Fetcher
+    ) async throws -> Bool {
+        guard spec.wasmPolicies.allSatisfy({
+            $0.abiVersion == WasmPolicyRef.currentABIVersion
+        }) else { return false }
+        let modules = try await policyModuleBytes(
+            policies: spec.wasmPolicies,
+            fetcher: fetcher
+        )
+        for policy in spec.wasmPolicies {
+            guard let bytes = modules[policy.moduleCID] else {
+                throw WasmPolicyError.missingModule(policy.moduleCID)
+            }
+            do {
+                try WasmPolicyEvaluator.validate(
+                    policy: policy,
+                    moduleBytes: bytes
+                )
+            } catch {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func policyModuleBytes(
+        policies: [WasmPolicyRef],
+        fetcher: Fetcher
+    ) async throws -> [String: Data] {
+        var result: [String: Data] = [:]
+        for policy in policies where result[policy.moduleCID] == nil {
+            let moduleHeader = WasmPolicyModuleHeader(
+                rawCID: policy.moduleCID
+            )
+            do {
+                guard let module = try await moduleHeader.resolve(
+                    fetcher: fetcher
+                ).node else {
+                    throw WasmPolicyError.missingModule(policy.moduleCID)
+                }
+                result[policy.moduleCID] = module.bytes
+            } catch is FetcherError {
+                throw WasmPolicyError.missingModule(policy.moduleCID)
+            }
+        }
+        return result
     }
 }
