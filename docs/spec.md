@@ -31,9 +31,10 @@ sources rather than validity or fork-choice authorities.
 - `U256` -- 256-bit unsigned integer
 
 Consensus ingress accepts only the unique canonical textual spelling of a CID,
-bounded to 128 UTF-8 bytes. Honest DAG-CBOR + SHA-256 CIDs are far below this
-ceiling; the bound prevents malformed identity strings from becoming an
-unbounded parsing or storage surface.
+bounded by the child-proof wire's `UInt16` length capacity (65535 bytes) — a
+structural encoding bound, not a policy cap. Honest DAG-CBOR + SHA-256 CIDs are
+~59 bytes, far below it; the canonical round-trip is the real identity check, and
+this bound only limits parse work on untrusted input to what the wire can carry.
 
 ## 3. Data Structures
 
@@ -139,9 +140,11 @@ Bounds required by a serialized field width and the deterministic WASM
 execution profile remain protocol rules.
 
 State keys use a small consensus grammar so radix work cannot grow with
-attacker-chosen Unicode or unbounded historical prefixes. Directories are
-1...64 visible-ASCII bytes; account identifiers and general-state keys are
-1...128 visible-ASCII bytes. Derived account, deposit, and genesis keys remain
+attacker-chosen Unicode. Every key is non-empty visible-ASCII (`0x21`...`0x7e`);
+directories are additionally separator-free (`/`-banned, to keep ReceiptKey
+injectivity) and bounded by the child-proof wire's `UInt16` length. There is no
+protocol length cap on account identifiers or general-state keys — key size is a
+node storage concern, not a consensus rule. Derived account, deposit, and genesis keys remain
 plain text and enumerable. Receipt-state storage alone uses
 `SHA256("lattice/receipt-state/v1\0" || ReceiptKey)` as a 64-character lowercase
 hex path, because a child may need that proof from a remote same-chain peer.
@@ -252,14 +255,14 @@ A genesis block `B` is valid if and only if ALL of the following hold:
    `validationContext.now` once (node-local, retriable admission — a future
    timestamp is deferred until real time reaches it, not permanently rejected)
 4. `B.prevState == CID(emptyState())`
-5. `B.nextTarget == B.target`. The target is irrelevant to the genesis — it is
-   not mined against a parent's scheduled difficulty — so it is not a
-   creator-configurable field: `GenesisCeremony` always builds the canonical
-   maximum (easiest) target, and the chain self-calibrates from block 1 via the
-   retarget. (Consensus validation constrains only `nextTarget == target`, not
-   the value; a genesis built with a non-canonical target by custom tooling is a
-   self-inflicted condition, and a zero-work `target == 0` genesis is still an
-   inert, unmineable but valid chain.)
+5. `B.nextTarget == B.target`. Consensus does NOT constrain the genesis target
+   value — any target `0...max` is valid. By convention `GenesisCeremony` always
+   commits the canonical maximum (easiest) target so the chain starts trivial and
+   self-calibrates from block 1, but that is a ceremony default, not a rule: a
+   genesis committing any other target is still valid. A zero-work `target == 0`
+   genesis is an inert, unmineable but valid chain — genesis is exempt from the
+   positive-work requirement consistently across in-memory construction and
+   durable replay/recovery.
 6. All transactions in `B.transactions` are fully resolvable
 7. For each transaction `tx`: `tx.validateTransactionForGenesis()` returns true
    - Account and general actions are structurally valid
@@ -418,8 +421,13 @@ apply its own root-work floor before spending resources on acquisition, but
 that is a non-punitive local preference and never changes validity.
 
 Every accepting level establishes the conservative work bound
-`floor(U256_MAX / target(B))`. For one root CID, the strongest verified bound is
-credited. A larger target is easier and represents less credited work.
+`workForTarget(target(B))`. Because proof validity is inclusive (`hash <= target`,
+so `target + 1` hashes qualify), this is `floor(2^256 / (target + 1))`, computed as
+Bitcoin's chainwork `(~target / (target + 1)) + 1` in 256-bit arithmetic (edge
+cases: `target 0 -> 0`, `target max -> 1`). The exclusive `U256_MAX / target` form
+over-credits by up to ~2x at tiny targets — exploitable now that a miner may
+select any `target <= parent.nextTarget` — so it is not used. For one root CID the
+strongest verified bound is credited; a larger target is easier and is less work.
 
 ### 5.5 Target Adjustment (Retargeting)
 
@@ -437,11 +445,12 @@ overachieving ratchets the schedule harder, never easier — self-penalizing, no
 gameable. A miner wanting the easiest future difficulty therefore mines exactly at
 the scheduled `parent.nextTarget`.
 
-Genesis has no parent-derived target: it always commits the canonical maximum
-(easiest) target — the target is irrelevant to the genesis and is not a creator
-choice — so block 1's schedule is `max` and the chain self-calibrates as early
-miners voluntarily mine harder. Its
-`nextTarget` MUST equal that target. Each non-genesis block's
+Genesis has no parent-derived target. The `GenesisCeremony` commits the canonical
+maximum (easiest) target by convention — so block 1's schedule is `max` and the
+chain self-calibrates as early miners voluntarily mine harder — but this is not a
+consensus rule: validation constrains only `nextTarget == target`, not the value,
+so any genesis target `0...max` is valid (see §5.1 rule 5). Its `nextTarget` MUST
+equal that target. Each non-genesis block's
 `nextTarget` is a **clamped, linearly-weighted retarget (LWMA)** recomputed every
 block from the candidate's own ancestor-branch solve times over the most recent
 `spec.retargetWindow` intervals (including the current block's own solve time), targeting
@@ -750,7 +759,7 @@ root hash proves a conservative lower bound for that same identity:
 
 ```text
 contribution.id   = rootCID
-contribution.work = floor(U256_MAX / target(B_i))
+contribution.work = workForTarget(target(B_i))   // floor(2^256 / (target + 1))
 ```
 
 Grind identity is immutable. Its credited quantity is the maximum of all verified

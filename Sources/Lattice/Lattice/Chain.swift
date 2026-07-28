@@ -4,9 +4,19 @@ import UInt256
 
 /// Compute proof-of-work for a given target threshold.
 /// Higher target value = easier proof; work is inversely proportional.
+///
+/// Proof validity is INCLUSIVE (`hash <= target`), so `target + 1` hashes satisfy
+/// it (`0...target`) and the expected number of tries to find one is
+/// `2^256 / (target + 1)`. This is Bitcoin's chainwork, `(~target / (target+1)) + 1`,
+/// in 256-bit arithmetic. The exclusive `2^256 / target` form over-credits by up
+/// to ~2x at tiny targets (e.g. target 1 has two valid hashes but would be scored
+/// ~2^256 instead of 2^255) — exploitable now that a miner may select any
+/// `target <= parent.nextTarget`. For realistic (huge) targets the two agree to
+/// within one unit.
 public func workForTarget(_ target: UInt256) -> UInt256 {
     guard target > UInt256.zero else { return UInt256.zero }
-    return UInt256.max / target
+    guard target < UInt256.max else { return UInt256(1) }
+    return (UInt256.max - target) / (target + UInt256(1)) + UInt256(1)
 }
 
 /// Work demonstrated by one observed hash. This is used for the setup-wide
@@ -456,8 +466,11 @@ private struct ConsensusBlockInput: Sendable {
               let postStateCID = CIDIdentity.canonicalString(fact.postStateCID),
               let prevStateCID = CIDIdentity.canonicalString(fact.prevStateCID),
               let specCID = CIDIdentity.canonicalString(fact.specCID),
-              let target = UInt256(fact.target, radix: 16), target > .zero,
-              let nextTarget = UInt256(fact.nextTarget, radix: 16), nextTarget > .zero,
+              let target = UInt256(fact.target, radix: 16),
+              let nextTarget = UInt256(fact.nextTarget, radix: 16),
+              // Genesis may carry a zero (unmineable, zero-work) target; every
+              // other block needs a positive target and nextTarget.
+              (fact.blockHeight == 0 || (target > .zero && nextTarget > .zero)),
               (fact.parentBlockHash == nil) == (fact.blockHeight == 0) else {
             return nil
         }
@@ -499,9 +512,15 @@ private struct TrustedAdmissionBatch {
             guard case .work(let value) = fact else { return nil }
             return value
         }
+        // A zero-work contribution is valid only for a genesis block (a chain may
+        // commit a zero-work, unmineable genesis); every non-genesis block needs
+        // positive work. Exempted here so the durable/replay path agrees with the
+        // in-memory ChainState construction and a persisted zero-work genesis
+        // restores cleanly instead of failing as corruptConsensusGraph.
+        let isGenesisBatch = blockFacts.count == 1 && blockFacts[0].blockHeight == 0
         guard workFacts.count == 1,
               let work = workFacts.first,
-              work.contribution.work > .zero,
+              isGenesisBatch || work.contribution.work > .zero,
               let workBlockHash = CIDIdentity.canonicalString(work.blockHash),
               let contributionID = CIDIdentity.canonicalString(work.contribution.id) else {
             return nil
@@ -749,9 +768,11 @@ public actor ChainState {
         contribution: VerifiedWorkContribution,
         mutationGeneration: UInt64 = 0
     ) throws -> ChainState {
+        // Genesis is exempt from the positive-work requirement — a chain may
+        // commit a zero-work (maximally-hard, unmineable) genesis. Every other
+        // block still needs positive work (enforced on insert).
         guard input.parentBlockHash == nil,
-              input.blockHeight == 0,
-              contribution.work > .zero else {
+              input.blockHeight == 0 else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
         let meta = BlockMeta(
@@ -1225,7 +1246,8 @@ public actor ChainState {
         let blockHash = input.blockHash
         guard !contributions.isEmpty,
               Set(contributions.map(\.id)).count == contributions.count,
-              contributions.allSatisfy({ $0.work > .zero }),
+              // Genesis may carry zero work; every other block needs positive work.
+              (input.parentBlockHash == nil || contributions.allSatisfy({ $0.work > .zero })),
               !(input.parentBlockHash == nil && input.blockHeight != 0)
         else {
             return .discarded()
