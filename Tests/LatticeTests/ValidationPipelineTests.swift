@@ -1003,30 +1003,6 @@ final class WasmPolicyTests: XCTestCase {
         ))
     }
 
-    func testOversizedPolicyContextRejectsBeforeAllocatorCall() throws {
-        let wat = """
-        (module
-          (memory (export "memory") 1)
-          (func (export "lattice_alloc") (param $len i32) (result i32)
-            unreachable)
-          (func (export "lattice_validate_transaction") (param $ptr i32) (param $len i32) (result i32)
-            i32.const 1)
-        )
-        """
-        let policy = WasmPolicyRef(moduleCID: "inline", scope: .transaction)
-        let oversizedContext = Data(repeating: 0, count: WasmPolicyEvaluator.maxMemoryBytes + 1)
-        XCTAssertThrowsError(try WasmPolicyEvaluator.evaluate(
-            policy: policy,
-            contextData: oversizedContext,
-            moduleBytes: Data(try wat2wasm(wat))
-        )) { error in
-            guard case WasmPolicyError.invalidAllocation = error else {
-                XCTFail("Expected invalidAllocation, got \(error)")
-                return
-            }
-        }
-    }
-
     private func allocatorFixture(pointer: String, memoryPages: Int) throws -> Data {
         let wat = """
         (module
@@ -1062,25 +1038,14 @@ final class WasmPolicyTests: XCTestCase {
         }
     }
 
-    func testPolicyPreflightRejectsOversizedModule() throws {
-        let policy = WasmPolicyRef(moduleCID: "inline", scope: .transaction)
-        let oversized = Data(repeating: 0, count: WasmPolicyEvaluator.maxModuleBytes + 1)
-        XCTAssertThrowsError(try WasmPolicyEvaluator.validate(
-            policy: policy,
-            moduleBytes: oversized
-        )) { error in
-            guard case WasmPolicyError.moduleTooLarge(WasmPolicyEvaluator.maxModuleBytes + 1) = error else {
-                XCTFail("Expected oversized module rejection, got \(error)")
-                return
-            }
-        }
-    }
-
-    func testPolicyPreflightRejectsExcessInitialMemory() throws {
-        let excessivePages = WasmPolicyEvaluator.maxMemoryBytes / (64 * 1024) + 1
+    func testPolicyValidatesMemoryBeyondFormerCap() throws {
+        // The protocol imposes no policy memory ceiling: a module declaring more
+        // than the old 2 MiB cap now validates. Its own declared memory (committed
+        // via its CID) and the WASM format's structural maxima govern.
+        let manyPages = 33 // 33 · 64 KiB = 2 MiB + 64 KiB, past the removed cap
         let wat = """
         (module
-          (memory (export "memory") \(excessivePages))
+          (memory (export "memory") \(manyPages))
           (func (export "lattice_alloc") (param $len i32) (result i32)
             i32.const 1024)
           (func (export "lattice_validate_transaction") (param $ptr i32) (param $len i32) (result i32)
@@ -1088,7 +1053,7 @@ final class WasmPolicyTests: XCTestCase {
         )
         """
         let policy = WasmPolicyRef(moduleCID: "inline", scope: .transaction)
-        XCTAssertThrowsError(try WasmPolicyEvaluator.validate(
+        XCTAssertNoThrow(try WasmPolicyEvaluator.validate(
             policy: policy,
             moduleBytes: Data(try wat2wasm(wat))
         ))
