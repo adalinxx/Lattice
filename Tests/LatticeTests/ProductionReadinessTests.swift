@@ -65,7 +65,7 @@ final class GenesisCeremonyTests: XCTestCase {
         XCTAssertTrue(GenesisCeremony.verify(block: result.block, config: config))
     }
 
-    func testCreateRejectsZeroWorkGenesisWithoutTrapping() async {
+    func testCreateAcceptsZeroWorkGenesisWithoutTrapping() async {
         let config = GenesisConfig(
             spec: ChainSpec(
                 maxNumberOfTransactionsPerBlock: 100,

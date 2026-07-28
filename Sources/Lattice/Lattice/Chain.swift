@@ -670,8 +670,17 @@ public actor ChainState {
         self.mainChainBlockAtIndex = [:]
         for meta in self.hashToBlock.values {
             let contributions = meta.workContributions.values
-            guard !contributions.isEmpty,
-                  contributions.allSatisfy({ $0.work > .zero }) else {
+            guard !contributions.isEmpty else {
+                throw ChainStateRestoreError.corruptConsensusGraph
+            }
+            // The genesis block is exempt from the positive-work requirement: a
+            // chain may commit a zero-work (maximally-hard, unmineable) genesis as
+            // a deployer choice — there is no minimum-target floor. Such a chain is
+            // inert (no child can ever be mined, since children inherit target 0),
+            // so its zero-work genesis never competes in fork choice. Every
+            // NON-genesis block must still carry positive work to hold weight.
+            guard meta.parentBlockHash == nil
+                || contributions.allSatisfy({ $0.work > .zero }) else {
                 throw ChainStateRestoreError.corruptConsensusGraph
             }
         }
