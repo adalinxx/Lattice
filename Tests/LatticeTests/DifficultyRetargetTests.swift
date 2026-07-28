@@ -295,7 +295,7 @@ final class DifficultyRetargetTests: XCTestCase {
         XCTAssertFalse(tooHard.validateNextTarget(spec: s, parent: parent, ancestorTimestamps: [parent.timestamp]))
     }
 
-    func testDifficultyMustBindToParentNextDifficulty() async throws {
+    func testEasierThanScheduledTargetRejected() async throws {
         let s = spec(window: 120, target: 1_000)
         let fetcher = StorableFetcher()
         let parent = try await makeGenesis(spec: s, timestamp: 1_000, target: UInt256(10_000), fetcher: fetcher)
@@ -306,16 +306,42 @@ final class DifficultyRetargetTests: XCTestCase {
             window: s.retargetWindow,
             newestFirstTimestamps: [blockTimestamp, parent.timestamp]
         )
-        let forgedDifficulty = parent.nextTarget + UInt256(1)
+        // A larger target is easier than the scheduled parent.nextTarget → rejected.
+        let easier = parent.nextTarget + UInt256(1)
         let block = try await makeNext(
             previous: parent,
             timestamp: blockTimestamp,
-            target: forgedDifficulty,
+            target: easier,
             nextTarget: expected,
             fetcher: fetcher
         )
 
         XCTAssertFalse(block.validateNextTarget(spec: s, parent: parent, ancestorTimestamps: [parent.timestamp]))
+    }
+
+    func testHarderThanScheduledTargetAccepted() async throws {
+        let s = spec(window: 120, target: 1_000)
+        let fetcher = StorableFetcher()
+        let parent = try await makeGenesis(spec: s, timestamp: 1_000, target: UInt256(10_000), fetcher: fetcher)
+        let blockTimestamp: Int64 = 2_000
+        // A smaller target is HARDER than the scheduled parent.nextTarget → allowed;
+        // nextTarget is recomputed from the actual (harder) target.
+        let harder = parent.nextTarget / UInt256(2)
+        let expected = oracleLWMA(
+            previousTarget: harder,
+            targetBlockTime: s.targetBlockTime,
+            window: s.retargetWindow,
+            newestFirstTimestamps: [blockTimestamp, parent.timestamp]
+        )
+        let block = try await makeNext(
+            previous: parent,
+            timestamp: blockTimestamp,
+            target: harder,
+            nextTarget: expected,
+            fetcher: fetcher
+        )
+
+        XCTAssertTrue(block.validateNextTarget(spec: s, parent: parent, ancestorTimestamps: [parent.timestamp]))
     }
 
     func testMissingAncestorIsUnavailableInsteadOfTwoBlockFallback() async throws {

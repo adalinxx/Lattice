@@ -305,8 +305,9 @@ A non-genesis nexus block `B` with previous block `P` is valid if and only if:
    which is therefore not imposed). The `<= now` bound is node-local, retriable
    admission — a future block is deferred until real time reaches its timestamp,
    never permanently rejected. The attempt captures `validationContext.now` once.
-6. `B.target == P.nextTarget`, and `B.nextTarget` equals section 5.5's clamped
-   proportional retarget
+6. `B.target <= P.nextTarget` (as hard or harder than scheduled, never easier),
+   and `B.nextTarget` equals section 5.5's clamped proportional retarget computed
+   from `B.target`
 7. All transactions pass `validateTransactionForNexus()`:
    - Signatures are valid over the `lattice-tx-v1` envelope
    - Signers match signature public keys
@@ -422,18 +423,24 @@ credited. A larger target is easier and represents less credited work.
 
 ### 5.5 Target Adjustment (Retargeting)
 
-The target is **derived from the parent, not chosen by the miner**. Normally,
-every non-genesis block MUST satisfy the binding rule:
+The scheduled target is derived from the parent. A block may meet that schedule
+or voluntarily exceed it — **as hard or harder, never easier**:
 
 ```
-B.target == parent.nextTarget
+B.target <= parent.nextTarget      // smaller target = harder = more work
 ```
 
-There is no minimum-target floor and no recovery fail-safe: `B.target` must equal
-`parent.nextTarget` exactly, with no other accepted value.
+A larger (easier) target is rejected; there is no minimum-target floor. Mining
+harder than scheduled only adds weight at proportional cost and cannot lower
+difficulty: `B.nextTarget` is recomputed from the *actual* `B.target` (below), so
+overachieving ratchets the schedule harder, never easier — self-penalizing, not
+gameable. A miner wanting the easiest future difficulty therefore mines exactly at
+the scheduled `parent.nextTarget`.
 
-Genesis has no parent-derived target: its configured target is committed in the
-block (the creator's free choice — any `UInt256`, `0` through `max`) and its
+Genesis has no parent-derived target: it always commits the canonical maximum
+(easiest) target — the target is irrelevant to the genesis and is not a creator
+choice — so block 1's schedule is `max` and the chain self-calibrates as early
+miners voluntarily mine harder. Its
 `nextTarget` MUST equal that target. Each non-genesis block's
 `nextTarget` is a **clamped, linearly-weighted retarget (LWMA)** recomputed every
 block from the candidate's own ancestor-branch solve times over the most recent
@@ -459,8 +466,9 @@ raises it (easier — a larger `target` is easier to satisfy). The per-block cha
 is bounded to a factor of `maxTargetChange` in either direction. Validity requires
 `B.nextTarget == nextTarget` exactly — there is no acceptance band. Because the
 retarget reads only the candidate's committed ancestry, is bounded per block, and
-`B.target` is bound to the parent, validity is independent of the current
-fork-choice projection and a miner cannot choose its own target. This
+`B.target` is bound at or below the parent's schedule, validity is independent of
+the current fork-choice projection and a miner can only make its own block harder
+(more work), never easier. This
 `maxTargetChange` clamp is itself the bound on how far timestamp manipulation can
 move difficulty; timestamps are further constrained by the strict-increase rule.
 
