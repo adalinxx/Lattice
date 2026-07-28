@@ -883,7 +883,12 @@ private func classifyValidationFailure(_ error: Error) -> ChainAdmissionFailure 
     }
     if let policyError = error as? WasmPolicyError {
         switch policyError {
-        case .missingModule:
+        case .missingModule, .resourceUnavailable:
+            // Missing module bytes, or a node-local resource guard (module size,
+            // declared memory, or table) tripping: this node cannot reach a
+            // verdict, but the policy is not proven invalid. Unavailable, never
+            // `protocolInvalid` — otherwise nodes with different limits fork on
+            // the same block.
             return .unavailableEvidence
         case .contextEncodingFailed:
             return .localVerificationFailure
@@ -1116,10 +1121,18 @@ public extension ChainLevel {
         guard resolved.block.parent == nil, resolved.block.height == 0 else {
             throw ChainAdmissionFailure.protocolInvalid
         }
+        // Genesis is exempt from a hard PoW self-hash REJECTION: there is no
+        // predecessor to prove work against and the chain is anchored by the
+        // genesis CID, so a target-miss genesis (e.g. a target-0 genesis nobody
+        // mines) stays admissible rather than being unrepresentable. But work is
+        // still only credited when the hash actually satisfies the target — a
+        // miss earns zero, so a harder claimed target can never inflate credit.
+        // This mirrors ordinary root admission, which admits regardless yet
+        // credits `nil`/zero work on a sub-target hash.
         let rootHash = resolved.block.proofOfWorkHash()
-        guard resolved.block.validateProofOfWork(nexusHash: rootHash) else {
-            throw ChainAdmissionFailure.notAcceptedAtCurrentChain
-        }
+        let genesisWork = resolved.block.validateProofOfWork(nexusHash: rootHash)
+            ? workForTarget(resolved.block.target)
+            : .zero
         let transition: (StateDiff, LatticeState?)
         switch await ChainLocalAdmission.validateGenesis(
             block: resolved.block,
@@ -1136,7 +1149,7 @@ public extension ChainLevel {
             fetcher: fetcher,
             contribution: VerifiedWorkContribution(
                 id: resolved.header.rawCID,
-                work: workForTarget(resolved.block.target)
+                work: genesisWork
             ),
             carrierLink: ParentCarrierLink(
                 parentPath: context.path,
