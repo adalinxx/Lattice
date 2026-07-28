@@ -119,6 +119,33 @@ final class FactReplayRecoveryTests: XCTestCase {
         )
     }
 
+    func testZeroWorkGenesisRejectedOnDurableReplay() async throws {
+        // A zero-work (target 0) genesis is invalid — genesis must satisfy its own
+        // target like every block — so the durable/replay path rejects it rather
+        // than restoring it. This matches admission, which never stores one.
+        let fetcher = StorableFetcher()
+        let genesis = try await buildAndStoreGenesis(
+            spec: recoverySpec(),
+            timestamp: 1,
+            target: .zero,
+            fetcher: fetcher
+        )
+        let batch = try testAdmissionBatch(for: genesis)
+        // Sanity: the work fact really is zero-work, so this exercises the rule.
+        if case .work(let fact) = batch.facts[1] {
+            XCTAssertEqual(fact.contribution.work, .zero)
+        } else {
+            return XCTFail("expected a work fact")
+        }
+
+        do {
+            _ = try await ChainState.restore(replaying: [batch])
+            XCTFail("a zero-work genesis must not restore")
+        } catch {
+            // expected: zero-work genesis is not a valid consensus graph
+        }
+    }
+
     func testRevisionFloorIsFinalAndStableAcrossRepeatedRecovery() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await buildAndStoreGenesis(

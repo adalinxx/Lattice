@@ -883,7 +883,12 @@ private func classifyValidationFailure(_ error: Error) -> ChainAdmissionFailure 
     }
     if let policyError = error as? WasmPolicyError {
         switch policyError {
-        case .missingModule:
+        case .missingModule, .resourceUnavailable:
+            // Missing module bytes, or a node-local resource guard (module size,
+            // declared memory, or table) tripping: this node cannot reach a
+            // verdict, but the policy is not proven invalid. Unavailable, never
+            // `protocolInvalid` — otherwise nodes with different limits fork on
+            // the same block.
             return .unavailableEvidence
         case .contextEncodingFailed:
             return .localVerificationFailure
@@ -1116,6 +1121,10 @@ public extension ChainLevel {
         guard resolved.block.parent == nil, resolved.block.height == 0 else {
             throw ChainAdmissionFailure.protocolInvalid
         }
+        // Genesis must satisfy its own declared target like any block: a target-0
+        // (or otherwise target-miss) genesis is rejected here, matching child
+        // bootstrap, which only makes a child genesis live once a parent grind
+        // confirms it. The canonical max-target genesis passes trivially.
         let rootHash = resolved.block.proofOfWorkHash()
         guard resolved.block.validateProofOfWork(nexusHash: rootHash) else {
             throw ChainAdmissionFailure.notAcceptedAtCurrentChain

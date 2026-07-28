@@ -235,36 +235,39 @@ final class BlockMintingTests: XCTestCase {
         XCTAssertEqual(revisionAfterDuplicate, acceptance.commit.revision)
     }
 
-    func test_validateGenesis_futureDriftTolerance() async throws {
+    func test_validateGenesis_usesSameTimestampRuleAsBlocks() async throws {
         let fetcher = makeFetcher()
         let base = now()
+        let context = ValidationContext(nowMilliseconds: base)
 
-        let withinDrift = try await buildAndStoreGenesis(
+        // A genesis at or before the node's clock validates — no future drift
+        // tolerance, the same `timestamp ≤ now` rule non-genesis blocks use.
+        let present = try await buildAndStoreGenesis(
+            spec: noPremine(),
+            timestamp: base,
+            target: UInt256(1000),
+            fetcher: fetcher
+        )
+        let presentValid = try await present.validateGenesis(
+            fetcher: fetcher,
+            chainPath: [DEFAULT_ROOT_DIRECTORY],
+            validationContext: context
+        ).0
+        XCTAssertTrue(presentValid, "a genesis at or before the node's clock validates")
+
+        // A genesis from the node's future does not.
+        let future = try await buildAndStoreGenesis(
             spec: noPremine(),
             timestamp: base + 3_600_000,
             target: UInt256(1000),
             fetcher: fetcher
         )
-        let context = ValidationContext(nowMilliseconds: base)
-        let withinValid = try await withinDrift.validateGenesis(
+        let futureValid = try await future.validateGenesis(
             fetcher: fetcher,
             chainPath: [DEFAULT_ROOT_DIRECTORY],
             validationContext: context
         ).0
-        XCTAssertTrue(withinValid, "genesis should use the same bounded future-drift tolerance as non-genesis blocks")
-
-        let beyondDrift = try await buildAndStoreGenesis(
-            spec: noPremine(),
-            timestamp: base + 3 * 3_600_000,
-            target: UInt256(1000),
-            fetcher: fetcher
-        )
-        let beyondValid = try await beyondDrift.validateGenesis(
-            fetcher: fetcher,
-            chainPath: [DEFAULT_ROOT_DIRECTORY],
-            validationContext: context
-        ).0
-        XCTAssertFalse(beyondValid, "genesis timestamps beyond the bounded future-drift window must still be rejected")
+        XCTAssertFalse(futureValid, "a genesis from the node's future must not validate")
     }
 
     func test_validateGenesis_canReportFutureBlockAsNotYetAdmissible() async throws {

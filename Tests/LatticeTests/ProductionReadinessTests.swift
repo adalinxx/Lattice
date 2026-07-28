@@ -58,36 +58,10 @@ final class GenesisCeremonyTests: XCTestCase {
                 targetBlockTime: 1_000,
                 initialReward: 1024, halvingInterval: 10_000
             ),
-            timestamp: 42,
-            target: UInt256(1000)
+            timestamp: 42
         )
         let result = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
         XCTAssertTrue(GenesisCeremony.verify(block: result.block, config: config))
-    }
-
-    func testCreateRejectsZeroWorkGenesisWithoutTrapping() async {
-        let config = GenesisConfig(
-            spec: ChainSpec(
-                maxNumberOfTransactionsPerBlock: 100,
-                maxStateGrowth: 100_000,
-                premine: 0,
-                targetBlockTime: 1_000,
-                initialReward: 1024,
-                halvingInterval: 10_000
-            ),
-            timestamp: 0,
-            target: .zero
-        )
-
-        // A zero (maximally-hard) genesis target is a deployer choice, not a
-        // protocol violation: there is no minimum-target floor. The resulting
-        // chain is unmineable, but that is the operator's problem, not a
-        // consensus rule the protocol imposes.
-        do {
-            _ = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
-        } catch {
-            XCTFail("zero-target genesis is a deployer choice and must be accepted, got \(error)")
-        }
     }
 
     func testVerifyRejectsWrongTimestamp() async throws {
@@ -99,31 +73,34 @@ final class GenesisCeremonyTests: XCTestCase {
                 targetBlockTime: 1_000,
                 initialReward: 1024, halvingInterval: 10_000
             ),
-            timestamp: 42,
-            target: UInt256(1000)
+            timestamp: 42
         )
         let result = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
 
-        let wrongConfig = GenesisConfig(
-            spec: config.spec, timestamp: 999, target: config.target
-        )
+        let wrongConfig = GenesisConfig(spec: config.spec, timestamp: 999)
         XCTAssertFalse(GenesisCeremony.verify(block: result.block, config: wrongConfig))
     }
 
-    func testVerifyRejectsDifficultyMismatch() async throws {
-        let specA = ChainSpec(
+    func testVerifyRejectsNonCanonicalTarget() async throws {
+        let spec = ChainSpec(
             maxNumberOfTransactionsPerBlock: 100,
             maxStateGrowth: 100_000,
             premine: 0,
             targetBlockTime: 1_000,
             initialReward: 1024, halvingInterval: 10_000
         )
-        let configA = GenesisConfig(spec: specA, timestamp: 0, target: UInt256.max)
-        let result = try await makeRuntimeGenesis(config: configA, fetcher: fetcher)
+        let config = GenesisConfig(spec: spec, timestamp: 0)
+        let result = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
+        // The ceremony genesis uses the canonical max target and verifies.
+        XCTAssertTrue(GenesisCeremony.verify(block: result.block, config: config))
 
-        let configB = GenesisConfig(spec: specA, timestamp: 0, target: UInt256(1))
-        XCTAssertTrue(GenesisCeremony.verify(block: result.block, config: configA))
-        XCTAssertFalse(GenesisCeremony.verify(block: result.block, config: configB))
+        // A genesis built with any non-canonical target is not a valid ceremony
+        // genesis, regardless of config (target is not a config field).
+        let store = StorableFetcher()
+        let nonCanonical = try await buildAndStoreGenesis(
+            spec: spec, timestamp: 0, target: UInt256(1), fetcher: store
+        )
+        XCTAssertFalse(GenesisCeremony.verify(block: nonCanonical, config: config))
     }
 
     func testVerifyRejectsSpecMismatch() async throws {
@@ -143,10 +120,10 @@ final class GenesisCeremonyTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024, halvingInterval: 10_000
         )
-        let configA = GenesisConfig(spec: specA, timestamp: 0, target: UInt256.max)
+        let configA = GenesisConfig(spec: specA, timestamp: 0)
         let result = try await makeRuntimeGenesis(config: configA, fetcher: fetcher)
 
-        let configC = GenesisConfig(spec: specB, timestamp: 0, target: UInt256.max)
+        let configC = GenesisConfig(spec: specB, timestamp: 0)
         XCTAssertTrue(GenesisCeremony.verify(block: result.block, config: configA))
         XCTAssertFalse(GenesisCeremony.verify(block: result.block, config: configC))
     }

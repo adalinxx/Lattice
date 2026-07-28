@@ -60,9 +60,8 @@ chain-specific WASM policy makes it part of that chain's validity rules.
 | Retarget window | `120` blocks, about 5 days |
 | Per-block target clamp | factor `2` |
 
-Normally, `block.target == parent.nextTarget`. A successor recovering from a
-legacy below-floor target instead uses `minimumTarget` for both `target` and
-`nextTarget`.
+Always, `block.target == parent.nextTarget`. There is no minimum-target floor
+and no below-floor recovery path.
 
 Let `D` be the expected hashes represented by the current target, approximately
 `U256_MAX / target`. At steady state, the observed honest hashrate is

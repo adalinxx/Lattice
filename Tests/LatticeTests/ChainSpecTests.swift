@@ -51,6 +51,76 @@ final class ChainSpecTests: XCTestCase {
         )
     }
 
+    // MARK: - Chain-committed maxTargetChange
+
+    private func retargetSpec(maxTargetChange: UInt8? = nil) -> ChainSpec {
+        ChainSpec(
+            maxNumberOfTransactionsPerBlock: 100,
+            maxStateGrowth: 100_000,
+            maxBlockSize: 1_000_000,
+            premine: 0,
+            targetBlockTime: 1_000,
+            initialReward: 1024,
+            halvingInterval: 10_000,
+            retargetWindow: 4,
+            maxTargetChange: maxTargetChange
+        )
+    }
+
+    /// A chain commits its own retarget clamp; committing none uses the default.
+    /// The choice is observable in content identity and drives the clamp factor.
+    func testChainCommittedMaxTargetChangeOptInAndDefault() throws {
+        let defaultSpec = retargetSpec()
+        let looseSpec = retargetSpec(maxTargetChange: 3)
+        XCTAssertNil(defaultSpec.maxTargetChange)
+        XCTAssertEqual(looseSpec.maxTargetChange, 3)
+
+        // Opt-in changes the content-addressed identity; the default spec keeps
+        // the pre-migration bytes (the key is omitted when uncommitted).
+        let defaultCID = try VolumeImpl<ChainSpec>(node: defaultSpec).rawCID
+        let looseCID = try VolumeImpl<ChainSpec>(node: looseSpec).rawCID
+        XCTAssertNotEqual(defaultCID, looseCID)
+
+        // A hard-easing window saturates at the chain's committed factor.
+        let previous = UInt256(10_000)
+        let easing: [Int64] = [1_000_000, 800_000, 500_000, 100_000, 0]
+        XCTAssertEqual(
+            defaultSpec.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: easing),
+            previous * UInt256(UInt64(ChainSpec.defaultMaxTargetChange))
+        )
+        XCTAssertEqual(
+            looseSpec.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: easing),
+            previous * UInt256(3)
+        )
+    }
+
+    /// A committed value round-trips through the wire; an absent one decodes to
+    /// nil (so an existing chain is unaffected).
+    func testChainCommittedMaxTargetChangeDecodesFromWire() throws {
+        let withValue = Data("""
+        {"maxNumberOfTransactionsPerBlock":1000,"maxStateGrowth":500000,"maxBlockSize":1000000,"premine":0,"targetBlockTime":600000,"initialReward":1048576,"halvingInterval":210000,"retargetWindow":120,"maxTargetChange":4}
+        """.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(ChainSpec.self, from: withValue).maxTargetChange, 4)
+
+        let withoutValue = Data("""
+        {"maxNumberOfTransactionsPerBlock":1000,"maxStateGrowth":500000,"maxBlockSize":1000000,"premine":0,"targetBlockTime":600000,"initialReward":1048576,"halvingInterval":210000,"retargetWindow":120}
+        """.utf8)
+        XCTAssertNil(try JSONDecoder().decode(ChainSpec.self, from: withoutValue).maxTargetChange)
+    }
+
+    /// A nonsensical committed `0` must not trap a validator on a content-addressed
+    /// spec: the clamp becomes a no-op (the chain's own consequence), never a crash.
+    func testChainCommittedZeroMaxTargetChangeDoesNotTrap() {
+        let zeroSpec = retargetSpec(maxTargetChange: 0)
+        XCTAssertFalse(zeroSpec.isValid)
+        let previous = UInt256(10_000)
+        let easing: [Int64] = [1_000_000, 800_000, 500_000, 100_000, 0]
+        // Runs to completion (no divide-by-zero trap) and, unclamped, eases past
+        // the default 2× ceiling.
+        let result = zeroSpec.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: easing)
+        XCTAssertGreaterThan(result, previous * UInt256(UInt64(ChainSpec.defaultMaxTargetChange)))
+    }
+
     // MARK: - Basic Properties Tests
 
     func testChainSpecInitialization() {
@@ -73,7 +143,7 @@ final class ChainSpecTests: XCTestCase {
         XCTAssertEqual(chainSpec.targetBlockTime, 600_000)
         XCTAssertEqual(chainSpec.initialReward, 1_048_576)
         XCTAssertEqual(chainSpec.halvingInterval, 210_000)
-        XCTAssertEqual(ChainSpec.maxTargetChange, 2)
+        XCTAssertEqual(ChainSpec.defaultMaxTargetChange, 2)
         XCTAssertEqual(chainSpec.wasmPolicies.count, 2)
     }
 
@@ -459,6 +529,16 @@ final class ChainSpecTests: XCTestCase {
         XCTAssertFalse(block.validateProofOfWork(nexusHash: UInt256(1_001)))
     }
 
+    func testTargetZeroRejectsEveryHashIncludingZero() {
+        // Target 0 is met by no hash: the predicate must stay total and reject even
+        // the degenerate hash 0, so it agrees with the positive-work rule
+        // (workForTarget(0) == 0) that durable replay enforces.
+        let block = makeGenesisBlock(target: .zero)
+
+        XCTAssertFalse(block.validateProofOfWork(nexusHash: .zero))
+        XCTAssertFalse(block.validateProofOfWork(nexusHash: UInt256(1)))
+    }
+
     func testChainSpecDifferences() {
         let bitcoin = ChainSpec.bitcoin
         let development = ChainSpec.development
@@ -469,7 +549,7 @@ final class ChainSpecTests: XCTestCase {
     }
 
     func testBlockchainConventionCompliance() {
-        XCTAssertEqual(ChainSpec.maxTargetChange, 2)
+        XCTAssertEqual(ChainSpec.defaultMaxTargetChange, 2)
 
         let bitcoin = ChainSpec.bitcoin
         XCTAssertEqual(bitcoin.maxNumberOfTransactionsPerBlock, 3000)

@@ -94,7 +94,7 @@ final class DifficultyRetargetTests: XCTestCase {
     /// `maxTargetChange`× in either direction. There is no absolute floor — the
     /// clamp is the only bound.
     private func clampBounds(previousTarget: UInt256) -> (lower: UInt256, upper: UInt256) {
-        let factor = UInt256(UInt64(ChainSpec.maxTargetChange))
+        let factor = UInt256(UInt64(ChainSpec.defaultMaxTargetChange))
         let upper = previousTarget > UInt256.max / factor ? UInt256.max : previousTarget * factor
         let lower = previousTarget / factor
         return (lower, upper)
@@ -132,10 +132,10 @@ final class DifficultyRetargetTests: XCTestCase {
             newestFirstTimestamps: timestamps
         )
         // Sanity: without a clamp the LWMA blows past the 2× ceiling.
-        XCTAssertGreaterThan(unclampedOracle, previous * UInt256(UInt64(ChainSpec.maxTargetChange)))
+        XCTAssertGreaterThan(unclampedOracle, previous * UInt256(UInt64(ChainSpec.defaultMaxTargetChange)))
 
         let result = s.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: timestamps)
-        XCTAssertEqual(result, previous * UInt256(UInt64(ChainSpec.maxTargetChange)), "easing must saturate at maxTargetChange×")
+        XCTAssertEqual(result, previous * UInt256(UInt64(ChainSpec.defaultMaxTargetChange)), "easing must saturate at maxTargetChange×")
         assertRetargetInvariants(s, previousTarget: previous, ancestorTimestamps: timestamps)
     }
 
@@ -148,7 +148,7 @@ final class DifficultyRetargetTests: XCTestCase {
         let timestamps: [Int64] = [5_000, 5_000, 5_000, 5_000, 5_000]
 
         let result = s.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: timestamps)
-        XCTAssertEqual(result, previous / UInt256(UInt64(ChainSpec.maxTargetChange)), "hardening must saturate at previous / maxTargetChange")
+        XCTAssertEqual(result, previous / UInt256(UInt64(ChainSpec.defaultMaxTargetChange)), "hardening must saturate at previous / maxTargetChange")
         assertRetargetInvariants(s, previousTarget: previous, ancestorTimestamps: timestamps)
     }
 
@@ -251,7 +251,7 @@ final class DifficultyRetargetTests: XCTestCase {
                 previousTarget: previous,
                 ancestorTimestamps: [.max, .min]
             ),
-            previous * UInt256(UInt64(ChainSpec.maxTargetChange))
+            previous * UInt256(UInt64(ChainSpec.defaultMaxTargetChange))
         )
     }
 
@@ -295,7 +295,7 @@ final class DifficultyRetargetTests: XCTestCase {
         XCTAssertFalse(tooHard.validateNextTarget(spec: s, parent: parent, ancestorTimestamps: [parent.timestamp]))
     }
 
-    func testDifficultyMustBindToParentNextDifficulty() async throws {
+    func testEasierThanScheduledTargetRejected() async throws {
         let s = spec(window: 120, target: 1_000)
         let fetcher = StorableFetcher()
         let parent = try await makeGenesis(spec: s, timestamp: 1_000, target: UInt256(10_000), fetcher: fetcher)
@@ -306,11 +306,12 @@ final class DifficultyRetargetTests: XCTestCase {
             window: s.retargetWindow,
             newestFirstTimestamps: [blockTimestamp, parent.timestamp]
         )
-        let forgedDifficulty = parent.nextTarget + UInt256(1)
+        // A larger target is easier than the scheduled parent.nextTarget → rejected.
+        let easier = parent.nextTarget + UInt256(1)
         let block = try await makeNext(
             previous: parent,
             timestamp: blockTimestamp,
-            target: forgedDifficulty,
+            target: easier,
             nextTarget: expected,
             fetcher: fetcher
         )
@@ -318,23 +319,29 @@ final class DifficultyRetargetTests: XCTestCase {
         XCTAssertFalse(block.validateNextTarget(spec: s, parent: parent, ancestorTimestamps: [parent.timestamp]))
     }
 
-    func testMTPMedianIsPinnedToMostRecentElevenTimestamps() async throws {
-        let s = spec(window: 20, target: 1_000)
+    func testHarderThanScheduledTargetAccepted() async throws {
+        let s = spec(window: 120, target: 1_000)
         let fetcher = StorableFetcher()
         let parent = try await makeGenesis(spec: s, timestamp: 1_000, target: UInt256(10_000), fetcher: fetcher)
+        let blockTimestamp: Int64 = 2_000
+        // A smaller target is HARDER than the scheduled parent.nextTarget → allowed;
+        // nextTarget is recomputed from the actual (harder) target.
+        let harder = parent.nextTarget / UInt256(2)
+        let expected = oracleLWMA(
+            previousTarget: harder,
+            targetBlockTime: s.targetBlockTime,
+            window: s.retargetWindow,
+            newestFirstTimestamps: [blockTimestamp, parent.timestamp]
+        )
         let block = try await makeNext(
             previous: parent,
-            timestamp: 1_035,
-            target: parent.nextTarget,
-            nextTarget: UInt256(10_000),
+            timestamp: blockTimestamp,
+            target: harder,
+            nextTarget: expected,
             fetcher: fetcher
         )
-        let mostRecentEleven: [Int64] = [1_050, 1_040, 1_030, 1_020, 1_010, 1_000, 990, 980, 970, 960, 950]
-        let olderHighOutliers = Array(repeating: Int64(10_000), count: 9)
-        let oldAllWindowMedian = (mostRecentEleven + olderHighOutliers).sorted()[9]
 
-        XCTAssertLessThanOrEqual(block.timestamp, oldAllWindowMedian)
-        XCTAssertTrue(block.validateTimestamp(parent: parent, ancestorTimestamps: mostRecentEleven + olderHighOutliers))
+        XCTAssertTrue(block.validateNextTarget(spec: s, parent: parent, ancestorTimestamps: [parent.timestamp]))
     }
 
     func testMissingAncestorIsUnavailableInsteadOfTwoBlockFallback() async throws {

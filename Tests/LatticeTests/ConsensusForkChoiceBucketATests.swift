@@ -67,8 +67,12 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
 
         _ = await chain.submitTestBlock(blockHeader: try BlockHeader(node: block), block: block)
 
+        // Two blocks at target 1 each carry workForTarget(1) = 2^255, so the
+        // cumulative work is 2^256 — beyond a single UInt256 (exercises WorkSum's
+        // wide accumulation). Track the formula rather than a hardcoded literal.
+        let unit = workForTarget(target)
         let cumulativeWork = await chain.getCumulativeWork(limit: 10)
-        XCTAssertEqual(cumulativeWork, WorkSum(UInt256.max) + UInt256.max)
+        XCTAssertEqual(cumulativeWork, WorkSum(unit) + unit)
         XCTAssertGreaterThan(cumulativeWork, WorkSum(UInt256.max))
     }
 

@@ -185,6 +185,13 @@ public struct TransactionBody: Scalar {
         }
         for genesisAction in genesisActions {
             if !isValidDirectoryAtom(genesisAction.directory) { return false }
+            // Structural: the directory is length-prefixed with a UInt16 in the
+            // child-proof wire format, so an anchor whose directory cannot be
+            // encoded there is unprovable and must be rejected. This is the wire's
+            // capacity, not a policy cap.
+            if genesisAction.directory.utf8.count > ChildProofWireLimits.maximumDirectoryBytes {
+                return false
+            }
             if !CIDIdentity.isCanonical(genesisAction.blockCID) { return false }
         }
         return true
@@ -302,7 +309,8 @@ public struct TransactionBody: Scalar {
         spec: ChainSpec,
         chainPath: [String],
         fetcher: Fetcher,
-        scopes: Set<WasmPolicyRef.Scope>? = nil
+        scopes: Set<WasmPolicyRef.Scope>? = nil,
+        resourceLimits: WasmPolicyResourceLimits = .default
     ) async throws -> Bool {
         guard chainPath.first == DEFAULT_ROOT_DIRECTORY else { return false }
         let policies = scopes.map { allowedScopes in
@@ -325,7 +333,8 @@ public struct TransactionBody: Scalar {
             return try WasmPolicyEvaluator.evaluate(
                 policy: policy,
                 contextData: context.canonicalData(),
-                moduleBytes: moduleBytes
+                moduleBytes: moduleBytes,
+                resourceLimits: resourceLimits
             )
         }
 
@@ -358,7 +367,8 @@ public struct TransactionBody: Scalar {
     /// entrypoint must be valid even when genesis has no matching context.
     public static func validateConfiguredPolicyModules(
         spec: ChainSpec,
-        fetcher: Fetcher
+        fetcher: Fetcher,
+        resourceLimits: WasmPolicyResourceLimits = .default
     ) async throws -> Bool {
         guard spec.wasmPolicies.allSatisfy({
             $0.abiVersion == WasmPolicyRef.currentABIVersion
@@ -374,8 +384,14 @@ public struct TransactionBody: Scalar {
             do {
                 try WasmPolicyEvaluator.validate(
                     policy: policy,
-                    moduleBytes: bytes
+                    moduleBytes: bytes,
+                    resourceLimits: resourceLimits
                 )
+            } catch WasmPolicyError.resourceUnavailable {
+                // Node-local resource guard, not module invalidity — propagate so
+                // admission classifies it as unavailable, never `protocolInvalid`.
+                // Every other error is a genuine module fault (→ `false`).
+                throw WasmPolicyError.resourceUnavailable
             } catch {
                 return false
             }
