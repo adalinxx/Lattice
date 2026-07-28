@@ -31,9 +31,10 @@ sources rather than validity or fork-choice authorities.
 - `U256` -- 256-bit unsigned integer
 
 Consensus ingress accepts only the unique canonical textual spelling of a CID,
-bounded to 128 UTF-8 bytes. Honest DAG-CBOR + SHA-256 CIDs are far below this
-ceiling; the bound prevents malformed identity strings from becoming an
-unbounded parsing or storage surface.
+bounded by the child-proof wire's `UInt16` length capacity (65535 bytes) — a
+structural encoding bound, not a policy cap. Honest DAG-CBOR + SHA-256 CIDs are
+~59 bytes, far below it; the canonical round-trip is the real identity check, and
+this bound only limits parse work on untrusted input to what the wire can carry.
 
 ## 3. Data Structures
 
@@ -122,13 +123,16 @@ transaction Volume and transaction body. Each CID's canonical bytes count once.
 The contents of the chain spec, wasm modules, parent blocks, all state Volumes,
 child blocks, and admission evidence are independent Volumes and do not count.
 
-**Protocol constants:**
+**Chain-committed retarget clamp (default):**
 
 ```
-maxTargetChange = 2
+maxTargetChange = 2   // ChainSpec default; a chain may commit its own value
 ```
 
-The positive `ChainSpec` values are chain-selected validity. Storage, transport,
+The per-retarget clamp factor is the chain's own committed
+`ChainSpec.maxTargetChange`; the default above applies only when a chain commits
+none. There is no protocol-imposed difficulty floor and no protocol-wide difficulty
+constant. The positive `ChainSpec` values are chain-selected validity. Storage, transport,
 bootstrap-spec, and parent-witness ceilings are node-local acquisition policy,
 not common consensus constants. A node may decline to operate a chain whose
 committed parameters exceed its resources without proving any block invalid.
@@ -136,9 +140,11 @@ Bounds required by a serialized field width and the deterministic WASM
 execution profile remain protocol rules.
 
 State keys use a small consensus grammar so radix work cannot grow with
-attacker-chosen Unicode or unbounded historical prefixes. Directories are
-1...64 visible-ASCII bytes; account identifiers and general-state keys are
-1...128 visible-ASCII bytes. Derived account, deposit, and genesis keys remain
+attacker-chosen Unicode. Every key is non-empty visible-ASCII (`0x21`...`0x7e`);
+directories are additionally separator-free (`/`-banned, to keep ReceiptKey
+injectivity) and bounded by the child-proof wire's `UInt16` length. There is no
+protocol length cap on account identifiers or general-state keys — key size is a
+node storage concern, not a consensus rule. Derived account, deposit, and genesis keys remain
 plain text and enumerable. Receipt-state storage alone uses
 `SHA256("lattice/receipt-state/v1\0" || ReceiptKey)` as a 64-character lowercase
 hex path, because a child may need that proof from a remote same-chain peer.
@@ -245,10 +251,27 @@ A genesis block `B` is valid if and only if ALL of the following hold:
 
 1. `B.previousBlock == nil`
 2. `B.height == 0`
-3. `B.timestamp <= validationContext.now + 2 hours`, where the admission
-   attempt captures `validationContext.now` once
+3. `B.timestamp <= validationContext.now`, where the admission attempt captures
+   `validationContext.now` once (node-local, retriable admission — a future
+   timestamp is deferred until real time reaches it, not permanently rejected)
 4. `B.prevState == CID(emptyState())`
-5. `B.target >= minimumTarget` and `B.nextTarget == B.target`
+5. `B.nextTarget == B.target`, and the target `B` commits is actually met — the
+   same inclusive `hash <= target` rule every block obeys, evaluated against the
+   hash that secures `B` at its own level (per §5.4 and §9.5):
+   - **Nexus (root) genesis:** `proofOfWorkHash(B) <= B.target` — `B`'s own grind.
+   - **Child genesis:** the securing root-grind hash `h` carried by its
+     `ChildBlockProof` satisfies `h <= B.target`; `B`'s own block hash is not
+     evaluated (a child inherits identity-bearing work from the root grind, not
+     from mining its own block).
+
+   Consensus does not constrain the target *value* a genesis may commit, but that
+   target must be met, so `target == 0` — which no hash satisfies at either level —
+   is invalid. By convention `GenesisCeremony` commits the canonical maximum
+   (easiest) target, which every hash satisfies, so the chain starts trivial, needs
+   no grinding, and self-calibrates from block 1; an operator wanting a harder
+   genesis must grind to meet it. A genesis therefore always carries positive work
+   (one unit at the canonical target), so there is no zero-work-genesis exemption
+   in construction or replay.
 6. All transactions in `B.transactions` are fully resolvable
 7. For each transaction `tx`: `tx.validateTransactionForGenesis()` returns true
    - Account and general actions are structurally valid
@@ -261,9 +284,11 @@ A genesis block `B` is valid if and only if ALL of the following hold:
     ```
     totalCredits <= premineAmount
     ```
-13. Every `GenesisAction` has a 1–64 byte visible-ASCII, separator-free
-    directory and a canonical genesis block CID. Its child proof depth must
-    remain at most 256. The child process validates that block's
+13. Every `GenesisAction` has a non-empty, visible-ASCII, separator-free
+    directory whose byte length fits the child-proof wire's `UInt16` length
+    prefix, and a canonical genesis block CID. Its child-proof depth likewise
+    fits the wire's `UInt16` prefix. These are the wire format's structural
+    capacities, not policy caps. The child process validates that block's
     content.
 14. **Post-state correctness**: Applying all actions to `prevState` (empty
     state) produces `postState`:
@@ -286,12 +311,15 @@ A non-genesis nexus block `B` with previous block `P` is valid if and only if:
 2. `B.spec == P.spec` (chain spec continuity)
 3. `B.prevState == P.postState` (state continuity)
 4. `B.height == P.height + 1`
-5. `P.timestamp < B.timestamp <= validationContext.now + 2 hours`, and
-   `B.timestamp > MedianTimePast(11)` when that window is available. The
-   attempt captures `validationContext.now` once.
-6. `B.target == P.nextTarget`, except for the minimum-target recovery in
-   section 5.5, and `B.nextTarget` equals that section's clamped proportional
-   retarget
+5. `P.timestamp < B.timestamp <= validationContext.now`. The strict increase
+   over the parent is the sole agreed-state timestamp rule (it makes timestamps
+   strictly increasing along the chain, subsuming a MedianTimePast lower bound,
+   which is therefore not imposed). The `<= now` bound is node-local, retriable
+   admission — a future block is deferred until real time reaches its timestamp,
+   never permanently rejected. The attempt captures `validationContext.now` once.
+6. `B.target <= P.nextTarget` (as hard or harder than scheduled, never easier),
+   and `B.nextTarget` equals section 5.5's clamped proportional retarget computed
+   from `B.target`
 7. All transactions pass `validateTransactionForNexus()`:
    - Signatures are valid over the `lattice-tx-v1` envelope
    - Signers match signature public keys
@@ -402,26 +430,38 @@ apply its own root-work floor before spending resources on acquisition, but
 that is a non-punitive local preference and never changes validity.
 
 Every accepting level establishes the conservative work bound
-`floor(U256_MAX / target(B))`. For one root CID, the strongest verified bound is
-credited. A larger target is easier and represents less credited work.
+`workForTarget(target(B))`. Because proof validity is inclusive (`hash <= target`,
+so `target + 1` hashes qualify), this is `floor(2^256 / (target + 1))`, computed as
+Bitcoin's chainwork `(~target / (target + 1)) + 1` in 256-bit arithmetic (edge
+cases: `target 0 -> 0`, `target max -> 1`). The exclusive `U256_MAX / target` form
+over-credits by up to ~2x at tiny targets — exploitable now that a miner may
+select any `target <= parent.nextTarget` — so it is not used. For one root CID the
+strongest verified bound is credited; a larger target is easier and is less work.
 
 ### 5.5 Target Adjustment (Retargeting)
 
-The target is **derived from the parent, not chosen by the miner**. Normally,
-every non-genesis block MUST satisfy the binding rule:
+The scheduled target is derived from the parent. A block may meet that schedule
+or voluntarily exceed it — **as hard or harder, never easier**:
 
 ```
-B.target == parent.nextTarget
+B.target <= parent.nextTarget      // smaller target = harder = more work
 ```
 
-There is one fail-safe for a previously committed underflowed target. If
-`parent.nextTarget < minimumTarget`, the successor MUST use
-`B.target == minimumTarget` and `B.nextTarget == B.target`. No other mismatch is
-accepted. This makes a chain with an unmineable below-floor scheduled target
-recoverable without giving the miner a target choice.
+A larger (easier) target is rejected; there is no minimum-target floor. Mining
+harder than scheduled only adds weight at proportional cost and cannot lower
+difficulty: `B.nextTarget` is recomputed from the *actual* `B.target` (below), so
+overachieving ratchets the schedule harder, never easier — self-penalizing, not
+gameable. A miner wanting the easiest future difficulty therefore mines exactly at
+the scheduled `parent.nextTarget`.
 
-Genesis has no parent-derived target: its configured target is committed in the
-block and its `nextTarget` MUST equal that target. Each non-genesis block's
+Genesis has no parent-derived target. The `GenesisCeremony` commits the canonical
+maximum (easiest) target by convention — every hash satisfies it, so genesis needs
+no grinding, block 1's schedule is `max`, and the chain self-calibrates as early
+miners voluntarily mine harder. The committed value is unconstrained, but genesis
+is NOT exempt from meeting it: the securing hash must satisfy `hash <= target`
+like any block — the root genesis's own grind hash, or a child genesis's securing
+root-grind hash (§5.1 rule 5) — so a genesis whose committed target is not met,
+including `target == 0`, is invalid. Its `nextTarget` MUST equal that target. Each non-genesis block's
 `nextTarget` is a **clamped, linearly-weighted retarget (LWMA)** recomputed every
 block from the candidate's own ancestor-branch solve times over the most recent
 `spec.retargetWindow` intervals (including the current block's own solve time), targeting
@@ -435,20 +475,22 @@ weightedActual = Σ_i (w_i · solveTime_i)
 weightedTarget = spec.targetBlockTime · Σ_i w_i
 proposed       = B.target · weightedActual / weightedTarget
 nextTarget     = clamp(proposed,
-                       B.target / maxTargetChange,    // lower bound, floored at minimumTarget
-                       B.target · maxTargetChange)     // upper bound (saturating)
+                       B.target / spec.maxTargetChange,   // lower bound (saturating)
+                       B.target · spec.maxTargetChange)   // upper bound (saturating)
 ```
 
-The result is never below `minimumTarget`. A faster-than-target window shrinks
-`weightedActual`, lowering the target (harder); a slower window raises it
-(easier — a larger `target` is easier to satisfy). The per-block change is bounded
-to a factor of `maxTargetChange` in either direction. Validity requires
+`spec.maxTargetChange` is the chain's own committed clamp factor (default 2). The
+clamp is the only bound — there is no absolute target floor. A faster-than-target
+window shrinks `weightedActual`, lowering the target (harder); a slower window
+raises it (easier — a larger `target` is easier to satisfy). The per-block change
+is bounded to a factor of `maxTargetChange` in either direction. Validity requires
 `B.nextTarget == nextTarget` exactly — there is no acceptance band. Because the
-retarget reads only the candidate's committed ancestry, is bounded per block,
-and `B.target` is bound to the parent or the single recovery floor, validity is
-independent of the current fork-choice projection and a miner cannot choose its
-own target. Timestamp
-influence is bounded separately by the MTP and future-drift rules.
+retarget reads only the candidate's committed ancestry, is bounded per block, and
+`B.target` is bound at or below the parent's schedule, validity is independent of
+the current fork-choice projection and a miner can only make its own block harder
+(more work), never easier. This
+`maxTargetChange` clamp is itself the bound on how far timestamp manipulation can
+move difficulty; timestamps are further constrained by the strict-increase rule.
 
 ## 6. State Transitions
 
@@ -728,7 +770,7 @@ root hash proves a conservative lower bound for that same identity:
 
 ```text
 contribution.id   = rootCID
-contribution.work = floor(U256_MAX / target(B_i))
+contribution.work = workForTarget(target(B_i))   // floor(2^256 / (target + 1))
 ```
 
 Grind identity is immutable. Its credited quantity is the maximum of all verified
@@ -1048,5 +1090,5 @@ state); withdrawals return it to the block-wide credit budget.
 
 | Constant | Value | Description |
 |---|---|---|
-| `maxTargetChange` | 2 | Maximum target adjustment factor per block |
+| `maxTargetChange` | 2 (default) | Per-block target adjustment clamp factor; chain-committed via `ChainSpec`, a chain may commit its own. Not a protocol-wide constant. |
 | `totalExponent` | 64 | Bit width of the reward/halving system |

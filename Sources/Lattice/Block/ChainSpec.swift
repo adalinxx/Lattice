@@ -18,9 +18,18 @@ public struct ChainSpec: Scalar {
     public let targetBlockTime: UInt64
     public let initialReward: UInt64
     public let halvingInterval: UInt64
-    public static let maxTargetChange: UInt8 = 2
     public let retargetWindow: UInt64
     public let wasmPolicies: [WasmPolicyRef]
+    /// Per-retarget difficulty clamp: a single retarget may move the target at
+    /// most this many × in either direction. This is the chain's own committed
+    /// manipulation-resistance vs. adaptation-speed choice (tighter = harder to
+    /// grind timestamps, slower to track real hashrate); `nil` means the chain
+    /// did not commit one and the default applies. Not a protocol-imposed
+    /// universal constant — a chain may commit any value it wants and live with
+    /// the consequences.
+    public let maxTargetChange: UInt8?
+    /// The clamp applied when a chain commits no `maxTargetChange` of its own.
+    public static let defaultMaxTargetChange: UInt8 = 2
     enum CodingKeys: String, CodingKey {
         case maxNumberOfTransactionsPerBlock
         case maxStateGrowth
@@ -31,6 +40,7 @@ public struct ChainSpec: Scalar {
         case halvingInterval
         case retargetWindow
         case wasmPolicies
+        case maxTargetChange
     }
 
     enum LegacyCodingKeys: String, CodingKey {
@@ -47,7 +57,8 @@ public struct ChainSpec: Scalar {
         initialReward: UInt64,
         halvingInterval: UInt64,
         retargetWindow: UInt64 = 10,
-        wasmPolicies: [WasmPolicyRef] = []
+        wasmPolicies: [WasmPolicyRef] = [],
+        maxTargetChange: UInt8? = nil
     ) {
         self.maxNumberOfTransactionsPerBlock = maxNumberOfTransactionsPerBlock
         self.maxStateGrowth = maxStateGrowth
@@ -58,6 +69,7 @@ public struct ChainSpec: Scalar {
         self.halvingInterval = halvingInterval
         self.retargetWindow = retargetWindow
         self.wasmPolicies = wasmPolicies
+        self.maxTargetChange = maxTargetChange
     }
 
     public init(from decoder: Decoder) throws {
@@ -79,6 +91,7 @@ public struct ChainSpec: Scalar {
             )
         }
         wasmPolicies = try container.decodeIfPresent([WasmPolicyRef].self, forKey: .wasmPolicies) ?? []
+        maxTargetChange = try container.decodeIfPresent(UInt8.self, forKey: .maxTargetChange)
     }
 }
 
@@ -204,7 +217,7 @@ public extension ChainSpec {
                targetBlockTime > 0 &&
                initialReward > 0 &&
                halvingInterval > 0 &&
-               ChainSpec.maxTargetChange > 0 &&
+               (maxTargetChange ?? ChainSpec.defaultMaxTargetChange) > 0 &&
                retargetWindow > 0
     }
 }
@@ -293,13 +306,15 @@ public extension ChainSpec {
 
     /// Bound a single retarget step to at most `maxTargetChange`× in either
     /// direction so a miner cannot grind timestamps to swing difficulty by an
-    /// unbounded factor in one window. Applied at the single retarget choke point
-    /// so the block builder and admission validator agree on the clamped value.
-    /// This `maxTargetChange×` clamp is the only bound: there is no absolute
-    /// target floor, and reaching a zero target would require difficulty to climb
-    /// past every physical limit for hundreds of consecutive windows.
+    /// unbounded factor in one window. The clamp factor is the chain's own
+    /// committed `maxTargetChange` (or the default when it commits none), applied
+    /// at the single retarget choke point so the block builder and admission
+    /// validator agree on the clamped value. This clamp is the only bound: there
+    /// is no absolute target floor. A chain that commits `0` (nonsensical) gets no
+    /// clamp rather than a validator trap — its choice, its consequences.
     private func clampTargetChange(previousTarget: UInt256, proposed: UInt256) -> UInt256 {
-        let factor = UInt256(UInt64(ChainSpec.maxTargetChange))
+        let factor = UInt256(UInt64(maxTargetChange ?? ChainSpec.defaultMaxTargetChange))
+        guard factor > .zero else { return proposed }
         let upperBound = previousTarget > UInt256.max / factor ? UInt256.max : previousTarget * factor
         let lowerBound = previousTarget / factor
         return min(max(proposed, lowerBound), upperBound)

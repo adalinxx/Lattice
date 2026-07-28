@@ -47,9 +47,18 @@ public enum BlockValidationError: Error, Sendable, Equatable {
 
 public struct ValidationContext: Sendable, Equatable {
     public let nowMilliseconds: Int64
+    /// Node-local WASM policy resource guard, carried alongside the clock because
+    /// both are node-local admission parameters an operator may tune — never
+    /// consensus rules. Exceeding these bounds yields a local/unavailable failure,
+    /// so nodes with different limits never fork on the same block.
+    public let wasmResourceLimits: WasmPolicyResourceLimits
 
-    public init(nowMilliseconds: Int64) {
+    public init(
+        nowMilliseconds: Int64,
+        wasmResourceLimits: WasmPolicyResourceLimits = .default
+    ) {
         self.nowMilliseconds = nowMilliseconds
+        self.wasmResourceLimits = wasmResourceLimits
     }
 
     public static var current: ValidationContext {
@@ -57,20 +66,19 @@ public struct ValidationContext: Sendable, Equatable {
     }
 
     func admits(timestamp: Int64) -> Bool {
-        let (latest, overflow) = nowMilliseconds.addingReportingOverflow(
-            Block.maxFutureDriftMilliseconds
-        )
-        return overflow || timestamp <= latest
+        // A node will not accept a block from its own future. This references
+        // only the node's own clock — there is no protocol-imposed drift
+        // constant — and it is retriable (see `notYetAdmissible`): a block from a
+        // slightly-fast miner is deferred until real time reaches its timestamp,
+        // never permanently rejected, so honest blocks are never lost and the
+        // valid-block set never forks on clock skew. An operator who wants slack
+        // constructs the context with a shifted `nowMilliseconds`.
+        timestamp <= nowMilliseconds
     }
 }
 
 public extension Block {
     private static let fieldSeparator: [UInt8] = [0x00]
-    /// Shared consensus timestamp limits.
-    /// Bounded future drift: a block timestamp may lead wall-clock by at most 2h.
-    internal static let maxFutureDriftMilliseconds: Int64 = 2 * 60 * 60 * 1000
-    /// MedianTimePast window depth (Bitcoin's MTP-11).
-    internal static let mtpDepth: UInt64 = 11
 
     /// Canonical proof-of-work preimage *prefix*: every consensus field hashed
     /// before the nonce, terminated by the field separator that precedes the
@@ -177,11 +185,12 @@ public extension Block {
         }
         if !(try await TransactionBody.validateConfiguredPolicyModules(
             spec: specNode,
-            fetcher: fetcher
+            fetcher: fetcher,
+            resourceLimits: validationContext.wasmResourceLimits
         )) {
             return (false, .empty, nil)
         }
-        if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: chainPath, fetcher: fetcher)) { return (false, .empty, nil) }
+        if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: chainPath, fetcher: fetcher, resourceLimits: validationContext.wasmResourceLimits)) { return (false, .empty, nil) }
         if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try await !validateBlockSize(spec: specNode, fetcher: fetcher) {
@@ -224,7 +233,9 @@ public extension Block {
         reportTemporalFailure: Bool = false,
         validationContext: ValidationContext
     ) async throws -> Bool {
-        let walkDepth = max(spec.retargetWindow, Block.mtpDepth)
+        // Only the difficulty retarget needs an ancestor-timestamp walk now that
+        // the MedianTimePast rule is gone; retargetWindow is the whole requirement.
+        let walkDepth = spec.retargetWindow
         let (parentDepth, overflow) = parent.height.addingReportingOverflow(1)
         guard !overflow else { return false }
         let requiredWalkDepth = min(walkDepth, parentDepth)
@@ -247,7 +258,6 @@ public extension Block {
         }
         if !validateTimestamp(
             parent: parent,
-            ancestorTimestamps: ancestorTimestamps,
             validationContext: validationContext
         ) { return false }
         if !validateNextTarget(spec: spec, parent: parent, ancestorTimestamps: ancestorTimestamps) { return false }
@@ -327,7 +337,7 @@ public extension Block {
 
         // Directory is positional (the anchor context / chainPath), not in the
         // spec; nil chainPath ⇒ root.
-        if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, fetcher: fetcher)) { return (false, .empty, nil) }
+        if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, fetcher: fetcher, resourceLimits: validationContext.wasmResourceLimits)) { return (false, .empty, nil) }
         if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try await !validateBlockSize(spec: specNode, fetcher: fetcher) {
@@ -415,7 +425,11 @@ public extension Block {
     }
 
     func validateProofOfWork(nexusHash: UInt256) -> Bool {
-        return target >= nexusHash
+        // Target 0 is met by no hash — keep the predicate total so it agrees with
+        // the positive-work rule (workForTarget(0) == 0, which durable replay
+        // rejects). Without the `target > .zero` guard, the degenerate
+        // (target 0, hash 0) case would pass here yet fail on restore.
+        return target > .zero && target >= nexusHash
     }
 
     func validatePostState(transactionBodies: [TransactionBody], fetcher: Fetcher) async throws -> (Bool, StateDiff, LatticeState?) {
@@ -490,7 +504,13 @@ public extension Block {
     }
 
     func validateNextTarget(spec: ChainSpec, parent: Block, ancestorTimestamps: [Int64] = []) -> Bool {
-        if target != parent.nextTarget { return false }
+        // A block's target need not equal the scheduled `parent.nextTarget` — it
+        // may be that or voluntarily HARDER (a smaller target = more work), never
+        // easier. A larger (easier) target is rejected. Mining harder only adds
+        // weight at proportional cost and cannot lower difficulty: `nextTarget` is
+        // recomputed from the actual `target` below, so overachieving ratchets the
+        // schedule harder, never easier — it is self-penalizing, not gameable.
+        if target > parent.nextTarget { return false }
         let (parentDepth, overflow) = parent.height.addingReportingOverflow(1)
         guard !overflow else { return false }
         let requiredRetargetDepth = min(spec.retargetWindow, parentDepth)
@@ -518,26 +538,26 @@ public extension Block {
             && nextTarget == target
     }
 
-    /// Bitcoin-style consensus rules:
-    ///   (1) timestamp strictly greater than previous block
-    ///   (2) timestamp ≤ now + 2h (bounded future drift — prevents warp
-    ///       attacks that forward-shift timestamps to halve target)
-    ///   (3) timestamp > MedianTimePast(11) (prevents grinding by predating)
-    /// No lower-bound against wall-clock: old blocks must still validate for
-    /// cold sync, so we only gate the future side against clock drift.
+    /// Consensus timestamp rules:
+    ///   (1) timestamp strictly greater than the previous block — the sole
+    ///       agreed-state rule; applied to every block it makes timestamps
+    ///       strictly increasing along the chain, which subsumes Bitcoin's
+    ///       MedianTimePast lower bound (a would-be predating block already
+    ///       fails (1), so an MTP median check can never reject anything (1)
+    ///       accepts — it was redundant and is gone).
+    ///   (2) timestamp ≤ now — a node will not build on a block from its own
+    ///       future. This is node-local, retriable admission (`notYetAdmissible`),
+    ///       not agreed state: it references the node's clock, defers rather than
+    ///       rejects, and closes the far-future lock-out that (1) alone would
+    ///       allow. No protocol-imposed drift constant.
+    /// No lower bound against wall-clock: old blocks must still validate for cold
+    /// sync, so only the future side is gated.
     func validateTimestamp(
         parent: Block,
-        ancestorTimestamps: [Int64] = [],
         validationContext: ValidationContext = .current
     ) -> Bool {
         if parent.timestamp >= timestamp { return false }
         if !validationContext.admits(timestamp: timestamp) { return false }
-        if !ancestorTimestamps.isEmpty {
-            let sorted = ancestorTimestamps.prefix(Int(Block.mtpDepth)).sorted()
-            let medianIndex = (sorted.count - 1) / 2
-            let median = sorted[medianIndex]
-            if timestamp <= median { return false }
-        }
         return true
     }
 

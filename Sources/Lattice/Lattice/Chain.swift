@@ -4,15 +4,34 @@ import UInt256
 
 /// Compute proof-of-work for a given target threshold.
 /// Higher target value = easier proof; work is inversely proportional.
+///
+/// Proof validity is INCLUSIVE (`hash <= target`), so `target + 1` hashes satisfy
+/// it (`0...target`) and the expected number of tries to find one is
+/// `2^256 / (target + 1)`. This is Bitcoin's chainwork, `(~target / (target+1)) + 1`,
+/// in 256-bit arithmetic. The exclusive `2^256 / target` form over-credits by up
+/// to ~2x at tiny targets (e.g. target 1 has two valid hashes but would be scored
+/// ~2^256 instead of 2^255) — exploitable now that a miner may select any
+/// `target <= parent.nextTarget`. For realistic (huge) targets the two agree to
+/// within one unit.
 public func workForTarget(_ target: UInt256) -> UInt256 {
     guard target > UInt256.zero else { return UInt256.zero }
-    return UInt256.max / target
+    guard target < UInt256.max else { return UInt256(1) }
+    return (UInt256.max - target) / (target + UInt256(1)) + UInt256(1)
 }
 
 /// Work demonstrated by one observed hash. This is used for the setup-wide
 /// traversal floor, which is deliberately independent of any chain target.
+///
+/// The root-work test is inclusive (`observedHash <= threshold`), so a hash `h`
+/// demonstrates the same work as a target of `h`: `2^256 / (h + 1)`, the
+/// inclusive form used by `workForTarget`. The old exclusive `2^256 / h`
+/// over-credited by up to ~2x at tiny hashes (hash 1 scored ~2^256 rather than
+/// its true ~2^255). Saturating edges: hash 0 is the single smallest output
+/// (maximal work, clamped to `.max`); hash `.max` is trivially met (one unit).
 public func workForHash(_ hash: UInt256) -> UInt256 {
-    hash == .zero ? .max : .max / hash
+    guard hash > UInt256.zero else { return UInt256.max }
+    guard hash < UInt256.max else { return UInt256(1) }
+    return (UInt256.max - hash) / (hash + UInt256(1)) + UInt256(1)
 }
 
 /// Stable tie-break for equal-work segment bases. Compare the CID bytes rather
@@ -456,8 +475,12 @@ private struct ConsensusBlockInput: Sendable {
               let postStateCID = CIDIdentity.canonicalString(fact.postStateCID),
               let prevStateCID = CIDIdentity.canonicalString(fact.prevStateCID),
               let specCID = CIDIdentity.canonicalString(fact.specCID),
-              let target = UInt256(fact.target, radix: 16), target > .zero,
-              let nextTarget = UInt256(fact.nextTarget, radix: 16), nextTarget > .zero,
+              let target = UInt256(fact.target, radix: 16),
+              let nextTarget = UInt256(fact.nextTarget, radix: 16),
+              // Every block, genesis included, must commit a positive target and
+              // nextTarget: genesis must satisfy its own target (h <= target), so a
+              // zero target — which no hash meets — is not admissible.
+              target > .zero, nextTarget > .zero,
               (fact.parentBlockHash == nil) == (fact.blockHeight == 0) else {
             return nil
         }
@@ -499,6 +522,10 @@ private struct TrustedAdmissionBatch {
             guard case .work(let value) = fact else { return nil }
             return value
         }
+        // Every block, genesis included, must carry positive work: genesis must
+        // satisfy its own committed target, and the canonical max-target genesis
+        // already yields one unit of work, so a zero-work contribution is never
+        // admissible in either the durable/replay path or in-memory construction.
         guard workFacts.count == 1,
               let work = workFacts.first,
               work.contribution.work > .zero,
@@ -670,8 +697,14 @@ public actor ChainState {
         self.mainChainBlockAtIndex = [:]
         for meta in self.hashToBlock.values {
             let contributions = meta.workContributions.values
-            guard !contributions.isEmpty,
-                  contributions.allSatisfy({ $0.work > .zero }) else {
+            guard !contributions.isEmpty else {
+                throw ChainStateRestoreError.corruptConsensusGraph
+            }
+            // Every block, genesis included, must carry positive work: genesis
+            // must satisfy its own committed target (h <= target), and the
+            // canonical max-target genesis already yields one unit, so there is no
+            // zero-work genesis to exempt.
+            guard contributions.allSatisfy({ $0.work > .zero }) else {
                 throw ChainStateRestoreError.corruptConsensusGraph
             }
         }
@@ -740,6 +773,8 @@ public actor ChainState {
         contribution: VerifiedWorkContribution,
         mutationGeneration: UInt64 = 0
     ) throws -> ChainState {
+        // Genesis, like every block, must carry positive work: it must satisfy its
+        // own committed target, so a zero-work genesis is not admissible.
         guard input.parentBlockHash == nil,
               input.blockHeight == 0,
               contribution.work > .zero else {
@@ -1216,6 +1251,8 @@ public actor ChainState {
         let blockHash = input.blockHash
         guard !contributions.isEmpty,
               Set(contributions.map(\.id)).count == contributions.count,
+              // Every block, genesis included, must carry positive work — genesis
+              // must satisfy its own committed target.
               contributions.allSatisfy({ $0.work > .zero }),
               !(input.parentBlockHash == nil && input.blockHeight != 0)
         else {

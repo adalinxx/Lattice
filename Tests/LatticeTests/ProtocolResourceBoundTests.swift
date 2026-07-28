@@ -4,7 +4,10 @@ import UInt256
 import cashew
 
 final class ProtocolResourceBoundTests: XCTestCase {
-    func testCIDIdentityHasAConsensusTextBound() {
+    func testCIDIdentityBoundedByProofWireCapacity() {
+        // The only bound is the proof wire's UInt16 CID length capacity, not a
+        // policy cap: a real CID (~59 bytes) is far under it, and the canonical
+        // round-trip is what actually decides validity.
         let cid = testCID("bounded-cid")
         XCTAssertLessThanOrEqual(cid.utf8.count, CIDIdentity.maximumTextBytes)
         XCTAssertEqual(CIDIdentity.canonicalString(cid), cid)
@@ -246,19 +249,6 @@ final class ProtocolResourceBoundTests: XCTestCase {
         XCTAssertFalse(genesisValid)
     }
 
-    func testMaximumWasmModuleFitsPublishedVolumeBound() throws {
-        let module = WasmPolicyModule(
-            bytes: Data(
-                repeating: 0,
-                count: WasmPolicyEvaluator.maxModuleBytes
-            )
-        )
-        let serialized = try XCTUnwrap(module.toData())
-        XCTAssertLessThanOrEqual(
-            serialized.count,
-            WasmPolicyEvaluator.maximumModuleVolumeBytes
-        )
-    }
 }
 
 private func resourceBoundSpec(

@@ -3,6 +3,7 @@ import XCTest
 @testable import Lattice
 import UInt256
 import cashew
+import WAT
 
 private func chainLocalSpec(wasmPolicies: [WasmPolicyRef] = []) -> ChainSpec {
     ChainSpec(
@@ -821,7 +822,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let future = try await makeChild(
             of: genesis,
             fetcher: fetcher,
-            timestamp: now + Block.maxFutureDriftMilliseconds + 60_000,
+            timestamp: now + 60_000,
             nonce: 1
         )
 
@@ -1583,6 +1584,56 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(restoredRevision, liveRevision)
     }
 
+    func testGenesisPolicyResourceLimitIsUnavailableNotConsensus() async throws {
+        // A policy module declaring more initial memory than THIS node's limit
+        // must yield an UNAVAILABLE verdict (this node cannot verify), never
+        // protocolInvalid — otherwise two nodes with different limits fork on the
+        // same genesis. Raising the node-local limit (injected via
+        // ValidationContext) admits the very same block.
+        let fetcher = StorableFetcher()
+        let module = try WasmPolicyModuleHeader(node: WasmPolicyModule(bytes: Data(try wat2wasm("""
+        (module
+          (memory (export "memory") 33)
+          (func (export "lattice_alloc") (param $len i32) (result i32) i32.const 1024)
+          (func (export "lattice_validate_transaction") (param $ptr i32) (param $len i32) (result i32)
+            i32.const 1)
+        )
+        """))))
+        try await module.storeRecursively(storer: fetcher)
+        let policy = WasmPolicyRef(moduleCID: module.rawCID, scope: .transaction)
+        let genesis = try await buildAndStoreGenesis(
+            spec: chainLocalSpec(wasmPolicies: [policy]),
+            timestamp: 1_000,
+            target: easy,
+            fetcher: fetcher
+        )
+        let header = try BlockHeader(node: genesis)
+        let context = testChainContext()
+
+        // Default limit (2 MiB) < 33 pages (2.06 MiB): unavailable, not invalid.
+        do {
+            _ = try await ChainLevel.bootstrap(
+                context: context, genesisHeader: header, fetcher: fetcher,
+                validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
+                stage: testAdmissionStage)
+            XCTFail("oversized policy must fail admission on the limited node")
+        } catch let failure as ChainAdmissionFailure {
+            XCTAssertEqual(failure, .unavailableEvidence)
+        }
+
+        // Same block, node with a raised limit injected via ValidationContext.
+        let raised = ValidationContext(
+            nowMilliseconds: 10_000,
+            wasmResourceLimits: WasmPolicyResourceLimits(maxMemoryBytes: 4 * 1024 * 1024))
+        let result = try await ChainLevel.bootstrap(
+            context: context, genesisHeader: header, fetcher: fetcher,
+            validationContext: raised,
+            validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
+            stage: testAdmissionStage)
+        let tip = await result.level.chain.getMainChainTip()
+        XCTAssertEqual(tip, header.rawCID)
+    }
+
     func testGenesisBootstrapRequiresUnsignedTransactions() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await makeGenesis(
@@ -2016,8 +2067,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             block: forged,
             config: GenesisConfig(
                 spec: chainLocalSpec(),
-                timestamp: forged.timestamp,
-                target: forged.target
+                timestamp: forged.timestamp
             )
         ))
 
@@ -3853,7 +3903,10 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let fetcher = StorableFetcher()
         let now = Int64(Date().timeIntervalSince1970 * 1_000)
         let genesis = try await makeGenesis(fetcher: fetcher, timestamp: now)
-        let candidateTimestamp = now + 3 * 60 * 60 * 1_000
+        // Candidates sit after genesis but within the validation context's clock
+        // (set below to now + 2h), so the timestamp rule admits them and the test
+        // exercises only the concurrent-admission path.
+        let candidateTimestamp = now + 60 * 60 * 1_000
         let first = try await makeChild(
             of: genesis,
             fetcher: fetcher,
