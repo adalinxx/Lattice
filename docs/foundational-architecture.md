@@ -108,7 +108,7 @@ complete parent-receipt witness from the exact same-chain advertiser within a
 history-independent bound.
 
 Securing-work verification is deliberately independent of carrier validity. A
-carrier may fail its own target, transition, MTP/future-drift check, or proposed
+carrier may fail its own target, transition, timestamp rule, or proposed
 `nextTarget` while the root grind still commits uniquely to a deeper child and
 beats that child's target. Those carrier-local rules do not become descendant
 dependencies.
