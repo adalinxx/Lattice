@@ -851,7 +851,7 @@ final class BlockLimitTests: XCTestCase {
 @MainActor
 final class TimestampSecurityTests: XCTestCase {
 
-    func testSmallFutureDriftAccepted() async throws {
+    func testNearFutureTimestampNotAdmitted() async throws {
         let fetcher = makeFetcher()
         let base = t() - 10_000
         let s = spec(premine: 0)
@@ -860,16 +860,19 @@ final class TimestampSecurityTests: XCTestCase {
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
 
-        // 60 s of clock skew is within the 2-hour drift budget.
-        let slightlyFuture = try await buildAndStoreBlock(
+        // There is no future-drift budget: the single rule is `timestamp ≤ now`.
+        // A block even 60 s ahead of the node's clock is not admitted now — it is
+        // deferred until real time reaches its timestamp (retriable, not
+        // permanently invalid), never built upon in the meantime.
+        let nearFuture = try await buildAndStoreBlock(
             previous: genesis, timestamp: t() + 60_000,
             target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
-        let valid = try await slightlyFuture.validateNexus(fetcher: fetcher).0
-        XCTAssertTrue(valid, "60s future drift must be accepted")
+        let valid = try await nearFuture.validateNexus(fetcher: fetcher).0
+        XCTAssertFalse(valid, "a block from the node's future must not be admitted now")
     }
 
-    func testFutureTimestampBeyondDriftRejected() async throws {
+    func testFarFutureTimestampNotAdmitted() async throws {
         let fetcher = makeFetcher()
         let base = t() - 10_000
         let s = spec(premine: 0)
@@ -878,14 +881,15 @@ final class TimestampSecurityTests: XCTestCase {
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
         )
 
-        // 3 h is beyond the 2 h drift budget — rejection prevents warp
-        // attacks that fast-forward timestamps to lower target.
+        // Same rule, larger lead: a far-future stamp is likewise not admitted.
+        // This is what stops a warp-forward timestamp from entering the chain and
+        // locking out honest real-time miners.
         let farFuture = try await buildAndStoreBlock(
             previous: genesis, timestamp: t() + 3 * 60 * 60 * 1000,
             target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
         let valid = try await farFuture.validateNexus(fetcher: fetcher).0
-        XCTAssertFalse(valid, "timestamp 3h in future must be rejected")
+        XCTAssertFalse(valid, "a far-future timestamp must not be admitted")
     }
 
     func testOldTimestampStillValidatesForSync() async throws {

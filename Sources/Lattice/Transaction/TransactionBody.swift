@@ -185,6 +185,13 @@ public struct TransactionBody: Scalar {
         }
         for genesisAction in genesisActions {
             if !isValidDirectoryAtom(genesisAction.directory) { return false }
+            // Structural: the directory is length-prefixed with a UInt16 in the
+            // child-proof wire format, so an anchor whose directory cannot be
+            // encoded there is unprovable and must be rejected. This is the wire's
+            // capacity, not a policy cap.
+            if genesisAction.directory.utf8.count > ChildProofWireLimits.maximumDirectoryBytes {
+                return false
+            }
             if !CIDIdentity.isCanonical(genesisAction.blockCID) { return false }
         }
         return true
