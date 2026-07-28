@@ -1105,6 +1105,48 @@ final class WasmPolicyTests: XCTestCase {
             policy: policy, moduleBytes: module))
     }
 
+    func testPolicyModuleWithMemoryGrowIsRejectedAsNondeterministic() throws {
+        // memory.grow returns -1 (not a trap) to the guest when a node-local
+        // limiter denies growth, letting a policy branch to different verdicts on
+        // nodes with different limits — a consensus fork. It is rejected at scan
+        // time on every node identically (protocol-invalid, not resource-local).
+        let growModule = Data(try wat2wasm("""
+        (module
+          (memory (export "memory") 1)
+          (func (export "lattice_alloc") (param $len i32) (result i32) i32.const 1024)
+          (func (export "lattice_validate_transaction") (param $ptr i32) (param $len i32) (result i32)
+            i32.const 1
+            drop
+            i32.const 1
+            memory.grow
+            drop
+            i32.const 1)
+        )
+        """))
+        let policy = WasmPolicyRef(moduleCID: "inline-grow", scope: .transaction)
+        XCTAssertThrowsError(try WasmPolicyEvaluator.validate(
+            policy: policy, moduleBytes: growModule)) { error in
+            guard case WasmPolicyError.nondeterministicConstruct = error else {
+                return XCTFail("expected nondeterministicConstruct, got \(error)")
+            }
+        }
+
+        // memory.size (constant without grow) stays allowed.
+        let sizeModule = Data(try wat2wasm("""
+        (module
+          (memory (export "memory") 1)
+          (func (export "lattice_alloc") (param $len i32) (result i32) i32.const 1024)
+          (func (export "lattice_validate_transaction") (param $ptr i32) (param $len i32) (result i32)
+            memory.size
+            drop
+            i32.const 1)
+        )
+        """))
+        XCTAssertNoThrow(try WasmPolicyEvaluator.validate(
+            policy: WasmPolicyRef(moduleCID: "inline-size", scope: .transaction),
+            moduleBytes: sizeModule))
+    }
+
     // MARK: - compiled-module cache
 
     private func cacheTestSpec(policy: WasmPolicyRef) -> ChainSpec {

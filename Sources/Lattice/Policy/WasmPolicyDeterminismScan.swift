@@ -23,8 +23,11 @@ import WasmParser
 ///   segments), and bulk MEMORY ops (memory.copy/fill/init, data.drop) —
 ///   their trap/bounds semantics are fully specified and deterministic, and
 ///   LLVM/Rust emit memory.copy/fill by default for wasm32 targets.
-/// - REJECTED: floats, atomics, tail calls, function-references
-///   ops, and all table.* instructions — outside the intended policy subset.
+/// - REJECTED: floats, atomics, tail calls, function-references ops, all
+///   table.* instructions, and memory.grow — outside the intended policy
+///   subset. memory.grow additionally makes the verdict node-dependent (it
+///   returns -1, not a trap, when a local limiter denies growth), so it is a
+///   cross-host nondeterminism source, not merely out-of-subset.
 /// - SIMD instruction opcodes (0xFD) have no decoder in WasmKit 0.2.x and
 ///   fail closed in the parser as unknown opcodes; the v128 STORAGE type does
 ///   decode and is rejected here. Unknown opcodes fail closed via
@@ -130,9 +133,19 @@ private struct OpcodeAllowListVisitor: AnyInstructionVisitor {
         case .unreachable, .nop, .else, .end, .br, .brIf, .brTable, .return,
              .call, .callIndirect, .drop, .select,
              .localGet, .localSet, .localTee, .globalGet, .globalSet,
-             .memorySize, .memoryGrow, .i32Const, .i64Const,
+             .memorySize, .i32Const, .i64Const,
              .i32Eqz, .i64Eqz:
             break
+
+        // memory.grow returns -1 to the guest (NOT a trap) when a node-local
+        // resource limiter denies growth, so a policy could branch on the result
+        // and reach different verdicts on nodes with different limits — a
+        // consensus fork. Disallowed at scan time (deterministic, module-content
+        // based, so every node rejects identically). Policies declare sufficient
+        // initial memory upfront, bounded at instantiation; memory.size stays
+        // allowed (constant without grow). table.grow is already rejected below.
+        case .memoryGrow:
+            try reject("memory.grow")
 
         // Bulk MEMORY ops decision: ALLOWED). Deterministic — bounds
         // checks and trap behavior are fully specified — and LLVM/Rust emit
