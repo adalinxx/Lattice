@@ -107,7 +107,6 @@ public struct WasmPolicyContext: Codable, Sendable {
 public enum WasmPolicyError: Error, Sendable {
     case unsupportedABI(UInt16)
     case missingModule(String)
-    case moduleTooLarge(Int)
     case invalidModule
     case missingMemory
     case missingAllocator
@@ -209,27 +208,15 @@ private extension WasmPolicyRef.Scope {
     }
 }
 
-private struct WasmPolicyResourceLimiter: ResourceLimiter {
-    let maxMemoryBytes: Int
-    let maxTableElements: Int
-
-    func limitMemoryGrowth(to desired: Int) throws -> Bool {
-        desired <= maxMemoryBytes
-    }
-
-    func limitTableGrowth(to desired: Int) throws -> Bool {
-        desired <= maxTableElements
-    }
-}
-
 public enum WasmPolicyEvaluator {
-    public static let maxModuleBytes = 256 * 1024
-    /// Canonical JSON stores `Data` as base64; 16 bytes covers the one-field
-    /// object framing beyond the exact 4 * ceil(n / 3) payload expansion.
-    public static let maximumModuleVolumeBytes =
-        4 * ((maxModuleBytes + 2) / 3) + 16
-    public static let maxMemoryBytes = 2 * 1024 * 1024
-    public static let maxTableElements = 1024
+    // A chain's WasmPolicy is its own committed, opt-in validity rule, not
+    // permissionless metered code — so the protocol imposes no module-size,
+    // memory, or table ceiling. A module's size is bounded by the content store,
+    // and its runtime memory/table by the module's OWN declared limits (committed
+    // via its CID) and the WASM format's structural maxima. Determinism of the
+    // verdict comes from `WasmPolicyDeterminismScan` (no floats/NaN) plus WASM
+    // integer semantics, not from these bounds; a validator that lacks the RAM a
+    // chain's policy demands treats the block as unavailable, not invalid.
     public static let executionFeatureSet: WasmFeatureSet = [.referenceTypes]
 
     public static func evaluate(policy: WasmPolicyRef, context: WasmPolicyContext, fetcher: Fetcher) async throws -> Bool {
@@ -247,8 +234,9 @@ public enum WasmPolicyEvaluator {
         let (memory, alloc, entrypoint) = try instantiate(policy: policy, moduleBytes: moduleBytes)
 
         let contextBytes = Array(contextData)
-        guard contextBytes.count <= maxMemoryBytes,
-              contextBytes.count <= Int(Int32.max) else {
+        // Only the WASM32 address-space bound applies; the module's actual memory
+        // capacity is checked against `memorySize` below.
+        guard contextBytes.count <= Int(Int32.max) else {
             throw WasmPolicyError.invalidAllocation
         }
         let contextLength = Int32(contextBytes.count)
@@ -298,9 +286,6 @@ public enum WasmPolicyEvaluator {
         guard policy.abiVersion == WasmPolicyRef.currentABIVersion else {
             throw WasmPolicyError.unsupportedABI(policy.abiVersion)
         }
-        guard moduleBytes.count <= maxModuleBytes else {
-            throw WasmPolicyError.moduleTooLarge(moduleBytes.count)
-        }
         // Cache key is the module's content id (CID of the immutable bytes).
         // Reusing the parsed `Module` across evaluations is safe: `instantiate`
         // below is non-mutating and allocates a fresh per-evaluation Store/Instance.
@@ -314,10 +299,9 @@ public enum WasmPolicyEvaluator {
         }
         let engine = Engine(configuration: EngineConfiguration(features: Self.executionFeatureSet))
         let store = Store(engine: engine)
-        store.resourceLimiter = WasmPolicyResourceLimiter(
-            maxMemoryBytes: maxMemoryBytes,
-            maxTableElements: maxTableElements
-        )
+        // No host-imposed resource limiter: the module's own declared memory/table
+        // limits (committed via its CID) and the WASM format's structural maxima
+        // govern growth. The protocol sets no ceiling.
         let instance = try module.instantiate(store: store)
         guard let memory = instance.exports[memory: "memory"] else {
             throw WasmPolicyError.missingMemory

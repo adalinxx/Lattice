@@ -246,19 +246,6 @@ final class ProtocolResourceBoundTests: XCTestCase {
         XCTAssertFalse(genesisValid)
     }
 
-    func testMaximumWasmModuleFitsPublishedVolumeBound() throws {
-        let module = WasmPolicyModule(
-            bytes: Data(
-                repeating: 0,
-                count: WasmPolicyEvaluator.maxModuleBytes
-            )
-        )
-        let serialized = try XCTUnwrap(module.toData())
-        XCTAssertLessThanOrEqual(
-            serialized.count,
-            WasmPolicyEvaluator.maximumModuleVolumeBytes
-        )
-    }
 }
 
 private func resourceBoundSpec(
