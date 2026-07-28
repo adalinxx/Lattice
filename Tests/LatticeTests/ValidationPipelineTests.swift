@@ -1055,9 +1055,14 @@ final class WasmPolicyTests: XCTestCase {
         }
         let policy = WasmPolicyRef(moduleCID: "inline", scope: .transaction)
 
-        // 33 pages = 2 MiB + 64 KiB, over the 2 MiB default → rejected, not crashed.
+        // 33 pages = 2 MiB + 64 KiB, over the 2 MiB default → rejected as a
+        // node-local resource failure (NOT module invalidity), not crashed.
         XCTAssertThrowsError(try WasmPolicyEvaluator.validate(
-            policy: policy, moduleBytes: try moduleWith(pages: 33)))
+            policy: policy, moduleBytes: try moduleWith(pages: 33))) { error in
+            guard case WasmPolicyError.resourceUnavailable = error else {
+                return XCTFail("expected resourceUnavailable, got \(error)")
+            }
+        }
 
         // 16 pages = 1 MiB, within the default → validates.
         XCTAssertNoThrow(try WasmPolicyEvaluator.validate(
@@ -1068,6 +1073,36 @@ final class WasmPolicyTests: XCTestCase {
             policy: policy,
             moduleBytes: try moduleWith(pages: 33),
             resourceLimits: WasmPolicyResourceLimits(maxMemoryBytes: 4 * 1024 * 1024)))
+    }
+
+    func testPolicyModuleByteBoundRejectsBeforeParseAsUnavailable() throws {
+        // A node-local ceiling on the raw module bytes, enforced before the
+        // copy/parse (reject, never truncate). Excess is an unavailable verdict,
+        // never module invalidity, so nodes with different bounds never disagree
+        // on validity.
+        let module = Data(try wat2wasm("""
+        (module
+          (memory (export "memory") 1)
+          (func (export "lattice_alloc") (param $len i32) (result i32) i32.const 1024)
+          (func (export "lattice_validate_transaction") (param $ptr i32) (param $len i32) (result i32)
+            i32.const 1)
+        )
+        """))
+        let policy = WasmPolicyRef(moduleCID: "inline", scope: .transaction)
+        let tiny = WasmPolicyResourceLimits(maxModuleBytes: module.count - 1)
+
+        XCTAssertThrowsError(try WasmPolicyEvaluator.validate(
+            policy: policy, moduleBytes: module, resourceLimits: tiny)) { error in
+            guard case WasmPolicyError.resourceUnavailable = error else {
+                return XCTFail("expected resourceUnavailable, got \(error)")
+            }
+        }
+        // At or above the module size (the default is far larger) it validates.
+        XCTAssertNoThrow(try WasmPolicyEvaluator.validate(
+            policy: policy, moduleBytes: module,
+            resourceLimits: WasmPolicyResourceLimits(maxModuleBytes: module.count)))
+        XCTAssertNoThrow(try WasmPolicyEvaluator.validate(
+            policy: policy, moduleBytes: module))
     }
 
     // MARK: - compiled-module cache
