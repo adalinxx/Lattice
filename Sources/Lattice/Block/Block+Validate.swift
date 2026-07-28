@@ -490,7 +490,13 @@ public extension Block {
     }
 
     func validateNextTarget(spec: ChainSpec, parent: Block, ancestorTimestamps: [Int64] = []) -> Bool {
-        if target != parent.nextTarget { return false }
+        // A block's target need not equal the scheduled `parent.nextTarget` — it
+        // may be that or voluntarily HARDER (a smaller target = more work), never
+        // easier. A larger (easier) target is rejected. Mining harder only adds
+        // weight at proportional cost and cannot lower difficulty: `nextTarget` is
+        // recomputed from the actual `target` below, so overachieving ratchets the
+        // schedule harder, never easier — it is self-penalizing, not gameable.
+        if target > parent.nextTarget { return false }
         let (parentDepth, overflow) = parent.height.addingReportingOverflow(1)
         guard !overflow else { return false }
         let requiredRetargetDepth = min(spec.retargetWindow, parentDepth)
