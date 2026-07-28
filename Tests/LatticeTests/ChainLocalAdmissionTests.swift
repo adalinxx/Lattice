@@ -2016,8 +2016,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             block: forged,
             config: GenesisConfig(
                 spec: chainLocalSpec(),
-                timestamp: forged.timestamp,
-                target: forged.target
+                timestamp: forged.timestamp
             )
         ))
 

@@ -252,9 +252,14 @@ A genesis block `B` is valid if and only if ALL of the following hold:
    `validationContext.now` once (node-local, retriable admission — a future
    timestamp is deferred until real time reaches it, not permanently rejected)
 4. `B.prevState == CID(emptyState())`
-5. `B.nextTarget == B.target`. The genesis target is the creator's free choice —
-   any `UInt256`, `0` through `max`, with no floor. A zero-work (`target == 0`)
-   genesis is a valid, inert, unmineable chain.
+5. `B.nextTarget == B.target`. The target is irrelevant to the genesis — it is
+   not mined against a parent's scheduled difficulty — so it is not a
+   creator-configurable field: `GenesisCeremony` always builds the canonical
+   maximum (easiest) target, and the chain self-calibrates from block 1 via the
+   retarget. (Consensus validation constrains only `nextTarget == target`, not
+   the value; a genesis built with a non-canonical target by custom tooling is a
+   self-inflicted condition, and a zero-work `target == 0` genesis is still an
+   inert, unmineable but valid chain.)
 6. All transactions in `B.transactions` are fully resolvable
 7. For each transaction `tx`: `tx.validateTransactionForGenesis()` returns true
    - Account and general actions are structurally valid
