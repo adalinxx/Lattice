@@ -477,9 +477,10 @@ private struct ConsensusBlockInput: Sendable {
               let specCID = CIDIdentity.canonicalString(fact.specCID),
               let target = UInt256(fact.target, radix: 16),
               let nextTarget = UInt256(fact.nextTarget, radix: 16),
-              // Genesis may carry a zero (unmineable, zero-work) target; every
-              // other block needs a positive target and nextTarget.
-              (fact.blockHeight == 0 || (target > .zero && nextTarget > .zero)),
+              // Every block, genesis included, must commit a positive target and
+              // nextTarget: genesis must satisfy its own target (h <= target), so a
+              // zero target — which no hash meets — is not admissible.
+              target > .zero, nextTarget > .zero,
               (fact.parentBlockHash == nil) == (fact.blockHeight == 0) else {
             return nil
         }
@@ -521,15 +522,13 @@ private struct TrustedAdmissionBatch {
             guard case .work(let value) = fact else { return nil }
             return value
         }
-        // A zero-work contribution is valid only for a genesis block (a chain may
-        // commit a zero-work, unmineable genesis); every non-genesis block needs
-        // positive work. Exempted here so the durable/replay path agrees with the
-        // in-memory ChainState construction and a persisted zero-work genesis
-        // restores cleanly instead of failing as corruptConsensusGraph.
-        let isGenesisBatch = blockFacts.count == 1 && blockFacts[0].blockHeight == 0
+        // Every block, genesis included, must carry positive work: genesis must
+        // satisfy its own committed target, and the canonical max-target genesis
+        // already yields one unit of work, so a zero-work contribution is never
+        // admissible in either the durable/replay path or in-memory construction.
         guard workFacts.count == 1,
               let work = workFacts.first,
-              isGenesisBatch || work.contribution.work > .zero,
+              work.contribution.work > .zero,
               let workBlockHash = CIDIdentity.canonicalString(work.blockHash),
               let contributionID = CIDIdentity.canonicalString(work.contribution.id) else {
             return nil
@@ -701,14 +700,11 @@ public actor ChainState {
             guard !contributions.isEmpty else {
                 throw ChainStateRestoreError.corruptConsensusGraph
             }
-            // The genesis block is exempt from the positive-work requirement: a
-            // chain may commit a zero-work (maximally-hard, unmineable) genesis as
-            // a deployer choice — there is no minimum-target floor. Such a chain is
-            // inert (no child can ever be mined, since children inherit target 0),
-            // so its zero-work genesis never competes in fork choice. Every
-            // NON-genesis block must still carry positive work to hold weight.
-            guard meta.parentBlockHash == nil
-                || contributions.allSatisfy({ $0.work > .zero }) else {
+            // Every block, genesis included, must carry positive work: genesis
+            // must satisfy its own committed target (h <= target), and the
+            // canonical max-target genesis already yields one unit, so there is no
+            // zero-work genesis to exempt.
+            guard contributions.allSatisfy({ $0.work > .zero }) else {
                 throw ChainStateRestoreError.corruptConsensusGraph
             }
         }
@@ -777,11 +773,11 @@ public actor ChainState {
         contribution: VerifiedWorkContribution,
         mutationGeneration: UInt64 = 0
     ) throws -> ChainState {
-        // Genesis is exempt from the positive-work requirement — a chain may
-        // commit a zero-work (maximally-hard, unmineable) genesis. Every other
-        // block still needs positive work (enforced on insert).
+        // Genesis, like every block, must carry positive work: it must satisfy its
+        // own committed target, so a zero-work genesis is not admissible.
         guard input.parentBlockHash == nil,
-              input.blockHeight == 0 else {
+              input.blockHeight == 0,
+              contribution.work > .zero else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
         let meta = BlockMeta(
@@ -1255,8 +1251,9 @@ public actor ChainState {
         let blockHash = input.blockHash
         guard !contributions.isEmpty,
               Set(contributions.map(\.id)).count == contributions.count,
-              // Genesis may carry zero work; every other block needs positive work.
-              (input.parentBlockHash == nil || contributions.allSatisfy({ $0.work > .zero })),
+              // Every block, genesis included, must carry positive work — genesis
+              // must satisfy its own committed target.
+              contributions.allSatisfy({ $0.work > .zero }),
               !(input.parentBlockHash == nil && input.blockHeight != 0)
         else {
             return .discarded()
