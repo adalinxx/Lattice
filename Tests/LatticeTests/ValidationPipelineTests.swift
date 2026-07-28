@@ -1038,25 +1038,36 @@ final class WasmPolicyTests: XCTestCase {
         }
     }
 
-    func testPolicyValidatesMemoryBeyondFormerCap() throws {
-        // The protocol imposes no policy memory ceiling: a module declaring more
-        // than the old 2 MiB cap now validates. Its own declared memory (committed
-        // via its CID) and the WASM format's structural maxima govern.
-        let manyPages = 33 // 33 · 64 KiB = 2 MiB + 64 KiB, past the removed cap
-        let wat = """
-        (module
-          (memory (export "memory") \(manyPages))
-          (func (export "lattice_alloc") (param $len i32) (result i32)
-            i32.const 1024)
-          (func (export "lattice_validate_transaction") (param $ptr i32) (param $len i32) (result i32)
-            i32.const 1)
-        )
-        """
+    func testPolicyMemoryLimiterRejectsOversizedWithoutCrashing() throws {
+        // No PROTOCOL memory ceiling, but a NODE-LOCAL resource limiter caps a
+        // module's declared initial memory so an oversized module fails as a
+        // WasmKit trap (thrown error) rather than OOM-killing the validator.
+        func moduleWith(pages: Int) throws -> Data {
+            Data(try wat2wasm("""
+            (module
+              (memory (export "memory") \(pages))
+              (func (export "lattice_alloc") (param $len i32) (result i32)
+                i32.const 1024)
+              (func (export "lattice_validate_transaction") (param $ptr i32) (param $len i32) (result i32)
+                i32.const 1)
+            )
+            """))
+        }
         let policy = WasmPolicyRef(moduleCID: "inline", scope: .transaction)
+
+        // 33 pages = 2 MiB + 64 KiB, over the 2 MiB default → rejected, not crashed.
+        XCTAssertThrowsError(try WasmPolicyEvaluator.validate(
+            policy: policy, moduleBytes: try moduleWith(pages: 33)))
+
+        // 16 pages = 1 MiB, within the default → validates.
+        XCTAssertNoThrow(try WasmPolicyEvaluator.validate(
+            policy: policy, moduleBytes: try moduleWith(pages: 16)))
+
+        // The limit is injectable: an operator can raise it to accept the module.
         XCTAssertNoThrow(try WasmPolicyEvaluator.validate(
             policy: policy,
-            moduleBytes: Data(try wat2wasm(wat))
-        ))
+            moduleBytes: try moduleWith(pages: 33),
+            resourceLimits: WasmPolicyResourceLimits(maxMemoryBytes: 4 * 1024 * 1024)))
     }
 
     // MARK: - compiled-module cache
