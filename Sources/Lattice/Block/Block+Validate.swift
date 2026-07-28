@@ -425,7 +425,11 @@ public extension Block {
     }
 
     func validateProofOfWork(nexusHash: UInt256) -> Bool {
-        return target >= nexusHash
+        // Target 0 is met by no hash — keep the predicate total so it agrees with
+        // the positive-work rule (workForTarget(0) == 0, which durable replay
+        // rejects). Without the `target > .zero` guard, the degenerate
+        // (target 0, hash 0) case would pass here yet fail on restore.
+        return target > .zero && target >= nexusHash
     }
 
     func validatePostState(transactionBodies: [TransactionBody], fetcher: Fetcher) async throws -> (Bool, StateDiff, LatticeState?) {

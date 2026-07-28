@@ -529,6 +529,16 @@ final class ChainSpecTests: XCTestCase {
         XCTAssertFalse(block.validateProofOfWork(nexusHash: UInt256(1_001)))
     }
 
+    func testTargetZeroRejectsEveryHashIncludingZero() {
+        // Target 0 is met by no hash: the predicate must stay total and reject even
+        // the degenerate hash 0, so it agrees with the positive-work rule
+        // (workForTarget(0) == 0) that durable replay enforces.
+        let block = makeGenesisBlock(target: .zero)
+
+        XCTAssertFalse(block.validateProofOfWork(nexusHash: .zero))
+        XCTAssertFalse(block.validateProofOfWork(nexusHash: UInt256(1)))
+    }
+
     func testChainSpecDifferences() {
         let bitcoin = ChainSpec.bitcoin
         let development = ChainSpec.development
