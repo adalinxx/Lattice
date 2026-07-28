@@ -255,14 +255,17 @@ A genesis block `B` is valid if and only if ALL of the following hold:
    `validationContext.now` once (node-local, retriable admission — a future
    timestamp is deferred until real time reaches it, not permanently rejected)
 4. `B.prevState == CID(emptyState())`
-5. `B.nextTarget == B.target`. Consensus does NOT constrain the genesis target
-   value — any target `0...max` is valid. By convention `GenesisCeremony` always
-   commits the canonical maximum (easiest) target so the chain starts trivial and
-   self-calibrates from block 1, but that is a ceremony default, not a rule: a
-   genesis committing any other target is still valid. A zero-work `target == 0`
-   genesis is an inert, unmineable but valid chain — genesis is exempt from the
-   positive-work requirement consistently across in-memory construction and
-   durable replay/recovery.
+5. `B.nextTarget == B.target`, and genesis satisfies its own committed target
+   like every block: `h(B) <= B.target`. Consensus does not constrain the target
+   *value* a genesis may commit, but the committed target must actually be met, so
+   `target == 0` (which no hash satisfies) is invalid. By convention
+   `GenesisCeremony` commits the canonical maximum (easiest) target, which every
+   hash satisfies — the chain starts trivial, needs no grinding, and self-calibrates
+   from block 1; an operator wanting a harder genesis must grind to meet it. A
+   genesis therefore always carries positive work (one unit at the canonical
+   target), so there is no zero-work-genesis exemption in construction or replay.
+   This matches child bootstrap, where a genesis becomes live only once a grind
+   meets its target.
 6. All transactions in `B.transactions` are fully resolvable
 7. For each transaction `tx`: `tx.validateTransactionForGenesis()` returns true
    - Account and general actions are structurally valid
@@ -446,11 +449,12 @@ gameable. A miner wanting the easiest future difficulty therefore mines exactly 
 the scheduled `parent.nextTarget`.
 
 Genesis has no parent-derived target. The `GenesisCeremony` commits the canonical
-maximum (easiest) target by convention — so block 1's schedule is `max` and the
-chain self-calibrates as early miners voluntarily mine harder — but this is not a
-consensus rule: validation constrains only `nextTarget == target`, not the value,
-so any genesis target `0...max` is valid (see §5.1 rule 5). Its `nextTarget` MUST
-equal that target. Each non-genesis block's
+maximum (easiest) target by convention — every hash satisfies it, so genesis needs
+no grinding, block 1's schedule is `max`, and the chain self-calibrates as early
+miners voluntarily mine harder. The committed value is unconstrained, but genesis
+is NOT exempt from meeting it: `h <= target` must hold like any block, so a genesis
+whose hash misses its committed target — including `target == 0` — is invalid (see
+§5.1 rule 5). Its `nextTarget` MUST equal that target. Each non-genesis block's
 `nextTarget` is a **clamped, linearly-weighted retarget (LWMA)** recomputed every
 block from the candidate's own ancestor-branch solve times over the most recent
 `spec.retargetWindow` intervals (including the current block's own solve time), targeting

@@ -64,28 +64,6 @@ final class GenesisCeremonyTests: XCTestCase {
         XCTAssertTrue(GenesisCeremony.verify(block: result.block, config: config))
     }
 
-    func testZeroWorkGenesisChainStateDoesNotTrap() async throws {
-        // The ceremony always builds the canonical max-target genesis, but a
-        // zero-work (target == 0) genesis built directly must still not trap
-        // ChainState construction: the genesis block is exempt from the
-        // positive-work invariant (an inert, unmineable chain is a valid state).
-        let store = StorableFetcher()
-        let genesis = try await buildAndStoreGenesis(
-            spec: ChainSpec(
-                maxNumberOfTransactionsPerBlock: 100,
-                maxStateGrowth: 100_000,
-                premine: 0,
-                targetBlockTime: 1_000,
-                initialReward: 1024,
-                halvingInterval: 10_000
-            ),
-            timestamp: 0,
-            target: .zero,
-            fetcher: store
-        )
-        XCTAssertNoThrow(ChainState.fromGenesis(block: genesis))
-    }
-
     func testVerifyRejectsWrongTimestamp() async throws {
         let config = GenesisConfig(
             spec: ChainSpec(
