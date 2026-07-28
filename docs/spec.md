@@ -255,17 +255,23 @@ A genesis block `B` is valid if and only if ALL of the following hold:
    `validationContext.now` once (node-local, retriable admission — a future
    timestamp is deferred until real time reaches it, not permanently rejected)
 4. `B.prevState == CID(emptyState())`
-5. `B.nextTarget == B.target`, and genesis satisfies its own committed target
-   like every block: `h(B) <= B.target`. Consensus does not constrain the target
-   *value* a genesis may commit, but the committed target must actually be met, so
-   `target == 0` (which no hash satisfies) is invalid. By convention
-   `GenesisCeremony` commits the canonical maximum (easiest) target, which every
-   hash satisfies — the chain starts trivial, needs no grinding, and self-calibrates
-   from block 1; an operator wanting a harder genesis must grind to meet it. A
-   genesis therefore always carries positive work (one unit at the canonical
-   target), so there is no zero-work-genesis exemption in construction or replay.
-   This matches child bootstrap, where a genesis becomes live only once a grind
-   meets its target.
+5. `B.nextTarget == B.target`, and the target `B` commits is actually met — the
+   same inclusive `hash <= target` rule every block obeys, evaluated against the
+   hash that secures `B` at its own level (per §5.4 and §9.5):
+   - **Nexus (root) genesis:** `proofOfWorkHash(B) <= B.target` — `B`'s own grind.
+   - **Child genesis:** the securing root-grind hash `h` carried by its
+     `ChildBlockProof` satisfies `h <= B.target`; `B`'s own block hash is not
+     evaluated (a child inherits identity-bearing work from the root grind, not
+     from mining its own block).
+
+   Consensus does not constrain the target *value* a genesis may commit, but that
+   target must be met, so `target == 0` — which no hash satisfies at either level —
+   is invalid. By convention `GenesisCeremony` commits the canonical maximum
+   (easiest) target, which every hash satisfies, so the chain starts trivial, needs
+   no grinding, and self-calibrates from block 1; an operator wanting a harder
+   genesis must grind to meet it. A genesis therefore always carries positive work
+   (one unit at the canonical target), so there is no zero-work-genesis exemption
+   in construction or replay.
 6. All transactions in `B.transactions` are fully resolvable
 7. For each transaction `tx`: `tx.validateTransactionForGenesis()` returns true
    - Account and general actions are structurally valid
@@ -452,9 +458,10 @@ Genesis has no parent-derived target. The `GenesisCeremony` commits the canonica
 maximum (easiest) target by convention — every hash satisfies it, so genesis needs
 no grinding, block 1's schedule is `max`, and the chain self-calibrates as early
 miners voluntarily mine harder. The committed value is unconstrained, but genesis
-is NOT exempt from meeting it: `h <= target` must hold like any block, so a genesis
-whose hash misses its committed target — including `target == 0` — is invalid (see
-§5.1 rule 5). Its `nextTarget` MUST equal that target. Each non-genesis block's
+is NOT exempt from meeting it: the securing hash must satisfy `hash <= target`
+like any block — the root genesis's own grind hash, or a child genesis's securing
+root-grind hash (§5.1 rule 5) — so a genesis whose committed target is not met,
+including `target == 0`, is invalid. Its `nextTarget` MUST equal that target. Each non-genesis block's
 `nextTarget` is a **clamped, linearly-weighted retarget (LWMA)** recomputed every
 block from the candidate's own ancestor-branch solve times over the most recent
 `spec.retargetWindow` intervals (including the current block's own solve time), targeting
