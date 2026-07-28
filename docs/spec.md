@@ -122,13 +122,16 @@ transaction Volume and transaction body. Each CID's canonical bytes count once.
 The contents of the chain spec, wasm modules, parent blocks, all state Volumes,
 child blocks, and admission evidence are independent Volumes and do not count.
 
-**Protocol constants:**
+**Chain-committed retarget clamp (default):**
 
 ```
-maxTargetChange = 2
+maxTargetChange = 2   // ChainSpec default; a chain may commit its own value
 ```
 
-The positive `ChainSpec` values are chain-selected validity. Storage, transport,
+The per-retarget clamp factor is the chain's own committed
+`ChainSpec.maxTargetChange`; the default above applies only when a chain commits
+none. There is no protocol-imposed difficulty floor and no protocol-wide difficulty
+constant. The positive `ChainSpec` values are chain-selected validity. Storage, transport,
 bootstrap-spec, and parent-witness ceilings are node-local acquisition policy,
 not common consensus constants. A node may decline to operate a chain whose
 committed parameters exceed its resources without proving any block invalid.
@@ -245,10 +248,13 @@ A genesis block `B` is valid if and only if ALL of the following hold:
 
 1. `B.previousBlock == nil`
 2. `B.height == 0`
-3. `B.timestamp <= validationContext.now + 2 hours`, where the admission
-   attempt captures `validationContext.now` once
+3. `B.timestamp <= validationContext.now`, where the admission attempt captures
+   `validationContext.now` once (node-local, retriable admission — a future
+   timestamp is deferred until real time reaches it, not permanently rejected)
 4. `B.prevState == CID(emptyState())`
-5. `B.target >= minimumTarget` and `B.nextTarget == B.target`
+5. `B.nextTarget == B.target`. The genesis target is the creator's free choice —
+   any `UInt256`, `0` through `max`, with no floor. A zero-work (`target == 0`)
+   genesis is a valid, inert, unmineable chain.
 6. All transactions in `B.transactions` are fully resolvable
 7. For each transaction `tx`: `tx.validateTransactionForGenesis()` returns true
    - Account and general actions are structurally valid
@@ -261,9 +267,11 @@ A genesis block `B` is valid if and only if ALL of the following hold:
     ```
     totalCredits <= premineAmount
     ```
-13. Every `GenesisAction` has a 1–64 byte visible-ASCII, separator-free
-    directory and a canonical genesis block CID. Its child proof depth must
-    remain at most 256. The child process validates that block's
+13. Every `GenesisAction` has a non-empty, visible-ASCII, separator-free
+    directory whose byte length fits the child-proof wire's `UInt16` length
+    prefix, and a canonical genesis block CID. Its child-proof depth likewise
+    fits the wire's `UInt16` prefix. These are the wire format's structural
+    capacities, not policy caps. The child process validates that block's
     content.
 14. **Post-state correctness**: Applying all actions to `prevState` (empty
     state) produces `postState`:
@@ -286,12 +294,14 @@ A non-genesis nexus block `B` with previous block `P` is valid if and only if:
 2. `B.spec == P.spec` (chain spec continuity)
 3. `B.prevState == P.postState` (state continuity)
 4. `B.height == P.height + 1`
-5. `P.timestamp < B.timestamp <= validationContext.now + 2 hours`, and
-   `B.timestamp > MedianTimePast(11)` when that window is available. The
-   attempt captures `validationContext.now` once.
-6. `B.target == P.nextTarget`, except for the minimum-target recovery in
-   section 5.5, and `B.nextTarget` equals that section's clamped proportional
-   retarget
+5. `P.timestamp < B.timestamp <= validationContext.now`. The strict increase
+   over the parent is the sole agreed-state timestamp rule (it makes timestamps
+   strictly increasing along the chain, subsuming a MedianTimePast lower bound,
+   which is therefore not imposed). The `<= now` bound is node-local, retriable
+   admission — a future block is deferred until real time reaches its timestamp,
+   never permanently rejected. The attempt captures `validationContext.now` once.
+6. `B.target == P.nextTarget`, and `B.nextTarget` equals section 5.5's clamped
+   proportional retarget
 7. All transactions pass `validateTransactionForNexus()`:
    - Signatures are valid over the `lattice-tx-v1` envelope
    - Signers match signature public keys
@@ -414,14 +424,12 @@ every non-genesis block MUST satisfy the binding rule:
 B.target == parent.nextTarget
 ```
 
-There is one fail-safe for a previously committed underflowed target. If
-`parent.nextTarget < minimumTarget`, the successor MUST use
-`B.target == minimumTarget` and `B.nextTarget == B.target`. No other mismatch is
-accepted. This makes a chain with an unmineable below-floor scheduled target
-recoverable without giving the miner a target choice.
+There is no minimum-target floor and no recovery fail-safe: `B.target` must equal
+`parent.nextTarget` exactly, with no other accepted value.
 
 Genesis has no parent-derived target: its configured target is committed in the
-block and its `nextTarget` MUST equal that target. Each non-genesis block's
+block (the creator's free choice — any `UInt256`, `0` through `max`) and its
+`nextTarget` MUST equal that target. Each non-genesis block's
 `nextTarget` is a **clamped, linearly-weighted retarget (LWMA)** recomputed every
 block from the candidate's own ancestor-branch solve times over the most recent
 `spec.retargetWindow` intervals (including the current block's own solve time), targeting
@@ -435,20 +443,21 @@ weightedActual = Σ_i (w_i · solveTime_i)
 weightedTarget = spec.targetBlockTime · Σ_i w_i
 proposed       = B.target · weightedActual / weightedTarget
 nextTarget     = clamp(proposed,
-                       B.target / maxTargetChange,    // lower bound, floored at minimumTarget
-                       B.target · maxTargetChange)     // upper bound (saturating)
+                       B.target / spec.maxTargetChange,   // lower bound (saturating)
+                       B.target · spec.maxTargetChange)   // upper bound (saturating)
 ```
 
-The result is never below `minimumTarget`. A faster-than-target window shrinks
-`weightedActual`, lowering the target (harder); a slower window raises it
-(easier — a larger `target` is easier to satisfy). The per-block change is bounded
-to a factor of `maxTargetChange` in either direction. Validity requires
+`spec.maxTargetChange` is the chain's own committed clamp factor (default 2). The
+clamp is the only bound — there is no absolute target floor. A faster-than-target
+window shrinks `weightedActual`, lowering the target (harder); a slower window
+raises it (easier — a larger `target` is easier to satisfy). The per-block change
+is bounded to a factor of `maxTargetChange` in either direction. Validity requires
 `B.nextTarget == nextTarget` exactly — there is no acceptance band. Because the
-retarget reads only the candidate's committed ancestry, is bounded per block,
-and `B.target` is bound to the parent or the single recovery floor, validity is
-independent of the current fork-choice projection and a miner cannot choose its
-own target. Timestamp
-influence is bounded separately by the MTP and future-drift rules.
+retarget reads only the candidate's committed ancestry, is bounded per block, and
+`B.target` is bound to the parent, validity is independent of the current
+fork-choice projection and a miner cannot choose its own target. This
+`maxTargetChange` clamp is itself the bound on how far timestamp manipulation can
+move difficulty; timestamps are further constrained by the strict-increase rule.
 
 ## 6. State Transitions
 
@@ -1048,5 +1057,5 @@ state); withdrawals return it to the block-wide credit budget.
 
 | Constant | Value | Description |
 |---|---|---|
-| `maxTargetChange` | 2 | Maximum target adjustment factor per block |
+| `maxTargetChange` | 2 (default) | Per-block target adjustment clamp factor; chain-committed via `ChainSpec`, a chain may commit its own. Not a protocol-wide constant. |
 | `totalExponent` | 64 | Bit width of the reward/halving system |

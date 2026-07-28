@@ -35,9 +35,9 @@ not automatically inherit all Nexus hashpower or Nexus canonicity.
 | `maxStateGrowth` | `3,000,000` bytes | Per block |
 | `maxNumberOfTransactionsPerBlock` | `5,000` | Per block |
 
-Protocol-wide `ChainSpec` constants also set `maxTargetChange = 2` and
-`minimumTarget = 1`. A chain directory is positional path data, not a
-`ChainSpec` field.
+The `ChainSpec` sets a default `maxTargetChange = 2` (the per-retarget clamp
+factor; a chain may commit its own value). There is no minimum-target floor. A
+chain directory is positional path data, not a `ChainSpec` field.
 
 ## Emission
 
@@ -100,8 +100,8 @@ by integer halving.
 ## Cadence And Fees
 
 Nexus retargets every block using a clamped LWMA over the candidate's own
-ancestor branch. Normally, a block's target equals its parent's `nextTarget`;
-the only exception is recovery from a previously committed below-floor target.
+ancestor branch. A block's target always equals its parent's `nextTarget` — there
+is no minimum-target floor and no recovery exception.
 
 The signed `fee` field does not automatically move value. Lattice enforces the
 block-wide non-creation bound over explicit actions. A node may require an
