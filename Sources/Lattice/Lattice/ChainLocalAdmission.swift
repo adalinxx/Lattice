@@ -1121,18 +1121,14 @@ public extension ChainLevel {
         guard resolved.block.parent == nil, resolved.block.height == 0 else {
             throw ChainAdmissionFailure.protocolInvalid
         }
-        // Genesis is exempt from a hard PoW self-hash REJECTION: there is no
-        // predecessor to prove work against and the chain is anchored by the
-        // genesis CID, so a target-miss genesis (e.g. a target-0 genesis nobody
-        // mines) stays admissible rather than being unrepresentable. But work is
-        // still only credited when the hash actually satisfies the target — a
-        // miss earns zero, so a harder claimed target can never inflate credit.
-        // This mirrors ordinary root admission, which admits regardless yet
-        // credits `nil`/zero work on a sub-target hash.
+        // Genesis must satisfy its own declared target like any block: a target-0
+        // (or otherwise target-miss) genesis is rejected here, matching child
+        // bootstrap, which only makes a child genesis live once a parent grind
+        // confirms it. The canonical max-target genesis passes trivially.
         let rootHash = resolved.block.proofOfWorkHash()
-        let genesisWork = resolved.block.validateProofOfWork(nexusHash: rootHash)
-            ? workForTarget(resolved.block.target)
-            : .zero
+        guard resolved.block.validateProofOfWork(nexusHash: rootHash) else {
+            throw ChainAdmissionFailure.notAcceptedAtCurrentChain
+        }
         let transition: (StateDiff, LatticeState?)
         switch await ChainLocalAdmission.validateGenesis(
             block: resolved.block,
@@ -1149,7 +1145,7 @@ public extension ChainLevel {
             fetcher: fetcher,
             contribution: VerifiedWorkContribution(
                 id: resolved.header.rawCID,
-                work: genesisWork
+                work: workForTarget(resolved.block.target)
             ),
             carrierLink: ParentCarrierLink(
                 parentPath: context.path,

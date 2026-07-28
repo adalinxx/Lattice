@@ -1584,39 +1584,6 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(restoredRevision, liveRevision)
     }
 
-    func testZeroTargetGenesisBootstrapsPersistsAndRestores() async throws {
-        // "No central rule" forbids rejecting a target-0 genesis: an operator may
-        // choose it (no one will mine it). It must bootstrap through REAL
-        // production admission — not merely replay a hand-built batch — and
-        // survive persist → restore. Before the genesis PoW exemption, bootstrap
-        // threw notAcceptedAtCurrentChain because hash 0 does not satisfy target 0.
-        let fetcher = StorableFetcher()
-        let genesis = try await buildAndStoreGenesis(
-            spec: chainLocalSpec(),
-            timestamp: 1_000,
-            target: .zero,
-            fetcher: fetcher
-        )
-        let header = try BlockHeader(node: genesis)
-        let recorder = AdmissionStageRecorder()
-
-        let result = try await ChainLevel.bootstrap(
-            context: testChainContext(),
-            genesisHeader: header,
-            fetcher: fetcher,
-            validationContentStorer: fetcher,
-            materializedVolumeStorer: fetcher,
-            stage: { batch in await recorder.stage(batch) }
-        )
-        let rootTip = await result.level.chain.getMainChainTip()
-        XCTAssertEqual(rootTip, header.rawCID)
-
-        let batches = await recorder.recordedBatches()
-        let restored = try await ChainState.restore(replaying: batches)
-        let restoredTip = await restored.getMainChainTip()
-        XCTAssertEqual(restoredTip, rootTip)
-    }
-
     func testGenesisPolicyResourceLimitIsUnavailableNotConsensus() async throws {
         // A policy module declaring more initial memory than THIS node's limit
         // must yield an UNAVAILABLE verdict (this node cannot verify), never
@@ -2125,11 +2092,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertTrue(staged.isEmpty)
     }
 
-    func testRootBootstrapAdmitsTargetMissGenesisWithZeroWork() async throws {
-        // A target-miss genesis (hash > target) is admissible — genesis is exempt
-        // from the hard PoW self-hash gate — but it earns ZERO work, so a harder
-        // claimed target can never inflate credit or out-weigh a real chain.
-        // Before the exemption this threw notAcceptedAtCurrentChain.
+    func testRootBootstrapRejectsTargetMissWithoutStoring() async throws {
         let fetcher = StorableFetcher()
         let durable = RecordingAdmissionStorer()
         let recorder = AdmissionStageRecorder()
@@ -2142,31 +2105,23 @@ final class ChainLocalAdmissionTests: XCTestCase {
             fetcher: fetcher
         )
         XCTAssertGreaterThan(hardGenesis.proofOfWorkHash(), hardGenesis.target)
-        let header = try BlockHeader(node: hardGenesis)
-
-        let result = try await ChainLevel.bootstrap(
-            context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY]),
-            genesisHeader: header,
-            fetcher: fetcher,
-            validationContentStorer: durable,
-            materializedVolumeStorer: durable,
-            stage: { batch in await recorder.stage(batch) }
-        )
-        let tip = await result.level.chain.getMainChainTip()
-        XCTAssertEqual(tip, header.rawCID)
-
-        // Admitted and persisted, but credited zero work (the hash misses target).
-        let storeCalls = await durable.storeCallCount()
-        XCTAssertGreaterThan(storeCalls, 0)
-        let workFacts = await recorder.recordedBatches()
-            .flatMap { $0.facts }
-            .compactMap { fact -> ChainWorkFact? in
-                if case .work(let work) = fact { return work }
-                return nil
-            }
-        XCTAssertFalse(workFacts.isEmpty)
-        XCTAssertTrue(workFacts.allSatisfy { $0.contribution.work == .zero },
-                      "a target-miss genesis must earn zero work")
+        do {
+            _ = try await ChainLevel.bootstrap(
+                context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY]),
+                genesisHeader: try BlockHeader(node: hardGenesis),
+                fetcher: fetcher,
+                validationContentStorer: durable,
+                materializedVolumeStorer: durable,
+                stage: { batch in await recorder.stage(batch) }
+            )
+            XCTFail("a target miss cannot bootstrap the root")
+        } catch let failure as ChainAdmissionFailure {
+            XCTAssertEqual(failure, .notAcceptedAtCurrentChain)
+        }
+        let targetMissStoreCalls = await durable.storeCallCount()
+        let targetMissBatches = await recorder.recordedBatches()
+        XCTAssertEqual(targetMissStoreCalls, 0)
+        XCTAssertTrue(targetMissBatches.isEmpty)
     }
 
     func testChildAcceptsWhenAncestorCarrierMissesItsOwnTarget() async throws {
