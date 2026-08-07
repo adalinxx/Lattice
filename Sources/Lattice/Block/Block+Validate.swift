@@ -535,6 +535,12 @@ public extension Block {
             && parent == nil
             && height == 0
             && prevState.rawCID == LatticeState.emptyHeader.rawCID
+            // A genesis is self-contained: it commits to no parent state. A child
+            // is anchored by its parent RECORDING the genesis CID (a plain
+            // GenesisAction), never by binding the genesis to a carrier's
+            // prevState. Cross-chain flows begin at block 1. (Root genesis and the
+            // block builder already use emptyHeader here.)
+            && parentState.rawCID == LatticeState.emptyHeader.rawCID
             && nextTarget == target
     }
 

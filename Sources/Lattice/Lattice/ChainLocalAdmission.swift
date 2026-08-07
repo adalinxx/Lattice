@@ -288,7 +288,6 @@ fileprivate struct PreparedAdmission: Sendable {
             parentGenesisLinks: try await parentGenesisLinks(
                 in: resolvedHeader,
                 parentPath: carrierLink.parentPath,
-                parentStateCID: block.prevState.rawCID,
                 fetcher: fetcher
             )
         )
@@ -377,7 +376,6 @@ public enum ChainAdmissionPreflightResult: Sendable {
 private func parentGenesisLinks(
     in header: BlockHeader,
     parentPath: [String],
-    parentStateCID: String,
     fetcher: any Fetcher
 ) async throws -> [ParentGenesisLink] {
     let content = try await header.resolveBlockContent(fetcher: fetcher)
@@ -394,7 +392,10 @@ private func parentGenesisLinks(
                 parentPath: parentPath,
                 directory: action.directory,
                 childGenesisCID: action.blockCID,
-                parentStateCID: parentStateCID
+                // A self-contained child genesis commits to the empty parent
+                // state, so its recorded authorization binds to emptyHeader —
+                // never the recording block's prevState.
+                parentStateCID: LatticeState.emptyHeader.rawCID
             ))
         }
     }
@@ -468,6 +469,17 @@ private enum ChainLocalAdmission {
             predecessor = resolved.block
         case .failure(let failure):
             return failure
+        }
+        // Block 1 over a self-contained genesis: the genesis carries no parent
+        // state (parentState == empty), so there is no continuity to prove from
+        // it. Block 1's own parentState is validated as a real carrier prevState
+        // by verifySecuringWork (height >= 1) when it is co-mined. No continuity
+        // link is required or permitted here.
+        if predecessor.parent == nil {
+            guard package.parentStateContinuityLink == nil else {
+                return .providerMalformedEvidence
+            }
+            return nil
         }
         let fromStateCID = predecessor.parentState.rawCID
         let toStateCID = child.parentState.rawCID
@@ -582,7 +594,6 @@ private enum ChainLocalAdmission {
                     genesisLinks = try await parentGenesisLinks(
                         in: resolvedHeader,
                         parentPath: carrierLink.parentPath,
-                        parentStateCID: block.prevState.rawCID,
                         fetcher: fetcher
                     )
                 } catch {
@@ -1165,7 +1176,7 @@ public extension ChainLevel {
         context: ChainRuntimeContext,
         genesisHeader: BlockHeader,
         fetcher: any Fetcher,
-        childPackage: ChildValidationPackage,
+        parentGenesisLink: ParentGenesisLink,
         validationContext: ValidationContext = .current,
         validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
@@ -1180,32 +1191,42 @@ public extension ChainLevel {
         guard resolved.block.parent == nil, resolved.block.height == 0 else {
             throw ChainAdmissionFailure.protocolInvalid
         }
-        let evidence: VerifiedChildEvidence
-        switch await ChainLocalAdmission.verifyChildProof(
-            childPackage,
-            child: resolved.block,
-            context: context
-        ) {
-        case .success(let verified): evidence = verified
-        case .failure(let failure): throw failure
-        }
+        let childCID = resolved.header.rawCID
+        // A child genesis is self-contained and SELF-mined, exactly like a root
+        // genesis — it is never co-mined via a carrier proof. Its grind root and
+        // carrier are itself.
         let carrierLink = ParentCarrierLink(
             parentPath: context.path,
-            carrierCID: resolved.header.rawCID,
-            rootCID: evidence.grindID
+            carrierCID: childCID,
+            rootCID: childCID
         )
-        if let failure = await ChainLocalAdmission.validateParentFacts(
-            childPackage,
-            child: resolved.block,
-            childCID: evidence.childCID,
-            context: context,
-            fetcher: fetcher
-        ) {
-            return .rejected(failure, parentCarrierLink: carrierLink)
+        // Record gate: the parent must have RECORDED this genesis for this
+        // directory (a plain GenesisAction → genesisState). The caller supplies
+        // the ParentGenesisLink derived from its own validated parent state; here
+        // we confirm it authorizes exactly this self-contained genesis (empty
+        // parentState). This is the sole authorization — there is no carrier proof.
+        guard resolved.block.hasGenesisAdmissionShape(),
+              let directory = context.path.last,
+              parentGenesisLink == ParentGenesisLink(
+                  parentPath: Array(context.path.dropLast()),
+                  directory: directory,
+                  childGenesisCID: childCID,
+                  parentStateCID: LatticeState.emptyHeader.rawCID
+              ) else {
+            return .rejected(
+                .providerMalformedEvidence, parentCarrierLink: carrierLink
+            )
         }
-        guard let contribution = evidence.contribution else {
+        // Self-PoW: the genesis must satisfy its own declared target, like a root
+        // genesis. A target-miss yields no work and is deferred (retriable).
+        let rootHash = resolved.block.proofOfWorkHash()
+        guard resolved.block.validateProofOfWork(nexusHash: rootHash) else {
             return .carrier(carrierLink)
         }
+        let contribution = VerifiedWorkContribution(
+            id: childCID,
+            work: workForTarget(resolved.block.target)
+        )
         let transition: (StateDiff, LatticeState?)
         switch await ChainLocalAdmission.validateGenesis(
             block: resolved.block,
