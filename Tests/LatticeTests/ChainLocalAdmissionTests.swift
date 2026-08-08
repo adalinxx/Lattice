@@ -1398,61 +1398,26 @@ final class ChainLocalAdmissionTests: XCTestCase {
             nonce: 1,
             transactions: [transaction]
         )
-        let rootCarrier = try await buildAndStoreGenesis(
-            spec: chainLocalSpec(),
-            children: ["Child": childGenesis],
-            timestamp: 500,
-            target: easy,
-            fetcher: fetcher
-        )
-        let proof = try await ChildBlockProof.generate(
-            rootHeader: try BlockHeader(node: rootCarrier),
-            childDirectory: "Child",
-            fetcher: fetcher
-        )
         let context = testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
         let header = try BlockHeader(node: childGenesis)
-        let package = try await childValidationPackage(
-            proof: proof,
-            fetcher: fetcher,
-            parentGenesisLink: testParentGenesisLink(
-                directory: "Child",
-                childGenesisCID: header.rawCID,
-                parentStateCID: childGenesis.parentState.rawCID
-            )
+        // The self-contained genesis is authorized solely by the parent's record
+        // (ParentGenesisLink), bound to the empty parent state. No carrier proof.
+        let genesisLink = testParentGenesisLink(
+            directory: "Child",
+            childGenesisCID: header.rawCID,
+            parentStateCID: childGenesis.parentState.rawCID
         )
 
-        let missingFact = try await ChainLevel.bootstrap(
-            context: context,
-            genesisHeader: header,
-            fetcher: fetcher,
-            childPackage: ChildValidationPackage(proof: proof),
-            validationContentStorer: fetcher,
-            materializedVolumeStorer: fetcher,
-            stage: testAdmissionStage
-        )
-        XCTAssertEqual(
-            missingFact.failure,
-            .crossChainEvidenceRequired(.parentGenesis(
-                parentPath: [DEFAULT_ROOT_DIRECTORY],
-                directory: "Child",
-                childGenesisCID: header.rawCID,
-                parentStateCID: childGenesis.parentState.rawCID
-            ))
-        )
-        XCTAssertEqual(missingFact.parentCarrierLink.carrierCID, header.rawCID)
-
+        // A ParentGenesisLink that does not authorize this exact genesis (wrong
+        // recorded state) is rejected — the record gate is the sole authorization.
         let wrongFact = try await ChainLevel.bootstrap(
             context: context,
             genesisHeader: header,
             fetcher: fetcher,
-            childPackage: ChildValidationPackage(
-                proof: proof,
-                parentGenesisLink: testParentGenesisLink(
-                    directory: "Child",
-                    childGenesisCID: header.rawCID,
-                    parentStateCID: testCID("wrong-deployment-state")
-                )
+            parentGenesisLink: testParentGenesisLink(
+                directory: "Child",
+                childGenesisCID: header.rawCID,
+                parentStateCID: testCID("wrong-deployment-state")
             ),
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
@@ -1466,7 +1431,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
                 context: context,
                 genesisHeader: header,
                 fetcher: fetcher,
-                childPackage: package,
+                parentGenesisLink: genesisLink,
                 validationContentStorer: FailingAdmissionStorer(),
                 materializedVolumeStorer: FailingAdmissionStorer(),
                 stage: testAdmissionStage
@@ -1478,7 +1443,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             context: context,
             genesisHeader: header,
             fetcher: fetcher,
-            childPackage: package,
+            parentGenesisLink: genesisLink,
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
@@ -1510,7 +1475,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
                 context: context,
                 genesisHeader: try BlockHeader(node: nonGenesis),
                 fetcher: fetcher,
-                childPackage: package,
+                parentGenesisLink: genesisLink,
                 validationContentStorer: fetcher,
                 materializedVolumeStorer: fetcher,
                 stage: testAdmissionStage
@@ -1802,7 +1767,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let parentLevel = makeLevel(genesis: parentGenesis)
         let childGenesis = try await BlockBuilder.buildChildGenesis(
             spec: chainLocalSpec(),
-            parentState: parentGenesis.postState,
+            parentState: LatticeState.emptyHeader,
             transactions: [unsignedStateChangingGenesisTransaction(
                 key: "child-genesis",
                 chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
@@ -1837,7 +1802,6 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let carrier = try await buildAndStoreBlock(
             previous: parentGenesis,
             transactions: [signedTestTransaction(anchorBody, by: keyPair)],
-            children: ["Child": childGenesis],
             timestamp: 2_000,
             target: easy,
             nonce: 2,
@@ -1865,22 +1829,14 @@ final class ChainLocalAdmissionTests: XCTestCase {
             parentPath: [DEFAULT_ROOT_DIRECTORY],
             directory: "Child",
             childGenesisCID: childHeader.rawCID,
-            parentStateCID: carrier.prevState.rawCID
+            parentStateCID: LatticeState.emptyHeader.rawCID
         )
 
-        let proof = try await ChildBlockProof.generate(
-            rootHeader: carrierHeader,
-            childDirectory: "Child",
-            fetcher: fetcher
-        )
         let childBootstrapResult = try await ChainLevel.bootstrap(
             context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"]),
             genesisHeader: childHeader,
             fetcher: fetcher,
-            childPackage: ChildValidationPackage(
-                proof: proof,
-                parentGenesisLink: genesisLink
-            ),
+            parentGenesisLink: genesisLink,
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
@@ -2001,28 +1957,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             fetcher: fetcher
         )
         try await storeBuiltBlock(childGenesis, in: fetcher)
-        let carrier = try await buildAndStoreGenesis(
-            spec: chainLocalSpec(),
-            children: ["Child": childGenesis],
-            timestamp: 2_000,
-            target: easy,
-            fetcher: fetcher
-        )
         let childHeader = try BlockHeader(node: childGenesis)
-        let proof = try await ChildBlockProof.generate(
-            rootHeader: try BlockHeader(node: carrier),
-            childDirectory: "Child",
-            fetcher: fetcher
-        )
-        let package = try await childValidationPackage(
-            proof: proof,
-            fetcher: fetcher,
-            parentGenesisLink: testParentGenesisLink(
-                directory: "Child",
-                childGenesisCID: childHeader.rawCID,
-                parentStateCID: childGenesis.parentState.rawCID
-            )
-        )
 
         let result = try await ChainLevel.bootstrap(
             context: testChainContext(
@@ -2030,7 +1965,11 @@ final class ChainLocalAdmissionTests: XCTestCase {
             ),
             genesisHeader: childHeader,
             fetcher: fetcher,
-            childPackage: package,
+            parentGenesisLink: testParentGenesisLink(
+                directory: "Child",
+                childGenesisCID: childHeader.rawCID,
+                parentStateCID: childGenesis.parentState.rawCID
+            ),
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
@@ -2313,37 +2252,18 @@ final class ChainLocalAdmissionTests: XCTestCase {
             nonce: 1,
             fetcher: fetcher
         )
-        let rootCarrier = try await buildAndStoreGenesis(
-            spec: chainLocalSpec(),
-            children: ["Child": childGenesis],
-            timestamp: 2_000,
-            target: easy,
-            nonce: 2,
-            fetcher: fetcher
-        )
-        XCTAssertGreaterThan(rootCarrier.proofOfWorkHash(), childGenesis.target)
-        let proof = try await ChildBlockProof.generate(
-            rootHeader: try BlockHeader(node: rootCarrier),
-            childDirectory: "Child",
-            fetcher: fetcher
-        )
         let header = try BlockHeader(node: childGenesis)
-        let package = try await childValidationPackage(
-            proof: proof,
-            fetcher: fetcher,
-            parentGenesisLink: testParentGenesisLink(
-                directory: "Child",
-                childGenesisCID: header.rawCID,
-                parentStateCID: childGenesis.parentState.rawCID
-            )
-        )
         let recorder = AdmissionStageRecorder()
 
         let result = try await ChainLevel.bootstrap(
             context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"]),
             genesisHeader: header,
             fetcher: fetcher,
-            childPackage: package,
+            parentGenesisLink: testParentGenesisLink(
+                directory: "Child",
+                childGenesisCID: header.rawCID,
+                parentStateCID: childGenesis.parentState.rawCID
+            ),
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
             stage: { record in await recorder.stage(record) }
@@ -2353,7 +2273,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         }
         XCTAssertEqual(link.parentPath, [DEFAULT_ROOT_DIRECTORY, "Child"])
         XCTAssertEqual(link.carrierCID, header.rawCID)
-        XCTAssertEqual(link.rootCID, proof.rootCID)
+        XCTAssertEqual(link.rootCID, header.rawCID)
         let stageCount = await recorder.count(for: header.rawCID)
         XCTAssertEqual(stageCount, 0)
     }
@@ -2402,14 +2322,10 @@ final class ChainLocalAdmissionTests: XCTestCase {
             ),
             genesisHeader: try BlockHeader(node: middle),
             fetcher: fetcher,
-            childPackage: try await childValidationPackage(
-                proof: rootHop,
-                fetcher: fetcher,
-                parentGenesisLink: testParentGenesisLink(
-                    directory: "Middle",
-                    childGenesisCID: try BlockHeader(node: middle).rawCID,
-                    parentStateCID: middle.parentState.rawCID
-                )
+            parentGenesisLink: testParentGenesisLink(
+                directory: "Middle",
+                childGenesisCID: try BlockHeader(node: middle).rawCID,
+                parentStateCID: middle.parentState.rawCID
             ),
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
@@ -2521,14 +2437,10 @@ final class ChainLocalAdmissionTests: XCTestCase {
             ),
             genesisHeader: middleHeader,
             fetcher: fetcher,
-            childPackage: try await childValidationPackage(
-                proof: rootHop,
-                fetcher: fetcher,
-                parentGenesisLink: testParentGenesisLink(
-                    directory: "Middle",
-                    childGenesisCID: middleHeader.rawCID,
-                    parentStateCID: invalidMiddle.parentState.rawCID
-                )
+            parentGenesisLink: testParentGenesisLink(
+                directory: "Middle",
+                childGenesisCID: middleHeader.rawCID,
+                parentStateCID: invalidMiddle.parentState.rawCID
             ),
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
