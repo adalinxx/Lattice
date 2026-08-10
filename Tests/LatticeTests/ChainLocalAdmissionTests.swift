@@ -3271,6 +3271,94 @@ final class ChainLocalAdmissionTests: XCTestCase {
         )
     }
 
+    func testDuplicateReadmissionPromotesSideBlockThatBecomesHeaviest() async throws {
+        // A cold-syncing host can accept a block into the graph a moment before
+        // the fork-choice landscape that makes it canonical is complete, so it is
+        // stored as a weightless side block. When the completing evidence lands,
+        // the block is re-admitted; because it carries no stronger work it is
+        // classified a duplicate. The duplicate seam must still re-run the
+        // existing fork choice, or the now-heaviest side block is never promoted.
+        //
+        // Pure sequential admission self-heals (a connecting mutation re-projects),
+        // so the stranded landscape is reconstructed directly: a real, heavier
+        // fork present in the durable graph while the canonical projection still
+        // points at a lighter fork — exactly the state the node reaches when the
+        // connecting mutation reaches the graph through the duplicate seam.
+        let fetcher = StorableFetcher()
+        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let incumbent = try await makeChild(
+            of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1
+        )
+        let heavier1 = try await makeChild(
+            of: genesis, fetcher: fetcher, timestamp: 2_500, nonce: 2
+        )
+        let heavier2 = try await makeChild(
+            of: heavier1, fetcher: fetcher, timestamp: 3_500, nonce: 3
+        )
+        let genesisCID = try BlockHeader(node: genesis).rawCID
+        let incumbentCID = try BlockHeader(node: incumbent).rawCID
+        let heavier1CID = try BlockHeader(node: heavier1).rawCID
+        let heavier2CID = try BlockHeader(node: heavier2).rawCID
+
+        // Admit every block through the normal path so the graph records their
+        // real, self-consistent work facts. This level self-heals to the heavier
+        // fork; it is only a source of authentic block metadata.
+        let source = makeLevel(genesis: genesis)
+        for block in [incumbent, heavier1, heavier2] {
+            _ = try await source.admitBlockHeaderChainLocal(
+                try BlockHeader(node: block),
+                fetcher: fetcher,
+                validationContentStorer: fetcher,
+                materializedVolumeStorer: fetcher,
+                stage: testAdmissionStage
+            )
+        }
+        func meta(_ hash: String) async throws -> BlockMeta {
+            let stored = await source.chain.getConsensusBlock(hash: hash)
+            return try XCTUnwrap(stored)
+        }
+        let metas = [
+            try await meta(genesisCID),
+            try await meta(incumbentCID),
+            try await meta(heavier1CID),
+            try await meta(heavier2CID)
+        ]
+
+        // Reconstruct the stranded landscape: the heavier fork is fully present in
+        // the durable graph, but the canonical projection still points at the
+        // lighter incumbent tip.
+        let stranded = ChainLevel(testChain: makeChain(
+            blocks: metas,
+            mainChainHashes: [genesisCID, incumbentCID]
+        ))
+        let strandedTip = await stranded.chain.getMainChainTip()
+        XCTAssertEqual(
+            strandedTip, incumbentCID,
+            "the stranded projection must start on the lighter fork"
+        )
+
+        // Re-admit the heaviest tip. It is already known with equal work, so it is
+        // classified a duplicate. The seam re-runs fork choice and surfaces the
+        // promotion. Pre-fix this returned `.duplicate` with a nil commit.
+        let replay = try await stranded.preflightBlockHeaderChainLocal(
+            try BlockHeader(node: heavier2),
+            fetcher: fetcher,
+            validationContentStorer: fetcher
+        )
+        guard case .duplicate(let token) = replay else {
+            return XCTFail("the known heavier tip must re-admit as a duplicate")
+        }
+        let promoted = try await stranded.resolveDuplicatePreflight(token)
+        let commit = try XCTUnwrap(
+            promoted.result.commit,
+            "the duplicate seam must surface the fork-choice promotion"
+        )
+        XCTAssertTrue(commit.canonicalChanged)
+        XCTAssertEqual(commit.tipHash, heavier2CID)
+        let finalTip = await stranded.chain.getMainChainTip()
+        XCTAssertEqual(finalTip, heavier2CID)
+    }
+
     func testAdmissionReturnsExactChainLocalReorganization() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
@@ -3787,7 +3875,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         await source.disable()
         let resolved = try await level.resolveDuplicatePreflight(duplicate)
 
-        guard case .duplicate(let link, let predecessor) = resolved.result else {
+        guard case .duplicate(let link, let predecessor, _) = resolved.result else {
             return XCTFail("resolved token must remain duplicate")
         }
         XCTAssertEqual(link?.carrierCID, orphanHeader.rawCID)
