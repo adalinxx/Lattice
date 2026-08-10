@@ -834,6 +834,15 @@ private enum ChainLocalAdmission {
         parentCarrierLink: ParentCarrierLink?
     ) -> ChainLocalBlockResult {
         guard let commit = submission.commit else {
+            // Unreachable with a non-nil `submission`, and safe by construction:
+            // `applyStaged` returns a non-nil `SubmissionResult` only via
+            // `submitBlock` (Chain.swift:1226-1231) or `addWorkContribution`
+            // (Chain.swift:1830) — both mutate the durable graph and therefore
+            // run `projectCanonicalChain()` themselves, always producing a
+            // non-nil commit. A no-mutation, stale-heavier outcome instead
+            // returns `nil` (Chain.swift:1877/1907), which `commitPreflight`
+            // handles by re-projecting at :1048. So no fork-choice re-run is
+            // owed here — projection already ran on the mutation path.
             return .duplicate(
                 parentCarrierLink,
                 sameChainPredecessor: sameChainPredecessor
