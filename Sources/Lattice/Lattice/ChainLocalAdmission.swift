@@ -118,7 +118,8 @@ public enum ChainLocalBlockResult: Sendable {
     )
     case duplicate(
         ParentCarrierLink?,
-        sameChainPredecessor: SameChainPredecessorRequirement? = nil
+        sameChainPredecessor: SameChainPredecessorRequirement? = nil,
+        promotedCommit: ChainCommit? = nil
     )
     case rejected(
         ChainAdmissionFailure,
@@ -137,8 +138,8 @@ public enum ChainLocalBlockResult: Sendable {
         switch self {
         case .accepted(let acceptance): acceptance.sameChainPredecessor
         case .carrier(_, let requirement),
-             .duplicate(_, let requirement),
              .rejected(_, _, let requirement): requirement
+        case .duplicate(_, let requirement, _): requirement
         }
     }
 
@@ -154,7 +155,8 @@ public enum ChainLocalBlockResult: Sendable {
     public var commit: ChainCommit? {
         switch self {
         case .accepted(let acceptance): acceptance.commit
-        case .carrier, .duplicate, .rejected: nil
+        case .duplicate(_, _, let promotedCommit): promotedCommit
+        case .carrier, .rejected: nil
         }
     }
 
@@ -166,7 +168,8 @@ public enum ChainLocalBlockResult: Sendable {
     public var parentCarrierLink: ParentCarrierLink? {
         switch self {
         case .accepted(let acceptance): acceptance.parentCarrierLink
-        case .carrier(let link, _), .duplicate(let link, _): link
+        case .carrier(let link, _): link
+        case .duplicate(let link, _, _): link
         case .rejected(_, let link, _): link
         }
     }
@@ -987,10 +990,12 @@ public extension ChainLevel {
         let requirement = await chain.sameChainPredecessorRequirement(
             for: duplicate.carrierLink.carrierCID
         )
+        let promotedCommit = await chain.reevaluateForkChoice()
         return (
             .duplicate(
                 duplicate.carrierLink,
-                sameChainPredecessor: requirement
+                sameChainPredecessor: requirement,
+                promotedCommit: promotedCommit
             ),
             isConnected ? duplicate.parentGenesisLinks : []
         )
@@ -1041,9 +1046,11 @@ public extension ChainLevel {
             for: prepared.resolvedHeader.rawCID
         )
         guard let submission else {
+            let promotedCommit = await chain.reevaluateForkChoice()
             return .duplicate(
                 prepared.carrierLink,
-                sameChainPredecessor: requirement
+                sameChainPredecessor: requirement,
+                promotedCommit: promotedCommit
             )
         }
         return ChainLocalAdmission.result(
