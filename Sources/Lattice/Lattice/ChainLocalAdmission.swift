@@ -118,7 +118,8 @@ public enum ChainLocalBlockResult: Sendable {
     )
     case duplicate(
         ParentCarrierLink?,
-        sameChainPredecessor: SameChainPredecessorRequirement? = nil
+        sameChainPredecessor: SameChainPredecessorRequirement? = nil,
+        promotedCommit: ChainCommit? = nil
     )
     case rejected(
         ChainAdmissionFailure,
@@ -137,8 +138,8 @@ public enum ChainLocalBlockResult: Sendable {
         switch self {
         case .accepted(let acceptance): acceptance.sameChainPredecessor
         case .carrier(_, let requirement),
-             .duplicate(_, let requirement),
              .rejected(_, _, let requirement): requirement
+        case .duplicate(_, let requirement, _): requirement
         }
     }
 
@@ -154,7 +155,8 @@ public enum ChainLocalBlockResult: Sendable {
     public var commit: ChainCommit? {
         switch self {
         case .accepted(let acceptance): acceptance.commit
-        case .carrier, .duplicate, .rejected: nil
+        case .duplicate(_, _, let promotedCommit): promotedCommit
+        case .carrier, .rejected: nil
         }
     }
 
@@ -166,7 +168,8 @@ public enum ChainLocalBlockResult: Sendable {
     public var parentCarrierLink: ParentCarrierLink? {
         switch self {
         case .accepted(let acceptance): acceptance.parentCarrierLink
-        case .carrier(let link, _), .duplicate(let link, _): link
+        case .carrier(let link, _): link
+        case .duplicate(let link, _, _): link
         case .rejected(_, let link, _): link
         }
     }
@@ -831,6 +834,15 @@ private enum ChainLocalAdmission {
         parentCarrierLink: ParentCarrierLink?
     ) -> ChainLocalBlockResult {
         guard let commit = submission.commit else {
+            // Unreachable with a non-nil `submission`, and safe by construction:
+            // `applyStaged` returns a non-nil `SubmissionResult` only via
+            // `submitBlock` (Chain.swift:1226-1231) or `addWorkContribution`
+            // (Chain.swift:1830) — both mutate the durable graph and therefore
+            // run `projectCanonicalChain()` themselves, always producing a
+            // non-nil commit. A no-mutation, stale-heavier outcome instead
+            // returns `nil` (Chain.swift:1877/1907), which `commitPreflight`
+            // handles by re-projecting at :1048. So no fork-choice re-run is
+            // owed here — projection already ran on the mutation path.
             return .duplicate(
                 parentCarrierLink,
                 sameChainPredecessor: sameChainPredecessor
@@ -987,10 +999,12 @@ public extension ChainLevel {
         let requirement = await chain.sameChainPredecessorRequirement(
             for: duplicate.carrierLink.carrierCID
         )
+        let promotedCommit = await chain.reevaluateForkChoice()
         return (
             .duplicate(
                 duplicate.carrierLink,
-                sameChainPredecessor: requirement
+                sameChainPredecessor: requirement,
+                promotedCommit: promotedCommit
             ),
             isConnected ? duplicate.parentGenesisLinks : []
         )
@@ -1041,9 +1055,11 @@ public extension ChainLevel {
             for: prepared.resolvedHeader.rawCID
         )
         guard let submission else {
+            let promotedCommit = await chain.reevaluateForkChoice()
             return .duplicate(
                 prepared.carrierLink,
-                sameChainPredecessor: requirement
+                sameChainPredecessor: requirement,
+                promotedCommit: promotedCommit
             )
         }
         return ChainLocalAdmission.result(
