@@ -23,13 +23,11 @@ public struct ChainSpec: Scalar {
     /// Per-retarget difficulty clamp: a single retarget may move the target at
     /// most this many × in either direction. This is the chain's own committed
     /// manipulation-resistance vs. adaptation-speed choice (tighter = harder to
-    /// grind timestamps, slower to track real hashrate); `nil` means the chain
-    /// did not commit one and the default applies. Not a protocol-imposed
-    /// universal constant — a chain may commit any value it wants and live with
-    /// the consequences.
+    /// grind timestamps, slower to track real hashrate); `nil` — the default —
+    /// commits none, and the windowed retarget applies its proportional
+    /// correction unclamped. There is no protocol-imposed default: a clamp
+    /// exists only when the chain commits one and lives with the consequences.
     public let maxTargetChange: UInt8?
-    /// The clamp applied when a chain commits no `maxTargetChange` of its own.
-    public static let defaultMaxTargetChange: UInt8 = 2
     enum CodingKeys: String, CodingKey {
         case maxNumberOfTransactionsPerBlock
         case maxStateGrowth
@@ -217,7 +215,7 @@ public extension ChainSpec {
                targetBlockTime > 0 &&
                initialReward > 0 &&
                halvingInterval > 0 &&
-               (maxTargetChange ?? ChainSpec.defaultMaxTargetChange) > 0 &&
+               maxTargetChange.map { $0 > 0 } ?? true &&
                retargetWindow > 0
     }
 }
@@ -287,34 +285,38 @@ public extension ChainSpec {
             weightedActual = weightedActual > UInt256.max - weightedSolve ? UInt256.max : weightedActual + weightedSolve
             weightSum = weightSum > UInt256.max - weight ? UInt256.max : weightSum + weight
         }
-        // Zero total solve time = maximally-fast window = maximally harder.
-        // Route it through the clamp (proposed 0 saturates to the lower bound of
-        // previousTarget / maxTargetChange) so a timestamp grind cannot harden
-        // difficulty by more than maxTargetChange× in one step.
-        let adjusted: UInt256
-        if weightedActual > UInt256.zero {
-            let target = UInt256(targetBlockTime)
-            let weightedTarget = target > UInt256.max / weightSum
-                ? UInt256.max
-                : target * weightSum
-            adjusted = multiplyDividingSaturating(previousTarget, by: weightedActual, over: weightedTarget)
-        } else {
-            adjusted = .zero
-        }
+        // Zero total solve time is unreachable in consensus (strictly
+        // increasing timestamps make every interval at least 1 ms); keep the
+        // previous difficulty unchanged for the degenerate direct-call case
+        // rather than proposing an impossible zero target — mirroring the
+        // `calculatePairTarget` guard, and independent of any clamp.
+        guard weightedActual > UInt256.zero else { return previousTarget }
+        let target = UInt256(targetBlockTime)
+        let weightedTarget = target > UInt256.max / weightSum
+            ? UInt256.max
+            : target * weightSum
+        // Integer floor of the representation, not a policy bound: a
+        // proportional correction that rounds to zero would propose target 0,
+        // which rejects every hash and bricks the chain. The smallest
+        // representable difficulty is 1.
+        let adjusted = max(
+            UInt256(1),
+            multiplyDividingSaturating(previousTarget, by: weightedActual, over: weightedTarget)
+        )
         return clampTargetChange(previousTarget: previousTarget, proposed: adjusted)
     }
 
     /// Bound a single retarget step to at most `maxTargetChange`× in either
     /// direction so a miner cannot grind timestamps to swing difficulty by an
-    /// unbounded factor in one window. The clamp factor is the chain's own
-    /// committed `maxTargetChange` (or the default when it commits none), applied
-    /// at the single retarget choke point so the block builder and admission
-    /// validator agree on the clamped value. This clamp is the only bound: there
-    /// is no absolute target floor. A chain that commits `0` (nonsensical) gets no
-    /// clamp rather than a validator trap — its choice, its consequences.
+    /// unbounded factor in one window. The clamp exists only when the chain
+    /// COMMITS a `maxTargetChange` — there is no protocol default; an
+    /// uncommitted spec retargets with the unclamped proportional correction.
+    /// Applied at the single retarget choke point so the block builder and
+    /// admission validator agree on the clamped value. This clamp is the only
+    /// bound: there is no absolute target floor.
     private func clampTargetChange(previousTarget: UInt256, proposed: UInt256) -> UInt256 {
-        let factor = UInt256(UInt64(maxTargetChange ?? ChainSpec.defaultMaxTargetChange))
-        guard factor > .zero else { return proposed }
+        guard let committed = maxTargetChange, committed > 0 else { return proposed }
+        let factor = UInt256(UInt64(committed))
         let upperBound = previousTarget > UInt256.max / factor ? UInt256.max : previousTarget * factor
         let lowerBound = previousTarget / factor
         return min(max(proposed, lowerBound), upperBound)

@@ -5,7 +5,7 @@ import cashew
 
 @MainActor
 final class DifficultyRetargetTests: XCTestCase {
-    private func spec(window: UInt64 = 120, target: UInt64 = 3_600_000) -> ChainSpec {
+    private func spec(window: UInt64 = 120, target: UInt64 = 3_600_000, maxTargetChange: UInt8? = nil) -> ChainSpec {
         ChainSpec(
             maxNumberOfTransactionsPerBlock: 100,
             maxStateGrowth: 100_000,
@@ -14,7 +14,8 @@ final class DifficultyRetargetTests: XCTestCase {
             targetBlockTime: target,
             initialReward: 1024,
             halvingInterval: 10_000,
-            retargetWindow: window
+            retargetWindow: window,
+            maxTargetChange: maxTargetChange
         )
     }
 
@@ -90,11 +91,11 @@ final class DifficultyRetargetTests: XCTestCase {
 
     // MARK: - Proportional-retarget window/clamp invariant (E4.6 /
 
-    /// Bound a single retarget step the way the choke point must: at most
-    /// `maxTargetChange`× in either direction. There is no absolute floor — the
-    /// clamp is the only bound.
-    private func clampBounds(previousTarget: UInt256) -> (lower: UInt256, upper: UInt256) {
-        let factor = UInt256(UInt64(ChainSpec.defaultMaxTargetChange))
+    /// Bound a single retarget step the way the choke point must: at most the
+    /// COMMITTED `maxTargetChange`× in either direction. There is no absolute
+    /// floor — a committed clamp is the only bound, and only when committed.
+    private func clampBounds(previousTarget: UInt256, factor committed: UInt8) -> (lower: UInt256, upper: UInt256) {
+        let factor = UInt256(UInt64(committed))
         let upper = previousTarget > UInt256.max / factor ? UInt256.max : previousTarget * factor
         let lower = previousTarget / factor
         return (lower, upper)
@@ -108,48 +109,70 @@ final class DifficultyRetargetTests: XCTestCase {
         line: UInt = #line
     ) {
         let result = s.calculateWindowedTarget(previousTarget: previousTarget, ancestorTimestamps: ancestorTimestamps)
-        let (lower, upper) = clampBounds(previousTarget: previousTarget)
-
-        // Per-retarget move bounded by maxTargetChange in either direction. This
-        // clamp is the only bound: there is no absolute target floor.
-        XCTAssertLessThanOrEqual(result, upper, "target rose by more than maxTargetChange×", file: file, line: line)
-        XCTAssertGreaterThanOrEqual(result, lower, "target fell by more than maxTargetChange×", file: file, line: line)
+        if let committed = s.maxTargetChange, committed > 0 {
+            // Per-retarget move bounded by the COMMITTED factor in either
+            // direction. The clamp is the only bound: no absolute target floor.
+            let (lower, upper) = clampBounds(previousTarget: previousTarget, factor: committed)
+            XCTAssertLessThanOrEqual(result, upper, "target rose by more than maxTargetChange×", file: file, line: line)
+            XCTAssertGreaterThanOrEqual(result, lower, "target fell by more than maxTargetChange×", file: file, line: line)
+        } else {
+            // Uncommitted = unclamped. Exact LWMA pass-through is asserted by
+            // the targeted tests on tame inputs; under adversarial extremes
+            // the saturating arithmetic legitimately diverges from the naive
+            // oracle, so the property here is the no-brick invariant: the
+            // retarget NEVER proposes the unmineable zero target.
+            XCTAssertGreaterThan(result, .zero, "uncommitted retarget must never propose target zero", file: file, line: line)
+        }
     }
 
-    /// A miner who grinds an enormous solve-time spread must not be able to
-    /// swing difficulty by more than maxTargetChange× in a single retarget.
-    /// Pre-fix this is RED: the unclamped LWMA returns ~max-factor easier.
-    func testGrindedLongSolveTimesClampedToMaxTargetChange() {
-        let s = spec(window: 4, target: 1_000)
+    /// A chain that COMMITS a clamp cannot have difficulty swung by more than
+    /// its committed factor in one retarget; an uncommitted chain retargets by
+    /// the full unclamped LWMA — its committed choice, either way.
+    func testGrindedLongSolveTimesClampedOnlyWhenCommitted() {
+        let unclamped = spec(window: 4, target: 1_000)
+        let clamped = spec(window: 4, target: 1_000, maxTargetChange: 2)
         let previous = UInt256(10_000)
         // Newest-first timestamps with huge gaps ⇒ LWMA wants a far-easier target.
         let timestamps: [Int64] = [1_000_000, 800_000, 500_000, 100_000, 0]
 
         let unclampedOracle = oracleLWMA(
             previousTarget: previous,
-            targetBlockTime: s.targetBlockTime,
-            window: s.retargetWindow,
+            targetBlockTime: unclamped.targetBlockTime,
+            window: unclamped.retargetWindow,
             newestFirstTimestamps: timestamps
         )
-        // Sanity: without a clamp the LWMA blows past the 2× ceiling.
-        XCTAssertGreaterThan(unclampedOracle, previous * UInt256(UInt64(ChainSpec.defaultMaxTargetChange)))
+        // Sanity: the proportional correction blows past a 2× ceiling.
+        XCTAssertGreaterThan(unclampedOracle, previous * UInt256(2))
 
-        let result = s.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: timestamps)
-        XCTAssertEqual(result, previous * UInt256(UInt64(ChainSpec.defaultMaxTargetChange)), "easing must saturate at maxTargetChange×")
-        assertRetargetInvariants(s, previousTarget: previous, ancestorTimestamps: timestamps)
+        // Uncommitted: the unclamped LWMA passes through exactly.
+        XCTAssertEqual(
+            unclamped.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: timestamps),
+            unclampedOracle,
+            "an uncommitted spec must not be clamped by any default"
+        )
+        // Committed: easing saturates at the committed factor.
+        XCTAssertEqual(
+            clamped.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: timestamps),
+            previous * UInt256(2),
+            "easing must saturate at the committed maxTargetChange×"
+        )
+        assertRetargetInvariants(unclamped, previousTarget: previous, ancestorTimestamps: timestamps)
+        assertRetargetInvariants(clamped, previousTarget: previous, ancestorTimestamps: timestamps)
     }
 
-    /// All-zero solve times (every block "instant") drive the LWMA toward zero;
-    /// the clamp must hold the floor at previous / maxTargetChange.
-    func testGrindedZeroSolveTimesClampedToMaxTargetChange() {
-        let s = spec(window: 4, target: 1_000)
+    /// All-zero solve times (every block "instant") are unreachable in
+    /// consensus (strictly increasing timestamps); the degenerate window keeps
+    /// the previous target — never an impossible zero — clamp or no clamp.
+    func testGrindedZeroSolveTimesKeepPreviousTarget() {
         let previous = UInt256(10_000)
-        // Equal timestamps ⇒ zero solve time ⇒ smallest possible target.
+        // Equal timestamps ⇒ zero solve time.
         let timestamps: [Int64] = [5_000, 5_000, 5_000, 5_000, 5_000]
 
-        let result = s.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: timestamps)
-        XCTAssertEqual(result, previous / UInt256(UInt64(ChainSpec.defaultMaxTargetChange)), "hardening must saturate at previous / maxTargetChange")
-        assertRetargetInvariants(s, previousTarget: previous, ancestorTimestamps: timestamps)
+        for s in [spec(window: 4, target: 1_000), spec(window: 4, target: 1_000, maxTargetChange: 2)] {
+            let result = s.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: timestamps)
+            XCTAssertEqual(result, previous, "a zero-solve window must keep the previous target")
+        }
+        assertRetargetInvariants(spec(window: 4, target: 1_000), previousTarget: previous, ancestorTimestamps: timestamps)
     }
 
     /// The window must consume at most `retargetWindow` intervals: timestamps
@@ -246,12 +269,21 @@ final class DifficultyRetargetTests: XCTestCase {
             ),
             previous
         )
+        // A one-interval window is definitionally the pair formula, so the
+        // extreme range must ease unclamped to exactly the pair target (and
+        // never trap on the saturated elapsed time).
+        let extreme = s.calculateWindowedTarget(
+            previousTarget: previous,
+            ancestorTimestamps: [.max, .min]
+        )
+        XCTAssertGreaterThan(extreme, previous)
         XCTAssertEqual(
-            s.calculateWindowedTarget(
+            extreme,
+            s.calculateMinimumTarget(
                 previousTarget: previous,
-                ancestorTimestamps: [.max, .min]
-            ),
-            previous * UInt256(UInt64(ChainSpec.defaultMaxTargetChange))
+                blockTimestamp: .max,
+                previousTimestamp: .min
+            )
         )
     }
 
