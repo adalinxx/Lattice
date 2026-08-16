@@ -123,15 +123,18 @@ transaction Volume and transaction body. Each CID's canonical bytes count once.
 The contents of the chain spec, wasm modules, parent blocks, all state Volumes,
 child blocks, and admission evidence are independent Volumes and do not count.
 
-**Chain-committed retarget clamp (default):**
+**Chain-committed retarget clamp (opt-in):**
 
 ```
-maxTargetChange = 2   // ChainSpec default; a chain may commit its own value
+maxTargetChange = nil   // ChainSpec default: no clamp; a chain may commit one
 ```
 
 The per-retarget clamp factor is the chain's own committed
-`ChainSpec.maxTargetChange`; the default above applies only when a chain commits
-none. There is no protocol-imposed difficulty floor and no protocol-wide difficulty
+`ChainSpec.maxTargetChange`; a chain that commits none retargets by the
+unclamped proportional correction — there is no protocol default. The only
+arithmetic bound is the integer floor of the representation: a correction that
+rounds to zero proposes target 1 (the smallest representable difficulty), never
+the unmineable zero target. There is no protocol-imposed difficulty floor and no protocol-wide difficulty
 constant. The positive `ChainSpec` values are chain-selected validity. Storage, transport,
 bootstrap-spec, and parent-witness ceilings are node-local acquisition policy,
 not common consensus constants. A node may decline to operate a chain whose
@@ -318,8 +321,8 @@ A non-genesis nexus block `B` with previous block `P` is valid if and only if:
    admission — a future block is deferred until real time reaches its timestamp,
    never permanently rejected. The attempt captures `validationContext.now` once.
 6. `B.target <= P.nextTarget` (as hard or harder than scheduled, never easier),
-   and `B.nextTarget` equals section 5.5's clamped proportional retarget computed
-   from `B.target`
+   and `B.nextTarget` equals section 5.5's proportional retarget computed from
+   `B.target` (clamped only by the chain's committed `maxTargetChange`, if any)
 7. All transactions pass `validateTransactionForNexus()`:
    - Signatures are valid over the `lattice-tx-v1` envelope
    - Signers match signature public keys

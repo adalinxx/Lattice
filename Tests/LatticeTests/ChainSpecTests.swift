@@ -67,8 +67,9 @@ final class ChainSpecTests: XCTestCase {
         )
     }
 
-    /// A chain commits its own retarget clamp; committing none uses the default.
-    /// The choice is observable in content identity and drives the clamp factor.
+    /// A chain commits its own retarget clamp; committing none means UNCLAMPED
+    /// proportional retargeting — there is no protocol default. The choice is
+    /// observable in content identity and drives the clamp factor.
     func testChainCommittedMaxTargetChangeOptInAndDefault() throws {
         let defaultSpec = retargetSpec()
         let looseSpec = retargetSpec(maxTargetChange: 3)
@@ -81,12 +82,14 @@ final class ChainSpecTests: XCTestCase {
         let looseCID = try VolumeImpl<ChainSpec>(node: looseSpec).rawCID
         XCTAssertNotEqual(defaultCID, looseCID)
 
-        // A hard-easing window saturates at the chain's committed factor.
+        // A hard-easing window saturates at the chain's committed factor; a
+        // chain that commits none gets the full proportional correction
+        // (weighted mean 260s vs the 1s target ⇒ ×260 easier).
         let previous = UInt256(10_000)
         let easing: [Int64] = [1_000_000, 800_000, 500_000, 100_000, 0]
         XCTAssertEqual(
             defaultSpec.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: easing),
-            previous * UInt256(UInt64(ChainSpec.defaultMaxTargetChange))
+            UInt256(2_600_000)
         )
         XCTAssertEqual(
             looseSpec.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: easing),
@@ -115,10 +118,9 @@ final class ChainSpecTests: XCTestCase {
         XCTAssertFalse(zeroSpec.isValid)
         let previous = UInt256(10_000)
         let easing: [Int64] = [1_000_000, 800_000, 500_000, 100_000, 0]
-        // Runs to completion (no divide-by-zero trap) and, unclamped, eases past
-        // the default 2× ceiling.
+        // Runs to completion (no divide-by-zero trap) and behaves unclamped.
         let result = zeroSpec.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: easing)
-        XCTAssertGreaterThan(result, previous * UInt256(UInt64(ChainSpec.defaultMaxTargetChange)))
+        XCTAssertEqual(result, UInt256(2_600_000))
     }
 
     // MARK: - Basic Properties Tests
@@ -143,7 +145,7 @@ final class ChainSpecTests: XCTestCase {
         XCTAssertEqual(chainSpec.targetBlockTime, 600_000)
         XCTAssertEqual(chainSpec.initialReward, 1_048_576)
         XCTAssertEqual(chainSpec.halvingInterval, 210_000)
-        XCTAssertEqual(ChainSpec.defaultMaxTargetChange, 2)
+        XCTAssertNil(chainSpec.maxTargetChange)
         XCTAssertEqual(chainSpec.wasmPolicies.count, 2)
     }
 
@@ -549,8 +551,6 @@ final class ChainSpecTests: XCTestCase {
     }
 
     func testBlockchainConventionCompliance() {
-        XCTAssertEqual(ChainSpec.defaultMaxTargetChange, 2)
-
         let bitcoin = ChainSpec.bitcoin
         XCTAssertEqual(bitcoin.maxNumberOfTransactionsPerBlock, 3000)
         XCTAssertEqual(bitcoin.premine, 0)
