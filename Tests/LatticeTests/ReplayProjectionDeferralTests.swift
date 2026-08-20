@@ -98,7 +98,15 @@ final class ReplayProjectionDeferralTests: XCTestCase {
         }
 
         // Replayed: the full batch set through restore, projection deferred.
-        let restored = try await ChainState.restore(replaying: batches.shuffled())
+        // Deterministically adversarial order — fully reversed, so every child
+        // precedes its parent and every carrier grind precedes its block —
+        // exercising replay's own height/work ordering; the incremental
+        // reference above covers the natural order. (Deliberately not
+        // shuffled(): a random permutation would turn any order-dependence
+        // bug into an unreproducible flake.)
+        let restored = try await ChainState.restore(
+            replaying: Array(batches.reversed())
+        )
 
         // Consensus state must be identical — tip, membership, and the whole
         // by-height index.
