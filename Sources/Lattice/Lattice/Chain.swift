@@ -599,6 +599,19 @@ public actor ChainState {
     private var localWorkCachesDirty: Bool
 
     var mainChainBlockAtIndex: [UInt64: String]
+    /// Generation at which the canonical projection was last brought current
+    /// BY AN ACTUAL PROJECTION. Every graph/weight mutation flows through
+    /// submitBlock or addWorkContribution, both of which advance
+    /// `mutationGeneration`, so equality proves the projection is exact and
+    /// re-projection is a no-op. `nil` = never verified: the package
+    /// initializer can construct a deliberately stale projection (simulation
+    /// and tests do), so currency is only ever established by projecting.
+    private var projectedGeneration: UInt64?
+    /// Restore-replay defers the derived canonical projection: batches are
+    /// durable, already-admitted facts, their commits are discarded, and no
+    /// replay step reads the projection — so it is computed exactly once at
+    /// the end of replay instead of per event.
+    private var deferProjectionForReplay = false
     var blockTimestamps: [String: Int64]
     /// Advances for every successful consensus mutation.
     var mutationGeneration: UInt64
@@ -821,13 +834,31 @@ public actor ChainState {
         )
         // The node may enumerate its durable facts in any order. Replay the seed
         // batch too: its existing block/work record makes that a no-op.
+        // The projection is a derived cache and no replay step reads it, so it
+        // is deferred across the whole replay and computed exactly once —
+        // replay is O(batches), not O(batches × chain length).
+        await chain.beginReplayProjectionDeferral()
         try await replay(batches[...], onto: chain)
+        await chain.completeReplayProjectionDeferral()
         await chain.sealRecovery(revisionFloor: revisionFloor)
         return chain
     }
 
     private func sealRecovery(revisionFloor: UInt64) {
         mutationGeneration = max(mutationGeneration, revisionFloor)
+    }
+
+    private func beginReplayProjectionDeferral() {
+        deferProjectionForReplay = true
+    }
+
+    /// End of restore-replay: compute the deferred canonical projection once.
+    /// `forceFull` bypasses the unchanged-spine early return — the incremental
+    /// spine was deliberately not maintained during the deferral.
+    private func completeReplayProjectionDeferral() {
+        deferProjectionForReplay = false
+        _ = projectCanonicalChain(forceFull: true)
+        tipSnapshot = tipSnapshotsByHash[chainTip]
     }
 
     private static func replay(
@@ -898,9 +929,16 @@ public actor ChainState {
     @discardableResult
     public func reevaluateForkChoice() -> ChainCommit? {
         guard hasUnreservedMutationCapacity else { return nil }
+        // No graph or weight fact has changed since the projection was last
+        // brought current, so re-projection is provably a no-op: a duplicate
+        // delivery that added nothing cannot promote anything.
+        guard mutationGeneration != projectedGeneration else { return nil }
         let canonicalChange = projectCanonicalChain()
         guard canonicalChange != nil else { return nil }
+        // This bump carries no graph mutation, so the projection just computed
+        // stays exact for the new generation.
         mutationGeneration += 1
+        projectedGeneration = mutationGeneration
         return (canonicalChange ?? ChainCommit(tipHash: chainTip))
             .atRevision(mutationGeneration)
     }
@@ -1224,7 +1262,9 @@ public actor ChainState {
         mutationGeneration += 1
 
         let canonicalChange: ChainCommit?
-        if canAppendCanonicalTip(blockHash, parentHash: input.parentBlockHash, oldTip: oldTip) {
+        if deferProjectionForReplay {
+            canonicalChange = nil
+        } else if canAppendCanonicalTip(blockHash, parentHash: input.parentBlockHash, oldTip: oldTip) {
             canonicalChange = appendCanonicalTip(blockHash)
         } else {
             canonicalChange = projectCanonicalChain()
@@ -1827,7 +1867,7 @@ public actor ChainState {
         applyForkChoiceContribution(contribution, to: blockHash)
         mutationGeneration += 1
 
-        let canonicalChange = projectCanonicalChain()
+        let canonicalChange = deferProjectionForReplay ? nil : projectCanonicalChain()
         if canonicalChange != nil {
             tipSnapshot = tipSnapshotsByHash[chainTip]
         }
@@ -2520,6 +2560,7 @@ public actor ChainState {
 
     private func appendCanonicalTip(_ blockHash: String) -> ChainCommit {
         let block = hashToBlock[blockHash]!
+        defer { projectedGeneration = mutationGeneration }
         chainTip = blockHash
         mainChainHashes.insert(blockHash)
         mainChainBlockAtIndex[block.blockHeight] = blockHash
@@ -2532,6 +2573,7 @@ public actor ChainState {
     }
 
     private func projectCanonicalChain(forceFull: Bool = false) -> ChainCommit? {
+        defer { projectedGeneration = mutationGeneration }
         let roots = Array(indexToBlockHash[0] ?? []).filter {
             hashToBlock[$0]?.parentBlockHash == nil
         }
