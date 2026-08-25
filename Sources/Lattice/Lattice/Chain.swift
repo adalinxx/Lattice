@@ -865,17 +865,26 @@ public actor ChainState {
         _ batches: ArraySlice<ChainAdmissionBatch>,
         onto chain: ChainState
     ) async throws {
-        var pending = Array(batches)
+        // Sort keys are derived from immutable batch content, so authenticate
+        // each batch ONCE and sort ONCE: the old per-comparison
+        // `TrustedAdmissionBatch` construction re-decoded both operands' block
+        // facts on every comparison, making a cold-start restore
+        // O(N log N x decode) per round — hours of CPU on a long chain. A
+        // sorted array's deferred subsequence keeps its relative order, so
+        // later rounds never need re-sorting either.
+        var pending = batches.map { batch in
+            (batch: batch, key: TrustedAdmissionBatch(batch))
+        }
+        pending.sort { replayPrecedes($0.key, $1.key) }
         while !pending.isEmpty {
-            pending.sort(by: replayPrecedes)
-            var deferred: [ChainAdmissionBatch] = []
+            var deferred: [(batch: ChainAdmissionBatch, key: TrustedAdmissionBatch?)] = []
             var completed = false
-            for batch in pending {
+            for entry in pending {
                 do {
-                    _ = try await chain.replay(batch)
+                    _ = try await chain.replay(entry.batch)
                     completed = true
                 } catch ChainStateRestoreError.missingBlockFact {
-                    deferred.append(batch)
+                    deferred.append(entry)
                 }
             }
             guard completed else {
@@ -886,11 +895,10 @@ public actor ChainState {
     }
 
     private static func replayPrecedes(
-        _ left: ChainAdmissionBatch,
-        _ right: ChainAdmissionBatch
+        _ left: TrustedAdmissionBatch?,
+        _ right: TrustedAdmissionBatch?
     ) -> Bool {
-        guard let left = TrustedAdmissionBatch(left),
-              let right = TrustedAdmissionBatch(right) else { return false }
+        guard let left, let right else { return false }
         switch (left.block, right.block) {
         case let (leftBlock?, rightBlock?)
         where leftBlock.blockHeight != rightBlock.blockHeight:
