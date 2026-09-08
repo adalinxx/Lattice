@@ -453,6 +453,58 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
             await assertMatchesReference(restored, seed: seed, event: "fact replay")
         }
     }
+
+    /// The safety net for the exclusion seam: drive random block insertions AND
+    /// random invalidity exclusions in random order, and after every step assert
+    /// the live filtered fork choice is byte-identical to the slow reference
+    /// oracle over the same excluded closure. This pins the single-index
+    /// integration (no parallel path) against the independent oracle across
+    /// insert/exclude interleavings — including exclusions of load-bearing
+    /// blocks that demote the tip, and later inserts under excluded subtrees.
+    func testRandomExclusionsMatchReferenceOracle() async throws {
+        for seed in UInt64(0)..<24 {
+            var random = DifferentialRandom(seed: seed &* 2_654_435_761 &+ 1)
+            let blocks = plannedBlocks(seed: seed, random: &random)
+            let chain = try await ChainState.restore(replaying: [
+                admission(for: blocks[0]),
+            ])
+
+            var present: [PlannedDifferentialBlock] = [blocks[0]]
+            var pendingInsert = Array(blocks.dropFirst())
+            var excluded = Set<String>()
+
+            while !pendingInsert.isEmpty {
+                // Randomly either insert the next block or exclude a present,
+                // non-root, not-yet-excluded block.
+                let doExclude = random.nextInt(3) == 0
+                if doExclude,
+                   let target = present.first(where: {
+                       $0.parentHash != nil && !excluded.contains($0.hash)
+                   }) {
+                    _ = try? await chain.applyStaged(exclusionBatch(for: target))
+                    excluded.insert(target.hash)
+                } else {
+                    let next = pendingInsert.removeFirst()
+                    _ = try await chain.applyStaged(admission(for: next))
+                    present.append(next)
+                }
+                await assertMatchesReferenceWithExclusions(
+                    chain, seed: seed, event: "interleaved op"
+                )
+            }
+
+            // A final sweep of exclusions over whatever remains.
+            for candidate in present where candidate.parentHash != nil {
+                if excluded.contains(candidate.hash) { continue }
+                if random.nextInt(2) == 0 { continue }
+                _ = try? await chain.applyStaged(exclusionBatch(for: candidate))
+                excluded.insert(candidate.hash)
+                await assertMatchesReferenceWithExclusions(
+                    chain, seed: seed, event: "final exclusion"
+                )
+            }
+        }
+    }
 }
 
 private struct PlannedDifferentialBlock {
@@ -549,6 +601,42 @@ private func assertMatchesReference(
     let livePath = await chain.mainChainHashes
     XCTAssertEqual(liveTip, expected.chainTip, "seed \(seed), \(event): tip", file: file, line: line)
     XCTAssertEqual(livePath, expected.mainChainHashes, "seed \(seed), \(event): path", file: file, line: line)
+}
+
+private func exclusionBatch(
+    for block: PlannedDifferentialBlock
+) -> ChainAdmissionBatch {
+    ChainAdmissionBatch(facts: [
+        .exclusion(ChainExclusionFact(blockHash: block.hash)),
+    ])
+}
+
+private func assertMatchesReferenceWithExclusions(
+    _ chain: ChainState,
+    seed: UInt64,
+    event: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async {
+    let blocks = await chain.hashToBlock
+    let closure = await chain.excludedClosureForTesting
+    let liveTip = await chain.getMainChainTip()
+    let livePath = await chain.mainChainHashes
+    guard let expected = ChainState.referenceCanonicalProjection(
+        in: blocks, excluding: closure
+    ) else {
+        // The only projectionless case here is every root excluded; the live
+        // tip must then also be unreachable from a non-excluded root.
+        return
+    }
+    XCTAssertEqual(
+        liveTip, expected.chainTip,
+        "seed \(seed), \(event): tip", file: file, line: line
+    )
+    XCTAssertEqual(
+        livePath, expected.mainChainHashes,
+        "seed \(seed), \(event): path", file: file, line: line
+    )
 }
 
 private struct DifferentialRandom {

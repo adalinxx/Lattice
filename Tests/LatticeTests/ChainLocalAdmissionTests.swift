@@ -499,9 +499,12 @@ final class ChainLocalAdmissionTests: XCTestCase {
                 expectedFailure: .providerMalformedEvidence
             ),
             ResolutionCase(
-                name: "unknown local verifier failure",
+                // Fail-safe: an unrecognized error is not a completed
+                // deterministic check, so it classifies as retryable, never as
+                // an excluding verdict (validated-tier invalidity-exclusion).
+                name: "unknown failure classifies as retryable, not a verdict",
                 fetcher: UnknownFailingAdmissionFetcher(),
-                expectedFailure: .localVerificationFailure
+                expectedFailure: .unavailableEvidence
             )
         ]
         let header = try BlockHeader(node: candidate)
@@ -863,6 +866,23 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let eagerBlockFact = try XCTUnwrap(blockFact(eagerAcceptance))
         let validatedBlockFact = try XCTUnwrap(blockFact(validatedAcceptance))
         XCTAssertEqual(validatedBlockFact, eagerBlockFact)
+    }
+
+    func testUnknownErrorClassifiesAsRetryableNotExcluding() {
+        // Fail-safe: an unenumerated error type is not a completed deterministic
+        // check, so both classifier catch-alls must route it to retryable
+        // `.unavailableEvidence`, never to an excluding verdict. Otherwise a new
+        // error type on any fetch/IO path becomes a silent consensus split.
+        struct UnrecognizedError: Error {}
+        let unknown = UnrecognizedError()
+
+        let validation = ChainLevel.classifyValidationFailureForTesting(unknown)
+        XCTAssertEqual(validation, .unavailableEvidence)
+        XCTAssertFalse(ChainLevel.isDeterministicInvalidityForTesting(validation))
+
+        let resolution = ChainLevel.classifyResolutionFailureForTesting(unknown)
+        XCTAssertEqual(resolution, .unavailableEvidence)
+        XCTAssertFalse(ChainLevel.isDeterministicInvalidityForTesting(resolution))
     }
 
     func testDeterministicInvalidityPartitionsAvailabilityFromVerdict() {

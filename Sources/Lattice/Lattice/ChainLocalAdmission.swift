@@ -1073,7 +1073,10 @@ private func classifyResolutionFailure(_ error: Error) -> ChainAdmissionFailure 
     if error is CashewDecodingError || error is ResolutionErrors {
         return .protocolInvalid
     }
-    return .localVerificationFailure
+    // An unenumerated error is not a completed deterministic check, so it must
+    // NOT exclude: fail toward retry. A future error type on any fetch/IO path
+    // would otherwise become a silent consensus-split vector.
+    return .unavailableEvidence
 }
 
 private func mapProofFailure(
@@ -1119,14 +1122,18 @@ private func classifyValidationFailure(_ error: Error) -> ChainAdmissionFailure 
         case .contextEncodingFailed:
             return .localVerificationFailure
         default:
-            return .protocolInvalid
+            // An unenumerated policy outcome is not a completed verdict: retry,
+            // never exclude, so a new case can never silently fork the network.
+            return .unavailableEvidence
         }
     }
     if error is StateErrors || error is ProofErrors
         || error is CashewDecodingError || error is ResolutionErrors {
         return .protocolInvalid
     }
-    return .localVerificationFailure
+    // Unenumerated error: not a completed deterministic check → retry, exclude
+    // nothing. Enumerated deterministic producers above keep excluding.
+    return .unavailableEvidence
 }
 
 private func classifyDataError(_ error: DataErrors) -> ChainAdmissionFailure {
@@ -1151,6 +1158,20 @@ public extension ChainLevel {
         _ failure: ChainAdmissionFailure
     ) -> Bool {
         ChainLocalAdmission.isDeterministicInvalidity(failure)
+    }
+
+    /// Test seam for the fail-safe classifier catch-alls: an unrecognized error
+    /// must classify as retryable, never as an excluding verdict.
+    static func classifyValidationFailureForTesting(
+        _ error: Error
+    ) -> ChainAdmissionFailure {
+        classifyValidationFailure(error)
+    }
+
+    static func classifyResolutionFailureForTesting(
+        _ error: Error
+    ) -> ChainAdmissionFailure {
+        classifyResolutionFailure(error)
     }
 #endif
 
