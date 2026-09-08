@@ -1170,13 +1170,16 @@ public actor ChainState {
     public func subtreeWeight(forHash hash: String) -> WorkSum? {
         guard hashToBlock[hash] != nil else { return nil }
         if !excludedClosure.isEmpty {
-            let filtered = forkChoiceBlocks()
-            guard filtered[hash] != nil else { return .zero }
+            // Excluded (or excluded-descendant) blocks weigh zero; every other
+            // block's subtree is measured with the excluded subtrees skipped, so
+            // this stays consistent with the live filtered fork choice.
+            guard !excludedClosure.contains(hash) else { return .zero }
             let measures = Self.effectiveSubtreeMeasures(
                 startingAt: [hash],
                 retaining: [hash],
-                in: filtered,
-                strongestWork: Self.strongestWorkByGrind(in: filtered)
+                in: hashToBlock,
+                strongestWork: Self.strongestWorkByGrind(in: hashToBlock),
+                excluding: excludedClosure
             )
             return measures[hash]?.total ?? .zero
         }
@@ -1297,17 +1300,24 @@ public actor ChainState {
             graftsExistingComponent: graftsExistingComponent
         )
         if !result.addedBlock { return result }
-        noteInsertionForExclusion(
+        let excludedInsertion = input.parentBlockHash
+            .map { excludedClosure.contains($0) } ?? false
+        let needsRebuild = noteInsertionForExclusion(
             blockHash: blockHash,
             parentHash: input.parentBlockHash
         )
         mutationGeneration += 1
+        if needsRebuild { rebuildForkChoiceIndices() }
 
         let canonicalChange: ChainCommit?
         if deferProjectionForReplay {
             canonicalChange = nil
-        } else if excludedClosure.isEmpty,
-                  canAppendCanonicalTip(blockHash, parentHash: input.parentBlockHash, oldTip: oldTip) {
+        } else if needsRebuild {
+            canonicalChange = projectCanonicalChain(forceFull: true)
+        } else if excludedInsertion {
+            // Gated excluded insert: never entered fork choice, nothing reorgs.
+            canonicalChange = nil
+        } else if canAppendCanonicalTip(blockHash, parentHash: input.parentBlockHash, oldTip: oldTip) {
             canonicalChange = appendCanonicalTip(blockHash)
         } else {
             canonicalChange = projectCanonicalChain()
@@ -1344,8 +1354,13 @@ public actor ChainState {
         addToBlockIndex(hash: blockHash, blockHeight: input.blockHeight)
 
         let childHashes = findChildren(hash: blockHash, blockHeight: input.blockHeight)
-        let parentChildCount = input.parentBlockHash.flatMap {
-            hashToBlock[$0]?.childHashes.count
+        // Count only children that are actually in the segment index. Excluded
+        // children remain in the served `childHashes` but were never routed, so
+        // the split/extend decision must ignore them.
+        let parentChildCount = input.parentBlockHash.flatMap { parent in
+            hashToBlock[parent]?.childHashes.filter {
+                !excludedClosure.contains($0)
+            }.count
         } ?? 0
         let meta = BlockMeta(
             blockHash: blockHash,
@@ -1367,28 +1382,37 @@ public actor ChainState {
         for contribution in contributions {
             applyLocalContribution(contribution, to: blockHash)
         }
-        if graftsExistingComponent {
-            // These graph and work-location invariants were validated before
-            // this private reducer. Never continue with a partial consensus
-            // index if an internal invariant is broken.
-            precondition(
-                graftConnectedComponent(
-                    rootedAt: blockHash,
-                    parentChildCount: parentChildCount
-                ),
-                "validated orphan component could not be routed"
-            )
-        } else if childHashes.isEmpty {
-            precondition(
-                extendSegmentIndex(
-                    for: blockHash,
-                    parentChildCount: parentChildCount
-                ),
-                "validated leaf could not be routed"
-            )
-        }
+        // Insert gate: a block descending from an excluded (proven-invalid) block
+        // is stored and served but MUST NOT enter fork choice — it never routes
+        // into the segment index and its work is never contributed. This keeps
+        // the single index filtered incrementally, so no per-insert rebuild is
+        // needed for excluded-subtree spam. (An out-of-order orphan routed before
+        // its excluded parent connected is folded and reconciled by a one-time
+        // rebuild in `noteInsertionForExclusion`.)
+        let isExcludedInsertion = input.parentBlockHash
+            .map { excludedClosure.contains($0) } ?? false
+        if !isExcludedInsertion {
+            if graftsExistingComponent {
+                // These graph and work-location invariants were validated before
+                // this private reducer. Never continue with a partial consensus
+                // index if an internal invariant is broken.
+                precondition(
+                    graftConnectedComponent(
+                        rootedAt: blockHash,
+                        parentChildCount: parentChildCount
+                    ),
+                    "validated orphan component could not be routed"
+                )
+            } else if childHashes.isEmpty {
+                precondition(
+                    extendSegmentIndex(
+                        for: blockHash,
+                        parentChildCount: parentChildCount
+                    ),
+                    "validated leaf could not be routed"
+                )
+            }
 
-        if !graftsExistingComponent {
             for contribution in contributions {
                 applyForkChoiceContribution(contribution, to: blockHash)
             }
@@ -1657,8 +1681,10 @@ public actor ChainState {
     ) -> Bool {
         guard let parentBase = segmentIndex.base(forBlock: parentHash),
               let parentLocation = segmentIndex.locationByBlock[parentHash],
+              // The sibling being split away is the parent's other ROUTED child;
+              // excluded children stay in `childHashes` but not in the index.
               let oldChild = hashToBlock[parentHash]?.childHashes.first(
-                  where: { $0 != newChildHash }
+                  where: { $0 != newChildHash && !excludedClosure.contains($0) }
               )
         else { return false }
         // A previous orphan graft may already have left a transparent
@@ -1907,10 +1933,18 @@ public actor ChainState {
         }
         guard hasUnreservedMutationCapacity else { return .discarded() }
         applyLocalContribution(contribution, to: blockHash)
-        applyForkChoiceContribution(contribution, to: blockHash)
+        // A stronger observation on an excluded block is stored and served, but
+        // its work never re-enters this node's fork choice — an excluded subtree
+        // is never resurrected by piling on work.
+        let excluded = excludedClosure.contains(blockHash)
+        if !excluded {
+            applyForkChoiceContribution(contribution, to: blockHash)
+        }
         mutationGeneration += 1
 
-        let canonicalChange = deferProjectionForReplay ? nil : projectCanonicalChain()
+        let canonicalChange = (deferProjectionForReplay || excluded)
+            ? nil
+            : projectCanonicalChain()
         if canonicalChange != nil {
             tipSnapshot = tipSnapshotsByHash[chainTip]
         }
@@ -2021,6 +2055,13 @@ public actor ChainState {
         }
         excludedRoots.insert(blockHash)
         recomputeExcludedClosure()
+        // Rebuild the single segment index from the exclusion-filtered graph
+        // ONCE. The excluded subtree was routed before it was proven invalid, so
+        // its work must leave the index; rebuilding (vs. an incremental Fenwick
+        // subtraction fighting the split/graft accounting) reuses the exact,
+        // tested restore builders. O(N) only at this rare, work-gated event —
+        // never per read or per insert.
+        rebuildForkChoiceIndices()
         mutationGeneration += 1
         let canonicalChange = deferProjectionForReplay
             ? nil
@@ -2053,8 +2094,8 @@ public actor ChainState {
 
     /// The fork-choice view of the graph: `hashToBlock` with excluded subtrees
     /// removed and excluded children stripped from their parents. Identical to
-    /// `hashToBlock` (no copy) when nothing is excluded — the common case and
-    /// every pre-exclusion test path.
+    /// `hashToBlock` (no copy) when nothing is excluded. Materialized only to
+    /// rebuild the segment index at an exclusion event — never per projection.
     private func forkChoiceBlocks() -> [String: BlockMeta] {
         guard !excludedClosure.isEmpty else { return hashToBlock }
         var filtered: [String: BlockMeta] = [:]
@@ -2069,15 +2110,47 @@ public actor ChainState {
         return filtered
     }
 
-    /// Fold a freshly inserted block into the excluded closure when it descends
-    /// from an already-excluded block. Its work never enters this node's fork
-    /// choice, though the block and its facts remain served.
+    /// Rebuild the segment quotient and its work index from the current
+    /// exclusion-filtered graph, using the same builders as restore. The spine
+    /// is left empty for the caller's forced re-projection to recompute.
+    private func rebuildForkChoiceIndices() {
+        let filtered = forkChoiceBlocks()
+        segmentIndex = Self.makeSegmentIndex(in: filtered)
+        workByGrind = Self.workIndex(in: filtered)
+        segmentWorkIndex = Self.buildSegmentWorkIndex(
+            index: segmentIndex,
+            workByGrind: &workByGrind
+        )
+        canonicalSegmentSpine = []
+        localWorkCachesDirty = true
+#if DEBUG
+        segmentCacheRebuildCount += 1
+#endif
+    }
+
+    /// Fold a freshly inserted block that descends from an excluded block into
+    /// the closure. Its work never counts in this node's fork choice, though the
+    /// block and its facts remain served. Returns `true` when a folded block had
+    /// already been routed (an out-of-order orphan attached before its excluded
+    /// parent connected), so the caller rebuilds the filtered index once.
     private func noteInsertionForExclusion(
         blockHash: String,
         parentHash: String?
-    ) {
-        guard let parentHash, excludedClosure.contains(parentHash) else { return }
-        excludedClosure.insert(blockHash)
+    ) -> Bool {
+        guard let parentHash, excludedClosure.contains(parentHash) else {
+            return false
+        }
+        var routedBlockFolded = false
+        var pending = [blockHash]
+        while let hash = pending.popLast() {
+            guard excludedClosure.insert(hash).inserted,
+                  let meta = hashToBlock[hash] else { continue }
+            if segmentIndex.locationByBlock[hash] != nil {
+                routedBlockFolded = true
+            }
+            pending.append(contentsOf: meta.childHashes)
+        }
+        return routedBlockFolded
     }
 
     /// Rebuild one already-durable admission fact during recovery. Callers must
@@ -2206,30 +2279,36 @@ public actor ChainState {
         startingAt startHashes: [String],
         retaining retainedHashes: Set<String>,
         in blocks: [String: BlockMeta],
-        strongestWork: [String: UInt256]
+        strongestWork: [String: UInt256],
+        excluding: Set<String> = []
     ) -> [String: WorkMeasure] {
         var order: [String] = []
-        var pending = startHashes
+        var pending = startHashes.filter { !excluding.contains($0) }
         var visited = Set<String>()
         while let hash = pending.popLast() {
             guard visited.insert(hash).inserted,
                   let meta = blocks[hash] else { continue }
             order.append(hash)
-            pending.append(contentsOf: meta.childHashes)
+            pending.append(contentsOf: meta.childHashes.filter {
+                !excluding.contains($0)
+            })
         }
 
         var accumulators: [String: WorkMeasure] = [:]
         var retained: [String: WorkMeasure] = [:]
         for hash in order.reversed() {
             guard let meta = blocks[hash] else { continue }
-            let largestChild = meta.childHashes.max {
+            let children = excluding.isEmpty
+                ? meta.childHashes
+                : meta.childHashes.filter { !excluding.contains($0) }
+            let largestChild = children.max {
                 (accumulators[$0]?.entries.count ?? 0)
                     < (accumulators[$1]?.entries.count ?? 0)
             }
             var measure = largestChild.flatMap {
                 accumulators.removeValue(forKey: $0)
             } ?? .zero
-            for childHash in meta.childHashes where childHash != largestChild {
+            for childHash in children where childHash != largestChild {
                 if let child = accumulators.removeValue(forKey: childHash) {
                     measure.formUnion(child)
                 }
@@ -2391,14 +2470,20 @@ public actor ChainState {
         among hashes: [String],
         weights: [String: WorkSum]
     ) -> String? {
-        guard var selected = hashes.first, weights[selected] != nil else { return nil }
-        for candidate in hashes.dropFirst() {
-            guard let candidateWork = weights[candidate],
-                  let selectedWork = weights[selected] else { continue }
+        // Skip candidates with no weight (e.g. an excluded base whose subtree
+        // was removed from fork choice) rather than bailing when the FIRST is
+        // weightless — selection must not depend on child ordering.
+        var selected: String?
+        for candidate in hashes {
+            guard let candidateWork = weights[candidate] else { continue }
+            guard let current = selected, let selectedWork = weights[current] else {
+                selected = candidate
+                continue
+            }
             if candidateWork > selectedWork ||
                 (candidateWork == selectedWork && forkChoicePrefersSegmentBase(
                     candidate,
-                    over: selected
+                    over: current
                 )) {
                 selected = candidate
             }
@@ -2410,15 +2495,18 @@ public actor ChainState {
         among hashes: [String],
         workIndex: SegmentWorkIndex
     ) -> String? {
-        guard var selected = hashes.first,
-              workIndex.subtreeWork(forBase: selected) != nil else { return nil }
-        for candidate in hashes.dropFirst() {
-            guard let candidateWork = workIndex.subtreeWork(forBase: candidate),
-                  let selectedWork = workIndex.subtreeWork(forBase: selected)
+        var selected: String?
+        for candidate in hashes {
+            guard let candidateWork = workIndex.subtreeWork(forBase: candidate)
             else { continue }
+            guard let current = selected,
+                  let selectedWork = workIndex.subtreeWork(forBase: current) else {
+                selected = candidate
+                continue
+            }
             if candidateWork > selectedWork
                 || (candidateWork == selectedWork
-                    && forkChoicePrefersSegmentBase(candidate, over: selected)) {
+                    && forkChoicePrefersSegmentBase(candidate, over: current)) {
                 selected = candidate
             }
         }
@@ -2430,33 +2518,22 @@ public actor ChainState {
     func chainWithMostWork(
         startingBlock: BlockMeta
     ) -> (subtreeWork: WorkSum, tipHash: String, blocks: Set<String>) {
-        if !excludedClosure.isEmpty {
-            let filtered = forkChoiceBlocks()
-            guard filtered[startingBlock.blockHash] != nil else {
-                return (.zero, startingBlock.blockHash, [startingBlock.blockHash])
-            }
-            let direct = Self.referenceGhostDescent(
-                from: startingBlock.blockHash,
-                in: filtered
-            )
-            let measures = Self.effectiveSubtreeMeasures(
-                startingAt: [startingBlock.blockHash],
-                retaining: [startingBlock.blockHash],
-                in: filtered,
-                strongestWork: Self.strongestWorkByGrind(in: filtered)
-            )
-            return (
-                measures[startingBlock.blockHash]?.total ?? .zero,
-                direct.tipHash,
-                direct.blocks
-            )
+        // An excluded start point contributes nothing and descends nowhere.
+        if excludedClosure.contains(startingBlock.blockHash) {
+            return (.zero, startingBlock.blockHash, [startingBlock.blockHash])
         }
+        // The segment index is kept filtered (excluded work removed at exclusion
+        // time, excluded inserts never routed), so its weights are already
+        // exclusion-correct. `excluding` only steers the childHashes traversal
+        // past excluded siblings still present in the served graph. Both are
+        // no-ops when nothing is excluded — the steady-state path is unchanged.
         let start = hashToBlock[startingBlock.blockHash] ?? startingBlock
         if let descent = Self.segmentGhostDescent(
             from: start.blockHash,
             in: hashToBlock,
             index: segmentIndex,
-            workIndex: segmentWorkIndex
+            workIndex: segmentWorkIndex,
+            excluding: excludedClosure
         ) {
             let baseWeight = segmentWorkIndex.subtreeWork(
                 forBase: start.blockHash
@@ -2466,7 +2543,8 @@ public actor ChainState {
         }
         let direct = Self.referenceGhostDescent(
             from: start.blockHash,
-            in: hashToBlock
+            in: hashToBlock,
+            excluding: excludedClosure
         )
         return (
             effectiveSubtreeWork(for: start.blockHash),
@@ -2480,7 +2558,8 @@ public actor ChainState {
             startingAt: [blockHash],
             retaining: [blockHash],
             in: hashToBlock,
-            strongestWork: Self.strongestWorkByGrind(in: hashToBlock)
+            strongestWork: Self.strongestWorkByGrind(in: hashToBlock),
+            excluding: excludedClosure
         )
         return measure[blockHash]?.total ?? .zero
     }
@@ -2491,7 +2570,8 @@ public actor ChainState {
         from startHash: String,
         in blocksByHash: [String: BlockMeta],
         index: SegmentIndex,
-        workIndex: SegmentWorkIndex
+        workIndex: SegmentWorkIndex,
+        excluding: Set<String> = []
     ) -> [CanonicalSegment]? {
         var currentHash = startHash
         var spine: [CanonicalSegment] = []
@@ -2503,7 +2583,13 @@ public actor ChainState {
             else { return nil }
             spine.append(CanonicalSegment(base: base, tail: tail))
 
-            let children = blocksByHash[tail]?.childHashes ?? []
+            // An excluded child is not in fork choice: a tail whose only children
+            // are excluded is a canonical tip.
+            let children = excluding.isEmpty
+                ? (blocksByHash[tail]?.childHashes ?? [])
+                : (blocksByHash[tail]?.childHashes ?? []).filter {
+                    !excluding.contains($0)
+                }
             guard !children.isEmpty else {
                 return spine
             }
@@ -2527,13 +2613,15 @@ public actor ChainState {
         in blocksByHash: [String: BlockMeta],
         index: SegmentIndex,
         workIndex: SegmentWorkIndex,
-        spine suppliedSpine: [CanonicalSegment]? = nil
+        spine suppliedSpine: [CanonicalSegment]? = nil,
+        excluding: Set<String> = []
     ) -> (tipHash: String, blocks: Set<String>, spine: [CanonicalSegment])? {
         guard let spine = suppliedSpine ?? segmentGhostSpine(
             from: startHash,
             in: blocksByHash,
             index: index,
-            workIndex: workIndex
+            workIndex: workIndex,
+            excluding: excluding
         ) else { return nil }
 
         var selectedBlocks = Set<String>()
@@ -2545,8 +2633,12 @@ public actor ChainState {
                     return nil
                 }
                 if segmentHash == segment.tail { break }
-                guard let children = blocksByHash[segmentHash]?.childHashes,
-                      children.count == 1 else {
+                let children = excluding.isEmpty
+                    ? (blocksByHash[segmentHash]?.childHashes ?? [])
+                    : (blocksByHash[segmentHash]?.childHashes ?? []).filter {
+                        !excluding.contains($0)
+                    }
+                guard children.count == 1 else {
                     return nil
                 }
                 segmentHash = children[0]
@@ -2567,11 +2659,17 @@ public actor ChainState {
     nonisolated private static func referenceGhostDescent(
         from startHash: String,
         in blocksByHash: [String: BlockMeta],
-        weights: [String: WorkSum]
+        weights: [String: WorkSum],
+        excluding: Set<String> = []
     ) -> (tipHash: String, blocks: Set<String>) {
         var currentHash = startHash
         var blocks: Set<String> = [currentHash]
-        while let children = blocksByHash[currentHash]?.childHashes, !children.isEmpty {
+        while true {
+            let allChildren = blocksByHash[currentHash]?.childHashes ?? []
+            let children = excluding.isEmpty
+                ? allChildren
+                : allChildren.filter { !excluding.contains($0) }
+            guard !children.isEmpty else { break }
             let next: String?
             if children.count == 1 {
                 next = children[0]
@@ -2590,18 +2688,21 @@ public actor ChainState {
     /// from raw work facts rather than trusting a potentially stale cache.
     nonisolated private static func referenceGhostDescent(
         from startHash: String,
-        in blocksByHash: [String: BlockMeta]
+        in blocksByHash: [String: BlockMeta],
+        excluding: Set<String> = []
     ) -> (tipHash: String, blocks: Set<String>) {
         let measures = effectiveSubtreeMeasures(
             startingAt: [startHash],
             retaining: Set(blocksByHash.keys),
             in: blocksByHash,
-            strongestWork: strongestWorkByGrind(in: blocksByHash)
+            strongestWork: strongestWorkByGrind(in: blocksByHash),
+            excluding: excluding
         )
         return referenceGhostDescent(
             from: startHash,
             in: blocksByHash,
-            weights: measures.mapValues(\.total)
+            weights: measures.mapValues(\.total),
+            excluding: excluding
         )
     }
 
@@ -2666,41 +2767,6 @@ public actor ChainState {
             in: blocksByHash
         )
         return (direct.tipHash, direct.blocks)
-    }
-
-    /// Re-project canonical selection over the exclusion-filtered graph. Used
-    /// only while a proven-invalid subtree exists; it recomputes from the
-    /// filtered map (reusing the full-rebuild projection) rather than trusting
-    /// the incremental caches, which still describe the unfiltered graph.
-    private func projectExcludedCanonicalChain() -> ChainCommit? {
-        canonicalSegmentSpine = []
-        guard let projection = Self.canonicalProjection(in: forkChoiceBlocks())
-        else { return nil }
-        let newTip = projection.chainTip
-        let newHashes = projection.mainChainHashes
-        guard newTip != chainTip || newHashes != mainChainHashes else {
-            return nil
-        }
-        let removed = mainChainHashes.subtracting(newHashes)
-        let added = newHashes.subtracting(mainChainHashes).reduce(
-            into: [String: UInt64]()
-        ) { result, hash in
-            if let height = hashToBlock[hash]?.blockHeight { result[hash] = height }
-        }
-        chainTip = newTip
-        mainChainHashes = newHashes
-        mainChainBlockAtIndex = [:]
-        for hash in newHashes {
-            if let height = hashToBlock[hash]?.blockHeight {
-                mainChainBlockAtIndex[height] = hash
-            }
-        }
-        tipSnapshot = tipSnapshotsByHash[newTip]
-        return ChainCommit(
-            tipHash: newTip,
-            mainChainBlocksAdded: added,
-            mainChainBlocksRemoved: removed
-        )
     }
 
     /// Reference oracle over an exclusion-filtered graph, used by differential
@@ -2779,11 +2845,15 @@ public actor ChainState {
 
     private func projectCanonicalChain(forceFull: Bool = false) -> ChainCommit? {
         defer { projectedGeneration = mutationGeneration }
-        if !excludedClosure.isEmpty {
-            return projectExcludedCanonicalChain()
-        }
+        // The segment index is kept filtered, so ONE projection path serves both
+        // the exclusion-free and exclusion-present cases. `excluding` is empty in
+        // the common case (zero cost); when set it only steers traversal past
+        // excluded siblings still present in the served graph. The fast
+        // `spine == canonicalSegmentSpine` early-out and `canAppendCanonicalTip`
+        // therefore keep working under an active exclusion — no parallel path.
         let roots = Array(indexToBlockHash[0] ?? []).filter {
             hashToBlock[$0]?.parentBlockHash == nil
+                && !excludedClosure.contains($0)
         }
         guard let root = Self.preferred(among: roots, workIndex: segmentWorkIndex)
         else { return nil }
@@ -2791,7 +2861,8 @@ public actor ChainState {
             from: root,
             in: hashToBlock,
             index: segmentIndex,
-            workIndex: segmentWorkIndex
+            workIndex: segmentWorkIndex,
+            excluding: excludedClosure
         )
         if !forceFull,
            let spine,
@@ -2807,11 +2878,13 @@ public actor ChainState {
             in: hashToBlock,
             index: segmentIndex,
             workIndex: segmentWorkIndex,
-            spine: spine
+            spine: spine,
+            excluding: excludedClosure
         ) ?? {
             let direct = Self.referenceGhostDescent(
                 from: root,
-                in: hashToBlock
+                in: hashToBlock,
+                excluding: excludedClosure
             )
             return (direct.tipHash, direct.blocks, [])
         }()

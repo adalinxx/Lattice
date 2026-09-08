@@ -152,6 +152,118 @@ final class DeferredExecutionExclusionTests: XCTestCase {
         XCTAssertEqual(restoredPath, expectedPath)
     }
 
+    /// Closure completeness under orphan admission: a descendant admitted BEFORE
+    /// its excluded parent connects (child-before-parent via orphan attach) is
+    /// still folded into the excluded closure and contributes zero to both fork
+    /// choice and its subtree weight.
+    func testOrphanDescendantOfExcludedRootIsFoldedAndZeroWeight() async throws {
+        // G → R (excluded) → B → C, plus a valid competing chain L1 → L2.
+        let g = block("g", parent: nil, work: 3)
+        let r = block("r", parent: g, work: 5)
+        let b = block("b", parent: r, work: 5)
+        let c = block("c", parent: b, work: 5)
+        let l1 = block("l1", parent: g, work: 4)
+        let l2 = block("l2", parent: l1, work: 4)
+
+        let chain = try await ChainState.restore(replaying: [admission(for: g)])
+        // R and the valid chain exist; B and C do not yet.
+        _ = try await chain.applyStaged(admission(for: r))
+        _ = try await chain.applyStaged(admission(for: l1))
+        _ = try await chain.applyStaged(admission(for: l2))
+
+        // Prove R invalid while B, C are still absent.
+        _ = try await chain.applyStaged(exclusion(of: r))
+
+        // C arrives before its parent B — an orphan attach (C routes normally,
+        // since B is not yet in the closure).
+        _ = try await chain.applyStaged(admission(for: c))
+        // B connects under the excluded root R, folding B AND the already-present
+        // orphan C into the closure.
+        _ = try await chain.applyStaged(admission(for: b))
+
+        let closure = await chain.excludedClosureForTesting
+        XCTAssertTrue(closure.contains(r.hash))
+        XCTAssertTrue(closure.contains(b.hash))
+        XCTAssertTrue(
+            closure.contains(c.hash),
+            "orphan descendant folded into the excluded closure"
+        )
+
+        // C weighs zero and is not on the main chain; the tip is the valid chain.
+        let cWeight = await chain.subtreeWeight(forHash: c.hash)
+        XCTAssertEqual(cWeight, .zero)
+        let path = await chain.mainChainHashes
+        XCTAssertFalse(path.contains(c.hash))
+        XCTAssertFalse(path.contains(b.hash))
+        let tip = await chain.getMainChainTip()
+        XCTAssertEqual(tip, l2.hash)
+
+        // Matches the reference oracle over the same exclusion.
+        let blocks = await chain.hashToBlock
+        let expected = ChainState.referenceCanonicalProjection(
+            in: blocks, excluding: closure
+        )
+        XCTAssertEqual(tip, expected?.chainTip)
+        XCTAssertEqual(path, expected?.mainChainHashes)
+    }
+
+    /// Complexity regression (the DoS the audit confirmed): with an exclusion
+    /// active, spamming losing side blocks must NOT trigger a full canonical
+    /// projection per insert — the single filtered segment index keeps the fast
+    /// spine early-out working, so the full-projection counter stays bounded.
+    func testSideBlockSpamUnderExclusionDoesNotFullyProjectPerInsert() async throws {
+        let (chain, g, h, _, _) = try await buildForkedChain()
+        _ = try await chain.applyStaged(exclusion(of: h[0]))
+
+        let baseline = await chain.fullCanonicalProjectionCount
+        // Many losing side blocks hung off genesis (height 1), none of which
+        // changes the winning spine.
+        for index in 0..<200 {
+            let sibling = PlannedBlock(
+                hash: testCID("exclusion-spam-\(index)"),
+                parentHash: g.hash,
+                height: 1,
+                work: 1
+            )
+            _ = try await chain.applyStaged(admission(for: sibling))
+        }
+        let after = await chain.fullCanonicalProjectionCount
+        XCTAssertLessThanOrEqual(
+            after - baseline,
+            5,
+            "200 losing side blocks under an exclusion must not each force a full projection"
+        )
+    }
+
+    /// Replay presenting an `.exclusion` batch STRICTLY BEFORE its block must
+    /// defer-and-retry (not corrupt), then reproject identically to the live
+    /// order. Exercises the missing-block defer path in `applyExclusion`.
+    func testExclusionStrictlyBeforeBlockDefersAndReprojectsIdentically() async throws {
+        let (chain, _, h, l, batches) = try await buildForkedChain()
+        _ = try await chain.applyStaged(exclusion(of: h[0]))
+        let expectedTip = await chain.getMainChainTip()
+        let expectedPath = await chain.mainChainHashes
+        XCTAssertEqual(expectedTip, l[1].hash)
+
+        // Durable order: genesis first (restore needs a root), then the exclusion
+        // BEFORE any of H1/H2/H3/L1/L2 — so it must defer until H1 arrives.
+        var durable = [batches[0]]
+        durable.append(exclusion(of: h[0]))
+        durable.append(contentsOf: batches.dropFirst())
+
+        let restored = try await ChainState.restore(replaying: durable)
+        let restoredTip = await restored.getMainChainTip()
+        let restoredPath = await restored.mainChainHashes
+        XCTAssertEqual(restoredTip, expectedTip)
+        XCTAssertEqual(restoredPath, expectedPath)
+
+        // And the excluded subtree is genuinely excluded after recovery.
+        let closure = await restored.excludedClosureForTesting
+        for excluded in h {
+            XCTAssertTrue(closure.contains(excluded.hash))
+        }
+    }
+
     /// A miner cannot resurrect an excluded subtree by piling on more work: a
     /// heavier extension of the excluded chain is still never acted on.
     func testHeavierExtensionOfExcludedChainNeverResurrectsTip() async throws {
