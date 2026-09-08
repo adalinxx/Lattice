@@ -272,6 +272,14 @@ fileprivate struct PreparedAdmission: Sendable {
     /// which re-derives and emits it once the block is executed. `var` only so
     /// the synthesized memberwise init can default it; never mutated.
     var defersHierarchyIssuance: Bool = false
+    /// A weighed admission possesses the block for fork choice but MUST NOT
+    /// resolve or store the block BODY (tier-3: transaction bodies, validation-
+    /// path states, WASM policy modules, genesis empty-state). Only the block
+    /// BOUNDARY is stored, so the ~74% of below-tip blocks that never become
+    /// canonical never fetch their bodies. The body is fetched+stored later, only
+    /// if/when the block is validated (`.validate`/`.eager` keep storing it).
+    /// `var` only so the synthesized memberwise init can default it; never mutated.
+    var defersBodyStore: Bool = false
 
     var facts: ChainAdmissionBatch {
         // An exclusion is a standalone verdict: exactly one `.exclusion` fact,
@@ -316,10 +324,21 @@ fileprivate struct PreparedAdmission: Sendable {
         case .evidence, .exclusion:
             return
         case .block:
-            try await resolvedHeader.storeBlock(
-                fetcher: fetcher,
-                storer: validationContentStorer
-            )
+            // A weighed admission stores only the block boundary (root node + tx
+            // /children tries) — never the body (tx bodies, validation-path
+            // states, WASM modules, genesis empty-state). Every other tier stores
+            // the full block unchanged.
+            if defersBodyStore {
+                try await resolvedHeader.storeBlockBoundary(
+                    fetcher: fetcher,
+                    storer: validationContentStorer
+                )
+            } else {
+                try await resolvedHeader.storeBlock(
+                    fetcher: fetcher,
+                    storer: validationContentStorer
+                )
+            }
         }
     }
 
@@ -740,7 +759,8 @@ private enum ChainLocalAdmission {
                 verifiedCarrierLink: carrier.issuableLink,
                 sameChainPredecessor: carrier.sameChainPredecessor,
                 kind: .block(StateDiff.empty, nil),
-                defersHierarchyIssuance: true
+                defersHierarchyIssuance: true,
+                defersBodyStore: true
             ))
         }
 

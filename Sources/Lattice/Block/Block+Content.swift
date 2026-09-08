@@ -126,6 +126,28 @@ public extension VolumeImpl where NodeType == Block {
         try await resolve(paths: Block.contentResolutionPaths, fetcher: fetcher)
     }
 
+    /// Store ONLY this block's own Volume boundary: the root node plus its
+    /// in-boundary transaction and child commitment tries. The transaction bodies,
+    /// chain spec, prev/parent/post state, parent block, child blocks, and WASM
+    /// policy modules are all independent nested Volumes and are deliberately
+    /// excluded — none is resolved or stored. This is the tier-2 possession a
+    /// weighed (not-yet-executed) block needs: it is servable and locally present
+    /// for fork choice, but its body is deferred until the block is validated.
+    ///
+    /// The tries are resolved `.list` (structure only, leaf Volumes left
+    /// unresolved) so no transaction-body / child-block Volume is fetched, then
+    /// the single block boundary Volume is stored.
+    func storeBlockBoundary(fetcher: any Fetcher, storer: any VolumeStorer) async throws {
+        let content = try await resolve(
+            paths: [
+                [TRANSACTIONS_PROPERTY, ""]: .list,
+                [CHILDREN_PROPERTY, ""]: .list,
+            ],
+            fetcher: fetcher
+        )
+        try await content.store(storer: storer)
+    }
+
     /// Store the complete block Volume and exactly the nested Volumes needed to
     /// validate it. Policy modules are independent Volumes; parent blocks and
     /// post-state remain independent roots with caller-owned retention policy.

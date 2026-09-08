@@ -791,6 +791,111 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(weighedBlockFact.stateDiff, StateDiff.empty)
     }
 
+    func testWeighedAdmissionStoresOnlyBlockBoundaryNotBody() async throws {
+        // Tier-2 body deferral: a `.weighed` admission stores the block BOUNDARY
+        // (root node + tx/children tries — so the block is servable and locally
+        // present for fork choice) but MUST NOT resolve or store tier-3 (tx
+        // bodies, validation-path states, WASM modules, genesis empty-state).
+        let fetcher = StorableFetcher()
+        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let candidate = try await buildAndStoreBlock(
+            previous: genesis,
+            transactions: [signedStateChangingGenesisTransaction(
+                key: "boundary-tx",
+                chainPath: [DEFAULT_ROOT_DIRECTORY]
+            )],
+            timestamp: 2_000,
+            target: easy,
+            nonce: 1,
+            fetcher: fetcher
+        )
+        // The transaction changes state, so the post-state is a distinct, real
+        // tier-3 Volume — not the empty state.
+        XCTAssertNotEqual(candidate.postState.rawCID, candidate.prevState.rawCID)
+        let candidateHash = try BlockHeader(node: candidate).rawCID
+
+        // A fresh store receives ONLY what the weighed admission chooses to store.
+        let boundaryStore = StorableFetcher()
+        let weighed = try await makeLevel(genesis: genesis).admitBlockHeaderChainLocal(
+            try BlockHeader(node: candidate),
+            fetcher: fetcher,
+            validationContentStorer: boundaryStore,
+            materializedVolumeStorer: NoopStorer(),
+            mode: .weighed,
+            stage: testAdmissionStage
+        )
+        guard case .accepted = weighed else {
+            return XCTFail("weighed admission must accept, got \(weighed)")
+        }
+
+        // The block boundary is present (servable/possessable at tier-2)...
+        XCTAssertTrue(boundaryStore.contains(rawCid: candidateHash))
+        // ...while every tier-3 body Volume is absent: chain spec, and both the
+        // prev and post validation-path states.
+        XCTAssertFalse(boundaryStore.contains(rawCid: candidate.spec.rawCID))
+        XCTAssertFalse(boundaryStore.contains(rawCid: candidate.prevState.rawCID))
+        XCTAssertFalse(boundaryStore.contains(rawCid: candidate.postState.rawCID))
+
+        // The stored boundary is complete: reading it back over the boundary
+        // store alone succeeds (a body-less store still serves the boundary).
+        try await BlockHeader(node: candidate).storeBlockBoundary(
+            fetcher: boundaryStore,
+            storer: NoopStorer()
+        )
+    }
+
+    func testWeighedCompletesWithBodylessFetcherWhileEagerFails() async throws {
+        // The bandwidth payoff, proven as a differential: a fetcher that serves
+        // ONLY the block boundary (root + tries) and has NO tx bodies / states /
+        // spec lets a weighed admission COMPLETE, but makes the same block's
+        // eager admission FAIL — the weighed path genuinely never touched tier-3.
+        let full = StorableFetcher()
+        let genesis = try await makeGenesis(fetcher: full, timestamp: 1_000)
+        let candidate = try await buildAndStoreBlock(
+            previous: genesis,
+            transactions: [signedStateChangingGenesisTransaction(
+                key: "bodyless-tx",
+                chainPath: [DEFAULT_ROOT_DIRECTORY]
+            )],
+            timestamp: 2_000,
+            target: easy,
+            nonce: 1,
+            fetcher: full
+        )
+        let header = try BlockHeader(node: candidate)
+
+        // A fetcher holding ONLY the candidate's block boundary — no body.
+        let bodyless = StorableFetcher()
+        try await header.storeBlockBoundary(fetcher: full, storer: bodyless)
+
+        // Weighed admission succeeds against the body-less fetcher.
+        let weighed = try await makeLevel(genesis: genesis).admitBlockHeaderChainLocal(
+            header,
+            fetcher: bodyless,
+            validationContentStorer: NoopStorer(),
+            materializedVolumeStorer: NoopStorer(),
+            mode: .weighed,
+            stage: testAdmissionStage
+        )
+        guard case .accepted = weighed else {
+            return XCTFail("weighed admission must accept with a body-less fetcher, got \(weighed)")
+        }
+
+        // The SAME block admitted eager against the SAME body-less fetcher fails:
+        // eager resolves and executes tier-3, which the fetcher cannot serve.
+        let eager = try await makeLevel(genesis: genesis).admitBlockHeaderChainLocal(
+            header,
+            fetcher: bodyless,
+            validationContentStorer: NoopStorer(),
+            materializedVolumeStorer: NoopStorer(),
+            stage: testAdmissionStage
+        )
+        guard case .rejected = eager else {
+            return XCTFail("eager admission must fail with a body-less fetcher, got \(eager)")
+        }
+        XCTAssertEqual(eager.failure, .unavailableEvidence)
+    }
+
     func testValidateTierExecutesLikeEagerAndMaterializesState() async throws {
         // Validated tier (deferred execution): `.validate` executes a block and
         // records the validity verdict. On a valid block it does exactly what
