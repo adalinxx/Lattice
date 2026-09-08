@@ -598,6 +598,18 @@ public actor ChainState {
     /// fork-choice inputs and are rebuilt only when an API exposes them.
     private var localWorkCachesDirty: Bool
 
+    /// Roots of proven-invalid subtrees (deferred-execution validated tier: a
+    /// block whose execution completed and FAILED). Rebuilt on recovery from the
+    /// durable `.exclusion` facts. `excludedClosure` is the derived set of every
+    /// block reachable from an excluded root, extended as descendants arrive.
+    ///
+    /// These express a CHAIN-LOCAL weighting decision only: excluded blocks and
+    /// their work facts stay in `hashToBlock`/`workContributions`, served and
+    /// exported unchanged. They are simply subtracted from this node's own fork
+    /// choice — the invalidity-exclusion seam of weight-first-acquisition.
+    private var excludedRoots: Set<String> = []
+    private var excludedClosure: Set<String> = []
+
     var mainChainBlockAtIndex: [UInt64: String]
     /// Generation at which the canonical projection was last brought current
     /// BY AN ACTUAL PROJECTION. Every graph/weight mutation flows through
@@ -1157,6 +1169,17 @@ public actor ChainState {
     /// The same-chain subtree measure of `hash`, deduplicated by grind identity.
     public func subtreeWeight(forHash hash: String) -> WorkSum? {
         guard hashToBlock[hash] != nil else { return nil }
+        if !excludedClosure.isEmpty {
+            let filtered = forkChoiceBlocks()
+            guard filtered[hash] != nil else { return .zero }
+            let measures = Self.effectiveSubtreeMeasures(
+                startingAt: [hash],
+                retaining: [hash],
+                in: filtered,
+                strongestWork: Self.strongestWorkByGrind(in: filtered)
+            )
+            return measures[hash]?.total ?? .zero
+        }
         materializeLocalWorkCachesIfNeeded()
         return hashToBlock[hash]?.subtreeWeight
     }
@@ -1164,6 +1187,7 @@ public actor ChainState {
     /// Public simulator/test view of the real local fork-choice descent.
     public func forkChoiceSnapshot(startingAt hash: String) -> ForkChoiceSnapshot? {
         guard let meta = hashToBlock[hash],
+              !excludedClosure.contains(hash),
               segmentIndex.base(forBlock: hash) != nil else { return nil }
         let choice = chainWithMostWork(startingBlock: meta)
         return ForkChoiceSnapshot(
@@ -1194,6 +1218,12 @@ public actor ChainState {
     /// the unchanged unary canonical path.
     func resetFullCanonicalProjectionCount() {
         fullCanonicalProjectionCount = 0
+    }
+
+    /// Test-only view of the derived exclusion closure so a differential test
+    /// can drive the reference oracle over the same filtered graph.
+    var excludedClosureForTesting: Set<String> {
+        excludedClosure
     }
 #endif
 
@@ -1267,12 +1297,17 @@ public actor ChainState {
             graftsExistingComponent: graftsExistingComponent
         )
         if !result.addedBlock { return result }
+        noteInsertionForExclusion(
+            blockHash: blockHash,
+            parentHash: input.parentBlockHash
+        )
         mutationGeneration += 1
 
         let canonicalChange: ChainCommit?
         if deferProjectionForReplay {
             canonicalChange = nil
-        } else if canAppendCanonicalTip(blockHash, parentHash: input.parentBlockHash, oldTip: oldTip) {
+        } else if excludedClosure.isEmpty,
+                  canAppendCanonicalTip(blockHash, parentHash: input.parentBlockHash, oldTip: oldTip) {
             canonicalChange = appendCanonicalTip(blockHash)
         } else {
             canonicalChange = projectCanonicalChain()
@@ -1903,6 +1938,9 @@ public actor ChainState {
     /// admission and recovery share this reducer so staging is the only
     /// linearization point.
     func applyStaged(_ batch: ChainAdmissionBatch) throws -> SubmissionResult? {
+        if let excluded = Self.exclusionTarget(of: batch) {
+            return try applyExclusion(blockHash: excluded)
+        }
         guard let trusted = TrustedAdmissionBatch(batch) else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
@@ -1959,6 +1997,87 @@ public actor ChainState {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
         return submission
+    }
+
+    /// An exclusion batch is exactly one `.exclusion` fact. Any other shape is
+    /// handled by the block/work reducer.
+    private static func exclusionTarget(of batch: ChainAdmissionBatch) -> String? {
+        guard batch.facts.count == 1,
+              case .exclusion(let fact) = batch.facts[0] else { return nil }
+        return CIDIdentity.canonicalString(fact.blockHash)
+    }
+
+    /// Record a proven-invalid subtree root. The block must already be present:
+    /// a not-yet-connected exclusion defers exactly like a work fact whose block
+    /// has not arrived, so replay retries it once the subtree exists.
+    private func applyExclusion(blockHash: String) throws -> SubmissionResult? {
+        guard hashToBlock[blockHash] != nil else {
+            throw ChainStateRestoreError.missingBlockFact
+        }
+        // Idempotent: a duplicate exclusion adds nothing and cannot reorg.
+        if excludedRoots.contains(blockHash) { return nil }
+        guard hasUnreservedMutationCapacity else {
+            throw ChainStateRestoreError.corruptConsensusGraph
+        }
+        excludedRoots.insert(blockHash)
+        recomputeExcludedClosure()
+        mutationGeneration += 1
+        let canonicalChange = deferProjectionForReplay
+            ? nil
+            : projectCanonicalChain(forceFull: true)
+        if canonicalChange != nil {
+            tipSnapshot = tipSnapshotsByHash[chainTip]
+        }
+        return SubmissionResult(
+            addedBlock: false,
+            addedContribution: false,
+            extendsMainChain: false,
+            commit: (canonicalChange ?? ChainCommit(tipHash: chainTip))
+                .atRevision(mutationGeneration)
+        )
+    }
+
+    /// The transitive closure of `excludedRoots` over the current graph. Called
+    /// when a root is recorded; the insert path extends it incrementally as
+    /// descendants of an already-excluded block arrive.
+    private func recomputeExcludedClosure() {
+        var closure = Set<String>()
+        var pending = Array(excludedRoots)
+        while let hash = pending.popLast() {
+            guard closure.insert(hash).inserted,
+                  let meta = hashToBlock[hash] else { continue }
+            pending.append(contentsOf: meta.childHashes)
+        }
+        excludedClosure = closure
+    }
+
+    /// The fork-choice view of the graph: `hashToBlock` with excluded subtrees
+    /// removed and excluded children stripped from their parents. Identical to
+    /// `hashToBlock` (no copy) when nothing is excluded — the common case and
+    /// every pre-exclusion test path.
+    private func forkChoiceBlocks() -> [String: BlockMeta] {
+        guard !excludedClosure.isEmpty else { return hashToBlock }
+        var filtered: [String: BlockMeta] = [:]
+        filtered.reserveCapacity(hashToBlock.count)
+        for (hash, meta) in hashToBlock where !excludedClosure.contains(hash) {
+            var visible = meta
+            visible.childHashes = meta.childHashes.filter {
+                !excludedClosure.contains($0)
+            }
+            filtered[hash] = visible
+        }
+        return filtered
+    }
+
+    /// Fold a freshly inserted block into the excluded closure when it descends
+    /// from an already-excluded block. Its work never enters this node's fork
+    /// choice, though the block and its facts remain served.
+    private func noteInsertionForExclusion(
+        blockHash: String,
+        parentHash: String?
+    ) {
+        guard let parentHash, excludedClosure.contains(parentHash) else { return }
+        excludedClosure.insert(blockHash)
     }
 
     /// Rebuild one already-durable admission fact during recovery. Callers must
@@ -2311,6 +2430,27 @@ public actor ChainState {
     func chainWithMostWork(
         startingBlock: BlockMeta
     ) -> (subtreeWork: WorkSum, tipHash: String, blocks: Set<String>) {
+        if !excludedClosure.isEmpty {
+            let filtered = forkChoiceBlocks()
+            guard filtered[startingBlock.blockHash] != nil else {
+                return (.zero, startingBlock.blockHash, [startingBlock.blockHash])
+            }
+            let direct = Self.referenceGhostDescent(
+                from: startingBlock.blockHash,
+                in: filtered
+            )
+            let measures = Self.effectiveSubtreeMeasures(
+                startingAt: [startingBlock.blockHash],
+                retaining: [startingBlock.blockHash],
+                in: filtered,
+                strongestWork: Self.strongestWorkByGrind(in: filtered)
+            )
+            return (
+                measures[startingBlock.blockHash]?.total ?? .zero,
+                direct.tipHash,
+                direct.blocks
+            )
+        }
         let start = hashToBlock[startingBlock.blockHash] ?? startingBlock
         if let descent = Self.segmentGhostDescent(
             from: start.blockHash,
@@ -2528,6 +2668,63 @@ public actor ChainState {
         return (direct.tipHash, direct.blocks)
     }
 
+    /// Re-project canonical selection over the exclusion-filtered graph. Used
+    /// only while a proven-invalid subtree exists; it recomputes from the
+    /// filtered map (reusing the full-rebuild projection) rather than trusting
+    /// the incremental caches, which still describe the unfiltered graph.
+    private func projectExcludedCanonicalChain() -> ChainCommit? {
+        canonicalSegmentSpine = []
+        guard let projection = Self.canonicalProjection(in: forkChoiceBlocks())
+        else { return nil }
+        let newTip = projection.chainTip
+        let newHashes = projection.mainChainHashes
+        guard newTip != chainTip || newHashes != mainChainHashes else {
+            return nil
+        }
+        let removed = mainChainHashes.subtracting(newHashes)
+        let added = newHashes.subtracting(mainChainHashes).reduce(
+            into: [String: UInt64]()
+        ) { result, hash in
+            if let height = hashToBlock[hash]?.blockHeight { result[hash] = height }
+        }
+        chainTip = newTip
+        mainChainHashes = newHashes
+        mainChainBlockAtIndex = [:]
+        for hash in newHashes {
+            if let height = hashToBlock[hash]?.blockHeight {
+                mainChainBlockAtIndex[height] = hash
+            }
+        }
+        tipSnapshot = tipSnapshotsByHash[newTip]
+        return ChainCommit(
+            tipHash: newTip,
+            mainChainBlocksAdded: added,
+            mainChainBlocksRemoved: removed
+        )
+    }
+
+    /// Reference oracle over an exclusion-filtered graph, used by differential
+    /// tests: the same slow per-block projection, applied to `blocksByHash` with
+    /// the excluded closure removed and excluded children stripped.
+    nonisolated static func referenceCanonicalProjection(
+        in blocksByHash: [String: BlockMeta],
+        excluding excludedClosure: Set<String>
+    ) -> (chainTip: String, mainChainHashes: Set<String>)? {
+        guard !excludedClosure.isEmpty else {
+            return referenceCanonicalProjection(in: blocksByHash)
+        }
+        var filtered: [String: BlockMeta] = [:]
+        filtered.reserveCapacity(blocksByHash.count)
+        for (hash, meta) in blocksByHash where !excludedClosure.contains(hash) {
+            var visible = meta
+            visible.childHashes = meta.childHashes.filter {
+                !excludedClosure.contains($0)
+            }
+            filtered[hash] = visible
+        }
+        return referenceCanonicalProjection(in: filtered)
+    }
+
     nonisolated private static func referenceCanonicalProjection(
         in blocksByHash: [String: BlockMeta],
         weights: [String: WorkSum]
@@ -2582,6 +2779,9 @@ public actor ChainState {
 
     private func projectCanonicalChain(forceFull: Bool = false) -> ChainCommit? {
         defer { projectedGeneration = mutationGeneration }
+        if !excludedClosure.isEmpty {
+            return projectExcludedCanonicalChain()
+        }
         let roots = Array(indexToBlockHash[0] ?? []).filter {
             hashToBlock[$0]?.parentBlockHash == nil
         }
