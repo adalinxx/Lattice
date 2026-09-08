@@ -61,6 +61,22 @@ public enum ChainAdmissionFact: Codable, Sendable, Equatable {
     }
 }
 
+/// Which admission tier `prepare` produces.
+///
+/// - `.eager` (default, unchanged behaviour): execute the state transition and
+///   emit a block fact carrying the materialized post-state and its `stateDiff`
+///   — a block is weighed and validated in one gate.
+/// - `.weighed` (deferred execution, weight-first-acquisition): weigh the block
+///   from its root + verified PoW / securing-work, WITHOUT executing the state
+///   transition. The declared post-state is recorded as an unverified claim;
+///   validity is a separate, later judgment on the validated tier. Because the
+///   consensus graph (`ConsensusBlockInput`) never reads `stateDiff`, a weighed
+///   block contributes to fork choice identically to an eager one.
+public enum AdmissionMode: Sendable {
+    case eager
+    case weighed
+}
+
 /// One node-atomic durability unit. New blocks stage their block and first work
 /// observations together; later work or a stronger observation appends another
 /// immutable fact.
@@ -516,7 +532,8 @@ private enum ChainLocalAdmission {
         blockHeader: BlockHeader,
         fetcher: any Fetcher,
         childPackage: ChildValidationPackage?,
-        validationContext: ValidationContext
+        validationContext: ValidationContext,
+        mode: AdmissionMode = .eager
     ) async -> Preparation {
         let context = level.context
         let resolvedHeader: BlockHeader
@@ -626,6 +643,27 @@ private enum ChainLocalAdmission {
                 verifiedCarrierLink: carrier.issuableLink,
                 sameChainPredecessor: carrier.sameChainPredecessor,
                 kind: .evidence
+            ))
+        }
+
+        // Weighed tier (deferred execution): the block is possessed and its
+        // work is verified (root PoW or child securing proof, above), so it can
+        // enter fork choice now. Skip the state transition entirely; emit a
+        // block fact whose declared `postStateCID` is recorded as an unverified
+        // claim (`StateDiff.empty`, no materialized state). Validity is a later,
+        // separate judgment on the validated tier. The consensus graph never
+        // reads `stateDiff`, so this contributes to fork choice identically to
+        // the eager path.
+        if case .weighed = mode {
+            return .ready(PreparedAdmission(
+                resolvedHeader: resolvedHeader,
+                block: block,
+                fetcher: fetcher,
+                contribution: contribution,
+                carrierLink: carrierLink,
+                verifiedCarrierLink: carrier.issuableLink,
+                sameChainPredecessor: carrier.sameChainPredecessor,
+                kind: .block(StateDiff.empty, nil)
             ))
         }
 
@@ -949,14 +987,16 @@ public extension ChainLevel {
         fetcher: any Fetcher,
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
-        validationContentStorer: any VolumeStorer
+        validationContentStorer: any VolumeStorer,
+        mode: AdmissionMode = .eager
     ) async throws -> ChainAdmissionPreflightResult {
         switch await ChainLocalAdmission.prepare(
             level: self,
             blockHeader: blockHeader,
             fetcher: fetcher,
             childPackage: childPackage,
-            validationContext: validationContext
+            validationContext: validationContext,
+            mode: mode
         ) {
         case .result(let result, let parentGenesisLinks):
             return .terminal(
@@ -1080,6 +1120,7 @@ public extension ChainLevel {
         validationContext: ValidationContext = .current,
         validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
+        mode: AdmissionMode = .eager,
         stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void
     ) async throws -> ChainLocalBlockResult {
         switch try await preflightBlockHeaderChainLocal(
@@ -1087,7 +1128,8 @@ public extension ChainLevel {
             fetcher: fetcher,
             childPackage: childPackage,
             validationContext: validationContext,
-            validationContentStorer: validationContentStorer
+            validationContentStorer: validationContentStorer,
+            mode: mode
         ) {
         case .terminal(let result, _):
             return result
@@ -1109,6 +1151,7 @@ public extension ChainLevel {
         validationContext: ValidationContext = .current,
         validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
+        mode: AdmissionMode = .eager,
         stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void
     ) async throws -> ChainLocalBlockResult {
         try await admitBlockHeaderChainLocal(
@@ -1118,6 +1161,7 @@ public extension ChainLevel {
             validationContext: validationContext,
             validationContentStorer: validationContentStorer,
             materializedVolumeStorer: materializedVolumeStorer,
+            mode: mode,
             stage: stage
         )
     }

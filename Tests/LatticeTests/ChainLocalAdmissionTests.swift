@@ -692,6 +692,101 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(result.failure, .protocolInvalid)
     }
 
+    func testWeighedAdmissionMatchesEagerForkChoiceWithoutMaterializedState() async throws {
+        // Deferred execution (weight-first-acquisition): a `.weighed` admission
+        // possesses the block and verifies its PoW, so its work enters fork
+        // choice with exactly the eager path's weight — the consensus graph
+        // never reads `stateDiff` — while it executes no state transition and
+        // materializes no post-state. The eager path stays byte-for-byte the
+        // default and is exercised here as the control.
+        let genesisTimestamp: Int64 = 1_000
+
+        let eagerFetcher = StorableFetcher()
+        let eagerGenesis = try await makeGenesis(
+            fetcher: eagerFetcher, timestamp: genesisTimestamp
+        )
+        let candidate = try await makeChild(
+            of: eagerGenesis, fetcher: eagerFetcher, timestamp: 2_000, nonce: 1
+        )
+        let genesisHash = try BlockHeader(node: eagerGenesis).rawCID
+        let candidateHash = try BlockHeader(node: candidate).rawCID
+
+        // A second, independent level seeded from an identical genesis so the
+        // two fork-choice graphs are directly comparable. The same candidate
+        // header is admitted into both.
+        let weighedFetcher = StorableFetcher()
+        let weighedGenesis = try await makeGenesis(
+            fetcher: weighedFetcher, timestamp: genesisTimestamp
+        )
+        _ = try await makeChild(
+            of: weighedGenesis, fetcher: weighedFetcher, timestamp: 2_000, nonce: 1
+        )
+        XCTAssertEqual(try BlockHeader(node: weighedGenesis).rawCID, genesisHash)
+
+        let eagerLevel = makeLevel(genesis: eagerGenesis)
+        let eager = try await eagerLevel.admitBlockHeaderChainLocal(
+            try BlockHeader(node: candidate),
+            fetcher: eagerFetcher,
+            validationContentStorer: eagerFetcher,
+            materializedVolumeStorer: eagerFetcher,
+            stage: testAdmissionStage
+        )
+
+        let weighedLevel = makeLevel(genesis: weighedGenesis)
+        let weighed = try await weighedLevel.admitBlockHeaderChainLocal(
+            try BlockHeader(node: candidate),
+            fetcher: weighedFetcher,
+            validationContentStorer: weighedFetcher,
+            materializedVolumeStorer: weighedFetcher,
+            mode: .weighed,
+            stage: testAdmissionStage
+        )
+
+        guard case .accepted(let eagerAcceptance) = eager else {
+            return XCTFail("eager admission must accept, got \(eager)")
+        }
+        guard case .accepted(let weighedAcceptance) = weighed else {
+            return XCTFail("weighed admission must accept, got \(weighed)")
+        }
+
+        // Fork choice is identical: the weighed block contributes the same work
+        // to the same tip over the same main-chain set.
+        let eagerSnapshotValue = await eagerLevel.chain
+            .forkChoiceSnapshot(startingAt: genesisHash)
+        let weighedSnapshotValue = await weighedLevel.chain
+            .forkChoiceSnapshot(startingAt: genesisHash)
+        let eagerSnapshot = try XCTUnwrap(eagerSnapshotValue)
+        let weighedSnapshot = try XCTUnwrap(weighedSnapshotValue)
+        XCTAssertEqual(weighedSnapshot, eagerSnapshot)
+        XCTAssertEqual(weighedSnapshot.tipHash, candidateHash)
+
+        // The discriminator between the tiers: the eager tier executes the
+        // transition and materializes the post-state; the weighed tier executes
+        // nothing and materializes nothing. (This candidate happens to carry no
+        // state-changing transactions, so both diffs are empty — the observable
+        // difference is that eager still computed and materialized the state.)
+        XCTAssertNil(weighed.materializedPostState)
+        XCTAssertNotNil(eager.materializedPostState)
+        XCTAssertEqual(weighedAcceptance.stateDiff, StateDiff.empty)
+
+        // Both tiers record the same declared block fact — same block hash, the
+        // same declared `postStateCID` claim, height, and target — differing
+        // only in the (materialized) stateDiff. Header claim identical; only
+        // execution is deferred.
+        func blockFact(_ acceptance: ChainAcceptance) -> ChainBlockFact? {
+            for case .block(let fact) in acceptance.facts.facts { return fact }
+            return nil
+        }
+        let eagerBlockFact = try XCTUnwrap(blockFact(eagerAcceptance))
+        let weighedBlockFact = try XCTUnwrap(blockFact(weighedAcceptance))
+        XCTAssertEqual(weighedBlockFact.blockHash, eagerBlockFact.blockHash)
+        XCTAssertEqual(weighedBlockFact.postStateCID, eagerBlockFact.postStateCID)
+        XCTAssertEqual(weighedBlockFact.blockHeight, eagerBlockFact.blockHeight)
+        XCTAssertEqual(weighedBlockFact.target, eagerBlockFact.target)
+        XCTAssertEqual(weighedBlockFact.prevStateCID, eagerBlockFact.prevStateCID)
+        XCTAssertEqual(weighedBlockFact.stateDiff, StateDiff.empty)
+    }
+
     func testTargetHitInvalidTransitionStillIssuesCarrierLink() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await makeGenesis(
