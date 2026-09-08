@@ -112,6 +112,7 @@ private actor AdmissionStageRecorder {
                 switch fact {
                 case .block(let block): block.blockHash == blockHash
                 case .work(let work): work.blockHash == blockHash
+                case .exclusion(let exclusion): exclusion.blockHash == blockHash
                 }
             }
         }
@@ -785,6 +786,111 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(weighedBlockFact.target, eagerBlockFact.target)
         XCTAssertEqual(weighedBlockFact.prevStateCID, eagerBlockFact.prevStateCID)
         XCTAssertEqual(weighedBlockFact.stateDiff, StateDiff.empty)
+    }
+
+    func testValidateTierExecutesLikeEagerAndMaterializesState() async throws {
+        // Validated tier (deferred execution): `.validate` executes a block and
+        // records the validity verdict. On a valid block it does exactly what
+        // eager does — runs the transition, materializes the post-state, emits
+        // the block fact carrying the real `stateDiff` — the durable "validated"
+        // marker that upgrades a weighed claim. Proven here against the eager
+        // control on an identical, independent level.
+        let genesisTimestamp: Int64 = 1_000
+
+        let eagerFetcher = StorableFetcher()
+        let eagerGenesis = try await makeGenesis(
+            fetcher: eagerFetcher, timestamp: genesisTimestamp
+        )
+        let candidate = try await makeChild(
+            of: eagerGenesis, fetcher: eagerFetcher, timestamp: 2_000, nonce: 1
+        )
+        let genesisHash = try BlockHeader(node: eagerGenesis).rawCID
+        let candidateHash = try BlockHeader(node: candidate).rawCID
+
+        let validateFetcher = StorableFetcher()
+        let validateGenesis = try await makeGenesis(
+            fetcher: validateFetcher, timestamp: genesisTimestamp
+        )
+        _ = try await makeChild(
+            of: validateGenesis, fetcher: validateFetcher, timestamp: 2_000, nonce: 1
+        )
+        XCTAssertEqual(try BlockHeader(node: validateGenesis).rawCID, genesisHash)
+
+        let eagerLevel = makeLevel(genesis: eagerGenesis)
+        let eager = try await eagerLevel.admitBlockHeaderChainLocal(
+            try BlockHeader(node: candidate),
+            fetcher: eagerFetcher,
+            validationContentStorer: eagerFetcher,
+            materializedVolumeStorer: eagerFetcher,
+            stage: testAdmissionStage
+        )
+
+        let validateLevel = makeLevel(genesis: validateGenesis)
+        let validated = try await validateLevel.admitBlockHeaderChainLocal(
+            try BlockHeader(node: candidate),
+            fetcher: validateFetcher,
+            validationContentStorer: validateFetcher,
+            materializedVolumeStorer: validateFetcher,
+            mode: .validate,
+            stage: testAdmissionStage
+        )
+
+        guard case .accepted(let eagerAcceptance) = eager else {
+            return XCTFail("eager admission must accept, got \(eager)")
+        }
+        guard case .accepted(let validatedAcceptance) = validated else {
+            return XCTFail("validate admission must accept, got \(validated)")
+        }
+
+        let eagerSnapshotValue = await eagerLevel.chain
+            .forkChoiceSnapshot(startingAt: genesisHash)
+        let validatedSnapshotValue = await validateLevel.chain
+            .forkChoiceSnapshot(startingAt: genesisHash)
+        let eagerSnapshot = try XCTUnwrap(eagerSnapshotValue)
+        let validatedSnapshot = try XCTUnwrap(validatedSnapshotValue)
+        XCTAssertEqual(validatedSnapshot, eagerSnapshot)
+        XCTAssertEqual(validatedSnapshot.tipHash, candidateHash)
+
+        // Unlike the weighed tier, validation executes: it materializes the
+        // post-state exactly as eager does.
+        XCTAssertNotNil(validated.materializedPostState)
+        XCTAssertNotNil(eager.materializedPostState)
+
+        func blockFact(_ acceptance: ChainAcceptance) -> ChainBlockFact? {
+            for case .block(let fact) in acceptance.facts.facts { return fact }
+            return nil
+        }
+        let eagerBlockFact = try XCTUnwrap(blockFact(eagerAcceptance))
+        let validatedBlockFact = try XCTUnwrap(blockFact(validatedAcceptance))
+        XCTAssertEqual(validatedBlockFact, eagerBlockFact)
+    }
+
+    func testDeterministicInvalidityPartitionsAvailabilityFromVerdict() {
+        // The data-availability linchpin: only a COMPLETED deterministic check
+        // is a verdict that may exclude. Availability, ordering and capacity
+        // failures are transient and must never record an exclusion.
+        for failure in [
+            ChainAdmissionFailure.protocolInvalid,
+            .localVerificationFailure,
+        ] {
+            XCTAssertTrue(
+                ChainLevel.isDeterministicInvalidityForTesting(failure),
+                "\(failure) is a completed invalidity verdict"
+            )
+        }
+        for failure in [
+            ChainAdmissionFailure.unavailableEvidence,
+            .providerMalformedEvidence,
+            .crossChainEvidenceRequired(.childProof(chainPath: [], childCID: "x")),
+            .notYetAdmissible,
+            .notAcceptedAtCurrentChain,
+            .revisionExhausted,
+        ] {
+            XCTAssertFalse(
+                ChainLevel.isDeterministicInvalidityForTesting(failure),
+                "\(failure) is transient and never excludes"
+            )
+        }
     }
 
     func testTargetHitInvalidTransitionStillIssuesCarrierLink() async throws {

@@ -40,14 +40,30 @@ public struct ChainWorkFact: Codable, Sendable, Equatable {
     public let contribution: VerifiedWorkContribution
 }
 
+/// A deterministic, replayable judgment that a possessed block is invalid — its
+/// execution completed and FAILED (a `postState` mismatch or a committed
+/// validity rule). Recording it removes the block's subtree from THIS chain's
+/// own effective weight so fork choice re-projects onto the heaviest VALID
+/// chain. It is not pruning: the excluded facts stay in the graph, served and
+/// exported unchanged; only this node's own weighting stops counting them.
+public struct ChainExclusionFact: Codable, Sendable, Equatable {
+    public let blockHash: String
+
+    public init(blockHash: String) {
+        self.blockHash = blockHash
+    }
+}
+
 public enum ChainFactID: Codable, Hashable, Sendable {
     case block(String)
     case work(blockHash: String, grindID: String, work: String)
+    case exclusion(String)
 }
 
 public enum ChainAdmissionFact: Codable, Sendable, Equatable {
     case block(ChainBlockFact)
     case work(ChainWorkFact)
+    case exclusion(ChainExclusionFact)
 
     public var id: ChainFactID {
         switch self {
@@ -57,6 +73,7 @@ public enum ChainAdmissionFact: Codable, Sendable, Equatable {
             grindID: fact.contribution.id,
             work: fact.contribution.work.toHexString()
         )
+        case .exclusion(let fact): .exclusion(fact.blockHash)
         }
     }
 }
@@ -72,9 +89,17 @@ public enum ChainAdmissionFact: Codable, Sendable, Equatable {
 ///   validity is a separate, later judgment on the validated tier. Because the
 ///   consensus graph (`ConsensusBlockInput`) never reads `stateDiff`, a weighed
 ///   block contributes to fork choice identically to an eager one.
+/// - `.validate` (deferred execution, validated tier): execute a block that was
+///   already weighed. On success emit the block fact carrying the materialized
+///   post-state — the durable "validated" marker that upgrades the weighed
+///   claim. On a COMPLETED deterministic invalidity (`postState` mismatch or a
+///   committed validity rule) emit an `.exclusion` fact removing the subtree
+///   from fork choice. An availability failure is not a verdict: it is a
+///   retryable rejection that excludes nothing.
 public enum AdmissionMode: Sendable {
     case eager
     case weighed
+    case validate
 }
 
 /// One node-atomic durability unit. New blocks stage their block and first work
@@ -225,6 +250,11 @@ fileprivate struct PreparedAdmission: Sendable {
     enum Kind: Sendable {
         case block(StateDiff, LatticeState?)
         case evidence
+        /// Validated tier: execution of a previously-weighed block completed and
+        /// FAILED deterministically. Stage a single `.exclusion` fact; the block
+        /// and its work are already possessed, so no new content is stored and
+        /// no work fact is re-emitted.
+        case exclusion
     }
 
     let resolvedHeader: BlockHeader
@@ -237,6 +267,13 @@ fileprivate struct PreparedAdmission: Sendable {
     let kind: Kind
 
     var facts: ChainAdmissionBatch {
+        // An exclusion is a standalone verdict: exactly one `.exclusion` fact,
+        // no block or work fact (both already durable from the weighed tier).
+        if case .exclusion = kind {
+            return ChainAdmissionBatch(facts: [
+                .exclusion(ChainExclusionFact(blockHash: resolvedHeader.rawCID)),
+            ])
+        }
         var facts: [ChainAdmissionFact] = []
         switch kind {
         case .block(let stateDiff, _):
@@ -252,7 +289,7 @@ fileprivate struct PreparedAdmission: Sendable {
                 timestamp: block.timestamp,
                 stateDiff: stateDiff
             )))
-        case .evidence:
+        case .evidence, .exclusion:
             break
         }
         facts.append(.work(ChainWorkFact(
@@ -269,7 +306,7 @@ fileprivate struct PreparedAdmission: Sendable {
         to validationContentStorer: any VolumeStorer
     ) async throws {
         switch kind {
-        case .evidence:
+        case .evidence, .exclusion:
             return
         case .block:
             try await resolvedHeader.storeBlock(
@@ -601,6 +638,27 @@ private enum ChainLocalAdmission {
             ))
         }
 
+        // Validated tier: the block was already weighed (its work is verified
+        // above and durable). Execute it now and record a validity verdict,
+        // bypassing the weighed/known/duplicate short-circuits that assume a
+        // first-observation of the header. Isolated so the eager and weighed
+        // paths are untouched.
+        if case .validate = mode {
+            return await prepareValidatedTier(
+                resolvedHeader: resolvedHeader,
+                block: block,
+                blockHash: blockHash,
+                fetcher: fetcher,
+                contribution: contribution,
+                carrier: carrier,
+                carrierLink: carrierLink,
+                childPackage: childPackage,
+                context: context,
+                level: level,
+                validationContext: validationContext
+            )
+        }
+
         if let existing = await level.chain.workContribution(
             id: contribution.id,
             at: blockHash
@@ -720,6 +778,113 @@ private enum ChainLocalAdmission {
                 sameChainPredecessor: carrier.sameChainPredecessor,
                 kind: .block(stateDiff, state)
             ))
+        }
+    }
+
+    /// Execute a previously-weighed block and produce a validity verdict. A
+    /// completed deterministic invalidity becomes an `.exclusion`; every other
+    /// failure is a non-verdict retry (availability, ordering) that excludes
+    /// nothing. Success upgrades the weighed claim with the materialized state.
+    private static func prepareValidatedTier(
+        resolvedHeader: BlockHeader,
+        block: Block,
+        blockHash: String,
+        fetcher: any Fetcher,
+        contribution: VerifiedWorkContribution,
+        carrier: (
+            relayLink: ParentCarrierLink,
+            issuableLink: ParentCarrierLink?,
+            sameChainPredecessor: SameChainPredecessorRequirement?
+        ),
+        carrierLink: ParentCarrierLink,
+        childPackage: ChildValidationPackage?,
+        context: ChainRuntimeContext,
+        level: ChainLevel,
+        validationContext: ValidationContext
+    ) async -> Preparation {
+        func excluded() -> Preparation {
+            .ready(PreparedAdmission(
+                resolvedHeader: resolvedHeader,
+                block: block,
+                fetcher: fetcher,
+                contribution: contribution,
+                carrierLink: carrierLink,
+                verifiedCarrierLink: carrier.issuableLink,
+                sameChainPredecessor: carrier.sameChainPredecessor,
+                kind: .exclusion
+            ))
+        }
+        func rejected(_ failure: ChainAdmissionFailure) -> Preparation {
+            // A completed deterministic check is a verdict; anything else
+            // (unavailable, ordering) is retryable and never excludes.
+            isDeterministicInvalidity(failure)
+                ? excluded()
+                : .result(.rejected(
+                    failure,
+                    parentCarrierLink: carrier.relayLink,
+                    sameChainPredecessor: carrier.sameChainPredecessor
+                ))
+        }
+
+        let transition: Result<(StateDiff, LatticeState?), ChainAdmissionFailure>
+        if block.parent == nil {
+            guard !context.isRoot, block.height == 0 else {
+                return excluded()
+            }
+            transition = await validateGenesis(
+                block: block,
+                fetcher: fetcher,
+                context: context,
+                validationContext: validationContext
+            )
+        } else {
+            transition = await validateBlock(
+                block: block,
+                fetcher: fetcher,
+                chain: level.chain,
+                context: context,
+                validationContext: validationContext
+            )
+        }
+
+        switch transition {
+        case .failure(let failure):
+            return rejected(failure)
+        case .success(let (stateDiff, state)):
+            if !context.isRoot, let childPackage,
+               let failure = await validateParentFacts(
+                   childPackage,
+                   child: block,
+                   childCID: blockHash,
+                   context: context,
+                   fetcher: fetcher
+               ) {
+                return rejected(failure)
+            }
+            return .ready(PreparedAdmission(
+                resolvedHeader: resolvedHeader,
+                block: block,
+                fetcher: fetcher,
+                contribution: contribution,
+                carrierLink: carrierLink,
+                verifiedCarrierLink: carrier.issuableLink,
+                sameChainPredecessor: carrier.sameChainPredecessor,
+                kind: .block(stateDiff, state)
+            ))
+        }
+    }
+
+    /// A failure is a validity verdict only when execution completed and the
+    /// block is provably invalid. Availability, ordering and capacity failures
+    /// are transient: they must be retried, never recorded as an exclusion.
+    static func isDeterministicInvalidity(_ failure: ChainAdmissionFailure) -> Bool {
+        switch failure {
+        case .protocolInvalid, .localVerificationFailure:
+            return true
+        case .unavailableEvidence, .providerMalformedEvidence,
+             .crossChainEvidenceRequired, .notYetAdmissible,
+             .notAcceptedAtCurrentChain, .revisionExhausted:
+            return false
         }
     }
 
@@ -979,6 +1144,16 @@ private func classifyDataError(_ error: DataErrors) -> ChainAdmissionFailure {
 }
 
 public extension ChainLevel {
+#if DEBUG
+    /// Test seam for the availability-vs-invalidity partition that gates the
+    /// validated tier's exclusion verdict.
+    static func isDeterministicInvalidityForTesting(
+        _ failure: ChainAdmissionFailure
+    ) -> Bool {
+        ChainLocalAdmission.isDeterministicInvalidity(failure)
+    }
+#endif
+
     /// Verify one candidate and store its immutable validation Volumes without
     /// mutating the accepted graph. The returned token contains the exact
     /// hierarchy facts the node must make durable with the batch.

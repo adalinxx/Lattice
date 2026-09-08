@@ -957,6 +957,45 @@ reprojects canonicality. A persisted tip is a derived cache, not protocol
 truth. Filesystem layout, payload retention, and format migration belong to the
 node.
 
+### 9.9 Deferred Execution: Weighed and Validated Tiers
+
+Admission (9.3) verifies work independently of executing state. Because the
+consensus graph carries only header fields and claimed state CIDs — never the
+body or materialized state — a block MAY enter fork choice on its verified work
+alone, before its state transition is executed. A candidate is therefore
+admitted at one of two tiers:
+
+- **Weighed.** Its work is verified (root proof-of-work or a `ChildBlockProof`)
+  and it possesses the header. Its declared `postStateCID` is recorded as an
+  unverified claim; no transition is executed and no post-state is materialized.
+  A weighed block contributes to `trueCumWork` and fork choice (9.4) identically
+  to an executed one.
+- **Validated.** Its transition (9.3 step 6) has been executed and the derived
+  post-state matches the declared `postStateCID`. Validation is a second,
+  separate, deterministic judgment recorded on an already-weighed block.
+
+"Accepted" in this section means *weighed*: present in the graph with verified
+work. Ranking is defined over weight; being *acted upon* — extended, served as
+head, or asserted as the node's state — requires the *validated* tier. A node
+MUST NOT act on a merely weighed tip; it builds on its heaviest validated tip
+and treats missing bodies of a heavier weighed branch as an availability gap
+(9.5-style: retried indefinitely, never a verdict).
+
+Failure to obtain a body is availability, never invalidity. Only a **completed**
+deterministic check — a `postState` mismatch or a committed validity rule —
+records an **invalidity exclusion** of the block. Exclusion removes the block's
+subtree from *this chain's own* effective weight, and fork choice re-projects
+onto the heaviest validated chain (9.4). Exclusion is a chain-local weighting
+decision, not pruning: the excluded block and its work facts remain in the
+graph, served and exported unchanged, and are never treated as invalid by any
+peer on that account. An excluded subtree is never resurrected by later work
+added beneath it. Exclusion is durable and replayed like any other fact:
+recovery reconstructs the excluded set and reprojects identically, independent
+of arrival order.
+
+Deferral and exclusion are one mechanism: a node MUST NOT let unexecuted weight
+be acted upon without the ability to exclude a subtree it later proves invalid.
+
 ## 10. Economic Model
 
 ### 10.1 Reward Schedule
