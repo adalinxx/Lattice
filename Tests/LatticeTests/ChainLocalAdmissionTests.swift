@@ -4049,6 +4049,68 @@ final class ChainLocalAdmissionTests: XCTestCase {
         )
     }
 
+    func testWeighedAdmissionIssuesNoCrossChainFacts() async throws {
+        // Deferred-execution safety: a weighed (not-yet-executed) child block
+        // must issue NO carrier link and NO parent-genesis link, because a child
+        // consuming such a fact would bind to unvalidated — possibly invalid or
+        // soon-reorged — parent state. The identical EAGER admission issues both
+        // (see testPreflightCommitPromotesCarrierLinkAfterPredecessorConnects),
+        // so this pins the suppression that gates issuance to the validated tier.
+        let fetcher = StorableFetcher()
+        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let predecessor = try await makeChild(
+            of: genesis,
+            fetcher: fetcher,
+            timestamp: 2_000,
+            nonce: 1
+        )
+        let descendant = try await makeChild(
+            of: predecessor,
+            fetcher: fetcher,
+            timestamp: 3_000,
+            nonce: 2
+        )
+        let level = makeLevel(genesis: genesis)
+        let predecessorHeader = try BlockHeader(node: predecessor)
+        let descendantHeader = try BlockHeader(node: descendant)
+
+        let preflightResult = try await level.preflightBlockHeaderChainLocal(
+            descendantHeader,
+            fetcher: fetcher,
+            validationContentStorer: fetcher,
+            mode: .weighed
+        )
+        guard case .ready(let preflight) = preflightResult else {
+            return XCTFail("valid weighed descendant must produce a commit token")
+        }
+
+        _ = try await level.admitBlockHeaderChainLocal(
+            predecessorHeader,
+            fetcher: fetcher,
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
+            stage: testAdmissionStage
+        )
+        let recorder = AdmissionStageRecorder()
+        let committed = try await level.commitPreflight(
+            preflight,
+            materializedVolumeStorer: fetcher,
+            stage: { context in await recorder.stage(context) }
+        )
+
+        XCTAssertNotNil(committed.commit)
+        let stagedContexts = await recorder.recordedContexts()
+        let stagedContext = try XCTUnwrap(stagedContexts.first)
+        XCTAssertNil(
+            stagedContext.issuedCarrierLink,
+            "weighed admission must not issue a carrier link"
+        )
+        XCTAssertTrue(
+            stagedContext.parentGenesisLinks.isEmpty,
+            "weighed admission must not issue parent-genesis links"
+        )
+    }
+
     func testDuplicatePreflightPromotesCarrierLinkAfterPredecessorConnectsWithoutStaging() async throws {
         let backing = StorableFetcher()
         let genesis = try await makeGenesis(fetcher: backing, timestamp: 1_000)

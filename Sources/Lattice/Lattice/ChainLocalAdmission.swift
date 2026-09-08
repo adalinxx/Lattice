@@ -265,6 +265,13 @@ fileprivate struct PreparedAdmission: Sendable {
     let verifiedCarrierLink: ParentCarrierLink?
     let sameChainPredecessor: SameChainPredecessorRequirement?
     let kind: Kind
+    /// A weighed admission is not yet executed, so it MUST NOT issue any
+    /// cross-chain hierarchy fact (carrier link or parent-genesis link): a child
+    /// consuming such a fact would bind to unvalidated — possibly invalid or
+    /// soon-reorged — parent state. Issuance is deferred to the validated tier,
+    /// which re-derives and emits it once the block is executed. `var` only so
+    /// the synthesized memberwise init can default it; never mutated.
+    var defersHierarchyIssuance: Bool = false
 
     var facts: ChainAdmissionBatch {
         // An exclusion is a standalone verdict: exactly one `.exclusion` fact,
@@ -338,6 +345,17 @@ fileprivate struct PreparedAdmission: Sendable {
     /// facts across the node durability boundary without reconstructing them.
     func stagingContext() async throws -> ChainAdmissionStagingContext {
         let batch = facts
+        // A weighed (not-yet-executed) block issues NO cross-chain facts; both
+        // are re-derived and emitted when it is validated. Suppressing here is
+        // the choke point that keeps a child from binding to unvalidated parent
+        // state.
+        if defersHierarchyIssuance {
+            return ChainAdmissionStagingContext(
+                batch: batch,
+                issuedCarrierLink: nil,
+                parentGenesisLinks: []
+            )
+        }
         return ChainAdmissionStagingContext(
             batch: batch,
             issuedCarrierLink: verifiedCarrierLink,
@@ -721,7 +739,8 @@ private enum ChainLocalAdmission {
                 carrierLink: carrierLink,
                 verifiedCarrierLink: carrier.issuableLink,
                 sameChainPredecessor: carrier.sameChainPredecessor,
-                kind: .block(StateDiff.empty, nil)
+                kind: .block(StateDiff.empty, nil),
+                defersHierarchyIssuance: true
             ))
         }
 
@@ -1270,8 +1289,14 @@ public extension ChainLevel {
         let stagingContext: ChainAdmissionStagingContext
         if preflight.stagingContext.issuedCarrierLink != nil {
             stagingContext = preflight.stagingContext
-        } else if let parentCID = prepared.block.parent?.rawCID,
+        } else if !prepared.defersHierarchyIssuance,
+                  let parentCID = prepared.block.parent?.rawCID,
                   await chain.hasValidatedAncestry(blockHash: parentCID) {
+            // Promotion issues a carrier link when the predecessor connected
+            // after preflight. It keys off `hasValidatedAncestry` (routed, i.e.
+            // weighed-inclusive), so it MUST be suppressed for a weighed block —
+            // otherwise a deferred, unexecuted block would issue a carrier link a
+            // child could bind to. Issuance is re-derived when it is validated.
             stagingContext = ChainAdmissionStagingContext(
                 batch: preflight.stagingContext.batch,
                 issuedCarrierLink: prepared.carrierLink,
