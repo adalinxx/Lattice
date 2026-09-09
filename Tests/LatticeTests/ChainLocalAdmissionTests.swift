@@ -864,9 +864,16 @@ final class ChainLocalAdmissionTests: XCTestCase {
         )
         let header = try BlockHeader(node: candidate)
 
-        // A fetcher holding ONLY the candidate's block boundary — no body.
+        // A fetcher holding ONLY block boundaries and the chain spec — what any
+        // node holds after weighing the parent and bootstrapping its genesis —
+        // and no body.
         let bodyless = StorableFetcher()
         try await header.storeBlockBoundary(fetcher: full, storer: bodyless)
+        try await BlockHeader(node: genesis).storeBlockBoundary(fetcher: full, storer: bodyless)
+        bodyless.store(
+            rawCid: genesis.spec.rawCID,
+            data: try await full.fetch(rawCid: genesis.spec.rawCID)
+        )
 
         // Weighed admission succeeds against the body-less fetcher.
         let weighed = try await makeLevel(genesis: genesis).admitBlockHeaderChainLocal(
@@ -894,6 +901,294 @@ final class ChainLocalAdmissionTests: XCTestCase {
             return XCTFail("eager admission must fail with a body-less fetcher, got \(eager)")
         }
         XCTAssertEqual(eager.failure, .unavailableEvidence)
+    }
+
+    /// A PoW-valid (easy target) re-header of `valid` with one linkage field
+    /// changed, stored so admission can resolve it.
+    private func storeVariant(
+        of valid: Block,
+        fetcher: StorableFetcher,
+        height: UInt64? = nil,
+        nextTarget: UInt256? = nil,
+        spec: VolumeImpl<ChainSpec>? = nil,
+        prevState: LatticeStateHeader? = nil
+    ) async throws -> Block {
+        try await storeBuiltBlock(Block(
+            version: valid.version,
+            parent: valid.parent,
+            transactions: valid.transactions,
+            target: valid.target,
+            nextTarget: nextTarget ?? valid.nextTarget,
+            spec: spec ?? valid.spec,
+            parentState: valid.parentState,
+            prevState: prevState ?? valid.prevState,
+            postState: valid.postState,
+            children: valid.children,
+            height: height ?? valid.height,
+            timestamp: valid.timestamp,
+            nonce: valid.nonce
+        ), in: fetcher)
+    }
+
+    func testWeighedAdmissionRejectsHeadersThatDoNotLinkToTheirParent() async throws {
+        // Weighed = possess + structurally verify. Work alone binds nothing to
+        // the parent: a peer can grind one trivial hash over the tip with any
+        // height, prevState, spec or nextTarget. Each is a completed
+        // deterministic check the weighed tier must reject exactly like the
+        // eager path — never admitted, never indexed, never in fork choice.
+        let fetcher = StorableFetcher()
+        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let valid = try await buildAndStoreBlock(
+            previous: genesis,
+            transactions: [signedStateChangingGenesisTransaction(
+                key: "linkage-tx",
+                chainPath: [DEFAULT_ROOT_DIRECTORY]
+            )],
+            timestamp: 2_000,
+            target: easy,
+            nonce: 1,
+            fetcher: fetcher
+        )
+        XCTAssertNotEqual(valid.prevState.rawCID, valid.postState.rawCID)
+        let foreignSpec = ChainSpec(
+            maxNumberOfTransactionsPerBlock: 100,
+            maxStateGrowth: 100_000,
+            maxBlockSize: 1_000_000,
+            premine: 0,
+            targetBlockTime: 1_000,
+            initialReward: 1_024,
+            halvingInterval: 10_000,
+            retargetWindow: 6
+        )
+
+        let variants: [(String, Block)] = [
+            ("height tip+2", try await storeVariant(
+                of: valid, fetcher: fetcher, height: valid.height + 1
+            )),
+            ("height UInt64.max", try await storeVariant(
+                of: valid, fetcher: fetcher, height: UInt64.max
+            )),
+            ("prevState != parent.postState", try await storeVariant(
+                of: valid, fetcher: fetcher, prevState: valid.postState
+            )),
+            ("spec differs from parent", try await storeVariant(
+                of: valid, fetcher: fetcher,
+                spec: try VolumeImpl<ChainSpec>(node: foreignSpec)
+            )),
+            ("nextTarget off schedule", try await storeVariant(
+                of: valid, fetcher: fetcher, nextTarget: valid.nextTarget - UInt256(1)
+            )),
+        ]
+        for (name, variant) in variants {
+            let header = try BlockHeader(node: variant)
+            XCTAssertTrue(variant.validateProofOfWork(nexusHash: variant.proofOfWorkHash()), name)
+            for mode in [AdmissionMode.weighed, .eager] {
+                let level = makeLevel(genesis: genesis)
+                let result = try await level.admitBlockHeaderChainLocal(
+                    header,
+                    fetcher: fetcher,
+                    validationContentStorer: fetcher,
+                    materializedVolumeStorer: fetcher,
+                    mode: mode,
+                    stage: testAdmissionStage
+                )
+                XCTAssertEqual(result.failure, .protocolInvalid, "\(name) \(mode)")
+                let inserted = await level.chain.contains(blockHash: header.rawCID)
+                XCTAssertFalse(inserted, "\(name) \(mode)")
+            }
+        }
+
+        // The control: the correctly linked block is still weighed in without
+        // being executed.
+        let accepted = try await makeLevel(genesis: genesis).admitBlockHeaderChainLocal(
+            try BlockHeader(node: valid),
+            fetcher: fetcher,
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
+            mode: .weighed,
+            stage: testAdmissionStage
+        )
+        guard case .accepted = accepted else {
+            return XCTFail("linked block must be weighed in, got \(accepted)")
+        }
+        XCTAssertNil(accepted.materializedPostState)
+    }
+
+    func testWeighedAdmissionRejectsATargetEasierThanTheSchedule() async throws {
+        // A target easier than the parent's schedule is trivially satisfied by
+        // one hash; the weighed tier must reject it like the eager path does.
+        let fetcher = StorableFetcher()
+        let genesis = try await buildAndStoreGenesis(
+            spec: chainLocalSpec(),
+            timestamp: 1_000,
+            target: easy / UInt256(2),
+            fetcher: fetcher
+        )
+        let tooEasy = try await buildAndStoreBlock(
+            previous: genesis,
+            timestamp: 2_000,
+            target: easy,
+            nonce: 1,
+            fetcher: fetcher
+        )
+        XCTAssertGreaterThan(tooEasy.target, genesis.nextTarget)
+        let header = try BlockHeader(node: tooEasy)
+
+        for mode in [AdmissionMode.weighed, .eager] {
+            let level = makeLevel(genesis: genesis)
+            let result = try await level.admitBlockHeaderChainLocal(
+                header,
+                fetcher: fetcher,
+                validationContentStorer: fetcher,
+                materializedVolumeStorer: fetcher,
+                mode: mode,
+                stage: testAdmissionStage
+            )
+            XCTAssertEqual(result.failure, .protocolInvalid, "\(mode)")
+            let inserted = await level.chain.contains(blockHash: header.rawCID)
+            XCTAssertFalse(inserted, "\(mode)")
+        }
+    }
+
+    func testWeighedNotYetAdmissibleCandidateIsDeferredNotRejected() async throws {
+        // The timestamp rule is node-local and retriable: a weighed block from
+        // the near future defers exactly as it does eagerly, never excludes.
+        let fetcher = StorableFetcher()
+        let now = Int64(Date().timeIntervalSince1970 * 1_000)
+        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: now - 100_000)
+        let future = try await makeChild(
+            of: genesis,
+            fetcher: fetcher,
+            timestamp: now + 60_000,
+            nonce: 1
+        )
+        let header = try BlockHeader(node: future)
+
+        let level = makeLevel(genesis: genesis)
+        let result = try await level.admitBlockHeaderChainLocal(
+            header,
+            fetcher: fetcher,
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
+            mode: .weighed,
+            stage: testAdmissionStage
+        )
+
+        XCTAssertEqual(result.failure, .notYetAdmissible)
+        let inserted = await level.chain.contains(blockHash: header.rawCID)
+        XCTAssertFalse(inserted)
+    }
+
+    func testWeighedAdmissionNeverAcceptsAGenesis() async throws {
+        // A genesis is only ever admitted eagerly via bootstrap (self/pinned);
+        // a network-weighed parentless header has nothing to link to.
+        let fetcher = StorableFetcher()
+        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let rival = try await makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let header = try BlockHeader(node: rival)
+
+        let level = makeLevel(genesis: genesis)
+        let result = try await level.admitBlockHeaderChainLocal(
+            header,
+            fetcher: fetcher,
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
+            mode: .weighed,
+            stage: testAdmissionStage
+        )
+
+        XCTAssertEqual(result.failure, .protocolInvalid)
+        let inserted = await level.chain.contains(blockHash: header.rawCID)
+        XCTAssertFalse(inserted)
+    }
+
+    func testWeighedChildAdmissionRunsTheSameHeaderLinkage() async throws {
+        // A child block's securing proof binds it to a parent grind, not to its
+        // own predecessor: the weighed tier must run the same same-chain header
+        // linkage for children as for roots.
+        let fetcher = StorableFetcher()
+        let parentGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let childGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let childPath = [DEFAULT_ROOT_DIRECTORY, "Child"]
+        let valid = try await buildAndStoreBlock(
+            previous: childGenesis,
+            transactions: [signedStateChangingGenesisTransaction(
+                key: "child-linkage-tx",
+                chainPath: childPath
+            )],
+            parentChainBlock: parentGenesis,
+            timestamp: 2_000,
+            target: easy,
+            nonce: 1,
+            fetcher: fetcher
+        )
+        XCTAssertNotEqual(valid.prevState.rawCID, valid.postState.rawCID)
+
+        // Each variant is co-mined into its own carrier so its securing proof
+        // verifies; only the same-chain linkage is wrong.
+        func packaged(_ child: Block, nonce: UInt64) async throws -> ChildValidationPackage {
+            let carrier = try await buildAndStoreGenesis(
+                spec: chainLocalSpec(),
+                children: ["Child": child],
+                timestamp: 3_000,
+                target: easy,
+                nonce: nonce,
+                fetcher: fetcher
+            )
+            return try await childValidationPackage(
+                proof: try await ChildBlockProof.generate(
+                    rootHeader: try BlockHeader(node: carrier),
+                    childDirectory: "Child",
+                    fetcher: fetcher
+                ),
+                fetcher: fetcher
+            )
+        }
+        func childLevel() -> ChainLevel {
+            ChainLevel(
+                chain: ChainState.fromGenesis(block: childGenesis),
+                context: testChainContext(path: childPath)
+            )
+        }
+
+        let variants: [(String, Block)] = [
+            ("height tip+2", try await storeVariant(
+                of: valid, fetcher: fetcher, height: valid.height + 1
+            )),
+            ("prevState != parent.postState", try await storeVariant(
+                of: valid, fetcher: fetcher, prevState: valid.postState
+            )),
+        ]
+        for (index, (name, variant)) in variants.enumerated() {
+            let header = try BlockHeader(node: variant)
+            let level = childLevel()
+            let result = try await level.admitBlockHeaderChainLocal(
+                header,
+                fetcher: fetcher,
+                childPackage: try await packaged(variant, nonce: UInt64(10 + index)),
+                validationContentStorer: fetcher,
+                materializedVolumeStorer: fetcher,
+                mode: .weighed,
+                stage: testAdmissionStage
+            )
+            XCTAssertEqual(result.failure, .protocolInvalid, name)
+            let inserted = await level.chain.contains(blockHash: header.rawCID)
+            XCTAssertFalse(inserted, name)
+        }
+
+        let accepted = try await childLevel().admitBlockHeaderChainLocal(
+            try BlockHeader(node: valid),
+            fetcher: fetcher,
+            childPackage: try await packaged(valid, nonce: 20),
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
+            mode: .weighed,
+            stage: testAdmissionStage
+        )
+        guard case .accepted = accepted else {
+            return XCTFail("linked child must be weighed in, got \(accepted)")
+        }
+        XCTAssertNil(accepted.materializedPostState)
     }
 
     func testValidateTierExecutesLikeEagerAndMaterializesState() async throws {
