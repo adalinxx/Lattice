@@ -749,7 +749,31 @@ private enum ChainLocalAdmission {
         // separate judgment on the validated tier. The consensus graph never
         // reads `stateDiff`, so this contributes to fork choice identically to
         // the eager path.
+        //
+        // Weighed = possess + structurally verify. Work binds nothing to the
+        // parent, so the header-linkage rules the eager path runs inside
+        // `validateNexus` (version, parent, spec, prevState == parent.postState,
+        // height, timestamp, target schedule) run here too, with the same
+        // outcomes: a failed rule is a completed deterministic check, a
+        // not-yet-admissible timestamp defers, a missing parent is unavailable
+        // evidence. A genesis is never weighed — only a self/pinned genesis is
+        // admitted, eagerly, through bootstrap.
         if case .weighed = mode {
+            guard block.parent != nil else {
+                return .result(.rejected(.protocolInvalid))
+            }
+            if let failure = await validateHeaderLinkage(
+                block: block,
+                fetcher: fetcher,
+                chain: level.chain,
+                validationContext: validationContext
+            ) {
+                return .result(.rejected(
+                    failure,
+                    parentCarrierLink: carrier.relayLink,
+                    sameChainPredecessor: carrier.sameChainPredecessor
+                ))
+            }
             return .ready(PreparedAdmission(
                 resolvedHeader: resolvedHeader,
                 block: block,
@@ -999,6 +1023,28 @@ private enum ChainLocalAdmission {
             descendantCID: blockHash,
             predecessorCID: predecessorCID
         ))
+    }
+
+    /// Structural verification for the weighed tier: the header-linkage rules
+    /// `validateBlock` runs (through `validateNexus`) before execution, with
+    /// the same failure classification, and nothing else.
+    static func validateHeaderLinkage(
+        block: Block,
+        fetcher: any Fetcher,
+        chain: ChainState,
+        validationContext: ValidationContext
+    ) async -> ChainAdmissionFailure? {
+        do {
+            let linked = try await block.validateHeaderLinkage(
+                fetcher: fetcher,
+                chain: chain,
+                reportTemporalFailure: true,
+                validationContext: validationContext
+            )
+            return linked ? nil : .protocolInvalid
+        } catch {
+            return classifyValidationFailure(error)
+        }
     }
 
     static func validateBlock(
