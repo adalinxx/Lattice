@@ -1191,6 +1191,187 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertNil(accepted.materializedPostState)
     }
 
+    func testProvenInvalidBlockRequestsNoPredecessor() async throws {
+        // A completed deterministic verdict must not ask the node to acquire
+        // the block's predecessor: the node tests `.predecessor` before
+        // `.terminal`, so a proven-invalid block over an unheld parent would
+        // otherwise be parked and its attacker-served predecessor seeded —
+        // recursing down a fabricated chain one park slot per junk block.
+        // The carrier relay stays: the grind may still carry descendant work.
+        let fetcher = StorableFetcher()
+        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let unheld = try await makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
+        let valid = try await makeChild(of: unheld, fetcher: fetcher, timestamp: 3_000, nonce: 2)
+        let invalid = try await storeVariant(
+            of: valid, fetcher: fetcher, height: valid.height + 1
+        )
+        let header = try BlockHeader(node: invalid)
+
+        for mode in [AdmissionMode.weighed, .eager] {
+            let result = try await makeLevel(genesis: genesis).admitBlockHeaderChainLocal(
+                header,
+                fetcher: fetcher,
+                validationContentStorer: fetcher,
+                materializedVolumeStorer: fetcher,
+                mode: mode,
+                stage: testAdmissionStage
+            )
+            XCTAssertEqual(result.failure, .protocolInvalid, "\(mode)")
+            XCTAssertNil(result.sameChainPredecessor, "\(mode)")
+            XCTAssertEqual(result.parentCarrierLink?.carrierCID, header.rawCID, "\(mode)")
+        }
+    }
+
+    func testWeighedMissingParentIsUnavailableWithPredecessorRequirement() async throws {
+        // The parent's root node is the one thing header linkage needs that a
+        // boundary-only possession may lack. Its absence is availability, not
+        // a verdict: retry, and name the exact predecessor to acquire.
+        let full = StorableFetcher()
+        let genesis = try await makeGenesis(fetcher: full, timestamp: 1_000)
+        let parent = try await makeChild(of: genesis, fetcher: full, timestamp: 2_000, nonce: 1)
+        let candidate = try await makeChild(of: parent, fetcher: full, timestamp: 3_000, nonce: 2)
+        let header = try BlockHeader(node: candidate)
+
+        // Candidate boundary + chain spec only; the parent root is absent.
+        let parentless = StorableFetcher()
+        try await header.storeBlockBoundary(fetcher: full, storer: parentless)
+        parentless.store(
+            rawCid: genesis.spec.rawCID,
+            data: try await full.fetch(rawCid: genesis.spec.rawCID)
+        )
+
+        let level = makeLevel(genesis: genesis)
+        let result = try await level.admitBlockHeaderChainLocal(
+            header,
+            fetcher: parentless,
+            validationContentStorer: parentless,
+            materializedVolumeStorer: parentless,
+            mode: .weighed,
+            stage: testAdmissionStage
+        )
+
+        XCTAssertEqual(result.failure, .unavailableEvidence)
+        XCTAssertEqual(result.sameChainPredecessor, SameChainPredecessorRequirement(
+            descendantCID: header.rawCID,
+            predecessorCID: try BlockHeader(node: parent).rawCID
+        ))
+        let inserted = await level.chain.contains(blockHash: header.rawCID)
+        XCTAssertFalse(inserted)
+    }
+
+    func testUnboundedRetargetWindowNeitherTrapsNorOverWalks() async throws {
+        // `retargetWindow` is an unbounded UInt64 from the spec — attacker-
+        // supplied when the parent is disconnected. The ancestor walk must be
+        // bounded by the chain's actual depth: never reserve or walk the raw
+        // window (`Int(UInt64.max)` traps), and serve exactly parentDepth
+        // timestamps on a short chain.
+        let fetcher = StorableFetcher()
+        let genesis = try await buildAndStoreGenesis(
+            spec: ChainSpec(
+                maxNumberOfTransactionsPerBlock: 100,
+                maxStateGrowth: 100_000,
+                maxBlockSize: 1_000_000,
+                premine: 0,
+                targetBlockTime: 1_000,
+                initialReward: 1_024,
+                halvingInterval: 10_000,
+                retargetWindow: UInt64.max
+            ),
+            timestamp: 1_000,
+            target: easy,
+            fetcher: fetcher
+        )
+        let first = try await makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
+        let second = try await makeChild(of: first, fetcher: fetcher, timestamp: 3_000, nonce: 2)
+        let firstHash = try BlockHeader(node: first).rawCID
+        let level = makeLevel(genesis: genesis)
+
+        let eager = try await level.admitBlockHeaderChainLocal(
+            try BlockHeader(node: first),
+            fetcher: fetcher,
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
+            stage: testAdmissionStage
+        )
+        guard case .accepted = eager else {
+            return XCTFail("eager admission must accept, got \(eager)")
+        }
+        let weighed = try await level.admitBlockHeaderChainLocal(
+            try BlockHeader(node: second),
+            fetcher: fetcher,
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
+            mode: .weighed,
+            stage: testAdmissionStage
+        )
+        guard case .accepted = weighed else {
+            return XCTFail("weighed admission must accept, got \(weighed)")
+        }
+
+        let served = await level.chain.getMainChainTimestamps(
+            forParentHash: firstHash, count: UInt64.max
+        )
+        XCTAssertEqual(served, [2_000, 1_000])
+    }
+
+    func testOffMainChainParentServesTimestampsFromTheHeldGraph() async throws {
+        // Every frontier leaf and losing fork has an off-main-chain parent. The
+        // held graph (parent links + timestamps of every accepted block, weighed
+        // included) serves its retarget window exactly as the fetcher walk
+        // would — same order, same count — so no candidate pays a sequential
+        // fetcher walk for ancestors the node already holds.
+        let full = StorableFetcher()
+        let genesis = try await makeGenesis(fetcher: full, timestamp: 1_000)
+        let mainOne = try await makeChild(of: genesis, fetcher: full, timestamp: 2_000, nonce: 1)
+        let mainTwo = try await makeChild(of: mainOne, fetcher: full, timestamp: 3_000, nonce: 2)
+        let sideOne = try await makeChild(of: genesis, fetcher: full, timestamp: 2_500, nonce: 3)
+        let sideTwo = try await makeChild(of: sideOne, fetcher: full, timestamp: 3_500, nonce: 4)
+        let genesisHash = try BlockHeader(node: genesis).rawCID
+        let sideOneHash = try BlockHeader(node: sideOne).rawCID
+
+        let level = makeLevel(genesis: genesis)
+        for block in [mainOne, mainTwo, sideOne] {
+            let result = try await level.admitBlockHeaderChainLocal(
+                try BlockHeader(node: block),
+                fetcher: full,
+                validationContentStorer: full,
+                materializedVolumeStorer: full,
+                stage: testAdmissionStage
+            )
+            guard case .accepted = result else {
+                return XCTFail("fixture block must be accepted, got \(result)")
+            }
+        }
+        let tip = await level.chain.getMainChainTip()
+        XCTAssertEqual(tip, try BlockHeader(node: mainTwo).rawCID)
+        let sideOnMain = await level.chain.getMainChainBlockHash(atIndex: 1)
+        XCTAssertNotEqual(sideOnMain, sideOneHash)
+
+        let served = await level.chain.getMainChainTimestamps(
+            forParentHash: sideOneHash, count: 5
+        )
+        let walked = try await sideTwo.collectAncestorTimestamps(
+            parent: sideOne, count: 5, fetcher: full
+        )
+        XCTAssertEqual(served, walked)
+        XCTAssertEqual(walked, [2_500, 1_000])
+
+        // A fetcher that cannot serve any ancestor beyond the parent still
+        // validates the side candidate: the window came from the held graph.
+        let noAncestors = MissingCIDAdmissionFetcher(backing: full, missingCID: genesisHash)
+        let result = try await level.admitBlockHeaderChainLocal(
+            try BlockHeader(node: sideTwo),
+            fetcher: noAncestors,
+            validationContentStorer: full,
+            materializedVolumeStorer: full,
+            mode: .weighed,
+            stage: testAdmissionStage
+        )
+        guard case .accepted = result else {
+            return XCTFail("side candidate must validate from the held graph, got \(result)")
+        }
+    }
+
     func testValidateTierExecutesLikeEagerAndMaterializesState() async throws {
         // Validated tier (deferred execution): `.validate` executes a block and
         // records the validity verdict. On a valid block it does exactly what
@@ -1384,13 +1565,10 @@ final class ChainLocalAdmissionTests: XCTestCase {
         )
         XCTAssertEqual(disconnected.failure, .protocolInvalid)
         XCTAssertEqual(disconnected.parentCarrierLink?.carrierCID, header.rawCID)
-        XCTAssertEqual(
-            disconnected.sameChainPredecessor,
-            SameChainPredecessorRequirement(
-                descendantCID: header.rawCID,
-                predecessorCID: try BlockHeader(node: genesis).rawCID
-            )
-        )
+        // The carrier relay survives a proven invalidity; a predecessor
+        // requirement does not — a verdict asks the node to acquire nothing
+        // (see testProvenInvalidBlockRequestsNoPredecessor).
+        XCTAssertNil(disconnected.sameChainPredecessor)
     }
 
     func testRootLevelRejectsASecondParentlessRoot() async throws {
