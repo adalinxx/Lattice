@@ -238,15 +238,18 @@ public extension Block {
         let walkDepth = spec.retargetWindow
         let (parentDepth, overflow) = parent.height.addingReportingOverflow(1)
         guard !overflow else { return false }
+        // The walk is bounded by the chain's actual depth, never by the raw
+        // window: `retargetWindow` is an unbounded UInt64 from a spec that is
+        // attacker-supplied while the parent is disconnected.
         let requiredWalkDepth = min(walkDepth, parentDepth)
         let ancestorTimestamps: [Int64]
         if let chain,
            let parentHash = self.parent?.rawCID,
-           let fast = await chain.getMainChainTimestamps(forParentHash: parentHash, count: walkDepth),
+           let fast = await chain.getMainChainTimestamps(forParentHash: parentHash, count: requiredWalkDepth),
            requiredWalkDepth <= UInt64(fast.count) {
             ancestorTimestamps = fast
         } else {
-            guard let walked = try await collectAncestorTimestamps(parent: parent, count: walkDepth, fetcher: fetcher),
+            guard let walked = try await collectAncestorTimestamps(parent: parent, count: requiredWalkDepth, fetcher: fetcher),
                   requiredWalkDepth <= UInt64(walked.count) else {
                 return false
             }
