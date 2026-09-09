@@ -1234,25 +1234,24 @@ public actor ChainState {
         mainChainBlockAtIndex[index]
     }
 
-    /// Return up to `count` ancestor timestamps newest-first, ending at `parentHash`.
-    /// Fast path: walks the main-chain side index via `mainChainBlockAtIndex` +
-    /// `blockTimestamps`, avoiding fetcher round-trips. Returns nil if `parentHash`
-    /// is not on the current main chain, or if any timestamp in the requested
-    /// window is missing (e.g. pre-upgrade persisted data) — callers should fall
-    /// back to a fetcher walk.
+    /// Return up to `count` ancestor timestamps newest-first, starting at
+    /// `parentHash`. Fast path: walks the held graph's parent links via
+    /// `hashToBlock` + `blockTimestamps` — every accepted block, weighed
+    /// included, on or off the main chain — avoiding fetcher round-trips, with
+    /// exactly the order and count of `Block.collectAncestorTimestamps`. Returns
+    /// nil if `parentHash` is not held, or if any timestamp in the held window
+    /// is missing (e.g. pre-upgrade persisted data) — callers should fall back
+    /// to a fetcher walk.
     public func getMainChainTimestamps(forParentHash parentHash: String, count: UInt64) -> [Int64]? {
         guard count > 0 else { return [] }
-        guard let parent = hashToBlock[parentHash] else { return nil }
-        guard mainChainBlockAtIndex[parent.blockHeight] == parentHash else { return nil }
+        guard hashToBlock[parentHash] != nil else { return nil }
         var result: [Int64] = []
-        result.reserveCapacity(Int(count))
-        var idx = parent.blockHeight
+        var current: String? = parentHash
         for _ in 0..<count {
-            guard let hash = mainChainBlockAtIndex[idx] else { break }
+            guard let hash = current else { break }
             guard let ts = blockTimestamps[hash] else { return nil }
             result.append(ts)
-            if idx == 0 { break }
-            idx -= 1
+            current = hashToBlock[hash]?.parentBlockHash
         }
         return result
     }

@@ -771,7 +771,9 @@ private enum ChainLocalAdmission {
                 return .result(.rejected(
                     failure,
                     parentCarrierLink: carrier.relayLink,
-                    sameChainPredecessor: carrier.sameChainPredecessor
+                    sameChainPredecessor: predecessorRequirement(
+                        carrier.sameChainPredecessor, after: failure
+                    )
                 ))
             }
             return .ready(PreparedAdmission(
@@ -814,7 +816,9 @@ private enum ChainLocalAdmission {
             return .result(.rejected(
                 failure,
                 parentCarrierLink: carrier.relayLink,
-                sameChainPredecessor: carrier.sameChainPredecessor
+                sameChainPredecessor: predecessorRequirement(
+                    carrier.sameChainPredecessor, after: failure
+                )
             ))
         case .success(let (stateDiff, state)):
             if !context.isRoot, let childPackage,
@@ -935,6 +939,17 @@ private enum ChainLocalAdmission {
                 kind: .block(stateDiff, state)
             ))
         }
+    }
+
+    /// A proven-invalid block asks the node for nothing: its predecessor must
+    /// not be acquired on its behalf, or a fabricated chain would be parked and
+    /// backfilled one junk block at a time. Only a non-verdict (availability,
+    /// ordering) keeps the requirement so the node can retry after acquiring.
+    static func predecessorRequirement(
+        _ requirement: SameChainPredecessorRequirement?,
+        after failure: ChainAdmissionFailure
+    ) -> SameChainPredecessorRequirement? {
+        isDeterministicInvalidity(failure) ? nil : requirement
     }
 
     /// A failure is a validity verdict only when execution completed and the
