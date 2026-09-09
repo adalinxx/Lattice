@@ -287,6 +287,51 @@ public extension Block {
         )
     }
 
+    /// Header linkage: the structural rules a non-genesis block must satisfy
+    /// against its parent before anything is executed — version, parent
+    /// resolution, spec continuity, `prevState == parent.postState`, and
+    /// height. Returns the resolved parent and spec, or nil when a rule fails.
+    /// With `validateTimestampAndNextTarget` this is the whole header-linkage
+    /// rule set (`validateHeaderLinkage` composes the two); `validateNexus`
+    /// runs the same pieces before it touches a transaction body.
+    func resolveHeaderLinkage(
+        fetcher: Fetcher
+    ) async throws -> (parent: Block, spec: ChainSpec)? {
+        if version != Block.currentVersion { return nil }
+        async let parentFuture = parent?.resolve(fetcher: fetcher)
+        async let specFuture = spec.resolve(fetcher: fetcher)
+        guard let previousBlockNode = try await parentFuture?.node else { return nil }
+        if !validateSpec(parent: previousBlockNode) { return nil }
+        if !validateState(parent: previousBlockNode) { return nil }
+        if !validateHeight(parent: previousBlockNode) { return nil }
+
+        guard let specNode = try await specFuture.node else { return nil }
+        return (previousBlockNode, specNode)
+    }
+
+    /// The complete header-linkage check — `resolveHeaderLinkage` plus the
+    /// timestamp and target schedule — and nothing else. This is what
+    /// "structurally verify" means for a block that is possessed but not yet
+    /// executed: exactly the checks `validateNexus` makes before execution.
+    func validateHeaderLinkage(
+        fetcher: Fetcher,
+        chain: ChainState? = nil,
+        reportTemporalFailure: Bool = false,
+        validationContext: ValidationContext
+    ) async throws -> Bool {
+        guard let linkage = try await resolveHeaderLinkage(fetcher: fetcher) else {
+            return false
+        }
+        return try await validateTimestampAndNextTarget(
+            spec: linkage.spec,
+            parent: linkage.parent,
+            fetcher: fetcher,
+            chain: chain,
+            reportTemporalFailure: reportTemporalFailure,
+            validationContext: validationContext
+        )
+    }
+
     /// Validate block structure: parent linkage, spec, height, timestamp,
     /// target, transaction signatures, balance changes, and genesis
     /// transactions, and post-state root. Returns the state diff and the
@@ -302,15 +347,9 @@ public extension Block {
         guard expectedChainPath.first == DEFAULT_ROOT_DIRECTORY else {
             return (false, .empty, nil)
         }
-        if version != Block.currentVersion { return (false, .empty, nil) }
-        async let parentFuture = parent?.resolve(fetcher: fetcher)
-        async let specFuture = spec.resolve(fetcher: fetcher)
-        guard let previousBlockNode = try await parentFuture?.node else { return (false, .empty, nil) }
-        if !validateSpec(parent: previousBlockNode) { return (false, .empty, nil) }
-        if !validateState(parent: previousBlockNode) { return (false, .empty, nil) }
-        if !validateHeight(parent: previousBlockNode) { return (false, .empty, nil) }
-
-        guard let specNode = try await specFuture.node else { return (false, .empty, nil) }
+        guard let (previousBlockNode, specNode) = try await resolveHeaderLinkage(
+            fetcher: fetcher
+        ) else { return (false, .empty, nil) }
 
         // Start transaction body resolution concurrently
         // with the ancestor-timestamp walk. The transaction CAS fetches and the
