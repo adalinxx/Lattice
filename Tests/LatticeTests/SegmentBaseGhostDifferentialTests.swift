@@ -511,6 +511,7 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
                 seed: 0,
                 event: "reorg round \(round)"
             )
+            await assertTruncationEquivalent(chain, "reorg round \(round)")
             let newPath = await referencePath(chain)
             assertCommitDelta(
                 result,
@@ -563,6 +564,60 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
             chain,
             seed: 0,
             event: "exclusion after deltas"
+        )
+    }
+
+    /// The merged-mining shape itself: a sibling at EVERY height, each arriving
+    /// BEFORE the canonical block, so the parent always already has a child and
+    /// no admission can take a cheap tip append. The randomized generator makes
+    /// siblings, but not systematically at every height — and this is both the
+    /// shape that degenerates the segment quotient and the one live sync
+    /// actually sees on a merged-mining child.
+    func testSiblingAtEveryHeightMatchesReferenceAndTruncates() async throws {
+        let depth = 32
+        var main: [PlannedDifferentialBlock] = []
+        for index in 0..<depth {
+            // `admission(for:)` derives work as `index % 3 + 1`, so an index of
+            // 3i+2 weighs 3 and an index of 3i weighs 1: the canonical branch
+            // wins on work at every height rather than on a CID tie-break.
+            main.append(PlannedDifferentialBlock(
+                index: 3 * index + 2,
+                hash: testCID("every-height-main-\(index)"),
+                parentHash: index == 0 ? nil : main[index - 1].hash,
+                height: UInt64(index)
+            ))
+        }
+        let chain = try await ChainState.restore(replaying: [
+            admission(for: main[0]),
+        ])
+        await assertMatchesReference(chain, seed: 0, event: "genesis")
+
+        for index in 1..<depth {
+            let sibling = PlannedDifferentialBlock(
+                index: 3 * index,
+                hash: testCID("every-height-side-\(index)"),
+                parentHash: main[index - 1].hash,
+                height: UInt64(index)
+            )
+            _ = try await chain.applyStaged(admission(for: sibling))
+            await assertMatchesReference(chain, seed: 0, event: "sibling at \(index)")
+            await assertTruncationEquivalent(chain, "sibling at \(index)")
+            _ = try await chain.applyStaged(admission(for: main[index]))
+            await assertMatchesReference(chain, seed: 0, event: "canonical at \(index)")
+            await assertTruncationEquivalent(chain, "canonical at \(index)")
+        }
+
+        let tip = await chain.getMainChainTip()
+        XCTAssertEqual(
+            tip,
+            main[depth - 1].hash,
+            "the heavier branch must win at every height"
+        )
+        let truncations = await chain.truncatedCanonicalProjectionCount
+        XCTAssertGreaterThan(
+            truncations,
+            0,
+            "the truncated descent must fire on the merged-mining shape"
         )
     }
 
@@ -755,6 +810,39 @@ private func assertMatchesReference(
         "seed \(seed), \(event): by-height index",
         file: file,
         line: line
+    )
+}
+
+/// A truncated projection must agree with a whole-chain projection over the
+/// SAME live index. Comparing only against the reference oracle cannot tell a
+/// wrong truncation from a wrong index — both show up as one divergence. This
+/// can: it holds the index fixed and varies only where the descent started.
+///
+/// This is DIAGNOSTIC rather than additional coverage: `assertMatchesReference`
+/// already pins the live path to the oracle, and the two can only disagree with
+/// each other when the index is wrong, which that assertion already catches. So
+/// it is called at the sites where truncation is the thing under test, not from
+/// the shared helper — running a whole-chain projection after every step of
+/// every differential test cost 5.5x the suite runtime (836s against 151s) to
+/// tell us which half of a failure to look at first.
+private func assertTruncationEquivalent(
+    _ chain: ChainState,
+    _ message: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async {
+    guard let full = await chain.debugFullCanonicalProjection() else { return }
+    let liveTip = await chain.getMainChainTip()
+    let livePath = await chain.mainChainHashes
+    XCTAssertEqual(
+        liveTip, full.chainTip,
+        "\(message): truncated tip vs whole-chain tip over the same index",
+        file: file, line: line
+    )
+    XCTAssertEqual(
+        livePath, full.mainChainHashes,
+        "\(message): truncated path vs whole-chain path over the same index",
+        file: file, line: line
     )
 }
 
