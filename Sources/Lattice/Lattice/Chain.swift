@@ -582,12 +582,13 @@ public actor ChainState {
     /// source of truth because scalar weights cannot preserve grind identity.
     private var segmentWorkIndex: SegmentWorkIndex
     private var segmentIndex: SegmentIndex
-    /// The selected quotient path. A normal leaf extension updates only this
-    /// final tail instead of rewalking the unchanged unary prefix.
-    private var canonicalSegmentSpine: [CanonicalSegment]
 #if DEBUG
     /// Test-visible diagnostic for a whole-block canonical materialization.
     var fullCanonicalProjectionCount: UInt64
+    /// Projections that re-descended from the divergence point instead of the
+    /// root. A truncation that silently never fired would still be CORRECT, so
+    /// the cost tests assert this rises rather than only that the answers match.
+    var truncatedCanonicalProjectionCount: UInt64
     /// Blocks materialized by canonical projections, and segments walked to
     /// select the canonical spine. The projection COUNT cannot show the cost
     /// PER projection, which is what live-sync admission actually pays.
@@ -683,9 +684,9 @@ public actor ChainState {
         self.workByGrind = [:]
         self.segmentWorkIndex = .empty
         self.segmentIndex = SegmentIndex()
-        self.canonicalSegmentSpine = []
 #if DEBUG
         self.fullCanonicalProjectionCount = 0
+        self.truncatedCanonicalProjectionCount = 0
         self.canonicalProjectionBlockVisitCount = 0
         self.canonicalProjectionSegmentVisitCount = 0
         self.segmentCacheRebuildCount = 0
@@ -748,11 +749,6 @@ public actor ChainState {
         self.segmentWorkIndex = Self.buildSegmentWorkIndex(
             index: self.segmentIndex,
             workByGrind: &self.workByGrind
-        )
-        self.canonicalSegmentSpine = Self.segmentSpine(
-            endingAt: chainTip,
-            in: self.hashToBlock,
-            index: self.segmentIndex
         )
         for hash in mainChainHashes {
             guard let height = self.hashToBlock[hash]?.blockHeight,
@@ -1230,6 +1226,38 @@ public actor ChainState {
         fullCanonicalProjectionCount = 0
     }
 
+    /// Read-only whole-chain projection over the LIVE index, with no counter and
+    /// no state effects. Differential tests use it to separate a wrong
+    /// truncation from a wrong index: a truncated projection must agree with
+    /// this at every step, and when it does not, this says which half is at
+    /// fault — something comparing only against the reference oracle cannot.
+    func debugFullCanonicalProjection() -> (
+        chainTip: String,
+        mainChainHashes: Set<String>
+    )? {
+        let roots = Array(indexToBlockHash[0] ?? []).filter {
+            hashToBlock[$0]?.parentBlockHash == nil
+                && !excludedClosure.contains($0)
+        }
+        guard let root = Self.preferred(among: roots, workIndex: segmentWorkIndex)
+        else { return nil }
+        if let descent = Self.segmentGhostDescent(
+            from: root,
+            in: hashToBlock,
+            index: segmentIndex,
+            workIndex: segmentWorkIndex,
+            excluding: excludedClosure
+        ) {
+            return (descent.tipHash, descent.blocks)
+        }
+        let direct = Self.referenceGhostDescent(
+            from: root,
+            in: hashToBlock,
+            excluding: excludedClosure
+        )
+        return (direct.tipHash, direct.blocks)
+    }
+
     /// Test-only view of the derived exclusion closure so a differential test
     /// can drive the reference oracle over the same filtered graph.
     var excludedClosureForTesting: Set<String> {
@@ -1323,10 +1351,13 @@ public actor ChainState {
         } else if excludedInsertion {
             // Gated excluded insert: never entered fork choice, nothing reorgs.
             canonicalChange = nil
-        } else if canAppendCanonicalTip(blockHash, parentHash: input.parentBlockHash, oldTip: oldTip) {
-            canonicalChange = appendCanonicalTip(blockHash)
         } else {
-            canonicalChange = projectCanonicalChain()
+            // A validated insert either adds one leaf or grafts one component
+            // rooted at this block, and every block carries strictly positive
+            // work: a positive increase confined to one point of the graph.
+            // The canonical tip append is not a special case any more — it is
+            // the cheapest instance of this one, a descent of a single step.
+            canonicalChange = projectCanonicalChain(monotoneIncreaseAt: blockHash)
         }
         let extendsMainChain = input.parentBlockHash == oldTip
             && mainChainHashes.contains(blockHash)
@@ -1739,18 +1770,6 @@ public actor ChainState {
             from: parentBase,
             index: segmentIndex
         ) else { return false }
-
-        if let selected = canonicalSegmentSpine.firstIndex(of:
-            CanonicalSegment(base: parentBase, tail: oldTail)
-        ) {
-            canonicalSegmentSpine.replaceSubrange(
-                selected...selected,
-                with: [
-                    CanonicalSegment(base: parentBase, tail: parentHash),
-                    CanonicalSegment(base: oldChild, tail: oldTail),
-                ]
-            )
-        }
         return true
     }
 
@@ -1948,9 +1967,12 @@ public actor ChainState {
         }
         mutationGeneration += 1
 
+        // A contribution only reaches here when it is strictly stronger than what
+        // this block already held, so fork choice saw a positive increase at
+        // exactly one point.
         let canonicalChange = (deferProjectionForReplay || excluded)
             ? nil
-            : projectCanonicalChain()
+            : projectCanonicalChain(monotoneIncreaseAt: blockHash)
         if canonicalChange != nil {
             tipSnapshot = tipSnapshotsByHash[chainTip]
         }
@@ -2127,7 +2149,6 @@ public actor ChainState {
             index: segmentIndex,
             workByGrind: &workByGrind
         )
-        canonicalSegmentSpine = []
         localWorkCachesDirty = true
 #if DEBUG
         segmentCacheRebuildCount += 1
@@ -2383,43 +2404,6 @@ public actor ChainState {
             }
         }
         return index
-    }
-
-    /// Compress the supplied canonical path once while constructing a chain.
-    /// Later steady-state projections use `segmentGhostSpine` and do not walk
-    /// unary blocks unless the selected quotient path changes.
-    nonisolated private static func segmentSpine(
-        endingAt tipHash: String,
-        in blocks: [String: BlockMeta],
-        index: SegmentIndex
-    ) -> [CanonicalSegment] {
-        var reversePath: [String] = []
-        var currentHash: String? = tipHash
-        var visited = Set<String>()
-        while let hash = currentHash,
-              visited.insert(hash).inserted,
-              let block = blocks[hash] {
-            reversePath.append(hash)
-            currentHash = block.parentBlockHash
-        }
-
-        var spine: [CanonicalSegment] = []
-        var base: String?
-        var tail: String?
-        for hash in reversePath.reversed() {
-            let nextBase = index.base(forBlock: hash) ?? hash
-            if nextBase != base {
-                if let base, let tail {
-                    spine.append(CanonicalSegment(base: base, tail: tail))
-                }
-                base = nextBase
-            }
-            tail = hash
-        }
-        if let base, let tail {
-            spine.append(CanonicalSegment(base: base, tail: tail))
-        }
-        return spine
     }
 
     /// Build the complete derived GHOST cache from identity-aware locations.
@@ -2813,50 +2797,38 @@ public actor ChainState {
         return (descent.tipHash, descent.blocks)
     }
 
-    private func canAppendCanonicalTip(
-        _ blockHash: String,
-        parentHash: String?,
-        oldTip: String
-    ) -> Bool {
-        guard parentHash == oldTip,
-              mainChainHashes.contains(oldTip),
-              let block = hashToBlock[blockHash],
-              block.childHashes.isEmpty,
-              let parent = hashToBlock[oldTip],
-              mainChainBlockAtIndex[parent.blockHeight] == oldTip,
-              parent.childHashes.count == 1,
-              parent.childHashes[0] == blockHash,
-              let base = segmentIndex.base(forBlock: oldTip),
-              segmentIndex.base(forBlock: blockHash) == base,
-              segmentIndex.tailByBase[base] == blockHash,
-              canonicalSegmentSpine.last == CanonicalSegment(base: base, tail: oldTip)
-        else { return false }
-
-        return true
-    }
-
-    private func appendCanonicalTip(_ blockHash: String) -> ChainCommit {
-        let block = hashToBlock[blockHash]!
+    /// Project the canonical path after one fork-choice mutation.
+    ///
+    /// `monotoneIncreaseAt` names the single block a strictly-positive work
+    /// increase landed on — a new leaf, a newly grafted component root, or a
+    /// stronger observation on a block already held. ONLY a mutation of that
+    /// shape may pass it. That is what makes truncation sound: such an increase
+    /// raises the subtree work of exactly the blocks on the mutated block's
+    /// ancestor line and of nothing else, so at every canonical block below the
+    /// point where that line leaves the canonical path, the child that already
+    /// wins is the child that gained — it cannot lose, not even a CID tie-break
+    /// it previously won, since it now wins strictly. No decision below that
+    /// point can flip, so the path below it needs no recomputation.
+    ///
+    /// Exclusion removes weight and therefore must never pass it; it forces a
+    /// whole-chain projection, as do restore-replay and a never-projected state.
+    private func projectCanonicalChain(
+        forceFull: Bool = false,
+        monotoneIncreaseAt mutatedAt: String? = nil
+    ) -> ChainCommit? {
         defer { projectedGeneration = mutationGeneration }
-        chainTip = blockHash
-        mainChainHashes.insert(blockHash)
-        mainChainBlockAtIndex[block.blockHeight] = blockHash
-        canonicalSegmentSpine[canonicalSegmentSpine.count - 1].tail = blockHash
-        tipSnapshot = tipSnapshotsByHash[blockHash]
-        return ChainCommit(
-            tipHash: blockHash,
-            mainChainBlocksAdded: [blockHash: block.blockHeight]
-        )
-    }
+        // A never-projected state has no trustworthy canonical path to truncate
+        // against, and `forceFull` means the caller knows it cannot be trusted.
+        if !forceFull, projectedGeneration != nil, let mutatedAt,
+           let outcome = truncatedProjection(monotoneIncreaseAt: mutatedAt) {
+            return outcome.commit
+        }
 
-    private func projectCanonicalChain(forceFull: Bool = false) -> ChainCommit? {
-        defer { projectedGeneration = mutationGeneration }
-        // The segment index is kept filtered, so ONE projection path serves both
-        // the exclusion-free and exclusion-present cases. `excluding` is empty in
-        // the common case (zero cost); when set it only steers traversal past
-        // excluded siblings still present in the served graph. The fast
-        // `spine == canonicalSegmentSpine` early-out and `canAppendCanonicalTip`
-        // therefore keep working under an active exclusion — no parallel path.
+        // Whole-chain fallback. The segment index is kept filtered, so ONE
+        // projection path serves both the exclusion-free and exclusion-present
+        // cases. `excluding` is empty in the common case (zero cost); when set
+        // it only steers traversal past excluded siblings still present in the
+        // served graph — no parallel path.
         let roots = Array(indexToBlockHash[0] ?? []).filter {
             hashToBlock[$0]?.parentBlockHash == nil
                 && !excludedClosure.contains($0)
@@ -2873,36 +2845,6 @@ public actor ChainState {
 #if DEBUG
         canonicalProjectionSegmentVisitCount += UInt64(spine?.count ?? 0)
 #endif
-        if !forceFull,
-           let spine,
-           spine == canonicalSegmentSpine {
-            return nil
-        }
-
-        // The segments the newly selected path shares with the projected one
-        // hold the same blocks: `parentBlockHash` is immutable once set and
-        // every edge is height-linked at admission, so a matching (base, tail)
-        // denotes the same block run whatever the index has done since. Only
-        // the segments after the shared prefix need walking. A forced
-        // projection and a never-projected state both mean the cached path
-        // cannot be trusted — they re-materialize from the root, as before.
-        var shared = 0
-        if !forceFull, projectedGeneration != nil, let spine {
-            shared = Self.commonSegmentPrefix(canonicalSegmentSpine, spine)
-        }
-        if shared > 0, let spine,
-           let suffix = canonicalSuffix(of: spine, after: shared),
-           let replaced = canonicalPathAbove(suffix.divergenceHeight) {
-#if DEBUG
-            canonicalProjectionBlockVisitCount += UInt64(suffix.blocks.count)
-#endif
-            canonicalSegmentSpine = spine
-            return applyCanonicalDelta(
-                tipHash: suffix.tipHash,
-                blocks: suffix.blocks,
-                replacing: replaced
-            )
-        }
 
 #if DEBUG
         fullCanonicalProjectionCount += 1
@@ -2931,7 +2873,6 @@ public actor ChainState {
         )
         let newHashes = projection.mainChainHashes
         let newTip = projection.chainTip
-        canonicalSegmentSpine = descent.spine
         guard newTip != chainTip || newHashes != mainChainHashes else { return nil }
 
         let removed = mainChainHashes.subtracting(newHashes)
@@ -2957,53 +2898,143 @@ public actor ChainState {
         )
     }
 
-    /// Leading segments the newly selected path shares with the projected one.
-    nonisolated private static func commonSegmentPrefix(
-        _ projected: [CanonicalSegment],
-        _ selected: [CanonicalSegment]
-    ) -> Int {
-        var shared = 0
-        while shared < projected.count,
-              shared < selected.count,
-              projected[shared] == selected[shared] {
-            shared += 1
-        }
-        return shared
+    /// Outcome of a mutation-point projection. A nil OUTCOME means truncation's
+    /// assumptions could not be verified and the caller must re-materialize from
+    /// the root; a nil `commit` inside one means the projection ran and nothing
+    /// changed.
+    private struct TruncatedProjectionOutcome {
+        let commit: ChainCommit?
     }
 
-    /// Materialize only the segments after the shared prefix. A malformed
-    /// suffix route returns nil so the caller falls back to the same full
-    /// re-materialization it has always run.
-    private func canonicalSuffix(
-        of spine: [CanonicalSegment],
-        after shared: Int
-    ) -> (tipHash: String, blocks: Set<String>, divergenceHeight: UInt64)? {
-        guard let lastShared = hashToBlock[spine[shared - 1].tail] else {
-            return nil
+    /// The deepest canonical block on the ancestor line of `mutatedAt`. Nil when
+    /// that line reaches a root or a missing parent without meeting the
+    /// canonical path — including a mutation under a different root.
+    ///
+    /// This walk is UNCAPPED deliberately. A step budget here is a cliff, not a
+    /// budget: past it the caller falls through to the whole-chain projection,
+    /// which pays a spine walk AND a descent from the root before it can
+    /// discover that nothing moved. So a cap does not bound the cost of a deep
+    /// divergence, it relocates it to O(n) per admission — reintroducing the
+    /// quadratic this change exists to remove, on precisely the shape it exists
+    /// to make cheap, and skipping the O(1) winner-unchanged check below, which
+    /// only runs once a divergence point has been found.
+    ///
+    /// Uncapped, the walk is bounded by the length of the branch below the
+    /// mutated block, which the node has already paid to admit, and every step
+    /// is an O(1) set membership test. Termination does not rest on a budget:
+    /// each step moves to a strictly lower height, and a parent that does not is
+    /// a malformed route that fails closed like every other guard here.
+    private func canonicalDivergencePoint(from mutatedAt: String) -> String? {
+        var current = mutatedAt
+        while !mainChainHashes.contains(current) {
+            guard let meta = hashToBlock[current],
+                  let parentHash = meta.parentBlockHash,
+                  let parent = hashToBlock[parentHash],
+                  parent.blockHeight < meta.blockHeight else { return nil }
+            current = parentHash
         }
-        let divergenceHeight = lastShared.blockHeight + 1
-        // The selected path is a strict prefix of the projected one: everything
-        // above the shared tail simply leaves the main chain.
-        guard shared < spine.count else {
-            return (lastShared.blockHash, [], divergenceHeight)
+        return current
+    }
+
+    /// Re-descend from the divergence point instead of the root. Every guard
+    /// here fails closed: the caller re-materializes whole rather than act on a
+    /// partial answer.
+    private func truncatedProjection(
+        monotoneIncreaseAt mutatedAt: String
+    ) -> TruncatedProjectionOutcome? {
+        // A block that never routed into the quotient contributed no work and no
+        // fork-choice edge — a routed parent always routes its child, so an
+        // unrouted block's parent is unrouted or absent and no routed block's
+        // visible children changed either. Nothing can have moved.
+        guard segmentIndex.base(forBlock: mutatedAt) != nil else {
+            return TruncatedProjectionOutcome(commit: nil)
         }
-        // A full descent validates every segment boundary inside the spine it
-        // walks. A suffix walk starts at the boundary BELOW its first segment,
-        // so that one boundary is checked here or by nobody: without it a
-        // suffix could start off the shared tail, landing blocks below
-        // `divergenceHeight` that `replaced` never covers.
-        guard lastShared.childHashes.contains(spine[shared].base) else {
-            return nil
+        // The increase landed inside the subtree that already wins at every one
+        // of its ancestors, so every canonical decision is reinforced and none
+        // flips. This is the ordinary "stronger observation on a canonical
+        // block" event, and it is now O(1) instead of a walk from the root.
+        guard !mainChainHashes.contains(mutatedAt) else {
+            return TruncatedProjectionOutcome(commit: nil)
         }
+        guard let divergence = canonicalDivergencePoint(from: mutatedAt),
+              let divergenceHeight = hashToBlock[divergence]?.blockHeight
+        else { return nil }
+        let (suffixHeight, overflow) = divergenceHeight.addingReportingOverflow(1)
+        guard !overflow else { return nil }
+        let children = excludedClosure.isEmpty
+            ? (hashToBlock[divergence]?.childHashes ?? [])
+            : (hashToBlock[divergence]?.childHashes ?? []).filter {
+                !excludedClosure.contains($0)
+            }
+        // Every child of the divergence point is out of fork choice. This looks
+        // unreachable — `childHashes` is appended unconditionally on insert, and
+        // the excluded closure is closed under descendants, so an excluded
+        // ancestor implies an excluded `mutatedAt`, which never reaches here.
+        // Reachable or not, mutating out of a guard would contradict this
+        // function's contract that every guard fails closed, so it hands the
+        // case to the whole-chain projection like every other guard does.
+        guard !children.isEmpty else { return nil }
+        // One GHOST step, taken exactly as the spine walk takes it: a lone child
+        // is followed WITHOUT a weight lookup, because a child inside its
+        // parent's unary run is not a segment base and so has no subtree entry
+        // of its own to compare.
+        let chosen = children.count == 1
+            ? children[0]
+            : Self.preferred(among: children, workIndex: segmentWorkIndex)
+        guard let chosen else { return nil }
+        // The COMMON admission on a merged-mining child is a losing sibling, and
+        // it must cost nothing. This point is the deepest canonical ancestor of
+        // the mutated block, so the child leading to that block is never the
+        // canonical one, and the increase is confined to its subtree. If the
+        // winner here is therefore still the block already on the canonical
+        // path, no decision changed anywhere — not here, not below it, not above
+        // it — and there is nothing to materialize.
+        //
+        // This is decided in O(1), before reading the path above and before any
+        // descent. Without it a losing sibling deep in the chain would
+        // re-materialize everything from the fork point to the tip only to
+        // conclude nothing moved, which is worse than the whole-chain early-out
+        // this change removes.
+        if mainChainHashes.contains(chosen) {
+#if DEBUG
+            truncatedCanonicalProjectionCount += 1
+#endif
+            return TruncatedProjectionOutcome(commit: nil)
+        }
+        guard let replaced = canonicalPathAbove(suffixHeight) else { return nil }
+        // The suffix begins at a block taken straight from the divergence
+        // point's own children, so the boundary below the first segment — the
+        // one a spine-prefix suffix walk cannot check for itself — holds here by
+        // construction rather than by assumption.
+        guard let spine = Self.segmentGhostSpine(
+                  from: chosen,
+                  in: hashToBlock,
+                  index: segmentIndex,
+                  workIndex: segmentWorkIndex,
+                  excluding: excludedClosure
+              )
+        else { return nil }
+#if DEBUG
+        canonicalProjectionSegmentVisitCount += UInt64(spine.count)
+#endif
         guard let descent = Self.segmentGhostDescent(
-            from: spine[shared].base,
-            in: hashToBlock,
-            index: segmentIndex,
-            workIndex: segmentWorkIndex,
-            spine: Array(spine[shared...]),
-            excluding: excludedClosure
-        ) else { return nil }
-        return (descent.tipHash, descent.blocks, divergenceHeight)
+                  from: chosen,
+                  in: hashToBlock,
+                  index: segmentIndex,
+                  workIndex: segmentWorkIndex,
+                  spine: spine,
+                  excluding: excludedClosure
+              )
+        else { return nil }
+#if DEBUG
+        canonicalProjectionBlockVisitCount += UInt64(descent.blocks.count)
+        truncatedCanonicalProjectionCount += 1
+#endif
+        return TruncatedProjectionOutcome(commit: applyCanonicalDelta(
+            tipHash: descent.tipHash,
+            blocks: descent.blocks,
+            replacing: replaced
+        ))
     }
 
     /// The canonical blocks at and above `height`. Returns nil when the
