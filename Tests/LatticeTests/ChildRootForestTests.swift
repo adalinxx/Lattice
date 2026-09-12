@@ -21,7 +21,7 @@ private func childForestHash(_ block: Block) -> String {
 }
 
 private func preferredChildForestHash(_ first: String, _ second: String) -> String {
-    forkChoicePrefersSegmentBase(first, over: second) ? first : second
+    forkChoicePrefersBlock(first, over: second) ? first : second
 }
 
 private func submitChildForestBlock(_ block: Block, to chain: ChainState) async -> SubmissionResult {

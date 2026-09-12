@@ -34,10 +34,11 @@ public func workForHash(_ hash: UInt256) -> UInt256 {
     return (UInt256.max - hash) / (hash + UInt256(1)) + UInt256(1)
 }
 
-/// Stable tie-break for equal-work segment bases. Compare the CID bytes rather
-/// than an encoded presentation string; malformed values remain deterministic
-/// so persistence validation can reject them without order-dependent behavior.
-public func forkChoicePrefersSegmentBase(
+/// Stable tie-break for equal-work same-chain child blocks. Compare the CID
+/// bytes rather than an encoded presentation string; malformed values remain
+/// deterministic so persistence validation can reject them without
+/// order-dependent behavior.
+public func forkChoicePrefersBlock(
     _ candidateHash: String,
     over currentHash: String
 ) -> Bool {
@@ -369,9 +370,12 @@ public actor ChainState {
     var indexToBlockHash: [UInt64: Set<String>]
     var hashToBlock: [String: BlockMeta]
     var workByGrind: [String: WorkContributionRecord]
-    /// Derived GHOST weights exist only where a choice can be made: genesis
-    /// roots and children of a same-chain fork. Per-block facts remain the
-    /// source of truth because scalar weights cannot preserve grind identity.
+    /// Derived GHOST weights, as one Euler range per routed block — every routed
+    /// block, not only those where a choice can be made. That was true while
+    /// weights were stored per segment base; a range structure answers for any
+    /// block at the same cost, and fork choice reads it only at forks.
+    /// Per-block facts remain the source of truth because scalar weights cannot
+    /// preserve grind identity.
     private var subtreeWorkIndex: EulerWorkIndex
 #if DEBUG
     /// Test-visible diagnostic for a whole-block canonical materialization.
@@ -2107,7 +2111,7 @@ public actor ChainState {
                 continue
             }
             if candidateWork > selectedWork ||
-                (candidateWork == selectedWork && forkChoicePrefersSegmentBase(
+                (candidateWork == selectedWork && forkChoicePrefersBlock(
                     candidate,
                     over: current
                 )) {
@@ -2132,7 +2136,7 @@ public actor ChainState {
             }
             if candidateWork > selectedWork
                 || (candidateWork == selectedWork
-                    && forkChoicePrefersSegmentBase(candidate, over: current)) {
+                    && forkChoicePrefersBlock(candidate, over: current)) {
                 selected = candidate
             }
         }

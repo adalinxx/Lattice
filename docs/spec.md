@@ -878,11 +878,10 @@ carrier validity and securing-work validity are orthogonal.
 
 ### 9.4 Fork Choice and Reorganization
 
-At each fork, GHOST compares the competing segments at their same-chain child
-bases. The segment with greatest effective `trueCumWork` wins. Equal
-work compares the canonical CID bytes of the segment bases; the
-lexicographically smaller CID wins. `nextTarget` and the segment tips are not
-comparators. The same rule applies to competing genesis roots, so arrival and
+At each fork, GHOST compares the competing same-chain child blocks. The child
+with greatest effective `trueCumWork` wins. Equal work compares the canonical
+CID bytes of those child blocks; the lexicographically smaller CID wins.
+`nextTarget` is not a comparator. The same rule applies to competing genesis roots, so arrival and
 replay order cannot change fork choice. The deliberate security tradeoff of
 this grindable deterministic tie-break is quantified in the
 [TRE-134 adversarial report](consensus/tre-134-adversarial-report.md).
@@ -1118,8 +1117,8 @@ state); withdrawals return it to the block-wide credit budget.
    while distinct grinds sum
 5. Effective `trueCumWork` contains only connected, accepted same-chain
    locations derived from verified proof bytes
-6. Equal-work segments prefer the lexicographically smaller canonical base CID;
-   `nextTarget` and segment tips are not comparators
+6. Equal-work same-chain child blocks prefer the lexicographically smaller
+   canonical block CID; `nextTarget` is not a comparator
 7. Parent canonicity alone cannot change child validity, weight, or fork choice
 8. A non-genesis child keeps the same parent-state reference or moves
    transitively forward through the immediate parent's connected accepted graph
