@@ -2951,14 +2951,7 @@ public actor ChainState {
               let divergenceHeight = hashToBlock[divergence]?.blockHeight
         else { return nil }
         let (suffixHeight, overflow) = divergenceHeight.addingReportingOverflow(1)
-        guard !overflow, let replaced = canonicalPathAbove(suffixHeight) else {
-            return nil
-        }
-        // The divergence point keeps its place on the path, so what moves starts
-        // at its chosen child. Taking that step here, rather than descending
-        // FROM the divergence point, keeps materialization at one block per
-        // admission: the divergence point is already materialized, and
-        // re-walking it would double this cost for no answer.
+        guard !overflow else { return nil }
         let children = excludedClosure.isEmpty
             ? (hashToBlock[divergence]?.childHashes ?? [])
             : (hashToBlock[divergence]?.childHashes ?? []).filter {
@@ -2966,6 +2959,9 @@ public actor ChainState {
             }
         guard !children.isEmpty else {
             // Nothing in fork choice below it: the canonical path ends here.
+            guard let replaced = canonicalPathAbove(suffixHeight) else {
+                return nil
+            }
 #if DEBUG
             truncatedCanonicalProjectionCount += 1
 #endif
@@ -2979,16 +2975,36 @@ public actor ChainState {
         // is followed WITHOUT a weight lookup, because a child inside its
         // parent's unary run is not a segment base and so has no subtree entry
         // of its own to compare.
-        let next = children.count == 1
+        let chosen = children.count == 1
             ? children[0]
             : Self.preferred(among: children, workIndex: segmentWorkIndex)
+        guard let chosen else { return nil }
+        // The COMMON admission on a merged-mining child is a losing sibling, and
+        // it must cost nothing. This point is the deepest canonical ancestor of
+        // the mutated block, so the child leading to that block is never the
+        // canonical one, and the increase is confined to its subtree. If the
+        // winner here is therefore still the block already on the canonical
+        // path, no decision changed anywhere — not here, not below it, not above
+        // it — and there is nothing to materialize.
+        //
+        // This is decided in O(1), before reading the path above and before any
+        // descent. Without it a losing sibling deep in the chain would
+        // re-materialize everything from the fork point to the tip only to
+        // conclude nothing moved, which is worse than the whole-chain early-out
+        // this change removes.
+        if mainChainHashes.contains(chosen) {
+#if DEBUG
+            truncatedCanonicalProjectionCount += 1
+#endif
+            return TruncatedProjectionOutcome(commit: nil)
+        }
+        guard let replaced = canonicalPathAbove(suffixHeight) else { return nil }
         // The suffix begins at a block taken straight from the divergence
         // point's own children, so the boundary below the first segment — the
         // one a spine-prefix suffix walk cannot check for itself — holds here by
         // construction rather than by assumption.
-        guard let next,
-              let spine = Self.segmentGhostSpine(
-                  from: next,
+        guard let spine = Self.segmentGhostSpine(
+                  from: chosen,
                   in: hashToBlock,
                   index: segmentIndex,
                   workIndex: segmentWorkIndex,
@@ -2999,7 +3015,7 @@ public actor ChainState {
         canonicalProjectionSegmentVisitCount += UInt64(spine.count)
 #endif
         guard let descent = Self.segmentGhostDescent(
-                  from: next,
+                  from: chosen,
                   in: hashToBlock,
                   index: segmentIndex,
                   workIndex: segmentWorkIndex,
