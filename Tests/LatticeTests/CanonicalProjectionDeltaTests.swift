@@ -160,11 +160,18 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         // 321,200 before. The x3 is headroom over the measured 2, and still
         // leaves the bound two orders of magnitude below the quadratic value it
         // replaces — a planted bug that disables truncation turns it red.
+        // NOTE: this is now a RESTATEMENT of the block bound above, not an
+        // independent constraint. Both counters receive the same expression
+        // since the quotient was deleted — with no hop to take, a descent step
+        // IS a block — so this can only fail when that one does. It is kept
+        // because the counter is still serving the cross-deletion measurement,
+        // and it should collapse into a single bound when the two counters
+        // collapse into a single name.
         for length in [200, 400, 800] {
             XCTAssertLessThanOrEqual(
                 segmentVisits[length]!,
                 UInt64(3 * length),
-                "the spine walk must scale with the change, not the chain: \(measured)"
+                "the descent must scale with the change, not the chain: \(measured)"
             )
         }
         // The truncation must also be shown to FIRE. One that silently never

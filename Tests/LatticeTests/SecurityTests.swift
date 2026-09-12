@@ -908,7 +908,7 @@ final class ConsensusStressTests: XCTestCase {
         // string order differs from byte order, so String.min() is not the rule.
         let expected = candidates.map { header($0).rawCID }.reduce(nil as String?) { best, cid in
             guard let best else { return cid }
-            return forkChoicePrefersSegmentBase(cid, over: best) ? cid : best
+            return forkChoicePrefersBlock(cid, over: best) ? cid : best
         }
         let tip = await chain.getMainChainTip()
         XCTAssertEqual(tip, expected, "Equal-work bases should converge on the stable CID tie-break")

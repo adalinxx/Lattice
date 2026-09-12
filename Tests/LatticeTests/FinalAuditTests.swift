@@ -340,7 +340,7 @@ final class SelfishMiningTests: XCTestCase {
         let honestBaseHash = try VolumeImpl<Block>(node: honestBase!).rawCID
         let selfishBaseHash = try VolumeImpl<Block>(node: selfishBlocks[0]).rawCID
         let selfishTip = try VolumeImpl<Block>(node: selfishBlocks[2]).rawCID
-        let selfishWins = forkChoicePrefersSegmentBase(
+        let selfishWins = forkChoicePrefersBlock(
             selfishBaseHash,
             over: honestBaseHash
         )
