@@ -173,8 +173,8 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         for length in [200, 400, 800] {
             XCTAssertGreaterThanOrEqual(
                 truncations[length]!,
-                UInt64(length),
-                "every canonical admission should have truncated: \(measured)"
+                UInt64(2 * length),
+                "every admission truncates, both per height: \(measured)"
             )
         }
 
@@ -247,6 +247,98 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
             segments,
             0,
             "and the winner at the fork point settles it without walking to the tip"
+        )
+    }
+
+    /// Divergence deeper than any fixed walk budget.
+    ///
+    /// An earlier version of this change capped the ancestor walk at 64 steps
+    /// and fell through to the whole-chain projection past it. That cap did not
+    /// bound the cost of a deep divergence, it RELOCATED it: the fallback pays a
+    /// spine walk and a descent from the root before it can discover that
+    /// nothing moved, so a divergence past the cap cost O(n) per admission — the
+    /// quadratic this change removes, on the shape it exists to make cheap.
+    ///
+    /// Every other shape in this file keeps the mutation one step off the
+    /// canonical path, so not one of them can see that. The shape is the test
+    /// here, not the bound.
+    func testDivergenceDeeperThanAnyWalkBudgetMaterializesNothing() async throws {
+        let length = 400
+        let forkHeight = 10
+        let branchLength = 160
+        XCTAssertGreaterThan(
+            branchLength,
+            64,
+            "the divergence must exceed any fixed step budget to be meaningful"
+        )
+
+        let root = node("budget-root", parent: nil, height: 0, work: 4)
+        let chain = try await ChainState.restore(replaying: [admission(root)])
+        var canonical = [root]
+        var previous = root
+        for height in 1...length {
+            let block = node(
+                "budget-main-\(height)",
+                parent: previous.hash,
+                height: UInt64(height),
+                work: 4
+            )
+            _ = try await chain.applyStaged(admission(block))
+            canonical.append(block)
+            previous = block
+        }
+
+        // A long LOSING branch off an early canonical block. Its total work
+        // stays far under the canonical subtree above the fork, so the canonical
+        // path never moves and everything admitted on it is a losing block.
+        var branchTip = canonical[forkHeight]
+        for step in 1...branchLength {
+            let block = node(
+                "budget-branch-\(step)",
+                parent: branchTip.hash,
+                height: UInt64(forkHeight + step),
+                work: 1
+            )
+            _ = try await chain.applyStaged(admission(block))
+            branchTip = block
+        }
+        let tipAfterBranch = await chain.getMainChainTip()
+        XCTAssertEqual(
+            tipAfterBranch,
+            previous.hash,
+            "the losing branch must not take the canonical path"
+        )
+
+        let blocksBefore = await chain.canonicalProjectionBlockVisitCount
+        let segmentsBefore = await chain.canonicalProjectionSegmentVisitCount
+        // One more block at the END of that branch: its ancestor line meets the
+        // canonical path branchLength + 1 steps down, far past any budget.
+        let deep = node(
+            "budget-deep",
+            parent: branchTip.hash,
+            height: UInt64(forkHeight + branchLength + 1),
+            work: 1
+        )
+        _ = try await chain.applyStaged(admission(deep))
+        let blocks = await chain.canonicalProjectionBlockVisitCount - blocksBefore
+        let segments = await chain.canonicalProjectionSegmentVisitCount
+            - segmentsBefore
+
+        let finalTip = await chain.getMainChainTip()
+        XCTAssertEqual(
+            finalTip,
+            previous.hash,
+            "a losing block on a deep branch must not move the tip"
+        )
+        XCTAssertEqual(
+            blocks,
+            0,
+            "a deep divergence that changes nothing must materialize nothing"
+        )
+        XCTAssertEqual(
+            segments,
+            0,
+            "and must not fall back to walking the path from the root"
         )
     }
 
