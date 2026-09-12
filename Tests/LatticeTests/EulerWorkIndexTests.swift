@@ -229,6 +229,60 @@ final class EulerWorkIndexTests: XCTestCase {
         }
     }
 
+    /// A malformed run must leave the structure EXACTLY as it was, not half
+    /// spliced. There is no delete here, so a partial splice is unrecoverable;
+    /// the caller turns a nil into an abort, which is a crash rather than silent
+    /// corruption, but the guarantee should be that nothing was written at all.
+    ///
+    /// Every case below passed the first version of the pre-validation, which
+    /// tested independent conditions instead of simulating the nesting.
+    func testMalformedSpliceLeavesTheIndexUntouched() {
+        var index = EulerWorkIndex.empty
+        var model = Model()
+        XCTAssertTrue(index.insertRoot("root"))
+        model.add("root", parent: nil)
+        for step in 0..<4 {
+            let hash = "m-\(step)"
+            let parent = step == 0 ? "root" : "m-\(step - 1)"
+            XCTAssertNotNil(index.insertLeaf(hash, under: parent))
+            model.add(hash, parent: parent)
+            XCTAssertNotNil(index.add(work(3), at: hash))
+            model.addWork(work(3), to: hash)
+        }
+        func snapshot(_ index: EulerWorkIndex) -> [String] {
+            index.debugSequence.map { "\($0.hash)|\($0.isOpen)|\($0.value)" }
+        }
+        let before = snapshot(index)
+
+        let malformed: [(name: String, events: [EulerWorkIndex.Event])] = [
+            ("duplicate close", [
+                .open("x", work(1)), .close("x"), .close("x"),
+            ]),
+            ("unclosed open", [.open("y", work(1))]),
+            ("close out of nesting order", [
+                .open("a", work(1)), .open("b", work(1)),
+                .close("a"), .close("b"),
+            ]),
+            ("reopen a block already held", [
+                .open("m-0", work(1)), .close("m-0"),
+            ]),
+            ("close a block already closed", [.close("root")]),
+        ]
+        for case let (name, events) in malformed {
+            XCTAssertNil(
+                index.splice(events, under: "m-1"),
+                "\(name): must be refused"
+            )
+            XCTAssertEqual(
+                snapshot(index),
+                before,
+                "\(name): nothing may have been written"
+            )
+            XCTAssertTrue(index.debugInvariantsHold, "\(name): invariants")
+        }
+        assertMatchesModel(index, model, "after refused splices")
+    }
+
     /// The point of the whole structure: the cost of recording work does NOT
     /// grow with how deep in the block tree it lands, because no ancestor total
     /// exists to update. A per-ancestor structure would grow linearly here.
