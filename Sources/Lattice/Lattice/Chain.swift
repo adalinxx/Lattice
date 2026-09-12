@@ -228,137 +228,6 @@ private struct SegmentIndex {
     }
 }
 
-private struct OriginWorkIndex {
-    private var tree: [WorkSum] = [.zero]
-
-    init(count: Int) {
-        self.init(values: Array(repeating: .zero, count: count))
-    }
-
-    init(values: [WorkSum]) {
-        tree = [.zero] + values
-        for index in 1..<tree.count {
-            let parent = index + (index & -index)
-            if parent < tree.count {
-                tree[parent] = tree[parent] + tree[index]
-            }
-        }
-    }
-
-    mutating func append() {
-        let index = tree.count
-        let lowerBound = index - (index & -index)
-        tree.append(prefix(index - 1).subtracting(prefix(lowerBound))!)
-    }
-
-    mutating func add(_ delta: WorkSum, at position: Int) -> Int? {
-        guard position >= 0, position + 1 < tree.count else { return nil }
-        var index = position + 1
-        var updated = 0
-        while index < tree.count {
-            tree[index] = tree[index] + delta
-            updated += 1
-            index += index & -index
-        }
-        return updated
-    }
-
-    func sum(in range: Range<Int>) -> WorkSum? {
-        guard range.lowerBound >= 0,
-              range.upperBound < tree.count else { return nil }
-        return prefix(range.upperBound)
-            .subtracting(prefix(range.lowerBound))
-    }
-
-    private func prefix(_ count: Int) -> WorkSum {
-        var result = WorkSum.zero
-        var index = count
-        while index > 0 {
-            result = result + tree[index]
-            index -= index & -index
-        }
-        return result
-    }
-}
-
-/// Exact subtree sums over the dynamic segment quotient. Direct work remains
-/// indexed by stable unary-run position so a split never walks its block suffix.
-private struct SegmentWorkIndex {
-    var directWorkByOrigin: [String: OriginWorkIndex] = [:]
-    var subtreeWorkByBase: [String: WorkSum] = [:]
-
-    static var empty: SegmentWorkIndex {
-        SegmentWorkIndex()
-    }
-
-    mutating func add(
-        _ delta: WorkSum,
-        atBlock blockHash: String,
-        index: SegmentIndex
-    ) -> Int? {
-        guard let location = index.locationByBlock[blockHash],
-              let base = index.base(forBlock: blockHash),
-              let directCells = directWorkByOrigin[location.origin]?.add(
-                  delta,
-                  at: location.index
-              )
-        else { return nil }
-        var updated = directCells
-        var current: String? = base
-        while let base = current {
-            subtreeWorkByBase[base, default: .zero] =
-                subtreeWorkByBase[base, default: .zero] + delta
-            updated += 1
-            current = index.parentBaseByBase[base]
-        }
-        return updated
-    }
-
-    mutating func addOrigin(_ origin: String, count: Int) {
-        directWorkByOrigin[origin] = OriginWorkIndex(count: count)
-    }
-
-    mutating func appendBlock(toOrigin origin: String) -> Bool {
-        guard directWorkByOrigin[origin] != nil else { return false }
-        directWorkByOrigin[origin]!.append()
-        return true
-    }
-
-    mutating func addLeafBase(
-        _ base: String,
-        index: SegmentIndex
-    ) -> Bool {
-        guard index.childrenByBase[base]?.isEmpty == true,
-              let range = index.range(forBase: base),
-              let direct = directWorkByOrigin[range.origin]?.sum(
-                  in: range.indices
-              )
-        else { return false }
-        subtreeWorkByBase[base] = direct
-        return true
-    }
-
-    mutating func splitBase(
-        _ childBase: String,
-        from parentBase: String,
-        index: SegmentIndex
-    ) -> Bool {
-        guard let oldTotal = subtreeWorkByBase[parentBase],
-              let retainedRange = index.range(forBase: parentBase),
-              let retainedDirect = directWorkByOrigin[retainedRange.origin]?.sum(
-                  in: retainedRange.indices
-              ),
-              let childTotal = oldTotal.subtracting(retainedDirect)
-        else { return false }
-        subtreeWorkByBase[childBase] = childTotal
-        return true
-    }
-
-    func subtreeWork(forBase base: String) -> WorkSum? {
-        subtreeWorkByBase[base]
-    }
-}
-
 private struct CanonicalSegment: Equatable {
     var base: String
     var tail: String
@@ -580,7 +449,7 @@ public actor ChainState {
     /// Derived GHOST weights exist only where a choice can be made: genesis
     /// roots and children of a same-chain fork. Per-block facts remain the
     /// source of truth because scalar weights cannot preserve grind identity.
-    private var segmentWorkIndex: SegmentWorkIndex
+    private var subtreeWorkIndex: EulerWorkIndex
     private var segmentIndex: SegmentIndex
 #if DEBUG
     /// Test-visible diagnostic for a whole-block canonical materialization.
@@ -682,7 +551,7 @@ public actor ChainState {
         }
         self.hashToBlock = hashToBlock
         self.workByGrind = [:]
-        self.segmentWorkIndex = .empty
+        self.subtreeWorkIndex = .empty
         self.segmentIndex = SegmentIndex()
 #if DEBUG
         self.fullCanonicalProjectionCount = 0
@@ -746,7 +615,8 @@ public actor ChainState {
         }
         self.segmentIndex = Self.makeSegmentIndex(in: self.hashToBlock)
         self.workByGrind = Self.workIndex(in: self.hashToBlock)
-        self.segmentWorkIndex = Self.buildSegmentWorkIndex(
+        self.subtreeWorkIndex = Self.buildSubtreeWorkIndex(
+            in: self.hashToBlock,
             index: self.segmentIndex,
             workByGrind: &self.workByGrind
         )
@@ -1239,13 +1109,13 @@ public actor ChainState {
             hashToBlock[$0]?.parentBlockHash == nil
                 && !excludedClosure.contains($0)
         }
-        guard let root = Self.preferred(among: roots, workIndex: segmentWorkIndex)
+        guard let root = Self.preferred(among: roots, workIndex: subtreeWorkIndex)
         else { return nil }
         if let descent = Self.segmentGhostDescent(
             from: root,
             in: hashToBlock,
             index: segmentIndex,
-            workIndex: segmentWorkIndex,
+            workIndex: subtreeWorkIndex,
             excluding: excludedClosure
         ) {
             return (descent.tipHash, descent.blocks)
@@ -1661,8 +1531,7 @@ public actor ChainState {
             segmentIndex.parentBaseByBase.removeValue(forKey: blockHash)
             segmentIndex.childrenByBase[blockHash] = []
             segmentIndex.tailByBase[blockHash] = blockHash
-            segmentWorkIndex.addOrigin(blockHash, count: 1)
-            return segmentWorkIndex.addLeafBase(blockHash, index: segmentIndex)
+            return subtreeWorkIndex.insertRoot(blockHash)
         }
         // A disconnected component stays unrouted until an admitted ancestor
         // grafts the whole component into the quotient.
@@ -1675,7 +1544,7 @@ public actor ChainState {
             guard segmentIndex.tailByBase[parentBase] == parentHash,
                   var origin = segmentIndex.origins[parentLocation.origin],
                   parentLocation.index + 1 == origin.blocks.count,
-                  segmentWorkIndex.appendBlock(toOrigin: parentLocation.origin)
+                  subtreeWorkIndex.insertLeaf(blockHash, under: parentHash) != nil
             else { return false }
             let location = BlockRunLocation(
                 origin: parentLocation.origin,
@@ -1705,8 +1574,7 @@ public actor ChainState {
         segmentIndex.childrenByBase[parentBase, default: []].insert(blockHash)
         segmentIndex.childrenByBase[blockHash] = []
         segmentIndex.tailByBase[blockHash] = blockHash
-        segmentWorkIndex.addOrigin(blockHash, count: 1)
-        return segmentWorkIndex.addLeafBase(blockHash, index: segmentIndex)
+        return subtreeWorkIndex.insertLeaf(blockHash, under: parentHash) != nil
     }
 
     /// Turn the old unary suffix after `parentHash` into its own quotient base.
@@ -1765,11 +1633,10 @@ public actor ChainState {
         segmentIndex.childrenByBase[parentBase] = [oldChild]
         segmentIndex.tailByBase[parentBase] = parentHash
         segmentIndex.tailByBase[oldChild] = oldTail
-        guard segmentWorkIndex.splitBase(
-            oldChild,
-            from: parentBase,
-            index: segmentIndex
-        ) else { return false }
+        // A split relabels quotient bases; it moves no block in the Euler order,
+        // so every subtree range still covers exactly the blocks it did before.
+        // There is nothing to recompute here any more — which is what
+        // "eliminated, not accelerated" means at this seam.
         return true
     }
 
@@ -1801,13 +1668,26 @@ public actor ChainState {
             roots: [rootHash]
         )
         var componentWorkByGrind = Self.workIndex(in: componentBlocks)
-        let componentWorkIndex = Self.buildSegmentWorkIndex(
-            index: componentIndex,
-            workByGrind: &componentWorkByGrind
-        )
-        guard componentIndex.base(forBlock: rootHash) == rootHash,
-              let componentTotal = componentWorkIndex.subtreeWork(forBase: rootHash)
-        else { return false }
+        guard componentIndex.base(forBlock: rootHash) == rootHash else {
+            return false
+        }
+        // Direct work per block, which is all the Euler tour carries. No subtree
+        // total is computed for the component and none is added to any ancestor:
+        // splicing its elements inside the parent's range makes every enclosing
+        // range correct by construction.
+        //
+        // `isRouted` is set here because the build call that used to set it as a
+        // side effect is gone. Leaving it false would let the contribution path
+        // add this same work a second time.
+        var componentDirectWork: [String: WorkSum] = [:]
+        for grindID in componentWorkByGrind.keys {
+            guard var record = componentWorkByGrind[grindID] else { continue }
+            record.isRouted = true
+            componentWorkByGrind[grindID] = record
+            componentDirectWork[record.blockHash, default: .zero] =
+                componentDirectWork[record.blockHash, default: .zero]
+                + record.contribution.work
+        }
 
         var routedParentBase: String?
         if let parentHash = hashToBlock[rootHash]?.parentBlockHash {
@@ -1846,21 +1726,50 @@ public actor ChainState {
             segmentIndex.childrenByBase[routedParentBase, default: []].insert(rootHash)
         }
 
-        for (origin, direct) in componentWorkIndex.directWorkByOrigin {
-            segmentWorkIndex.directWorkByOrigin[origin] = direct
+        // One splice, and nothing above it. The walk that used to add this
+        // component's total to every routed base above the graft point is gone,
+        // because there are no stored ancestor totals left to update.
+        // Iterative on purpose: a connected component can be a long orphan run,
+        // and a recursive tour would put its length on the call stack.
+        var events: [EulerWorkIndex.Event] = []
+        events.reserveCapacity(componentHashes.count * 2)
+        func componentChildren(_ hash: String) -> [String] {
+            (componentBlocks[hash]?.childHashes ?? [])
+                .filter { componentHashes.contains($0) }
+                .sorted()
         }
-        for (base, work) in componentWorkIndex.subtreeWorkByBase {
-            segmentWorkIndex.subtreeWorkByBase[base] = work
+        var tourStack: [(hash: String, children: [String], next: Int)] = []
+        events.append(.open(rootHash, componentDirectWork[rootHash] ?? .zero))
+        tourStack.append((rootHash, componentChildren(rootHash), 0))
+        while var frame = tourStack.popLast() {
+            guard frame.next < frame.children.count else {
+                events.append(.close(frame.hash))
+                continue
+            }
+            let child = frame.children[frame.next]
+            frame.next += 1
+            tourStack.append(frame)
+            events.append(.open(child, componentDirectWork[child] ?? .zero))
+            tourStack.append((child, componentChildren(child), 0))
         }
 
-        var updatedAncestors = 0
-        var ancestor = routedParentBase
-        while let base = ancestor {
-            segmentWorkIndex.subtreeWorkByBase[base, default: .zero] =
-                segmentWorkIndex.subtreeWorkByBase[base, default: .zero]
-                + componentTotal
-            updatedAncestors += 1
-            ancestor = segmentIndex.parentBaseByBase[base]
+        var updatedCells = 0
+        if let parentHash = hashToBlock[rootHash]?.parentBlockHash {
+            guard let cells = subtreeWorkIndex.splice(events, under: parentHash)
+            else { return false }
+            updatedCells = cells
+        } else {
+            // A component rooted at genesis has no parent range to sit inside.
+            guard subtreeWorkIndex.insertRoot(rootHash) else { return false }
+            if let rootWork = componentDirectWork[rootHash] {
+                _ = subtreeWorkIndex.add(rootWork, at: rootHash)
+            }
+            let inner = Array(events.dropFirst().dropLast())
+            if !inner.isEmpty {
+                guard let cells = subtreeWorkIndex.splice(inner, under: rootHash)
+                else { return false }
+                updatedCells = cells
+            }
         }
 
         for (grindID, record) in componentWorkByGrind {
@@ -1869,7 +1778,7 @@ public actor ChainState {
 #if DEBUG
         segmentGraftCount += 1
         segmentGraftBlockVisitCount += UInt64(componentHashes.count)
-        segmentWorkUpdateCellCount += UInt64(updatedAncestors)
+        segmentWorkUpdateCellCount += UInt64(updatedCells)
 #endif
         return true
     }
@@ -1914,10 +1823,9 @@ public actor ChainState {
             if existing.isRouted {
                 let delta = WorkSum(contribution.work)
                     .subtracting(WorkSum(existing.contribution.work))!
-                guard let updatedCells = segmentWorkIndex.add(
+                guard let updatedCells = subtreeWorkIndex.add(
                         delta,
-                        atBlock: blockHash,
-                        index: segmentIndex
+                        at: blockHash
                       ) else { return }
 #if DEBUG
                 segmentWorkUpdateCellCount += UInt64(updatedCells)
@@ -1929,10 +1837,9 @@ public actor ChainState {
         guard hashToBlock[blockHash] != nil,
               workByGrind[id]?.isRouted == false,
               let strongest = workByGrind[id]?.contribution else { return }
-        guard let updatedCells = segmentWorkIndex.add(
+        guard let updatedCells = subtreeWorkIndex.add(
                 WorkSum(strongest.work),
-                atBlock: blockHash,
-                index: segmentIndex
+                at: blockHash
               ) else {
             return
         }
@@ -2145,7 +2052,8 @@ public actor ChainState {
         let filtered = forkChoiceBlocks()
         segmentIndex = Self.makeSegmentIndex(in: filtered)
         workByGrind = Self.workIndex(in: filtered)
-        segmentWorkIndex = Self.buildSegmentWorkIndex(
+        subtreeWorkIndex = Self.buildSubtreeWorkIndex(
+            in: filtered,
             index: segmentIndex,
             workByGrind: &workByGrind
         )
@@ -2408,11 +2316,20 @@ public actor ChainState {
 
     /// Build the complete derived GHOST cache from identity-aware locations.
     /// Recovery uses this linear builder; every live mutation is incremental.
-    nonisolated private static func buildSegmentWorkIndex(
+    /// Build the derived GHOST weight index as one Euler tour of the routed
+    /// graph. Recovery and the exclusion rebuild use this linear builder; every
+    /// live mutation is incremental.
+    ///
+    /// The tour visits routed blocks only, children sorted, so a rebuild is
+    /// deterministic. Its ORDER differs from the one live insertion produces,
+    /// which appends each new child last — but a subtree is a contiguous range
+    /// under either order, and the sum over a range does not depend on the order
+    /// within it, which is the only thing fork choice reads.
+    nonisolated private static func buildSubtreeWorkIndex(
+        in blocks: [String: BlockMeta],
         index: SegmentIndex,
         workByGrind: inout [String: WorkContributionRecord]
-    ) -> SegmentWorkIndex {
-        var result = SegmentWorkIndex()
+    ) -> EulerWorkIndex {
         var directWorkByBlock: [String: WorkSum] = [:]
         for grindID in workByGrind.keys {
             guard var record = workByGrind[grindID] else { continue }
@@ -2425,35 +2342,41 @@ public actor ChainState {
                     + record.contribution.work
             }
         }
-        for (origin, run) in index.origins {
-            result.directWorkByOrigin[origin] = OriginWorkIndex(
-                values: run.blocks.map { directWorkByBlock[$0] ?? .zero }
-            )
-        }
-        for base in index.childrenByBase.keys {
-            guard let range = index.range(forBase: base),
-                  let direct = result.directWorkByOrigin[range.origin]?.sum(
-                    in: range.indices
-                  ) else { continue }
-            result.subtreeWorkByBase[base] = direct
-        }
 
-        var remainingChildren = index.childrenByBase.mapValues(\.count)
-        var leaves = Array(remainingChildren.compactMap { base, count in
-            count == 0 ? base : nil
-        }.sorted().reversed())
-        while let base = leaves.popLast() {
-            guard let parent = index.parentBaseByBase[base],
-                  let work = result.subtreeWorkByBase[base],
-                  let count = remainingChildren[parent], count > 0 else {
-                continue
-            }
-            result.subtreeWorkByBase[parent, default: .zero] =
-                result.subtreeWorkByBase[parent, default: .zero] + work
-            remainingChildren[parent] = count - 1
-            if count == 1 { leaves.append(parent) }
+        // Iterative for the same reason the segment builder is: a chain is as
+        // deep as it is long, and recursion here would be bounded by the stack.
+        func routedChildren(_ hash: String) -> [String] {
+            (blocks[hash]?.childHashes ?? [])
+                .filter { index.locationByBlock[$0] != nil }
+                .sorted()
         }
-        return result
+        var events: [EulerWorkIndex.Event] = []
+        events.reserveCapacity(index.locationByBlock.count * 2)
+        let roots = blocks.values
+            .filter {
+                $0.parentBlockHash == nil
+                    && $0.blockHeight == 0
+                    && index.locationByBlock[$0.blockHash] != nil
+            }
+            .map(\.blockHash)
+            .sorted()
+        for root in roots {
+            var tourStack: [(hash: String, children: [String], next: Int)] = []
+            events.append(.open(root, directWorkByBlock[root] ?? .zero))
+            tourStack.append((root, routedChildren(root), 0))
+            while var frame = tourStack.popLast() {
+                guard frame.next < frame.children.count else {
+                    events.append(.close(frame.hash))
+                    continue
+                }
+                let child = frame.children[frame.next]
+                frame.next += 1
+                tourStack.append(frame)
+                events.append(.open(child, directWorkByBlock[child] ?? .zero))
+                tourStack.append((child, routedChildren(child), 0))
+            }
+        }
+        return EulerWorkIndex.build(events: events)
     }
 
     nonisolated private static func preferred(
@@ -2483,14 +2406,14 @@ public actor ChainState {
 
     nonisolated private static func preferred(
         among hashes: [String],
-        workIndex: SegmentWorkIndex
+        workIndex: EulerWorkIndex
     ) -> String? {
         var selected: String?
         for candidate in hashes {
-            guard let candidateWork = workIndex.subtreeWork(forBase: candidate)
+            guard let candidateWork = workIndex.subtreeWork(candidate)
             else { continue }
             guard let current = selected,
-                  let selectedWork = workIndex.subtreeWork(forBase: current) else {
+                  let selectedWork = workIndex.subtreeWork(current) else {
                 selected = candidate
                 continue
             }
@@ -2522,12 +2445,10 @@ public actor ChainState {
             from: start.blockHash,
             in: hashToBlock,
             index: segmentIndex,
-            workIndex: segmentWorkIndex,
+            workIndex: subtreeWorkIndex,
             excluding: excludedClosure
         ) {
-            let baseWeight = segmentWorkIndex.subtreeWork(
-                forBase: start.blockHash
-            )
+            let baseWeight = subtreeWorkIndex.subtreeWork(start.blockHash)
                 ?? effectiveSubtreeWork(for: start.blockHash)
             return (baseWeight, descent.tipHash, descent.blocks)
         }
@@ -2560,7 +2481,7 @@ public actor ChainState {
         from startHash: String,
         in blocksByHash: [String: BlockMeta],
         index: SegmentIndex,
-        workIndex: SegmentWorkIndex,
+        workIndex: EulerWorkIndex,
         excluding: Set<String> = []
     ) -> [CanonicalSegment]? {
         var currentHash = startHash
@@ -2602,7 +2523,7 @@ public actor ChainState {
         from startHash: String,
         in blocksByHash: [String: BlockMeta],
         index: SegmentIndex,
-        workIndex: SegmentWorkIndex,
+        workIndex: EulerWorkIndex,
         spine suppliedSpine: [CanonicalSegment]? = nil,
         excluding: Set<String> = []
     ) -> (tipHash: String, blocks: Set<String>, spine: [CanonicalSegment])? {
@@ -2701,7 +2622,8 @@ public actor ChainState {
     ) -> (chainTip: String, mainChainHashes: Set<String>)? {
         var workByGrind = workIndex(in: blocksByHash)
         let index = makeSegmentIndex(in: blocksByHash)
-        let workIndex = buildSegmentWorkIndex(
+        let workIndex = buildSubtreeWorkIndex(
+            in: blocksByHash,
             index: index,
             workByGrind: &workByGrind
         )
@@ -2735,7 +2657,7 @@ public actor ChainState {
     nonisolated private static func canonicalProjection(
         in blocksByHash: [String: BlockMeta],
         index: SegmentIndex,
-        workIndex: SegmentWorkIndex
+        workIndex: EulerWorkIndex
     ) -> (chainTip: String, mainChainHashes: Set<String>)? {
         let roots = blocksByHash.values
             .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
@@ -2833,13 +2755,13 @@ public actor ChainState {
             hashToBlock[$0]?.parentBlockHash == nil
                 && !excludedClosure.contains($0)
         }
-        guard let root = Self.preferred(among: roots, workIndex: segmentWorkIndex)
+        guard let root = Self.preferred(among: roots, workIndex: subtreeWorkIndex)
         else { return nil }
         let spine = Self.segmentGhostSpine(
             from: root,
             in: hashToBlock,
             index: segmentIndex,
-            workIndex: segmentWorkIndex,
+            workIndex: subtreeWorkIndex,
             excluding: excludedClosure
         )
 #if DEBUG
@@ -2853,7 +2775,7 @@ public actor ChainState {
             from: root,
             in: hashToBlock,
             index: segmentIndex,
-            workIndex: segmentWorkIndex,
+            workIndex: subtreeWorkIndex,
             spine: spine,
             excluding: excludedClosure
         ) ?? {
@@ -2980,7 +2902,7 @@ public actor ChainState {
         // of its own to compare.
         let chosen = children.count == 1
             ? children[0]
-            : Self.preferred(among: children, workIndex: segmentWorkIndex)
+            : Self.preferred(among: children, workIndex: subtreeWorkIndex)
         guard let chosen else { return nil }
         // The COMMON admission on a merged-mining child is a losing sibling, and
         // it must cost nothing. This point is the deepest canonical ancestor of
@@ -3010,7 +2932,7 @@ public actor ChainState {
                   from: chosen,
                   in: hashToBlock,
                   index: segmentIndex,
-                  workIndex: segmentWorkIndex,
+                  workIndex: subtreeWorkIndex,
                   excluding: excludedClosure
               )
         else { return nil }
@@ -3021,7 +2943,7 @@ public actor ChainState {
                   from: chosen,
                   in: hashToBlock,
                   index: segmentIndex,
-                  workIndex: segmentWorkIndex,
+                  workIndex: subtreeWorkIndex,
                   spine: spine,
                   excluding: excludedClosure
               )

@@ -1,0 +1,267 @@
+import XCTest
+import UInt256
+@testable import Lattice
+
+/// The Euler range structure on its own, against a brute-force oracle.
+///
+/// Fork choice is the wrong place to first learn this structure is wrong: a bad
+/// rotation or a stale aggregate surfaces there as an unexplained path
+/// divergence. These tests hold the graph trivial and the structure under
+/// suspicion, so a failure names the defect directly.
+final class EulerWorkIndexTests: XCTestCase {
+    /// The naive answer: walk the block tree and add work up. This is what the
+    /// range query has to reproduce exactly, at every step.
+    private struct Model {
+        private(set) var childrenOf: [String: [String]] = [:]
+        private(set) var work: [String: WorkSum] = [:]
+        private(set) var blocks: [String] = []
+
+        mutating func add(_ hash: String, parent: String?) {
+            blocks.append(hash)
+            childrenOf[hash] = []
+            work[hash] = .zero
+            if let parent { childrenOf[parent, default: []].append(hash) }
+        }
+
+        mutating func addWork(_ delta: WorkSum, to hash: String) {
+            work[hash] = (work[hash] ?? .zero) + delta
+        }
+
+        func subtreeWork(_ hash: String) -> WorkSum {
+            var total = work[hash] ?? .zero
+            for child in childrenOf[hash] ?? [] {
+                total = total + subtreeWork(child)
+            }
+            return total
+        }
+    }
+
+    private struct Random {
+        private var state: UInt64
+        init(seed: UInt64) { state = seed &+ 0x9E37_79B9_7F4A_7C15 }
+        mutating func next(_ bound: Int) -> Int {
+            state ^= state << 13
+            state ^= state >> 7
+            state ^= state << 17
+            return bound <= 0 ? 0 : Int(state % UInt64(bound))
+        }
+    }
+
+    private func work(_ value: UInt64) -> WorkSum {
+        WorkSum(UInt256(value))
+    }
+
+    private func assertMatchesModel(
+        _ index: EulerWorkIndex,
+        _ model: Model,
+        _ event: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertTrue(
+            index.debugInvariantsHold,
+            "\(event): tree invariants (aggregate, height, balance, parent)",
+            file: file, line: line
+        )
+        assertValidEulerTour(index, model, event, file: file, line: line)
+        for hash in model.blocks {
+            XCTAssertEqual(
+                index.subtreeWork(hash),
+                model.subtreeWork(hash),
+                "\(event): subtree work at \(hash)",
+                file: file, line: line
+            )
+        }
+    }
+
+    /// Every block opens once, closes once, and closes in the reverse order it
+    /// opened — the property that makes a subtree a contiguous range at all.
+    private func assertValidEulerTour(
+        _ index: EulerWorkIndex,
+        _ model: Model,
+        _ event: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        var stack: [String] = []
+        var opened = Set<String>()
+        for step in index.debugSequence {
+            if step.isOpen {
+                XCTAssertTrue(
+                    opened.insert(step.hash).inserted,
+                    "\(event): \(step.hash) opened twice",
+                    file: file, line: line
+                )
+                stack.append(step.hash)
+            } else {
+                XCTAssertEqual(
+                    stack.popLast(),
+                    step.hash,
+                    "\(event): close out of order at \(step.hash)",
+                    file: file, line: line
+                )
+            }
+        }
+        XCTAssertTrue(stack.isEmpty, "\(event): unclosed blocks", file: file, line: line)
+        XCTAssertEqual(
+            opened.count,
+            model.blocks.count,
+            "\(event): block count",
+            file: file, line: line
+        )
+    }
+
+    func testRandomGrowthAndWorkMatchBruteForce() {
+        for seed: UInt64 in [1, 2, 3, 0xBEEF, 0xC0FFEE] {
+            var random = Random(seed: seed)
+            var index = EulerWorkIndex.empty
+            var model = Model()
+
+            XCTAssertTrue(index.insertRoot("root"))
+            model.add("root", parent: nil)
+            assertMatchesModel(index, model, "seed \(seed): root")
+
+            for step in 0..<60 {
+                if random.next(100) < 65 {
+                    let parent = model.blocks[random.next(model.blocks.count)]
+                    let hash = "b-\(seed)-\(step)"
+                    XCTAssertNotNil(
+                        index.insertLeaf(hash, under: parent),
+                        "seed \(seed): insert \(hash)"
+                    )
+                    model.add(hash, parent: parent)
+                } else {
+                    let target = model.blocks[random.next(model.blocks.count)]
+                    let delta = work(UInt64(random.next(9) + 1))
+                    XCTAssertNotNil(
+                        index.add(delta, at: target),
+                        "seed \(seed): add at \(target)"
+                    )
+                    model.addWork(delta, to: target)
+                }
+                assertMatchesModel(index, model, "seed \(seed): step \(step)")
+            }
+        }
+    }
+
+    func testSplicedComponentMatchesBruteForce() {
+        var index = EulerWorkIndex.empty
+        var model = Model()
+        XCTAssertTrue(index.insertRoot("root"))
+        model.add("root", parent: nil)
+        for step in 0..<5 {
+            let hash = "chain-\(step)"
+            let parent = step == 0 ? "root" : "chain-\(step - 1)"
+            XCTAssertNotNil(index.insertLeaf(hash, under: parent))
+            model.add(hash, parent: parent)
+            XCTAssertNotNil(index.add(work(3), at: hash))
+            model.addWork(work(3), to: hash)
+        }
+
+        // A component of its own: root c0 with two children, spliced under a
+        // block in the middle of the existing chain.
+        let events: [EulerWorkIndex.Event] = [
+            .open("c0", work(5)),
+            .open("c1", work(7)),
+            .close("c1"),
+            .open("c2", work(11)),
+            .close("c2"),
+            .close("c0"),
+        ]
+        XCTAssertNotNil(index.splice(events, under: "chain-2"))
+        model.add("c0", parent: "chain-2")
+        model.addWork(work(5), to: "c0")
+        model.add("c1", parent: "c0")
+        model.addWork(work(7), to: "c1")
+        model.add("c2", parent: "c0")
+        model.addWork(work(11), to: "c2")
+
+        assertMatchesModel(index, model, "spliced component")
+
+        // And work landing inside the spliced component still reaches every
+        // enclosing range.
+        XCTAssertNotNil(index.add(work(13), at: "c1"))
+        model.addWork(work(13), to: "c1")
+        assertMatchesModel(index, model, "work inside spliced component")
+    }
+
+    func testBulkBuildAgreesWithIncrementalOnAnswers() {
+        var incremental = EulerWorkIndex.empty
+        var model = Model()
+        XCTAssertTrue(incremental.insertRoot("root"))
+        model.add("root", parent: nil)
+        var random = Random(seed: 0xA11CE)
+        for step in 0..<40 {
+            let parent = model.blocks[random.next(model.blocks.count)]
+            let hash = "n-\(step)"
+            XCTAssertNotNil(incremental.insertLeaf(hash, under: parent))
+            model.add(hash, parent: parent)
+            let delta = work(UInt64(random.next(5) + 1))
+            XCTAssertNotNil(incremental.add(delta, at: hash))
+            model.addWork(delta, to: hash)
+        }
+
+        // A rebuild walks children in sorted order, so its tour differs from the
+        // incremental one, which appends each new child last. Subtree sums are
+        // order-independent, so the ANSWERS must agree even though the
+        // sequences need not — and that is the only property fork choice reads.
+        var events: [EulerWorkIndex.Event] = []
+        func walk(_ hash: String) {
+            events.append(.open(hash, model.work[hash] ?? .zero))
+            for child in (model.childrenOf[hash] ?? []).sorted() { walk(child) }
+            events.append(.close(hash))
+        }
+        walk("root")
+        let rebuilt = EulerWorkIndex.build(events: events)
+
+        XCTAssertTrue(rebuilt.debugInvariantsHold, "rebuild invariants")
+        for hash in model.blocks {
+            XCTAssertEqual(
+                rebuilt.subtreeWork(hash),
+                model.subtreeWork(hash),
+                "rebuilt subtree work at \(hash)"
+            )
+            XCTAssertEqual(
+                rebuilt.subtreeWork(hash),
+                incremental.subtreeWork(hash),
+                "rebuilt vs incremental at \(hash)"
+            )
+        }
+    }
+
+    /// The point of the whole structure: the cost of recording work does NOT
+    /// grow with how deep in the block tree it lands, because no ancestor total
+    /// exists to update. A per-ancestor structure would grow linearly here.
+    func testCostDoesNotGrowWithBlockDepth() {
+        var touchedByDepth: [Int: Int] = [:]
+        for depth in [200, 400, 800] {
+            var index = EulerWorkIndex.empty
+            XCTAssertTrue(index.insertRoot("root"))
+            var previous = "root"
+            for step in 0..<depth {
+                let hash = "d-\(step)"
+                XCTAssertNotNil(index.insertLeaf(hash, under: previous))
+                previous = hash
+            }
+            // Work on the DEEPEST block: maximally far from the root in the
+            // block tree, which is exactly the case that used to cost O(depth).
+            let touched = index.add(work(7), at: previous)
+            XCTAssertNotNil(touched, "depth \(depth): work must be recorded")
+            touchedByDepth[depth] = touched ?? .max
+        }
+
+        let measured = "touched \(touchedByDepth)"
+        // Quadrupling the depth must not quadruple the cost. Logarithmic growth
+        // adds a couple of nodes; a per-ancestor walk would go 200 -> 800.
+        XCTAssertLessThanOrEqual(
+            touchedByDepth[800]!,
+            touchedByDepth[200]! * 2,
+            "recording work must not scale with block depth: \(measured)"
+        )
+        XCTAssertLessThan(
+            touchedByDepth[800]!,
+            64,
+            "a logarithmic path over 1,600 elements is nowhere near this: \(measured)"
+        )
+    }
+}

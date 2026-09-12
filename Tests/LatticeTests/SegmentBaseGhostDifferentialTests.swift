@@ -242,10 +242,21 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
             visits,
             UInt64(depth - 1)
         )
-        XCTAssertEqual(
+        // The graft adds NO ancestor total, because no ancestor total exists any
+        // more: the component's elements are spliced inside the parent's range
+        // and every enclosing range is correct by construction. What remains is
+        // the cost of placing the component's own elements, which is inherent to
+        // routing those blocks and used to be paid untracked inside the index
+        // rebuild and the dictionary merges this replaced.
+        //
+        // So the cost claim is NOT a single number here — it is that the graft
+        // does not touch mature history, which only a shape that varies the
+        // mature history can witness. See
+        // `testOrphanGraftCostDoesNotScaleWithMatureHistory`.
+        XCTAssertGreaterThan(
             cellsAfter - cellsBefore,
-            1,
-            "the whole unary component adds one total to its existing root base"
+            0,
+            "the component's own elements must be placed"
         )
 
         var expected = WorkSum.zero
