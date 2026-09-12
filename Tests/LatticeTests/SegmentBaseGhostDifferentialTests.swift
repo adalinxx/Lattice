@@ -566,6 +566,58 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
         )
     }
 
+    /// The merged-mining shape itself: a sibling at EVERY height, each arriving
+    /// BEFORE the canonical block, so the parent always already has a child and
+    /// no admission can take a cheap tip append. The randomized generator makes
+    /// siblings, but not systematically at every height — and this is both the
+    /// shape that degenerates the segment quotient and the one live sync
+    /// actually sees on a merged-mining child.
+    func testSiblingAtEveryHeightMatchesReferenceAndTruncates() async throws {
+        let depth = 32
+        var main: [PlannedDifferentialBlock] = []
+        for index in 0..<depth {
+            // `admission(for:)` derives work as `index % 3 + 1`, so an index of
+            // 3i+2 weighs 3 and an index of 3i weighs 1: the canonical branch
+            // wins on work at every height rather than on a CID tie-break.
+            main.append(PlannedDifferentialBlock(
+                index: 3 * index + 2,
+                hash: testCID("every-height-main-\(index)"),
+                parentHash: index == 0 ? nil : main[index - 1].hash,
+                height: UInt64(index)
+            ))
+        }
+        let chain = try await ChainState.restore(replaying: [
+            admission(for: main[0]),
+        ])
+        await assertMatchesReference(chain, seed: 0, event: "genesis")
+
+        for index in 1..<depth {
+            let sibling = PlannedDifferentialBlock(
+                index: 3 * index,
+                hash: testCID("every-height-side-\(index)"),
+                parentHash: main[index - 1].hash,
+                height: UInt64(index)
+            )
+            _ = try await chain.applyStaged(admission(for: sibling))
+            await assertMatchesReference(chain, seed: 0, event: "sibling at \(index)")
+            _ = try await chain.applyStaged(admission(for: main[index]))
+            await assertMatchesReference(chain, seed: 0, event: "canonical at \(index)")
+        }
+
+        let tip = await chain.getMainChainTip()
+        XCTAssertEqual(
+            tip,
+            main[depth - 1].hash,
+            "the heavier branch must win at every height"
+        )
+        let truncations = await chain.truncatedCanonicalProjectionCount
+        XCTAssertGreaterThan(
+            truncations,
+            0,
+            "the truncated descent must fire on the merged-mining shape"
+        )
+    }
+
     /// The safety net for the exclusion seam: drive random block insertions AND
     /// random invalidity exclusions in random order, and after every step assert
     /// the live filtered fork choice is byte-identical to the slow reference
@@ -756,6 +808,37 @@ private func assertMatchesReference(
         file: file,
         line: line
     )
+    await assertTruncationEquivalent(
+        chain,
+        "seed \(seed), \(event)",
+        file: file,
+        line: line
+    )
+}
+
+/// A truncated projection must agree with a whole-chain projection over the
+/// SAME live index. Comparing only against the reference oracle cannot tell a
+/// wrong truncation from a wrong index — both show up as one divergence. This
+/// can: it holds the index fixed and varies only where the descent started.
+private func assertTruncationEquivalent(
+    _ chain: ChainState,
+    _ message: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async {
+    guard let full = await chain.debugFullCanonicalProjection() else { return }
+    let liveTip = await chain.getMainChainTip()
+    let livePath = await chain.mainChainHashes
+    XCTAssertEqual(
+        liveTip, full.chainTip,
+        "\(message): truncated tip vs whole-chain tip over the same index",
+        file: file, line: line
+    )
+    XCTAssertEqual(
+        livePath, full.mainChainHashes,
+        "\(message): truncated path vs whole-chain path over the same index",
+        file: file, line: line
+    )
 }
 
 private func exclusionBatch(
@@ -796,6 +879,12 @@ private func assertMatchesReferenceWithExclusions(
         chain,
         expectedPath: expected.mainChainHashes,
         "seed \(seed), \(event): by-height index",
+        file: file,
+        line: line
+    )
+    await assertTruncationEquivalent(
+        chain,
+        "seed \(seed), \(event)",
         file: file,
         line: line
     )
