@@ -495,10 +495,13 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
         }
 
         // Decisive work on a random sibling each round, so the shared prefix
-        // shrinks and grows across projections instead of only extending.
+        // shrinks and grows across projections instead of only extending. The
+        // emitted commit is the node's only view of what moved, so both halves
+        // of it are checked against the reference walk's own set difference.
+        var previousPath = await referencePath(chain)
         for round in 0..<24 {
             let target = siblings[random.nextInt(siblings.count)]
-            _ = try await chain.applyStaged(workAdmission(
+            let result = try await chain.applyStaged(workAdmission(
                 blockHash: target.hash,
                 id: testCID("delta-reorg-grind-\(target.index)"),
                 work: UInt64(round + 1) * 8
@@ -508,6 +511,14 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
                 seed: 0,
                 event: "reorg round \(round)"
             )
+            let newPath = await referencePath(chain)
+            assertCommitDelta(
+                result,
+                from: previousPath,
+                to: newPath,
+                event: "reorg round \(round)"
+            )
+            previousPath = newPath
         }
 
         // A late orphan graft: the child arrives first, then its parent
@@ -524,10 +535,26 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
             parentHash: graftParent.hash,
             height: 8
         )
-        _ = try await chain.applyStaged(admission(for: graftChild))
+        let heldResult = try await chain.applyStaged(admission(for: graftChild))
         await assertMatchesReference(chain, seed: 0, event: "orphan held")
-        _ = try await chain.applyStaged(admission(for: graftParent))
+        var graftPath = await referencePath(chain)
+        assertCommitDelta(
+            heldResult,
+            from: previousPath,
+            to: graftPath,
+            event: "orphan held"
+        )
+        previousPath = graftPath
+
+        let graftResult = try await chain.applyStaged(admission(for: graftParent))
         await assertMatchesReference(chain, seed: 0, event: "orphan grafted")
+        graftPath = await referencePath(chain)
+        assertCommitDelta(
+            graftResult,
+            from: previousPath,
+            to: graftPath,
+            event: "orphan grafted"
+        )
 
         // An exclusion rebuilds the filtered index and forces a full
         // projection; the delta must not outlive it.
@@ -666,6 +693,42 @@ private func workAdmission(
             contribution: VerifiedWorkContribution(id: id, work: UInt256(work))
         )),
     ])
+}
+
+/// The reference walk's own canonical path, used as the oracle for the
+/// emitted commit delta.
+private func referencePath(_ chain: ChainState) async -> Set<String> {
+    let blocks = await chain.hashToBlock
+    return ChainState.referenceCanonicalProjection(in: blocks)?.mainChainHashes
+        ?? []
+}
+
+/// A commit must report exactly the blocks that joined and left the canonical
+/// path — the removal half included, which no standing test covered.
+private func assertCommitDelta(
+    _ result: SubmissionResult?,
+    from previousPath: Set<String>,
+    to newPath: Set<String>,
+    event: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    let added = Set((result?.commit?.mainChainBlocksAdded ?? [:]).keys)
+    let removed = result?.commit?.mainChainBlocksRemoved ?? []
+    XCTAssertEqual(
+        added,
+        newPath.subtracting(previousPath),
+        "\(event): added",
+        file: file,
+        line: line
+    )
+    XCTAssertEqual(
+        removed,
+        previousPath.subtracting(newPath),
+        "\(event): removed",
+        file: file,
+        line: line
+    )
 }
 
 private func assertMatchesReference(
