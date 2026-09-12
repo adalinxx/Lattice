@@ -511,6 +511,7 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
                 seed: 0,
                 event: "reorg round \(round)"
             )
+            await assertTruncationEquivalent(chain, "reorg round \(round)")
             let newPath = await referencePath(chain)
             assertCommitDelta(
                 result,
@@ -600,8 +601,10 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
             )
             _ = try await chain.applyStaged(admission(for: sibling))
             await assertMatchesReference(chain, seed: 0, event: "sibling at \(index)")
+            await assertTruncationEquivalent(chain, "sibling at \(index)")
             _ = try await chain.applyStaged(admission(for: main[index]))
             await assertMatchesReference(chain, seed: 0, event: "canonical at \(index)")
+            await assertTruncationEquivalent(chain, "canonical at \(index)")
         }
 
         let tip = await chain.getMainChainTip()
@@ -808,18 +811,20 @@ private func assertMatchesReference(
         file: file,
         line: line
     )
-    await assertTruncationEquivalent(
-        chain,
-        "seed \(seed), \(event)",
-        file: file,
-        line: line
-    )
 }
 
 /// A truncated projection must agree with a whole-chain projection over the
 /// SAME live index. Comparing only against the reference oracle cannot tell a
 /// wrong truncation from a wrong index — both show up as one divergence. This
 /// can: it holds the index fixed and varies only where the descent started.
+///
+/// This is DIAGNOSTIC rather than additional coverage: `assertMatchesReference`
+/// already pins the live path to the oracle, and the two can only disagree with
+/// each other when the index is wrong, which that assertion already catches. So
+/// it is called at the sites where truncation is the thing under test, not from
+/// the shared helper — running a whole-chain projection after every step of
+/// every differential test cost 5.5x the suite runtime (836s against 151s) to
+/// tell us which half of a failure to look at first.
 private func assertTruncationEquivalent(
     _ chain: ChainState,
     _ message: String,
@@ -879,12 +884,6 @@ private func assertMatchesReferenceWithExclusions(
         chain,
         expectedPath: expected.mainChainHashes,
         "seed \(seed), \(event): by-height index",
-        file: file,
-        line: line
-    )
-    await assertTruncationEquivalent(
-        chain,
-        "seed \(seed), \(event)",
         file: file,
         line: line
     )

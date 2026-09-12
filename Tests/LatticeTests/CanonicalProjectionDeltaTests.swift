@@ -192,6 +192,64 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         )
     }
 
+    /// A LOSING sibling deep in the chain is the most common admission shape on
+    /// a merged-mining child, and it changes no canonical decision at all, so it
+    /// must cost nothing. The shape matters: the sibling-at-every-height case
+    /// hangs its sibling off the current TIP, where a descent to the tip is one
+    /// block and a regression here would be invisible. These siblings hang off
+    /// blocks spread across the whole history, including just above genesis,
+    /// where descending to the tip would materialize hundreds of blocks to
+    /// conclude nothing moved.
+    func testDeepLosingSiblingMaterializesNothing() async throws {
+        let length = 400
+        let root = node("deep-root", parent: nil, height: 0, work: 4)
+        let chain = try await ChainState.restore(replaying: [admission(root)])
+        var canonical = [root]
+        var previous = root
+        for height in 1...length {
+            let block = node(
+                "deep-main-\(height)",
+                parent: previous.hash,
+                height: UInt64(height),
+                work: 4
+            )
+            _ = try await chain.applyStaged(admission(block))
+            canonical.append(block)
+            previous = block
+        }
+
+        let blocksBefore = await chain.canonicalProjectionBlockVisitCount
+        let segmentsBefore = await chain.canonicalProjectionSegmentVisitCount
+        var siblings = 0
+        for height in stride(from: 1, through: length - 1, by: 8) {
+            let sibling = node(
+                "deep-side-\(height)",
+                parent: canonical[height - 1].hash,
+                height: UInt64(height),
+                work: 1
+            )
+            _ = try await chain.applyStaged(admission(sibling))
+            siblings += 1
+        }
+        let blocks = await chain.canonicalProjectionBlockVisitCount - blocksBefore
+        let segments = await chain.canonicalProjectionSegmentVisitCount
+            - segmentsBefore
+        let tip = await chain.getMainChainTip()
+
+        XCTAssertGreaterThan(siblings, 40, "the shape must cover real depth")
+        XCTAssertEqual(tip, previous.hash, "a losing sibling must not move the tip")
+        XCTAssertEqual(
+            blocks,
+            0,
+            "a losing sibling changes no decision, so nothing may be materialized"
+        )
+        XCTAssertEqual(
+            segments,
+            0,
+            "and the winner at the fork point settles it without walking to the tip"
+        )
+    }
+
     /// Subtree work is SUMMED by the live index but deduplicated by grind
     /// identity in the reference oracle, so the two agree only while each grind
     /// identity occupies exactly one block. That is what `acceptsLocation`
