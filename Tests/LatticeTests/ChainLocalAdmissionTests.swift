@@ -4201,7 +4201,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
 
         let main1Hash = try BlockHeader(node: main1).rawCID
         let fork1Hash = try BlockHeader(node: fork1).rawCID
-        let forkWinsTie = forkChoicePrefersSegmentBase(
+        let forkWinsTie = forkChoicePrefersBlock(
             fork1Hash,
             over: main1Hash
         )

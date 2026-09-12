@@ -199,7 +199,7 @@ A change preserves the architecture only if all of these remain true:
 3. Work is joined by grind identity before quantities are totaled.
 4. Non-genesis parent-state movement is reflexive or transitively forward
    through the immediate parent's connected accepted graph.
-5. Fork choice compares effective `trueCumWork`, then segment-base CID.
+5. Fork choice compares effective `trueCumWork`, then same-chain child block CID.
 6. External ingress uses one admission boundary; recovery replays durable facts.
 7. Durable facts precede visible mutation.
 9. Lattice retains consensus inputs; the node owns payload retention.
