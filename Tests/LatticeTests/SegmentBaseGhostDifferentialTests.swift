@@ -242,10 +242,21 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
             visits,
             UInt64(depth - 1)
         )
-        XCTAssertEqual(
+        // The graft adds NO ancestor total, because no ancestor total exists any
+        // more: the component's elements are spliced inside the parent's range
+        // and every enclosing range is correct by construction. What remains is
+        // the cost of placing the component's own elements, which is inherent to
+        // routing those blocks and used to be paid untracked inside the index
+        // rebuild and the dictionary merges this replaced.
+        //
+        // So the cost claim is NOT a single number here — it is that the graft
+        // does not touch mature history, which only a shape that varies the
+        // mature history can witness. See
+        // `testOrphanGraftCostDoesNotScaleWithMatureHistory`.
+        XCTAssertGreaterThan(
             cellsAfter - cellsBefore,
-            1,
-            "the whole unary component adds one total to its existing root base"
+            0,
+            "the component's own elements must be placed"
         )
 
         var expected = WorkSum.zero
@@ -618,6 +629,79 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
             truncations,
             0,
             "the truncated descent must fire on the merged-mining shape"
+        )
+    }
+
+    /// The genesis branch of `graftConnectedComponent` splices a FOREST. It
+    /// passes `events.dropFirst().dropLast()` — the concatenated complete tours
+    /// of the component root's child subtrees — not one nested root. The splice
+    /// validation balances to EMPTY precisely so that is legal.
+    ///
+    /// Nothing else in the suite produces it: a probe that aborted whenever a
+    /// genesis-branch graft had more than one child subtree never fired across
+    /// all 781 tests. Other tests reach that branch, but only ever with a single
+    /// subtree, so tightening the balance check to "one root, properly nested"
+    /// would pass everything and still refuse every genesis-rooted graft in
+    /// production — where the caller does not degrade, it aborts, through
+    /// `precondition(graftConnectedComponent(…))`.
+    func testSecondRootGraftsAForestOfChildSubtrees() async throws {
+        let genesis = PlannedDifferentialBlock(
+            index: 0,
+            hash: testCID("forest-graft-genesis"),
+            parentHash: nil,
+            height: 0
+        )
+        let chain = try await ChainState.restore(replaying: [
+            admission(for: genesis),
+        ])
+
+        // A SECOND root carrying two independent child subtrees.
+        let second = PlannedDifferentialBlock(
+            index: 900,
+            hash: testCID("forest-graft-second-root"),
+            parentHash: nil,
+            height: 0
+        )
+        let left = PlannedDifferentialBlock(
+            index: 901,
+            hash: testCID("forest-graft-left"),
+            parentHash: second.hash,
+            height: 1
+        )
+        let leftChild = PlannedDifferentialBlock(
+            index: 902,
+            hash: testCID("forest-graft-left-child"),
+            parentHash: left.hash,
+            height: 2
+        )
+        let right = PlannedDifferentialBlock(
+            index: 903,
+            hash: testCID("forest-graft-right"),
+            parentHash: second.hash,
+            height: 1
+        )
+
+        // Children first, so the whole component sits unrouted as orphans.
+        for block in [leftChild, left, right] {
+            _ = try await chain.applyStaged(admission(for: block))
+        }
+        await assertMatchesReference(chain, seed: 0, event: "forest held")
+
+        // Then the root arrives and grafts all of it at once: `inner` is two
+        // complete tours side by side, which balances only to empty.
+        _ = try await chain.applyStaged(admission(for: second))
+        await assertMatchesReference(chain, seed: 0, event: "forest grafted")
+
+        let choice = await chain.forkChoiceSnapshot(startingAt: second.hash)
+        let snapshot = try XCTUnwrap(choice, "the grafted root must be routed")
+        var expected = WorkSum.zero
+        for block in [second, left, leftChild, right] {
+            expected = expected + UInt256(UInt64(block.index % 3 + 1))
+        }
+        XCTAssertEqual(
+            snapshot.subtreeWork,
+            expected,
+            "every block of the forest must fall inside the root's range"
         )
     }
 

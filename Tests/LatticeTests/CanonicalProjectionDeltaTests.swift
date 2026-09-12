@@ -178,17 +178,25 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
             )
         }
 
-        // What this change does NOT fix, pinned so it cannot be mistaken for
-        // solved: `SegmentWorkIndex.add` still walks every ancestor base on
-        // every admission. It is the larger of the two residual terms and it is
-        // paid before any projection runs, so no change to the descent can
-        // reach it — that needs a different weight structure. A fix to it is
-        // EXPECTED to break this assertion; update it deliberately when it
-        // lands.
-        XCTAssertGreaterThan(
+        // The last of the three columns in adalinxx/lattice-node#64, and the
+        // one no change to the descent could reach: it is paid before any
+        // projection runs. The ancestor walk is not faster here, it is GONE.
+        // Subtree work is a range over an Euler order, so recording work walks
+        // one root-ward path in the SEQUENCE tree and touches nothing above the
+        // block in the BLOCK tree, and routing a block updates no ancestor at
+        // all.
+        //
+        // Measured 3,619 at 200 and 18,894 at 800, against 40,800 and 643,200
+        // before — 34x less at 800 blocks, and widening. Quadrupling the chain
+        // multiplied this column by 5.2, which is n log n; quadratic would be
+        // 16. The x8 bound separates those two and nothing finer.
+        //
+        // This was an XCTAssertGreaterThan pinning the column as quadratic.
+        // Inverting it is the entire point of this change, not a broken test.
+        XCTAssertLessThanOrEqual(
             workCells[800]!,
             workCells[200]! * 8,
-            "subtree-weight walk is still quadratic: \(measured)"
+            "the weight index must not scale with chain length: \(measured)"
         )
     }
 
@@ -339,6 +347,198 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
             segments,
             0,
             "and must not fall back to walking the path from the root"
+        )
+    }
+
+    /// Build `length` heights of history with a LOSING sibling at every height,
+    /// delivered before the canonical block, and return the canonical blocks.
+    ///
+    /// The SHAPE is the point, not the length. A fork-free chain collapses the
+    /// segment quotient to one or two bases, so any cost measured per ancestor
+    /// BASE is O(1) on it however long it gets — which would make the cost
+    /// assertions below pass on the implementation they exist to discriminate
+    /// against. A sibling at every height forces a split at every height, giving
+    /// the quotient one base per block: the merged-mining shape, and the only
+    /// one on which these costs can be measured at all.
+    private func forkedHistory(
+        _ chain: ChainState,
+        prefix: String,
+        length: Int,
+        from root: Node
+    ) async throws -> [Node] {
+        var blocks = [root]
+        var previous = root
+        for height in 1...length {
+            let sibling = node(
+                "\(prefix)-side-\(height)",
+                parent: previous.hash,
+                height: UInt64(height),
+                work: 1
+            )
+            _ = try await chain.applyStaged(admission(sibling))
+            let block = node(
+                "\(prefix)-main-\(height)",
+                parent: previous.hash,
+                height: UInt64(height),
+                work: 4
+            )
+            _ = try await chain.applyStaged(admission(block))
+            blocks.append(block)
+            previous = block
+        }
+        return blocks
+    }
+
+    /// Grafting an orphan component must cost what the COMPONENT costs, never
+    /// what the chain behind it costs. The old index added the component's total
+    /// to every routed ancestor base, so this scaled with mature history; the
+    /// range structure adds nothing above the graft point at all.
+    ///
+    /// Holding the component fixed and varying the history is the only shape
+    /// that can witness that — a single-point count cannot.
+    func testOrphanGraftCostDoesNotScaleWithMatureHistory() async throws {
+        var cells: [Int: UInt64] = [:]
+        // Small enough to stay a LOSING component against the canonical blocks
+        // above the graft point, so this measures a graft and not a reorg. Its
+        // size is fixed across both histories, which is what the ratio needs.
+        let componentDepth = 4
+        for history in [200, 800] {
+            let root = node("graft-\(history)-root", parent: nil, height: 0, work: 4)
+            let chain = try await ChainState.restore(replaying: [admission(root)])
+            let main = try await forkedHistory(
+                chain, prefix: "graft-\(history)", length: history, from: root
+            )
+
+            // A component hanging off a block near the TIP, delivered
+            // child-first so it stays unrouted until its connecting block
+            // arrives.
+            //
+            // Deep on purpose. The cost this bounds was a walk from the mutation
+            // point to the ROOT, so a graft near genesis has a short ancestor
+            // path and cannot witness the regression however long the history
+            // is — the Θ(n) bases sit ABOVE such a graft, where that walk never
+            // goes. This is the same axis error as the fork-free history, one
+            // level down.
+            var component: [Node] = []
+            var parentHash = main[history - 2].hash
+            for step in 0...componentDepth {
+                let block = node(
+                    "graft-\(history)-orphan-\(step)",
+                    parent: parentHash,
+                    height: UInt64(history - 1 + step),
+                    work: 1
+                )
+                component.append(block)
+                parentHash = block.hash
+            }
+            for block in component.dropFirst().reversed() {
+                _ = try await chain.applyStaged(admission(block))
+            }
+
+            let before = await chain.segmentWorkUpdateCellCount
+            // The connecting block grafts the whole component at once.
+            _ = try await chain.applyStaged(admission(component[0]))
+            let after = await chain.segmentWorkUpdateCellCount
+            cells[history] = after - before
+        }
+
+        let measured = "graft cells \(cells)"
+        XCTAssertGreaterThan(cells[200]!, 0, measured)
+        XCTAssertLessThanOrEqual(
+            cells[800]!,
+            cells[200]! * 2,
+            "a graft must not scale with the history behind it: \(measured)"
+        )
+    }
+
+    /// A deep WINNING sibling — a real reorg, not a losing one. The canonical
+    /// path legitimately moves and many blocks are materialized, but recording
+    /// the work that caused it must still not scale with chain length.
+    func testDeepWinningSiblingWeightCostDoesNotScaleWithChainLength() async throws {
+        var cells: [Int: UInt64] = [:]
+        for length in [200, 800] {
+            let root = node("win-\(length)-root", parent: nil, height: 0, work: 4)
+            let chain = try await ChainState.restore(replaying: [admission(root)])
+            let main = try await forkedHistory(
+                chain, prefix: "win-\(length)", length: length, from: root
+            )
+
+            let before = await chain.segmentWorkUpdateCellCount
+            // Attached near the TIP, and heavy enough to outweigh the canonical
+            // remainder above it, so the chain genuinely reorganizes onto it.
+            //
+            // Near the tip rather than near genesis because the cost this bounds
+            // was a walk from the mutation point to the ROOT: a shallow mutation
+            // has a short ancestor path and cannot witness the regression at any
+            // chain length. The REORG's depth was never the measured axis — the
+            // mutation point's depth is.
+            let winner = node(
+                "win-\(length)-sibling",
+                parent: main[length - 3].hash,
+                height: UInt64(length - 2),
+                work: UInt64(length) * 16
+            )
+            _ = try await chain.applyStaged(admission(winner))
+            let after = await chain.segmentWorkUpdateCellCount
+            cells[length] = after - before
+
+            let tip = await chain.getMainChainTip()
+            XCTAssertEqual(tip, winner.hash, "length \(length): the reorg must happen")
+        }
+
+        let measured = "reorg weight cells \(cells)"
+        XCTAssertLessThanOrEqual(
+            cells[800]!,
+            cells[200]! * 2,
+            "recording a reorg's work must not scale with the chain: \(measured)"
+        )
+    }
+
+    /// Exclusion rebuilds the index from the filtered graph. Admissions AFTER
+    /// it must be as cheap as admissions before it — a rebuild that left the
+    /// index in a shape where updates walk history would show up here and
+    /// nowhere else.
+    func testAdmissionAfterExclusionDoesNotScaleWithChainLength() async throws {
+        var cells: [Int: UInt64] = [:]
+        for length in [200, 800] {
+            let root = node("excl-\(length)-root", parent: nil, height: 0, work: 4)
+            let chain = try await ChainState.restore(replaying: [admission(root)])
+            let main = try await forkedHistory(
+                chain, prefix: "excl-\(length)", length: length, from: root
+            )
+            let doomed = node(
+                "excl-\(length)-doomed",
+                parent: main[4].hash,
+                height: 5,
+                work: 1
+            )
+            _ = try await chain.applyStaged(admission(doomed))
+            _ = try? await chain.applyStaged(ChainAdmissionBatch(facts: [
+                .exclusion(ChainExclusionFact(blockHash: doomed.hash)),
+            ]))
+
+            let before = await chain.segmentWorkUpdateCellCount
+            var previous = main[length]
+            for step in 1...8 {
+                let block = node(
+                    "excl-\(length)-after-\(step)",
+                    parent: previous.hash,
+                    height: UInt64(length + step),
+                    work: 4
+                )
+                _ = try await chain.applyStaged(admission(block))
+                previous = block
+            }
+            let after = await chain.segmentWorkUpdateCellCount
+            cells[length] = after - before
+        }
+
+        let measured = "post-exclusion cells \(cells)"
+        XCTAssertGreaterThan(cells[200]!, 0, measured)
+        XCTAssertLessThanOrEqual(
+            cells[800]!,
+            cells[200]! * 2,
+            "admissions after an exclusion must not scale with the chain: \(measured)"
         )
     }
 
