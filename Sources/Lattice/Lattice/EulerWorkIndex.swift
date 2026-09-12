@@ -127,19 +127,31 @@ struct EulerWorkIndex: Sendable {
         // no delete, so bailing mid-loop would strand an OPEN with no CLOSE —
         // the caller turns that into an abort rather than silent corruption, but
         // "fails closed" ought to mean closed, not aborted after half a
-        // mutation. Nothing reaches this today; it costs one pass to make the
-        // guarantee real rather than argued.
-        var pendingOpens = Set<String>()
+        // mutation.
+        //
+        // The check simulates the nesting rather than testing a set of
+        // independent conditions, because the precondition IS "this run is a
+        // well-formed tour", and a pair of sets cannot express that. Validation
+        // never writes `closeNode`, so with a pending-opens set alone
+        // `[open(A), close(A), close(A)]` validates clean — the duplicate close
+        // sees `closeNode[A]` still nil — and the mutating loop then strands two
+        // inserts. Nor would a pending-closes set catch an unclosed open, which
+        // strands one. The stack rejects both, a close out of nesting order, and
+        // a block already held: every way the loop below can fail.
+        var stack: [String] = []
+        var opened = Set<String>()
         for event in events {
             switch event {
             case let .open(hash, _):
                 guard openNode[hash] == nil,
-                      pendingOpens.insert(hash).inserted else { return nil }
+                      opened.insert(hash).inserted else { return nil }
+                stack.append(hash)
             case let .close(hash):
-                guard pendingOpens.contains(hash),
-                      closeNode[hash] == nil else { return nil }
+                guard closeNode[hash] == nil,
+                      stack.popLast() == hash else { return nil }
             }
         }
+        guard stack.isEmpty else { return nil }
         var touched = 0
         for event in events {
             switch event {
