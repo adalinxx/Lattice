@@ -2879,20 +2879,20 @@ public actor ChainState {
             return nil
         }
 
-#if DEBUG
-        fullCanonicalProjectionCount += 1
-#endif
         // The segments the newly selected path shares with the projected one
-        // hold the same blocks, so only the segments after them need walking.
-        // A forced projection and a never-projected state both mean the cached
-        // path cannot be trusted — they re-materialize from the root, as
-        // before.
+        // hold the same blocks: `parentBlockHash` is immutable once set and
+        // every edge is height-linked at admission, so a matching (base, tail)
+        // denotes the same block run whatever the index has done since. Only
+        // the segments after the shared prefix need walking. A forced
+        // projection and a never-projected state both mean the cached path
+        // cannot be trusted — they re-materialize from the root, as before.
         var shared = 0
         if !forceFull, projectedGeneration != nil, let spine {
             shared = Self.commonSegmentPrefix(canonicalSegmentSpine, spine)
         }
         if shared > 0, let spine,
-           let suffix = canonicalSuffix(of: spine, after: shared) {
+           let suffix = canonicalSuffix(of: spine, after: shared),
+           let replaced = canonicalPathAbove(suffix.divergenceHeight) {
 #if DEBUG
             canonicalProjectionBlockVisitCount += UInt64(suffix.blocks.count)
 #endif
@@ -2900,9 +2900,13 @@ public actor ChainState {
             return applyCanonicalDelta(
                 tipHash: suffix.tipHash,
                 blocks: suffix.blocks,
-                from: suffix.divergenceHeight
+                replacing: replaced
             )
         }
+
+#if DEBUG
+        fullCanonicalProjectionCount += 1
+#endif
         let descent = Self.segmentGhostDescent(
             from: root,
             in: hashToBlock,
@@ -2983,6 +2987,14 @@ public actor ChainState {
         guard shared < spine.count else {
             return (lastShared.blockHash, [], divergenceHeight)
         }
+        // A full descent validates every segment boundary inside the spine it
+        // walks. A suffix walk starts at the boundary BELOW its first segment,
+        // so that one boundary is checked here or by nobody: without it a
+        // suffix could start off the shared tail, landing blocks below
+        // `divergenceHeight` that `replaced` never covers.
+        guard lastShared.childHashes.contains(spine[shared].base) else {
+            return nil
+        }
         guard let descent = Self.segmentGhostDescent(
             from: spine[shared].base,
             in: hashToBlock,
@@ -2994,20 +3006,33 @@ public actor ChainState {
         return (descent.tipHash, descent.blocks, divergenceHeight)
     }
 
-    /// Swap the canonical path from `height` up for the freshly materialized
-    /// suffix. The prefix below it is unchanged, so membership and the by-height
-    /// index are updated in place instead of rebuilt over the whole chain.
+    /// The canonical blocks at and above `height`. Returns nil when the
+    /// by-height index is not contiguous to the tip, so the caller
+    /// re-materializes instead of trusting a partial removal set.
+    private func canonicalPathAbove(_ height: UInt64) -> Set<String>? {
+        guard let tipHeight = hashToBlock[chainTip]?.blockHeight else {
+            return nil
+        }
+        var replaced = Set<String>()
+        var current = height
+        while current <= tipHeight {
+            guard let hash = mainChainBlockAtIndex[current] else { return nil }
+            replaced.insert(hash)
+            current += 1
+        }
+        return replaced
+    }
+
+    /// Swap the canonical path `replaced` for the freshly materialized suffix.
+    /// The prefix below it is unchanged, so membership and the by-height index
+    /// are updated in place instead of rebuilt over the whole chain.
     private func applyCanonicalDelta(
         tipHash: String,
         blocks: Set<String>,
-        from height: UInt64
+        replacing replaced: Set<String>
     ) -> ChainCommit? {
-        var replaced = Set<String>()
-        var replacedHeight = height
-        while let hash = mainChainBlockAtIndex[replacedHeight] {
-            replaced.insert(hash)
-            replacedHeight += 1
-        }
+        // Both differences are unconditional, so they are correct whether or
+        // not the replaced and suffix block sets overlap.
         let removed = replaced.subtracting(blocks)
         let added = blocks.subtracting(replaced).reduce(
             into: [String: UInt64]()

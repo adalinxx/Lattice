@@ -127,20 +127,20 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
             workCells[length] = run.workCells
         }
 
-        // A whole-chain re-materialization quadruples for a doubled chain; a
-        // delta projection at worst doubles. The bound is deliberately loose —
-        // it separates Θ(n²) from Θ(n), not constant factors.
+        // Assert the per-admission bound the projection actually guarantees,
+        // not a growth ratio: a "must not quadruple for a doubled chain" bound
+        // is vacuous here, since the whole-chain projection satisfies it too
+        // (20,300 x 4 >= 80,600). Materializing the changed suffix is one block
+        // per admission on this shape; the x2 leaves room for the first
+        // projection, which is necessarily full.
         let measured = "blocks \(blockVisits), segments \(segmentVisits), workCells \(workCells)"
-        XCTAssertLessThanOrEqual(
-            blockVisits[400]!,
-            blockVisits[200]! * 4,
-            "doubling the chain must not quadruple projection work: \(measured)"
-        )
-        XCTAssertLessThanOrEqual(
-            blockVisits[800]!,
-            blockVisits[200]! * 8,
-            "quadrupling the chain must not multiply projection work by 16: \(measured)"
-        )
+        for length in [200, 400, 800] {
+            XCTAssertLessThanOrEqual(
+                blockVisits[length]!,
+                UInt64(2 * length),
+                "projection work must scale with the change, not the chain length: \(measured)"
+            )
+        }
 
         // What the delta projection does NOT fix, pinned so it cannot be
         // mistaken for solved. Both remaining terms are still Θ(n²) on this
