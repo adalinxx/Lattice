@@ -454,6 +454,91 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
         }
     }
 
+    /// The delta projection's own risk surface: a long shared prefix with
+    /// reorgs of varying depth above it — including a selected path that
+    /// becomes a strict prefix of the projected one — plus a late orphan graft
+    /// and an exclusion. Every step is compared against the independent
+    /// reference walk, the by-height index included.
+    func testDeltaProjectionMatchesReferenceAcrossDeepReorgs() async throws {
+        var random = DifferentialRandom(seed: 0x0DE1_7A00)
+        let depth = 48
+        var main: [PlannedDifferentialBlock] = []
+        for index in 0..<depth {
+            main.append(PlannedDifferentialBlock(
+                index: index,
+                hash: testCID("delta-reorg-main-\(index)"),
+                parentHash: index == 0 ? nil : main[index - 1].hash,
+                height: UInt64(index)
+            ))
+        }
+        let chain = try await ChainState.restore(replaying: [
+            admission(for: main[0]),
+        ])
+        for block in main.dropFirst() {
+            _ = try await chain.applyStaged(admission(for: block))
+        }
+        await assertMatchesReference(chain, seed: 0, event: "spine")
+
+        // A sibling at every fourth height: the merged-mining shape that
+        // defeats the O(1) tip append and splits the quotient.
+        var siblings: [PlannedDifferentialBlock] = []
+        for index in stride(from: 4, to: depth, by: 4) {
+            let sibling = PlannedDifferentialBlock(
+                index: 1_000 + index,
+                hash: testCID("delta-reorg-side-\(index)"),
+                parentHash: main[index - 1].hash,
+                height: UInt64(index)
+            )
+            siblings.append(sibling)
+            _ = try await chain.applyStaged(admission(for: sibling))
+            await assertMatchesReference(chain, seed: 0, event: "sibling \(index)")
+        }
+
+        // Decisive work on a random sibling each round, so the shared prefix
+        // shrinks and grows across projections instead of only extending.
+        for round in 0..<24 {
+            let target = siblings[random.nextInt(siblings.count)]
+            _ = try await chain.applyStaged(workAdmission(
+                blockHash: target.hash,
+                id: testCID("delta-reorg-grind-\(target.index)"),
+                work: UInt64(round + 1) * 8
+            ))
+            await assertMatchesReference(
+                chain,
+                seed: 0,
+                event: "reorg round \(round)"
+            )
+        }
+
+        // A late orphan graft: the child arrives first, then its parent
+        // connects the whole component into the quotient.
+        let graftParent = PlannedDifferentialBlock(
+            index: 2_000,
+            hash: testCID("delta-reorg-graft-parent"),
+            parentHash: main[6].hash,
+            height: 7
+        )
+        let graftChild = PlannedDifferentialBlock(
+            index: 2_001,
+            hash: testCID("delta-reorg-graft-child"),
+            parentHash: graftParent.hash,
+            height: 8
+        )
+        _ = try await chain.applyStaged(admission(for: graftChild))
+        await assertMatchesReference(chain, seed: 0, event: "orphan held")
+        _ = try await chain.applyStaged(admission(for: graftParent))
+        await assertMatchesReference(chain, seed: 0, event: "orphan grafted")
+
+        // An exclusion rebuilds the filtered index and forces a full
+        // projection; the delta must not outlive it.
+        _ = try? await chain.applyStaged(exclusionBatch(for: siblings[0]))
+        await assertMatchesReferenceWithExclusions(
+            chain,
+            seed: 0,
+            event: "exclusion after deltas"
+        )
+    }
+
     /// The safety net for the exclusion seam: drive random block insertions AND
     /// random invalidity exclusions in random order, and after every step assert
     /// the live filtered fork choice is byte-identical to the slow reference
@@ -601,6 +686,13 @@ private func assertMatchesReference(
     let livePath = await chain.mainChainHashes
     XCTAssertEqual(liveTip, expected.chainTip, "seed \(seed), \(event): tip", file: file, line: line)
     XCTAssertEqual(livePath, expected.mainChainHashes, "seed \(seed), \(event): path", file: file, line: line)
+    await assertMainChainIndexMatchesPath(
+        chain,
+        expectedPath: expected.mainChainHashes,
+        "seed \(seed), \(event): by-height index",
+        file: file,
+        line: line
+    )
 }
 
 private func exclusionBatch(
@@ -636,6 +728,13 @@ private func assertMatchesReferenceWithExclusions(
     XCTAssertEqual(
         livePath, expected.mainChainHashes,
         "seed \(seed), \(event): path", file: file, line: line
+    )
+    await assertMainChainIndexMatchesPath(
+        chain,
+        expectedPath: expected.mainChainHashes,
+        "seed \(seed), \(event): by-height index",
+        file: file,
+        line: line
     )
 }
 

@@ -220,6 +220,56 @@ final class SegmentTailProjectionTests: XCTestCase {
         await assertSegmentTailReferenceParity(chain)
     }
 
+    /// The commit delta is the node's only view of what moved, so a projection
+    /// that materializes just the changed suffix must still report exactly the
+    /// blocks that joined the main chain — no more.
+    func testSuffixProjectionReportsExactlyTheBlocksThatJoined() async throws {
+        let root = segmentTailBlock(name: "extend-root", parent: nil, height: 0)
+        let a = segmentTailBlock(name: "extend-a", parent: root.hash, height: 1)
+        // A losing sibling splits the run, so the canonical path is more than
+        // one segment and the delta has a shared prefix to keep.
+        let b = segmentTailBlock(name: "extend-b", parent: a.hash, height: 2, work: 4)
+        let side = segmentTailBlock(name: "extend-side", parent: a.hash, height: 2, work: 1)
+        let c = segmentTailBlock(name: "extend-c", parent: b.hash, height: 3)
+        // Delivered before their parent, so connecting `d` extends the canonical
+        // path by three blocks through a projection, not the O(1) append.
+        let d = segmentTailBlock(name: "extend-d", parent: c.hash, height: 4)
+        let e = segmentTailBlock(name: "extend-e", parent: d.hash, height: 5)
+        let f = segmentTailBlock(name: "extend-f", parent: e.hash, height: 6)
+
+        let chain = try await ChainState.restore(replaying: [segmentTailAdmission(root)])
+        for block in [a, side, b, c] {
+            _ = try await chain.applyStaged(segmentTailAdmission(block))
+        }
+        let tipBefore = await chain.getMainChainTip()
+        XCTAssertEqual(tipBefore, c.hash)
+        let mainChainBefore = await chain.mainChainHashes
+
+        for block in [f, e] {
+            _ = try await chain.applyStaged(segmentTailAdmission(block))
+        }
+        let held = await chain.getMainChainTip()
+        XCTAssertEqual(held, c.hash, "an unconnected component must not be selected")
+
+        let submission = try await chain.applyStaged(segmentTailAdmission(d))
+        let result = try XCTUnwrap(submission)
+        let commit = try XCTUnwrap(result.commit)
+        let mainChainAfter = await chain.mainChainHashes
+
+        XCTAssertEqual(commit.tipHash, f.hash)
+        XCTAssertEqual(
+            commit.mainChainBlocksAdded,
+            [d.hash: d.height, e.hash: e.height, f.hash: f.height],
+            "only the blocks that joined may be reported as added"
+        )
+        XCTAssertEqual(commit.mainChainBlocksRemoved, Set<String>())
+        XCTAssertEqual(
+            mainChainAfter,
+            mainChainBefore.union([d.hash, e.hash, f.hash])
+        )
+        await assertSegmentTailReferenceParity(chain)
+    }
+
 }
 
 private struct SegmentTailBlock {
@@ -292,6 +342,13 @@ private func assertSegmentTailReferenceParity(
     XCTAssertEqual(
         mainChain,
         reference.mainChainHashes,
+        file: file,
+        line: line
+    )
+    await assertMainChainIndexMatchesPath(
+        chain,
+        expectedPath: reference.mainChainHashes,
+        "by-height index",
         file: file,
         line: line
     )

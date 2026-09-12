@@ -588,6 +588,11 @@ public actor ChainState {
 #if DEBUG
     /// Test-visible diagnostic for a whole-block canonical materialization.
     var fullCanonicalProjectionCount: UInt64
+    /// Blocks materialized by canonical projections, and segments walked to
+    /// select the canonical spine. The projection COUNT cannot show the cost
+    /// PER projection, which is what live-sync admission actually pays.
+    var canonicalProjectionBlockVisitCount: UInt64
+    var canonicalProjectionSegmentVisitCount: UInt64
     var segmentCacheRebuildCount: UInt64
     var segmentWorkUpdateCellCount: UInt64
     var segmentGraftCount: UInt64
@@ -681,6 +686,8 @@ public actor ChainState {
         self.canonicalSegmentSpine = []
 #if DEBUG
         self.fullCanonicalProjectionCount = 0
+        self.canonicalProjectionBlockVisitCount = 0
+        self.canonicalProjectionSegmentVisitCount = 0
         self.segmentCacheRebuildCount = 0
         self.segmentWorkUpdateCellCount = 0
         self.segmentGraftCount = 0
@@ -2863,6 +2870,9 @@ public actor ChainState {
             workIndex: segmentWorkIndex,
             excluding: excludedClosure
         )
+#if DEBUG
+        canonicalProjectionSegmentVisitCount += UInt64(spine?.count ?? 0)
+#endif
         if !forceFull,
            let spine,
            spine == canonicalSegmentSpine {
@@ -2872,6 +2882,27 @@ public actor ChainState {
 #if DEBUG
         fullCanonicalProjectionCount += 1
 #endif
+        // The segments the newly selected path shares with the projected one
+        // hold the same blocks, so only the segments after them need walking.
+        // A forced projection and a never-projected state both mean the cached
+        // path cannot be trusted — they re-materialize from the root, as
+        // before.
+        var shared = 0
+        if !forceFull, projectedGeneration != nil, let spine {
+            shared = Self.commonSegmentPrefix(canonicalSegmentSpine, spine)
+        }
+        if shared > 0, let spine,
+           let suffix = canonicalSuffix(of: spine, after: shared) {
+#if DEBUG
+            canonicalProjectionBlockVisitCount += UInt64(suffix.blocks.count)
+#endif
+            canonicalSegmentSpine = spine
+            return applyCanonicalDelta(
+                tipHash: suffix.tipHash,
+                blocks: suffix.blocks,
+                from: suffix.divergenceHeight
+            )
+        }
         let descent = Self.segmentGhostDescent(
             from: root,
             in: hashToBlock,
@@ -2887,6 +2918,9 @@ public actor ChainState {
             )
             return (direct.tipHash, direct.blocks, [])
         }()
+#if DEBUG
+        canonicalProjectionBlockVisitCount += UInt64(descent.blocks.count)
+#endif
         let projection = (
             chainTip: descent.tipHash,
             mainChainHashes: descent.blocks
@@ -2914,6 +2948,90 @@ public actor ChainState {
         tipSnapshot = tipSnapshotsByHash[newTip]
         return ChainCommit(
             tipHash: newTip,
+            mainChainBlocksAdded: added,
+            mainChainBlocksRemoved: removed
+        )
+    }
+
+    /// Leading segments the newly selected path shares with the projected one.
+    nonisolated private static func commonSegmentPrefix(
+        _ projected: [CanonicalSegment],
+        _ selected: [CanonicalSegment]
+    ) -> Int {
+        var shared = 0
+        while shared < projected.count,
+              shared < selected.count,
+              projected[shared] == selected[shared] {
+            shared += 1
+        }
+        return shared
+    }
+
+    /// Materialize only the segments after the shared prefix. A malformed
+    /// suffix route returns nil so the caller falls back to the same full
+    /// re-materialization it has always run.
+    private func canonicalSuffix(
+        of spine: [CanonicalSegment],
+        after shared: Int
+    ) -> (tipHash: String, blocks: Set<String>, divergenceHeight: UInt64)? {
+        guard let lastShared = hashToBlock[spine[shared - 1].tail] else {
+            return nil
+        }
+        let divergenceHeight = lastShared.blockHeight + 1
+        // The selected path is a strict prefix of the projected one: everything
+        // above the shared tail simply leaves the main chain.
+        guard shared < spine.count else {
+            return (lastShared.blockHash, [], divergenceHeight)
+        }
+        guard let descent = Self.segmentGhostDescent(
+            from: spine[shared].base,
+            in: hashToBlock,
+            index: segmentIndex,
+            workIndex: segmentWorkIndex,
+            spine: Array(spine[shared...]),
+            excluding: excludedClosure
+        ) else { return nil }
+        return (descent.tipHash, descent.blocks, divergenceHeight)
+    }
+
+    /// Swap the canonical path from `height` up for the freshly materialized
+    /// suffix. The prefix below it is unchanged, so membership and the by-height
+    /// index are updated in place instead of rebuilt over the whole chain.
+    private func applyCanonicalDelta(
+        tipHash: String,
+        blocks: Set<String>,
+        from height: UInt64
+    ) -> ChainCommit? {
+        var replaced = Set<String>()
+        var replacedHeight = height
+        while let hash = mainChainBlockAtIndex[replacedHeight] {
+            replaced.insert(hash)
+            replacedHeight += 1
+        }
+        let removed = replaced.subtracting(blocks)
+        let added = blocks.subtracting(replaced).reduce(
+            into: [String: UInt64]()
+        ) { result, hash in
+            if let height = hashToBlock[hash]?.blockHeight { result[hash] = height }
+        }
+        guard tipHash != chainTip || !removed.isEmpty || !added.isEmpty else {
+            return nil
+        }
+
+        chainTip = tipHash
+        mainChainHashes.subtract(removed)
+        mainChainHashes.formUnion(added.keys)
+        for hash in removed {
+            guard let height = hashToBlock[hash]?.blockHeight,
+                  mainChainBlockAtIndex[height] == hash else { continue }
+            mainChainBlockAtIndex.removeValue(forKey: height)
+        }
+        for (hash, height) in added {
+            mainChainBlockAtIndex[height] = hash
+        }
+        tipSnapshot = tipSnapshotsByHash[tipHash]
+        return ChainCommit(
+            tipHash: tipHash,
             mainChainBlocksAdded: added,
             mainChainBlocksRemoved: removed
         )
