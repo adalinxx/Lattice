@@ -258,10 +258,14 @@ final class EulerWorkIndexTests: XCTestCase {
             touchedByDepth[200]! * 2,
             "recording work must not scale with block depth: \(measured)"
         )
-        XCTAssertLessThan(
+        // Logarithmic growth, stated as a relation between the measurements
+        // rather than an absolute literal: doubling twice adds a couple of
+        // nodes, so the deepest case stays under the sum of the two shallower
+        // ones. A per-ancestor structure would be 800 against 600 here.
+        XCTAssertLessThanOrEqual(
             touchedByDepth[800]!,
-            64,
-            "a logarithmic path over 1,600 elements is nowhere near this: \(measured)"
+            touchedByDepth[400]! + touchedByDepth[200]!,
+            "cost must grow logarithmically, not linearly: \(measured)"
         )
     }
 }
