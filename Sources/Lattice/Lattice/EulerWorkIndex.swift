@@ -129,15 +129,31 @@ struct EulerWorkIndex: Sendable {
         // "fails closed" ought to mean closed, not aborted after half a
         // mutation.
         //
-        // The check simulates the nesting rather than testing a set of
+        // The check simulates the nesting rather than testing a list of
         // independent conditions, because the precondition IS "this run is a
-        // well-formed tour", and a pair of sets cannot express that. Validation
-        // never writes `closeNode`, so with a pending-opens set alone
-        // `[open(A), close(A), close(A)]` validates clean — the duplicate close
-        // sees `closeNode[A]` still nil — and the mutating loop then strands two
-        // inserts. Nor would a pending-closes set catch an unclosed open, which
-        // strands one. The stack rejects both, a close out of nesting order, and
-        // a block already held: every way the loop below can fail.
+        // well-formed tour", and a list cannot express that.
+        //
+        // Do NOT re-derive this from the guards in the loop below. Two malformed
+        // runs make that loop SUCCEED and silently insert a corrupt tour, so
+        // auditing its guards cannot find them:
+        //
+        //   - an unclosed open, `[open(Y)]`, inserts an OPEN with no CLOSE;
+        //   - a close out of nesting order, `[open(a), open(b), close(a),
+        //     close(b)]`, satisfies every guard and inserts
+        //     `a_open b_open a_close b_close`, after which the subtree range of
+        //     both blocks is garbage.
+        //
+        // Those are worse than a refusal. The rest are rejections the loop would
+        // reach only after mutating: with a pending-opens set alone
+        // `[open(A), close(A), close(A)]` validates clean — validation never
+        // writes `closeNode`, so the duplicate close sees it still nil — and the
+        // loop strands two inserts before bailing.
+        //
+        // The simulation rejects every malformed run, including the two the loop
+        // accepts silently, across four guard classes: a block already opened
+        // here or already held (`openNode`), a block already closed
+        // (`closeNode`), a close that does not match the innermost open, and a
+        // run that does not balance.
         var stack: [String] = []
         var opened = Set<String>()
         for event in events {
@@ -151,6 +167,14 @@ struct EulerWorkIndex: Sendable {
                       stack.popLast() == hash else { return nil }
             }
         }
+        // Balances to EMPTY, deliberately — a FOREST is a legitimate input, not
+        // just a single properly-nested root. `graftConnectedComponent`'s
+        // genesis branch splices `events.dropFirst().dropLast()` under the
+        // component root, which is the concatenated complete tours of that
+        // root's child subtrees. Tightening this to "one root, properly nested"
+        // would refuse every genesis-rooted graft, and the caller turns a nil
+        // into `precondition(graftConnectedComponent(…))` — a live node abort on
+        // entirely valid input.
         guard stack.isEmpty else { return nil }
         var touched = 0
         for event in events {

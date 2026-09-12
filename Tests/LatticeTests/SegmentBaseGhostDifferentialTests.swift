@@ -632,6 +632,79 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
         )
     }
 
+    /// The genesis branch of `graftConnectedComponent` splices a FOREST. It
+    /// passes `events.dropFirst().dropLast()` — the concatenated complete tours
+    /// of the component root's child subtrees — not one nested root. The splice
+    /// validation balances to EMPTY precisely so that is legal.
+    ///
+    /// Nothing else in the suite produces it: a probe that aborted whenever a
+    /// genesis-branch graft had more than one child subtree never fired across
+    /// all 781 tests. Other tests reach that branch, but only ever with a single
+    /// subtree, so tightening the balance check to "one root, properly nested"
+    /// would pass everything and still refuse every genesis-rooted graft in
+    /// production — where the caller does not degrade, it aborts, through
+    /// `precondition(graftConnectedComponent(…))`.
+    func testSecondRootGraftsAForestOfChildSubtrees() async throws {
+        let genesis = PlannedDifferentialBlock(
+            index: 0,
+            hash: testCID("forest-graft-genesis"),
+            parentHash: nil,
+            height: 0
+        )
+        let chain = try await ChainState.restore(replaying: [
+            admission(for: genesis),
+        ])
+
+        // A SECOND root carrying two independent child subtrees.
+        let second = PlannedDifferentialBlock(
+            index: 900,
+            hash: testCID("forest-graft-second-root"),
+            parentHash: nil,
+            height: 0
+        )
+        let left = PlannedDifferentialBlock(
+            index: 901,
+            hash: testCID("forest-graft-left"),
+            parentHash: second.hash,
+            height: 1
+        )
+        let leftChild = PlannedDifferentialBlock(
+            index: 902,
+            hash: testCID("forest-graft-left-child"),
+            parentHash: left.hash,
+            height: 2
+        )
+        let right = PlannedDifferentialBlock(
+            index: 903,
+            hash: testCID("forest-graft-right"),
+            parentHash: second.hash,
+            height: 1
+        )
+
+        // Children first, so the whole component sits unrouted as orphans.
+        for block in [leftChild, left, right] {
+            _ = try await chain.applyStaged(admission(for: block))
+        }
+        await assertMatchesReference(chain, seed: 0, event: "forest held")
+
+        // Then the root arrives and grafts all of it at once: `inner` is two
+        // complete tours side by side, which balances only to empty.
+        _ = try await chain.applyStaged(admission(for: second))
+        await assertMatchesReference(chain, seed: 0, event: "forest grafted")
+
+        let choice = await chain.forkChoiceSnapshot(startingAt: second.hash)
+        let snapshot = try XCTUnwrap(choice, "the grafted root must be routed")
+        var expected = WorkSum.zero
+        for block in [second, left, leftChild, right] {
+            expected = expected + UInt256(UInt64(block.index % 3 + 1))
+        }
+        XCTAssertEqual(
+            snapshot.subtreeWork,
+            expected,
+            "every block of the forest must fall inside the root's range"
+        )
+    }
+
     /// The safety net for the exclusion seam: drive random block insertions AND
     /// random invalidity exclusions in random order, and after every step assert
     /// the live filtered fork choice is byte-identical to the slow reference
