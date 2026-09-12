@@ -350,8 +350,17 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         )
     }
 
-    /// Build a canonical chain of `length` blocks and return it.
-    private func canonicalChain(
+    /// Build `length` heights of history with a LOSING sibling at every height,
+    /// delivered before the canonical block, and return the canonical blocks.
+    ///
+    /// The SHAPE is the point, not the length. A fork-free chain collapses the
+    /// segment quotient to one or two bases, so any cost measured per ancestor
+    /// BASE is O(1) on it however long it gets — which would make the cost
+    /// assertions below pass on the implementation they exist to discriminate
+    /// against. A sibling at every height forces a split at every height, giving
+    /// the quotient one base per block: the merged-mining shape, and the only
+    /// one on which these costs can be measured at all.
+    private func forkedHistory(
         _ chain: ChainState,
         prefix: String,
         length: Int,
@@ -360,6 +369,13 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         var blocks = [root]
         var previous = root
         for height in 1...length {
+            let sibling = node(
+                "\(prefix)-side-\(height)",
+                parent: previous.hash,
+                height: UInt64(height),
+                work: 1
+            )
+            _ = try await chain.applyStaged(admission(sibling))
             let block = node(
                 "\(prefix)-main-\(height)",
                 parent: previous.hash,
@@ -382,23 +398,34 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
     /// that can witness that — a single-point count cannot.
     func testOrphanGraftCostDoesNotScaleWithMatureHistory() async throws {
         var cells: [Int: UInt64] = [:]
-        let componentDepth = 24
+        // Small enough to stay a LOSING component against the canonical blocks
+        // above the graft point, so this measures a graft and not a reorg. Its
+        // size is fixed across both histories, which is what the ratio needs.
+        let componentDepth = 4
         for history in [200, 800] {
             let root = node("graft-\(history)-root", parent: nil, height: 0, work: 4)
             let chain = try await ChainState.restore(replaying: [admission(root)])
-            let main = try await canonicalChain(
+            let main = try await forkedHistory(
                 chain, prefix: "graft-\(history)", length: history, from: root
             )
 
-            // A component hanging off an early block, delivered child-first so
-            // it stays unrouted until its connecting block arrives.
+            // A component hanging off a block near the TIP, delivered
+            // child-first so it stays unrouted until its connecting block
+            // arrives.
+            //
+            // Deep on purpose. The cost this bounds was a walk from the mutation
+            // point to the ROOT, so a graft near genesis has a short ancestor
+            // path and cannot witness the regression however long the history
+            // is — the Θ(n) bases sit ABOVE such a graft, where that walk never
+            // goes. This is the same axis error as the fork-free history, one
+            // level down.
             var component: [Node] = []
-            var parentHash = main[1].hash
+            var parentHash = main[history - 2].hash
             for step in 0...componentDepth {
                 let block = node(
                     "graft-\(history)-orphan-\(step)",
                     parent: parentHash,
-                    height: UInt64(2 + step),
+                    height: UInt64(history - 1 + step),
                     work: 1
                 )
                 component.append(block)
@@ -432,17 +459,23 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         for length in [200, 800] {
             let root = node("win-\(length)-root", parent: nil, height: 0, work: 4)
             let chain = try await ChainState.restore(replaying: [admission(root)])
-            let main = try await canonicalChain(
+            let main = try await forkedHistory(
                 chain, prefix: "win-\(length)", length: length, from: root
             )
 
             let before = await chain.segmentWorkUpdateCellCount
-            // Deep, and heavy enough to outweigh the whole canonical remainder,
-            // so the chain actually reorganizes onto it.
+            // Attached near the TIP, and heavy enough to outweigh the canonical
+            // remainder above it, so the chain genuinely reorganizes onto it.
+            //
+            // Near the tip rather than near genesis because the cost this bounds
+            // was a walk from the mutation point to the ROOT: a shallow mutation
+            // has a short ancestor path and cannot witness the regression at any
+            // chain length. The REORG's depth was never the measured axis — the
+            // mutation point's depth is.
             let winner = node(
                 "win-\(length)-sibling",
-                parent: main[8].hash,
-                height: 9,
+                parent: main[length - 3].hash,
+                height: UInt64(length - 2),
                 work: UInt64(length) * 16
             )
             _ = try await chain.applyStaged(admission(winner))
@@ -470,7 +503,7 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         for length in [200, 800] {
             let root = node("excl-\(length)-root", parent: nil, height: 0, work: 4)
             let chain = try await ChainState.restore(replaying: [admission(root)])
-            let main = try await canonicalChain(
+            let main = try await forkedHistory(
                 chain, prefix: "excl-\(length)", length: length, from: root
             )
             let doomed = node(

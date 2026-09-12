@@ -123,6 +123,23 @@ struct EulerWorkIndex: Sendable {
         under parentHash: String
     ) -> Int? {
         guard let anchor = closeNode[parentHash] else { return nil }
+        // Validate the whole run BEFORE inserting any of it. This structure has
+        // no delete, so bailing mid-loop would strand an OPEN with no CLOSE —
+        // the caller turns that into an abort rather than silent corruption, but
+        // "fails closed" ought to mean closed, not aborted after half a
+        // mutation. Nothing reaches this today; it costs one pass to make the
+        // guarantee real rather than argued.
+        var pendingOpens = Set<String>()
+        for event in events {
+            switch event {
+            case let .open(hash, _):
+                guard openNode[hash] == nil,
+                      pendingOpens.insert(hash).inserted else { return nil }
+            case let .close(hash):
+                guard pendingOpens.contains(hash),
+                      closeNode[hash] == nil else { return nil }
+            }
+        }
         var touched = 0
         for event in events {
             switch event {
