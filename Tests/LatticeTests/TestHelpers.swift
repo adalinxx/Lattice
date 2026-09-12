@@ -1,3 +1,4 @@
+import XCTest
 import Foundation
 #if canImport(os)
 import os
@@ -449,4 +450,23 @@ func storeWasmPolicy(
     let module = try WasmPolicyModuleHeader(node: WasmPolicyModule(bytes: try wasmPolicyFixture(requiringSubstring: needle)))
     try await module.storeRecursively(storer: fetcher)
     return WasmPolicyRef(moduleCID: module.rawCID, scope: scope, entrypoint: entrypoint)
+}
+
+/// The by-height canonical index is derived state that a delta projection can
+/// desync without changing the membership set, so parity checks compare it too.
+func assertMainChainIndexMatchesPath(
+    _ chain: ChainState,
+    expectedPath: Set<String>,
+    _ message: String = "",
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async {
+    let blocks = await chain.hashToBlock
+    let index = await chain.mainChainBlockAtIndex
+    var expected: [UInt64: String] = [:]
+    for hash in expectedPath {
+        guard let height = blocks[hash]?.blockHeight else { continue }
+        expected[height] = hash
+    }
+    XCTAssertEqual(index, expected, message, file: file, line: line)
 }
