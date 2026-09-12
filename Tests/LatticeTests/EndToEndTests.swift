@@ -314,7 +314,7 @@ final class ForkReorgE2ETests: XCTestCase {
         let _ = await chain.submitTestBlock(blockHeader: blockHeader(b1), block: b1)
         let resultB2 = await chain.submitTestBlock(blockHeader: blockHeader(b2), block: b2)
 
-        let bWins = forkChoicePrefersSegmentBase(
+        let bWins = forkChoicePrefersBlock(
             blockHeader(b1).rawCID,
             over: blockHeader(a1).rawCID
         )

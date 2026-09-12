@@ -96,7 +96,7 @@ trueCumWork(B) = total(effectiveSubtree(B))
 ```
 
 Fork choice starts at an accepted height-zero root and repeatedly chooses the
-child segment base with greatest `trueCumWork`. An exact tie selects the smaller
+same-chain child block with greatest `trueCumWork`. An exact tie selects the smaller
 canonical CID bytes.
 
 Holding the incumbent on an exact tie is deliberately not part of consensus.
