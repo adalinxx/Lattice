@@ -2906,23 +2906,32 @@ public actor ChainState {
         let commit: ChainCommit?
     }
 
-    /// How far off the canonical path a mutation may land before truncation is
-    /// abandoned. A cost fallback, never a correctness bound: exceeding it
-    /// re-materializes from the root, which is what every projection did before.
-    private static let maximumDivergenceWalk = 64
-
     /// The deepest canonical block on the ancestor line of `mutatedAt`. Nil when
-    /// that line reaches a root, a missing parent, or the walk limit without
-    /// meeting the canonical path — including a mutation under a different root.
+    /// that line reaches a root or a missing parent without meeting the
+    /// canonical path — including a mutation under a different root.
+    ///
+    /// This walk is UNCAPPED deliberately. A step budget here is a cliff, not a
+    /// budget: past it the caller falls through to the whole-chain projection,
+    /// which pays a spine walk AND a descent from the root before it can
+    /// discover that nothing moved. So a cap does not bound the cost of a deep
+    /// divergence, it relocates it to O(n) per admission — reintroducing the
+    /// quadratic this change exists to remove, on precisely the shape it exists
+    /// to make cheap, and skipping the O(1) winner-unchanged check below, which
+    /// only runs once a divergence point has been found.
+    ///
+    /// Uncapped, the walk is bounded by the length of the branch below the
+    /// mutated block, which the node has already paid to admit, and every step
+    /// is an O(1) set membership test. Termination does not rest on a budget:
+    /// each step moves to a strictly lower height, and a parent that does not is
+    /// a malformed route that fails closed like every other guard here.
     private func canonicalDivergencePoint(from mutatedAt: String) -> String? {
         var current = mutatedAt
-        var steps = 0
         while !mainChainHashes.contains(current) {
-            guard steps < Self.maximumDivergenceWalk,
-                  let parent = hashToBlock[current]?.parentBlockHash,
-                  hashToBlock[parent] != nil else { return nil }
-            current = parent
-            steps += 1
+            guard let meta = hashToBlock[current],
+                  let parentHash = meta.parentBlockHash,
+                  let parent = hashToBlock[parentHash],
+                  parent.blockHeight < meta.blockHeight else { return nil }
+            current = parentHash
         }
         return current
     }
@@ -2957,20 +2966,14 @@ public actor ChainState {
             : (hashToBlock[divergence]?.childHashes ?? []).filter {
                 !excludedClosure.contains($0)
             }
-        guard !children.isEmpty else {
-            // Nothing in fork choice below it: the canonical path ends here.
-            guard let replaced = canonicalPathAbove(suffixHeight) else {
-                return nil
-            }
-#if DEBUG
-            truncatedCanonicalProjectionCount += 1
-#endif
-            return TruncatedProjectionOutcome(commit: applyCanonicalDelta(
-                tipHash: divergence,
-                blocks: [],
-                replacing: replaced
-            ))
-        }
+        // Every child of the divergence point is out of fork choice. This looks
+        // unreachable — `childHashes` is appended unconditionally on insert, and
+        // the excluded closure is closed under descendants, so an excluded
+        // ancestor implies an excluded `mutatedAt`, which never reaches here.
+        // Reachable or not, mutating out of a guard would contradict this
+        // function's contract that every guard fails closed, so it hands the
+        // case to the whole-chain projection like every other guard does.
+        guard !children.isEmpty else { return nil }
         // One GHOST step, taken exactly as the spine walk takes it: a lone child
         // is followed WITHOUT a weight lookup, because a child inside its
         // parent's unary run is not a segment base and so has no subtree entry
