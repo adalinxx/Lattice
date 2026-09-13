@@ -285,4 +285,134 @@ final class DeferredExecutionExclusionTests: XCTestCase {
         let extendedPath = await chain.mainChainHashes
         XCTAssertEqual(extendedPath.contains(h4.hash), false)
     }
+
+    // MARK: - Graft of a component carrying a durable exclusion
+
+    /// Shape:  G -> V1                (valid competitor)
+    ///         G -> P -> B0 -> B1     (P withheld; B1 proven invalid unrouted)
+    ///
+    /// A durable exclusion can exist on a block that is present but NOT routed:
+    /// `applyExclusion` gates only on `hashToBlock[blockHash] != nil`, and a
+    /// branch whose connecting ancestor is withheld never routes, because
+    /// `routeBlock` returns early when the parent is absent. A completed
+    /// execution verdict needs the block's CONTENT, not its CONNECTIVITY.
+    ///
+    /// Work comes from the fixture alone, chosen so the VALID part of the P
+    /// branch (P + B0) is lighter than V1, while the P branch counted WITH the
+    /// excluded B1 is heavier. Fork choice must prefer V1; preferring the P
+    /// branch is exactly the resurrection spec 9.9 forbids.
+    private func buildGraftedExclusionChain() async throws -> (
+        chain: ChainState,
+        g: PlannedBlock,
+        p: PlannedBlock,
+        b0: PlannedBlock,
+        b1: PlannedBlock,
+        v1: PlannedBlock
+    ) {
+        let g = block("graft-g", parent: nil, work: 1)
+        let p = block("graft-p", parent: g, work: 1)
+        let b0 = block("graft-b0", parent: p, work: 1)
+        let b1 = block("graft-b1", parent: b0, work: 10)
+        let v1 = block("graft-v1", parent: g, work: 4)
+
+        let chain = try await ChainState.restore(replaying: [admission(for: g)])
+        _ = try await chain.applyStaged(admission(for: v1))
+
+        // B0 and B1 arrive while their connecting ancestor P is withheld, so
+        // neither routes: the work is held, fork choice never sees it.
+        _ = try await chain.applyStaged(admission(for: b0))
+        _ = try await chain.applyStaged(admission(for: b1))
+        let b0Routed = await chain.hasValidatedAncestry(blockHash: b0.hash)
+        let b1Routed = await chain.hasValidatedAncestry(blockHash: b1.hash)
+        XCTAssertFalse(b0Routed, "precondition: B0 is weighed but unrouted")
+        XCTAssertFalse(b1Routed, "precondition: B1 is weighed but unrouted")
+
+        // The verdict lands on an unrouted block.
+        _ = try await chain.applyStaged(exclusion(of: b1))
+        let closure = await chain.excludedClosureForTesting
+        XCTAssertTrue(
+            closure.contains(b1.hash),
+            "precondition: durable exclusion recorded on an unrouted block"
+        )
+
+        // The withheld ancestor arrives and grafts the whole component in.
+        _ = try await chain.applyStaged(admission(for: p))
+        return (chain, g, p, b0, b1, v1)
+    }
+
+    /// The component tour must skip the excluded closure. Otherwise the
+    /// proven-invalid elements are spliced inside every ancestor's Euler range,
+    /// and `subtreeWork` is a RANGE SUM - so each ancestor is permanently
+    /// over-weighted by work that was proven invalid.
+    ///
+    /// Oracle: while an exclusion is present, `subtreeWeight(forHash:)`
+    /// recomputes with `excluding:` and never reads the live index, so the
+    /// live range sum and the recomputation are two independent numbers that
+    /// must agree.
+    func testGraftDoesNotSpliceExcludedWorkIntoAncestorRanges() async throws {
+        let (chain, g, p, b0, b1, v1) = try await buildGraftedExclusionChain()
+
+        // Each range's valid membership, summed from the fixture's own planned
+        // work - every bound derives from the fixture, not from a constant.
+        func plannedWork(_ blocks: [PlannedBlock]) -> WorkSum {
+            blocks.reduce(WorkSum.zero) { $0 + UInt256($1.work) }
+        }
+
+        // Genesis range: G + P + B0 + V1. The excluded B1 must not appear.
+        let snapG = await chain.forkChoiceSnapshot(startingAt: g.hash)
+        let liveG = snapG?.subtreeWork
+        let oracleG = await chain.subtreeWeight(forHash: g.hash)
+        XCTAssertEqual(
+            liveG,
+            plannedWork([g, p, b0, v1]),
+            "genesis range must count only non-excluded work"
+        )
+        XCTAssertEqual(
+            liveG,
+            oracleG,
+            "genesis: live index must match the excluding: recomputation"
+        )
+
+        // The grafted component's own root: P + B0 only.
+        let snapP = await chain.forkChoiceSnapshot(startingAt: p.hash)
+        let liveP = snapP?.subtreeWork
+        let oracleP = await chain.subtreeWeight(forHash: p.hash)
+        XCTAssertEqual(
+            liveP,
+            plannedWork([p, b0]),
+            "grafted root must count only non-excluded work"
+        )
+        XCTAssertEqual(
+            liveP,
+            oracleP,
+            "grafted root: live index must match the recomputation"
+        )
+
+        let held = await chain.contains(blockHash: b1.hash)
+        XCTAssertTrue(held, "excluded block remains served")
+        let excludedWeight = await chain.subtreeWeight(forHash: b1.hash)
+        XCTAssertEqual(excludedWeight, .zero)
+    }
+
+    /// The safety consequence: excluded work carried in by a graft must not
+    /// win fork choice against a genuinely heavier valid branch.
+    func testGraftedExcludedWorkNeverOutweighsHeavierValidBranch() async throws {
+        let (chain, _, p, b0, _, v1) = try await buildGraftedExclusionChain()
+
+        let tip = await chain.getMainChainTip()
+        XCTAssertEqual(tip, v1.hash, "heavier VALID branch must win")
+        let path = await chain.mainChainHashes
+        XCTAssertFalse(path.contains(b0.hash))
+        XCTAssertFalse(path.contains(p.hash))
+
+        // The live projection agrees with the reference oracle.
+        let blocks = await chain.hashToBlock
+        let closure = await chain.excludedClosureForTesting
+        let expected = ChainState.referenceCanonicalProjection(
+            in: blocks, excluding: closure
+        )
+        XCTAssertEqual(tip, expected?.chainTip)
+        XCTAssertEqual(path, expected?.mainChainHashes)
+    }
+
 }
