@@ -1447,7 +1447,12 @@ public actor ChainState {
         var pending = [rootHash]
         var componentHashes = Set<String>()
         while let hash = pending.popLast() {
+            // An excluded (proven-invalid) member must not re-enter fork
+            // choice. Skipping it here also strips it from the spliced
+            // events: the tour below only follows children that are in
+            // componentHashes.
             guard !subtreeWorkIndex.contains(hash),
+                  !excludedClosure.contains(hash),
                   componentHashes.insert(hash).inserted,
                   let block = hashToBlock[hash] else { continue }
             pending.append(contentsOf: block.childHashes)
