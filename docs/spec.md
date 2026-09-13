@@ -473,7 +473,7 @@ heavily: for `N` intervals the `i`-th most-recent (`i = 0` is newest) gets weigh
 `w_i = N - i`.
 
 ```
-solveTime_i    = max(0, timestamp(b_i) - timestamp(b_{i-1}))   // clamped ≥ 0
+solveTime_i    = max(0, timestamp(b_i) - timestamp(b_{i+1}))   // clamped ≥ 0
 weightedActual = Σ_i (w_i · solveTime_i)
 weightedTarget = spec.targetBlockTime · Σ_i w_i
 proposed       = B.target · weightedActual / weightedTarget
@@ -499,17 +499,18 @@ own block harder (more work), never easier.
 
 **The control variable is the window mean, not the newest interval.**
 Substituting `w_i = N - i` into `weightedActual` and applying Abel summation
-collapses the weighted sum to a single gap:
+collapses the weighted sum to a single gap `g`:
 
 ```
-weightedActual = N · (t_0 - mean(t_1 … t_N))
+weightedActual = N · g,   where g = t_0 - mean(t_1 … t_N)
 ```
 
-where `t_0` is the candidate's timestamp and `t_1 … t_N` are the previous `N`
-timestamps. Since `Σ_i w_i = N(N+1)/2`, difficulty is held steady when
+`t_0` is the candidate's timestamp and `t_1 … t_N` are the previous `N`
+timestamps, so `g` is the candidate's distance from the window mean. Since
+`Σ_i w_i = N(N+1)/2`, difficulty is held steady when
 
 ```
-t_0 - mean(t_1 … t_N) = (N+1)/2 · spec.targetBlockTime
+g = (N+1)/2 · spec.targetBlockTime
 ```
 
 For Nexus (`N = 120`, `spec.targetBlockTime = 1 hour`) that equilibrium gap is
@@ -536,21 +537,40 @@ elapsed time: the retarget cannot be ground to mint cheap work. The hardening
 direction carries no consensus bound — with no committed `maxTargetChange`, one
 step may make the chain ~60.5× harder, and nothing caps it.
 
-**Compressed-window attractor.** A window of tightly clustered timestamps — what
-a burst of fast blocks from a max-target genesis produces — puts the equilibrium
-block time at `(N+1)/2 · spec.targetBlockTime`, so a block arriving *faster* than
-that makes the target harder again rather than easier. The window is
-self-reinforcing until enough real time accumulates inside it. Walking a fully
-compressed window back to even spacing costs
+**Compressed-window attractor.** The gap `g` evolves by an exact step rule.
+Mining a block with solve time `S` admits `t_0` into the window and drops `t_N`,
+which raises the window mean by `W/N`, where `W = t_0 - t_N` is the previous
+window's span:
 
 ```
-Σ_j S_j = T · N(N+1) · H_2N / (2N+1) ≈ 365 · T
+g' = g + S - W/N
 ```
 
-(`H_n` is the `n`-th harmonic number, `T = spec.targetBlockTime`), which for
-Nexus is about **15 days even with hashrate perfectly matched to the target**:
-the cost is elapsed time, not work. A live Nexus chain sat at a single height for
-27+ hours under exactly this condition.
+Even spacing at `S = spec.targetBlockTime` is the fixed point: it gives
+`W = N · spec.targetBlockTime` and `g = (N+1)/2 · spec.targetBlockTime`, so
+`g' = g` — the equilibrium above, reached at exactly one-hour spacing.
+
+A window of tightly clustered timestamps — what a burst of fast blocks from a
+max-target genesis produces — starts from `W ≈ 0` and `g ≈ 0`, so the target
+hardens sharply and each new block must spend more than `W/N` merely to stop the
+gap shrinking. The window is self-reinforcing: a block arriving sooner than
+`(N+1)/2 · spec.targetBlockTime` after the window mean hardens the target again
+rather than easing it.
+
+Recovery is therefore paid in elapsed time, not work. Modeling the walk back from
+a fully compressed window — assuming constant hashrate exactly matched to the
+steady-state target, deterministic solve times equal to their expectation, and no
+representation floor — gives a total of order
+
+```
+Σ_j S_j ≈ T · N(N+1) · H_2N / (2N+1) ≈ 365 · T
+```
+
+(`H_n` is the `n`-th harmonic number, `T = spec.targetBlockTime`), or about **two
+weeks for Nexus**. That closed form is an estimate under those assumptions, not a
+result derived from the step rule above; the order of magnitude is the
+load-bearing claim. A live Nexus chain sat at a single height for 27+ hours under
+exactly this condition.
 
 **A minimum-work filter sets a permanent floor.** `validateNextTarget` recomputes
 `nextTarget` from the block's *own* `B.target`, not from `parent.nextTarget`, so
