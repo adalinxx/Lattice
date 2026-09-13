@@ -394,6 +394,14 @@ public actor ChainState {
     var segmentGraftCount: UInt64
     var segmentGraftBlockVisitCount: UInt64
     var stateContinuityBlockVisitCount: UInt64
+    /// WHERE routed work lands, relative to the canonical tip. An accumulator
+    /// whose repair cost is proportional to distance-from-tip is only cheap if
+    /// admissions are near the tip, so that has to be measured rather than
+    /// assumed. Depth is recorded, never thresholded: the test derives mean and
+    /// maximum, so no ceiling is chosen here.
+    var workAdmissionCount: UInt64
+    var workAdmissionDepthSum: UInt64
+    var workAdmissionMaxDepth: UInt64
 #endif
     /// Diagnostic prefix/subtree totals are derived local views. They are not
     /// fork-choice inputs and are rebuilt only when an API exposes them.
@@ -488,6 +496,9 @@ public actor ChainState {
         self.segmentGraftCount = 0
         self.segmentGraftBlockVisitCount = 0
         self.stateContinuityBlockVisitCount = 0
+        self.workAdmissionCount = 0
+        self.workAdmissionDepthSum = 0
+        self.workAdmissionMaxDepth = 0
 #endif
         self.localWorkCachesDirty = true
         var allByHeight = indexToBlockHash
@@ -1590,6 +1601,7 @@ public actor ChainState {
                       ) else { return }
 #if DEBUG
                 segmentWorkUpdateCellCount += UInt64(updatedCells)
+                recordWorkAdmissionDepth(at: blockHash)
 #endif
             }
             workByGrind[id]?.contribution = contribution
@@ -1606,9 +1618,24 @@ public actor ChainState {
         }
 #if DEBUG
         segmentWorkUpdateCellCount += UInt64(updatedCells)
+        recordWorkAdmissionDepth(at: blockHash)
 #endif
         workByGrind[id]?.isRouted = true
     }
+
+#if DEBUG
+    /// Distance from the canonical tip to the block a work fact landed on. A
+    /// block at or above the tip records zero — that is a tip extension, the
+    /// case the accumulator design expects to dominate.
+    private func recordWorkAdmissionDepth(at blockHash: String) {
+        let tipHeight = hashToBlock[chainTip]?.blockHeight ?? 0
+        let height = hashToBlock[blockHash]?.blockHeight ?? tipHeight
+        let depth = tipHeight > height ? tipHeight - height : 0
+        workAdmissionCount += 1
+        workAdmissionDepthSum += depth
+        workAdmissionMaxDepth = max(workAdmissionMaxDepth, depth)
+    }
+#endif
 
     // MARK: - Additional proof facts
 
