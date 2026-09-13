@@ -58,10 +58,11 @@ chain-specific WASM policy makes it part of that chain's validity rules.
 |---|---:|
 | Target block time `T` | `3,600` seconds |
 | Retarget window | `120` blocks, about 5 days |
-| Per-block target clamp | factor `2` |
+| Per-block target clamp | none (`maxTargetChange` unset) |
 
-Always, `block.target == parent.nextTarget`. There is no minimum-target floor
-and no below-floor recovery path.
+A block's target is `parent.nextTarget` or voluntarily harder, never easier.
+There is no minimum-target floor and no below-floor recovery path. Retarget steps
+are unclamped: one step may correct by an arbitrary factor in either direction.
 
 Let `D` be the expected hashes represented by the current target, approximately
 `U256_MAX / target`. At steady state, the observed honest hashrate is
@@ -71,7 +72,13 @@ H ~= D / T
 ```
 
 The LWMA tracks sustained changes in `H`; it does not make a short attack free
-to choose an easier target.
+to choose an easier target. The easing direction is bounded independently of the
+absent clamp: because a block's timestamp may not exceed the validating node's
+clock, redistributing timestamps inside the window makes the next target at most
+about 2× easier than honest spacing (see
+[specification §5.5](../spec.md#55-target-adjustment-retargeting)), so the
+retarget cannot be ground down to mint cheap work. The hardening direction is not
+bounded.
 
 ## Majority-Reorg Estimate
 
