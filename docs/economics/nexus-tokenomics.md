@@ -108,12 +108,14 @@ parent's `nextTarget` or voluntarily harder, never easier — there is no
 minimum-target floor and no recovery exception.
 
 Because the window is linearly weighted, the retarget reads the candidate's gap
-from the *mean* of the previous 120 timestamps, and holds difficulty steady at
-`(120+1)/2 = 60.5` hours rather than at one hour. Redistributing timestamps
+from the *mean* of the previous 120 timestamps, and holds difficulty steady when
+that gap is `(120+1)/2 = 60.5` hours. Evenly spaced one-hour blocks produce
+exactly that gap, so steady difficulty still means one-hour spacing; 60.5 hours
+is the distance to the window mean, not a block time. Redistributing timestamps
 within the window can make the next target at most about 2× easier than honest
 spacing, but up to 60.5× harder, with no clamp on the harder direction. A
-clustered window is self-reinforcing and takes roughly 15 days of elapsed time to
-walk back even at matched hashrate. See
+clustered window is self-reinforcing and is estimated to need on the order of two
+weeks of elapsed time to walk back even at matched hashrate. See
 [specification §5.5](../spec.md#55-target-adjustment-retargeting).
 
 The signed `fee` field does not automatically move value. Lattice enforces the
