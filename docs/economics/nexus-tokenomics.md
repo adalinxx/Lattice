@@ -34,10 +34,12 @@ not automatically inherit all Nexus hashpower or Nexus canonicity.
 | `maxBlockSize` | `1,000,000` bytes | Unique canonical block + transaction Volume bytes |
 | `maxStateGrowth` | `3,000,000` bytes | Per block |
 | `maxNumberOfTransactionsPerBlock` | `5,000` | Per block |
+| `maxTargetChange` | unset (`nil`) | No per-retarget clamp |
 
-The `ChainSpec` sets a default `maxTargetChange = 2` (the per-retarget clamp
-factor; a chain may commit its own value). There is no minimum-target floor. A
-chain directory is positional path data, not a `ChainSpec` field.
+`ChainSpec.maxTargetChange` defaults to `nil` — no per-retarget clamp. A chain
+may commit a factor; **Nexus commits none**, so Nexus retargets by the full
+unclamped proportional correction. There is no minimum-target floor. A chain
+directory is positional path data, not a `ChainSpec` field.
 
 ## Emission
 
@@ -99,9 +101,20 @@ by integer halving.
 
 ## Cadence And Fees
 
-Nexus retargets every block using a clamped LWMA over the candidate's own
-ancestor branch. A block's target always equals its parent's `nextTarget` — there
-is no minimum-target floor and no recovery exception.
+Nexus retargets every block using an **unclamped** LWMA over the candidate's
+own ancestor branch: `maxTargetChange` is unset, so one step may correct by an
+arbitrary factor (a ×1150 step has been observed live). A block's target is its
+parent's `nextTarget` or voluntarily harder, never easier — there is no
+minimum-target floor and no recovery exception.
+
+Because the window is linearly weighted, the retarget reads the candidate's gap
+from the *mean* of the previous 120 timestamps, and holds difficulty steady at
+`(120+1)/2 = 60.5` hours rather than at one hour. Redistributing timestamps
+within the window can make the next target at most about 2× easier than honest
+spacing, but up to 60.5× harder, with no clamp on the harder direction. A
+clustered window is self-reinforcing and takes roughly 15 days of elapsed time to
+walk back even at matched hashrate. See
+[specification §5.5](../spec.md#55-target-adjustment-retargeting).
 
 The signed `fee` field does not automatically move value. Lattice enforces the
 block-wide non-creation bound over explicit actions. A node may require an
