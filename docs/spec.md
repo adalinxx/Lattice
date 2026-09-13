@@ -465,7 +465,7 @@ is NOT exempt from meeting it: the securing hash must satisfy `hash <= target`
 like any block — the root genesis's own grind hash, or a child genesis's securing
 root-grind hash (§5.1 rule 5) — so a genesis whose committed target is not met,
 including `target == 0`, is invalid. Its `nextTarget` MUST equal that target. Each non-genesis block's
-`nextTarget` is a **clamped, linearly-weighted retarget (LWMA)** recomputed every
+`nextTarget` is a **linearly-weighted retarget (LWMA)** recomputed every
 block from the candidate's own ancestor-branch solve times over the most recent
 `spec.retargetWindow` intervals (including the current block's own solve time), targeting
 `spec.targetBlockTime` per block. More recent intervals are weighted more
@@ -473,27 +473,113 @@ heavily: for `N` intervals the `i`-th most-recent (`i = 0` is newest) gets weigh
 `w_i = N - i`.
 
 ```
-solveTime_i    = max(0, timestamp(b_i) - timestamp(b_{i-1}))   // clamped ≥ 0
+solveTime_i    = max(0, timestamp(b_i) - timestamp(b_{i+1}))   // clamped ≥ 0
 weightedActual = Σ_i (w_i · solveTime_i)
 weightedTarget = spec.targetBlockTime · Σ_i w_i
 proposed       = B.target · weightedActual / weightedTarget
-nextTarget     = clamp(proposed,
-                       B.target / spec.maxTargetChange,   // lower bound (saturating)
-                       B.target · spec.maxTargetChange)   // upper bound (saturating)
+nextTarget     = clampTargetChange(proposed)   // identity unless the chain
+                                               // commits spec.maxTargetChange
 ```
 
-`spec.maxTargetChange` is the chain's own committed clamp factor (default 2). The
-clamp is the only bound — there is no absolute target floor. A faster-than-target
-window shrinks `weightedActual`, lowering the target (harder); a slower window
-raises it (easier — a larger `target` is easier to satisfy). The per-block change
-is bounded to a factor of `maxTargetChange` in either direction. Validity requires
-`B.nextTarget == nextTarget` exactly — there is no acceptance band. Because the
-retarget reads only the candidate's committed ancestry, is bounded per block, and
-`B.target` is bound at or below the parent's schedule, validity is independent of
-the current fork-choice projection and a miner can only make its own block harder
-(more work), never easier. This
-`maxTargetChange` clamp is itself the bound on how far timestamp manipulation can
-move difficulty; timestamps are further constrained by the strict-increase rule.
+`spec.maxTargetChange` is **`nil` by default: no clamp.** A chain may commit a
+factor, and a chain that does bounds each step to `B.target / f … B.target · f`
+(saturating). Nexus commits none, so Nexus retargets by the full unclamped
+proportional correction — a single ×1150 step has been observed live and is the
+intended behaviour. The only arithmetic bound is the integer floor of the
+representation: a correction that rounds to zero proposes target 1. There is no
+absolute target floor.
+
+A faster-than-target window shrinks `weightedActual`, lowering the target
+(harder); a slower window raises it (easier — a larger `target` is easier to
+satisfy). Validity requires `B.nextTarget == nextTarget` exactly — there is no
+acceptance band. Because the retarget reads only the candidate's committed
+ancestry, and `B.target` is bound at or below the parent's schedule, validity is
+independent of the current fork-choice projection and a miner can only make its
+own block harder (more work), never easier.
+
+**The control variable is the window mean, not the newest interval.**
+Substituting `w_i = N - i` into `weightedActual` and applying Abel summation
+collapses the weighted sum to a single gap `g`:
+
+```
+weightedActual = N · g,   where g = t_0 - mean(t_1 … t_N)
+```
+
+`t_0` is the candidate's timestamp and `t_1 … t_N` are the previous `N`
+timestamps, so `g` is the candidate's distance from the window mean. Since
+`Σ_i w_i = N(N+1)/2`, difficulty is held steady when
+
+```
+g = (N+1)/2 · spec.targetBlockTime
+```
+
+For Nexus (`N = 120`, `spec.targetBlockTime = 1 hour`) that equilibrium gap is
+**60.5 hours, not one hour**. One hour is the spacing between consecutive blocks
+at equilibrium; the quantity the retarget reads is the candidate's distance from
+the window mean.
+
+**Bound on timestamp manipulation.** Admission enforces only
+`parent.timestamp < B.timestamp` (agreed state) and `B.timestamp <= now`
+(node-local and retriable, §5.2 rule 5). There is no MedianTimePast rule, no
+lower bound against wall clock, and no future-drift constant. For a miner
+producing `N` blocks over real elapsed time `E`, honest even spacing yields a gap
+of `E · (N+1) / 2N`, and the two extremes of redistributing `E` inside the window
+are asymmetric:
+
+| `E` pushed onto | Gap produced | Effect on the next target |
+|---|---|---|
+| the **newest** interval (weight `N`) | `E` | at most `2N/(N+1) ≈ 2×` easier |
+| the **oldest** interval (weight `1`) | `E / N` | `(N+1)/2 = 60.5×` harder |
+
+The easing direction is bounded at roughly **2×** however the window is arranged,
+because `B.timestamp <= now` anchors `t_0` to real time and `E` cannot exceed
+elapsed time: the retarget cannot be ground to mint cheap work. The hardening
+direction carries no consensus bound — with no committed `maxTargetChange`, one
+step may make the chain ~60.5× harder, and nothing caps it.
+
+**Compressed-window attractor.** The gap `g` evolves by an exact step rule.
+Mining a block with solve time `S` admits `t_0` into the window and drops `t_N`,
+which raises the window mean by `W/N`, where `W = t_0 - t_N` is the previous
+window's span:
+
+```
+g' = g + S - W/N
+```
+
+Even spacing at `S = spec.targetBlockTime` is the fixed point: it gives
+`W = N · spec.targetBlockTime` and `g = (N+1)/2 · spec.targetBlockTime`, so
+`g' = g` — the equilibrium above, reached at exactly one-hour spacing.
+
+A window of tightly clustered timestamps — what a burst of fast blocks from a
+max-target genesis produces — starts from `W ≈ 0` and `g ≈ 0`, so the target
+hardens sharply and each new block must spend more than `W/N` merely to stop the
+gap shrinking. The window is self-reinforcing: a block arriving sooner than
+`(N+1)/2 · spec.targetBlockTime` after the window mean hardens the target again
+rather than easing it.
+
+Recovery is therefore paid in elapsed time, not work. Modeling the walk back from
+a fully compressed window — assuming constant hashrate exactly matched to the
+steady-state target, deterministic solve times equal to their expectation, and no
+representation floor — gives a total of order
+
+```
+Σ_j S_j ≈ T · N(N+1) · H_2N / (2N+1) ≈ 365 · T
+```
+
+(`H_n` is the `n`-th harmonic number, `T = spec.targetBlockTime`), or about **two
+weeks for Nexus**. That closed form is an estimate under those assumptions, not a
+result derived from the step rule above; the order of magnitude is the
+load-bearing claim. A live Nexus chain sat at a single height for 27+ hours under
+exactly this condition.
+
+**A minimum-work filter sets a permanent floor.** `validateNextTarget` recomputes
+`nextTarget` from the block's *own* `B.target`, not from `parent.nextTarget`, so
+a miner-side minimum-work filter that declines to mine easier than some level
+does not merely skip easy blocks: the level it chooses becomes the chain's new
+floor, and every later schedule derives from the harder target actually mined.
+This is the self-penalizing property above seen from the operator's side. Such a
+filter should be set to the work the operator can sustain, not merely to what
+clears an opening burst.
 
 ## 6. State Transitions
 
@@ -1131,5 +1217,5 @@ state); withdrawals return it to the block-wide credit budget.
 
 | Constant | Value | Description |
 |---|---|---|
-| `maxTargetChange` | 2 (default) | Per-block target adjustment clamp factor; chain-committed via `ChainSpec`, a chain may commit its own. Not a protocol-wide constant. |
+| `maxTargetChange` | `nil` (default: no clamp) | Optional per-block target adjustment clamp factor, chain-committed via `ChainSpec`. Unset means the proportional correction applies unclamped; Nexus commits none. Not a protocol-wide constant. |
 | `totalExponent` | 64 | Bit width of the reward/halving system |
