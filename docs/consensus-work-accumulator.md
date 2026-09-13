@@ -1,9 +1,33 @@
 # Subtree work by spine accumulation
 
-Status: **design landed, structure built and proven, not yet wired into fork
-choice.** This note records the derivation so it survives outside the review
-thread, including two rules that were wrong on the first and second statements
-and why.
+Status: **PAUSED — do not wire this.** The structure is built and its arithmetic
+is proven, but there is a principled objection that goes underneath the rule,
+recorded immediately below. This note survives outside the review thread because
+the reasoning is worth more than the code, and because a rule that has now been
+stated wrongly three times is worth a written record.
+
+## Why it is paused: canonicity and work must be orthogonal
+
+Fork choice reads weight in order to decide canonicity, so a weight structure
+keyed on canonicity is circular. The spec states the property directly: *"moving
+only a parent's preferred pointer adds no physical work and therefore cannot
+move the child tip"*. A pure canonicity change must therefore cause **zero**
+churn in the work structure.
+
+**The measurement in this document is the evidence against its own design.** 400
+spine displacements over 400 heights, each freezing one block and stamping
+another — and not one joule of work moved in any of them. That entire re-basing
+workload is an artifact of tying the accumulator to the spine, not a property of
+the chain.
+
+The structure this would replace does not have the problem. An Euler range is
+keyed on the **block tree**, so when a sibling loses to its canonical rival,
+nothing happens at all.
+
+So the spine restriction was a performance hack: it shrinks the correction set
+from "all non-ancestors", which is Θ(n), down to a suffix — and canonicity is
+what it smuggled in to pay for that. The arithmetic below is sound; keying it on
+canonicity is the part being rejected.
 
 ## What it replaces, and why
 
@@ -12,11 +36,23 @@ special cases. The requirement is that the **common-case insertion be constant
 time**. The accumulator meets that; the Euler structure cannot, because a
 balanced sequence tree pays a logarithmic path on every insert by construction.
 
-Measured on a 400-height merged-mining sync, the Euler structure costs about 12
+Measured on a 400-height merged-mining sync, the Euler structure costs about 11
 node touches per admission (18,894 cells over 1,600 admissions). The accumulator
-takes the common case to one add and one stamp. That gain is real but modest in
-absolute terms, and it buys spine/off-spine duality and re-basing on reorg. The
-tradeoff is recorded here rather than assumed away.
+takes the common case to one add and one stamp.
+
+That comparison flatters the accumulator, and the honest version is worse for it
+in three ways:
+
+- **The worst case regresses.** Euler is ~11 touches *uniformly*; the accumulator
+  is 1 in the common case but 399 on the measured deep restrike. Trading a flat
+  cost for a spiky one is a different decision from trading 11 for 1.
+- **The complexity cost has a concrete measure**: this rule has been stated
+  wrongly three times. That is the best available evidence of what it costs to
+  hold in a reader's head, and it is worth more than an estimate.
+- **The depth measurement is of honest mining.** It shows where work *happens to*
+  land, not where an adversary *could* place it. Securing work enters at a
+  carrier's depth, and nothing in the measurement bounds an adversary who
+  chooses that depth deliberately.
 
 ## The rule
 
@@ -52,7 +88,14 @@ deleted by a later tidy-up without anything noticing.
 Freezing uses `A0` and not the incremented value because the block being
 admitted is, by construction, not the frozen block's descendant.
 
-## Two rules that were wrong, and why
+## Three statements of this rule have been wrong, and why
+
+The count matters, so it is stated plainly: the **inversion** (storing work
+outside the subtree), the **height gloss** (writing the ancestor test as a height
+test), and the **example used to justify fixing the gloss** (a shape that does
+not in fact separate the two rules). Each was caught by re-derivation rather than
+by a test, which is the argument for the re-derivation step — and also the
+clearest signal available about how hard this rule is to hold correctly.
 
 ### The repair set is the ancestor line, not its complement
 
@@ -94,8 +137,76 @@ the reverse delivery order the sibling is off-spine on arrival and the height
 form is wrong — passing the entire measurement while being silently wrong one
 delivery order over.
 
-`SpineWorkAccumulatorOrderTests` asserts the two delivery orders agree, which is
-what closes this.
+**This is not yet proven.** `SpineWorkAccumulatorOrderTests` asserts that the two
+delivery orders agree, but it does **not** discriminate between the two rules,
+for two reasons:
+
+- In that shape the rules compute the same set. The fork sits at height `h-1`
+  and the sibling at `h`, so "spine blocks above the fork" and "spine blocks at
+  height >= h" coincide. The rules separate only when the mutated block is
+  already on the spine, or when a fork sits well below `h`, and that shape
+  contains neither.
+- More fundamentally, `apply` takes `correctingNonAncestors` as a **parameter**,
+  so the test supplies the very rule it purports to check. That is a boundary
+  problem, not a coverage gap: no choice of shape fixes it.
+
+So stage one proves the accumulator's **arithmetic**, and its order-independence
+**given correct sets**. The height-versus-ancestor rule is **unproven until
+wiring**, because the rule lives in the caller.
+
+### The general form of that mistake
+
+**A test cannot validate a rule it is also supplying.** Whenever a function takes
+the answer as a parameter, tests of that function pin arithmetic, never policy,
+and the policy proof must live at the layer that computes the parameter. This
+boundary has now been mistaken twice, so it is written down rather than
+remembered.
+
+### Acceptance criterion for the discriminating test
+
+The next stage is not complete until a test exists that would **fail against a
+height test**. It must:
+
+- be a **`ChainState`-level** test, with the correction sets computed by
+  production code rather than supplied by the test;
+- fail against the **height test substituted for the ancestor test**, verified
+  as a marker-checked planted bug rather than inferred from a passing run;
+- run on shapes where the two rules actually separate.
+
+**This list has itself been wrong.** "A sibling forking well below the tip" does
+not separate them: a one-block sibling sits exactly one block above its fork, so
+`f = h-1` and "above the fork" and "height >= h" compute the same set *however
+deep the fork is*. Fork depth is irrelevant. What matters is the depth of the
+admitted block **below** the fork. The minimum sufficient set is three shapes:
+
+1. a **restrike on a block already on the spine** — separates "not
+   ancestors-or-self" from "height >= h", which wrongly includes the block
+   itself, though it must gain the work;
+2. a **one-block sibling delivered canonical-first** — separates "height >= h"
+   from "height > h", since the canonical rival at height `h` is a non-ancestor
+   and must be corrected;
+3. a block **two or more deep inside an off-spine branch** — its deepest spine
+   ancestor is at `f`, so the correction must start at `f+1`, while any height
+   form starts at `h >= f+2` and misses the spine block at `f+1`. This shape
+   separates both.
+
+Stage one contains none of the three.
+
+### Two defects in the stage-one structure
+
+Recorded rather than fixed, because the design is paused and both are
+instructive:
+
+- **`apply` trusts the caller's `base` on a joiner.** It discards any existing
+  `direct[hash]` without checking the supplied `base` matches it, so a caller
+  that takes a fresh reading instead of passing the maintained total is
+  undetectable. The parameter is load-bearing and unvalidated.
+- **The freeze loop can mutate and then fail.** `preIncrement.subtracting(taken)`
+  can return nil mid-loop, after earlier leavers have already been written to
+  `direct` and removed from the spine — a partial mutation in a structure with
+  no undo. This is the same class as the `splice` pre-validation issue in #23,
+  which took two rounds to close there; the up-front validation added here
+  checks membership but not that every subtraction will succeed.
 
 ### Stamping is post-increment
 
@@ -152,6 +263,9 @@ Remaining:
    exclusion rebuild.
 4. A `ChainState`-level order-independence test, which is what §9.9 actually
    requires; the accumulator-level test here is narrower by design.
+5. The discriminating test described above — the one that would fail against a
+   height test. Until it exists, the central rule of this design rests on
+   derivation alone, which is the weakest footing of anything claimed here.
 5. Retire the Euler range structure once fork choice reads the accumulator, and
    collapse `canonicalProjectionSegmentVisitCount` into the block counter, which
    has been provably redundant since the quotient was deleted.

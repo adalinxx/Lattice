@@ -77,9 +77,12 @@ final class SpineWorkAccumulatorTests: XCTestCase {
         }
     }
 
-    /// Tip extension, the case the owner's directive is about: no leaver, no
-    /// correction, one add and one stamp, whatever the chain length.
-    func testTipExtensionIsOneAddAndOneStamp() {
+    /// Tip extension against the oracle. NOTE the name this test used to carry,
+    /// `testTipExtensionIsOneAddAndOneStamp`, claimed a cost property it does
+    /// not assert: nothing here counts touches, and the accumulator exposes no
+    /// touch count to assert against. It pins the arithmetic of the no-leaver,
+    /// no-correction path; the cost claim is unmeasured at this layer.
+    func testTipExtensionMatchesTheOracle() {
         var accumulator = SpineWorkAccumulator.empty
         var model = Model()
         var spine: [String] = []
