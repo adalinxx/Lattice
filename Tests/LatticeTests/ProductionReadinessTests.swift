@@ -4,7 +4,11 @@ import UInt256
 import cashew
 import Foundation
 
-private let fetcher = ThrowingFetcher()
+/// Storing, not throwing: the difficulty schedule anchors at the height-1
+/// ancestor, so a chain deeper than two blocks has to be able to reach back
+/// through itself. A block's parent is carried by CID alone, which makes that
+/// reach a real fetch.
+private let fetcher = StorableFetcher()
 
 private struct RuntimeGenesisResult {
     let block: Block
@@ -250,6 +254,10 @@ final class GenesisToBlockE2ETests: XCTestCase {
                 target: UInt256.max, nonce: 0, fetcher: fetcher
             )
             let mined = BlockBuilder.mine(block: template, target: UInt256.max, maxAttempts: 10)!
+            // Store the MINED block, not just the template: mining changes the
+            // nonce, so the block the next one descends from is this one, and it
+            // is this one an anchor walk will have to resolve.
+            try await VolumeImpl<Block>(node: mined).storeBlock(storer: fetcher)
 
             let header = try! VolumeImpl<Block>(node: mined)
             let result = await genesis.chainState.submitTestBlock(

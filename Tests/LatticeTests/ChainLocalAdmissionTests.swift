@@ -554,29 +554,36 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(result.failure, .providerMalformedEvidence)
     }
 
-    func testMissingTimestampAncestorIsUnavailableEvidence() async throws {
+    /// An ancestor the difficulty schedule depends on being unreachable is
+    /// UNAVAILABLE evidence, never a verdict of invalid: the block may be
+    /// perfectly good and the content merely not here yet, so it has to stay
+    /// retriable rather than be discarded.
+    ///
+    /// The ancestor that matters is the chain's height-1 block — the schedule's
+    /// anchor — not genesis, which the schedule never reads. So this hides block
+    /// 1 and builds deep enough that reaching it is a real fetch: the anchor for
+    /// a height-2 block is its own parent, already in hand, and nothing is
+    /// fetched at all.
+    func testMissingAnchorAncestorIsUnavailableEvidence() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let parent = try await makeChild(
-            of: genesis,
-            fetcher: fetcher,
-            timestamp: 2_000,
-            nonce: 1
+        let blockOne = try await makeChild(
+            of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1
+        )
+        let blockTwo = try await makeChild(
+            of: blockOne, fetcher: fetcher, timestamp: 3_000, nonce: 2
         )
         let candidate = try await makeChild(
-            of: parent,
-            fetcher: fetcher,
-            timestamp: 3_000,
-            nonce: 2
+            of: blockTwo, fetcher: fetcher, timestamp: 4_000, nonce: 3
         )
-        let missingGenesis = MissingCIDAdmissionFetcher(
+        let missingAnchor = MissingCIDAdmissionFetcher(
             backing: fetcher,
-            missingCID: try BlockHeader(node: genesis).rawCID
+            missingCID: try BlockHeader(node: blockOne).rawCID
         )
 
         let result = try await makeLevel(genesis: genesis).admitBlockHeaderChainLocal(
             try BlockHeader(node: candidate),
-            fetcher: missingGenesis,
+            fetcher: missingAnchor,
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
@@ -2941,7 +2948,10 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertFalse(candidate.validateNextTarget(
             spec: chainLocalSpec(),
             parent: childGenesis,
-            ancestorTimestamps: [childGenesis.timestamp]
+            difficultyAnchor: DifficultyAnchor(
+                blockHeight: 1,
+                timestamp: candidate.timestamp, target: candidate.target
+            )
         ))
         let proof = try await ChildBlockProof.generate(
             rootHeader: try BlockHeader(node: carrier),
@@ -2993,10 +3003,18 @@ final class ChainLocalAdmissionTests: XCTestCase {
             nonce: 1,
             fetcher: fetcher
         )
+        // An explicitly hard target, because this test needs a block the root's
+        // proof of work MISSES. Inheriting the scheduled target no longer
+        // produces one: the predecessor is height 1, so it anchors the schedule
+        // at its own `easy` target rather than retargeting away from it, and
+        // nothing can miss a maximum target. Committing harder than the schedule
+        // is permitted — `target <= parent.nextTarget` — and it is the miss, not
+        // its provenance, that this test is about.
         let candidate = try await buildAndStoreBlock(
             previous: missingPredecessor,
             parentChainBlock: parentTemplate,
             timestamp: 1_002,
+            target: UInt256(1),
             nonce: 2,
             fetcher: fetcher
         )

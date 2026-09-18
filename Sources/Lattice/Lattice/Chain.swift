@@ -65,10 +65,42 @@ public enum ChainStateRestoreError: Error, Sendable, Equatable {
 
 // MARK: - Concrete Types
 
+/// The block the difficulty schedule is measured from: height 1 of this block's
+/// OWN ancestry, carried forward so it costs nothing to reach.
+///
+/// Not genesis, because a genesis timestamp measures nothing — no one mined
+/// before block 1 — and a chain that stamps genesis far before its first block
+/// would read that gap as one enormous solve time.
+///
+/// Not a single chain-wide value either. Block 1 can be reorged like any other
+/// block, and a chain-wide anchor would then change under every block already
+/// built on it, retroactively altering targets that were already validated. An
+/// anchor that belongs to the block's own ancestry cannot: two branches forking
+/// at height 1 simply carry two anchors, each branch internally consistent,
+/// which is exactly what such a reorg means.
+public struct DifficultyAnchor: Sendable, Equatable {
+    public let blockHeight: UInt64
+    public let timestamp: Int64
+    public let target: UInt256
+
+    public init(blockHeight: UInt64, timestamp: Int64, target: UInt256) {
+        self.blockHeight = blockHeight
+        self.timestamp = timestamp
+        self.target = target
+    }
+}
+
 public struct BlockMeta: Sendable {
     public let blockHash: String
     public let parentBlockHash: String?
     public let blockHeight: UInt64
+    /// Inherited from the parent, or self at height 1. Absent on genesis, which
+    /// precedes the anchor and has no schedule to be measured against.
+    ///
+    /// Derived, like `cumulativeWork` and `subtreeWeight` beside it: a pure
+    /// function of this block's ancestry, rebuildable by walking to height 1.
+    /// Carried rather than walked only so reaching it is O(1) instead of O(chain).
+    public private(set) var difficultyAnchor: DifficultyAnchor?
     public private(set) var work: WorkSum
     public var childHashes: [String]
     public private(set) var workContributions: [String: VerifiedWorkContribution]
@@ -92,7 +124,8 @@ public struct BlockMeta: Sendable {
         childHashes: [String],
         workContributions: [VerifiedWorkContribution],
         cumulativeWork: WorkSum = .zero,
-        subtreeWeight: WorkSum? = nil
+        subtreeWeight: WorkSum? = nil,
+        difficultyAnchor: DifficultyAnchor? = nil
     ) {
         let contributions = Dictionary(
             workContributions.map { ($0.id, $0) },
@@ -109,6 +142,15 @@ public struct BlockMeta: Sendable {
         self.workContributions = contributions
         self.cumulativeWork = cumulativeWork
         self.subtreeWeight = subtreeWeight ?? work
+        self.difficultyAnchor = difficultyAnchor
+    }
+
+    /// Fill an anchor left absent by out-of-order admission. Write-once: the
+    /// anchor is a function of ancestry, which never changes for a given block,
+    /// so a second value would mean the ancestry was misread.
+    mutating func adoptDifficultyAnchor(_ anchor: DifficultyAnchor) {
+        guard difficultyAnchor == nil else { return }
+        difficultyAnchor = anchor
     }
 
     /// Internal-only: `ChainState` rebuilds this derived cache.
@@ -1070,6 +1112,38 @@ public actor ChainState {
     /// nil if `parentHash` is not held, or if any timestamp in the held window
     /// is missing (e.g. pre-upgrade persisted data) — callers should fall back
     /// to a fetcher walk.
+    /// The difficulty anchor for a block, filling any gap and caching the
+    /// result along the way.
+    ///
+    /// Admission normally inherits the anchor from the parent, which is O(1).
+    /// A block can arrive before its parent though, and it has no anchor to
+    /// inherit at that moment — so rather than leave a hole its descendants
+    /// would inherit, this walks up to the nearest ancestor that does have one
+    /// and writes it back down the path it walked. Height 1 always has an
+    /// anchor from its own admission, so the walk always terminates.
+    ///
+    /// The result is a pure function of the block's ancestry either way; the
+    /// cache only decides how much of that ancestry has to be re-read.
+    public func difficultyAnchor(forBlockHash hash: String) -> DifficultyAnchor? {
+        var unresolved: [String] = []
+        var current: String? = hash
+        var resolved: DifficultyAnchor?
+        while let step = current, let meta = hashToBlock[step] {
+            if let anchor = meta.difficultyAnchor {
+                resolved = anchor
+                break
+            }
+            unresolved.append(step)
+            guard meta.blockHeight > 1 else { break }
+            current = meta.parentBlockHash
+        }
+        guard let anchor = resolved else { return nil }
+        for step in unresolved {
+            hashToBlock[step]?.adoptDifficultyAnchor(anchor)
+        }
+        return anchor
+    }
+
     public func getMainChainTimestamps(forParentHash parentHash: String, count: UInt64) -> [Int64]? {
         guard count > 0 else { return [] }
         guard hashToBlock[parentHash] != nil else { return nil }
@@ -1184,6 +1258,24 @@ public actor ChainState {
         addToBlockIndex(hash: blockHash, blockHeight: input.blockHeight)
 
         let childHashes = findChildren(hash: blockHash, blockHeight: input.blockHeight)
+        // Height 1 is its own anchor; everything above inherits its parent's.
+        // Following the PARENT rather than the canonical chain is what makes
+        // this reorg-safe: a block admitted onto a competing branch takes that
+        // branch's anchor, so two branches forking at height 1 never borrow each
+        // other's schedule. A block whose parent is not yet known carries none
+        // and acquires one when it connects.
+        let anchor: DifficultyAnchor?
+        if input.blockHeight == 1 {
+            anchor = DifficultyAnchor(
+                blockHeight: 1,
+                timestamp: input.timestamp,
+                target: input.snapshot.target
+            )
+        } else if let parentHash = input.parentBlockHash {
+            anchor = hashToBlock[parentHash]?.difficultyAnchor
+        } else {
+            anchor = nil
+        }
         let meta = BlockMeta(
             blockHash: blockHash,
             parentBlockHash: input.parentBlockHash,
@@ -1191,7 +1283,8 @@ public actor ChainState {
             childHashes: childHashes,
             workContributions: [],
             cumulativeWork: .zero,
-            subtreeWeight: .zero
+            subtreeWeight: .zero,
+            difficultyAnchor: anchor
         )
 
         hashToBlock[blockHash] = meta

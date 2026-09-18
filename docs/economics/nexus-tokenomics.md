@@ -101,21 +101,21 @@ by integer halving.
 
 ## Cadence And Fees
 
-Nexus retargets every block using an **unclamped** LWMA over the candidate's
-own ancestor branch: `maxTargetChange` is unset, so one step may correct by an
-arbitrary factor (a ×1150 step has been observed live). A block's target is its
-parent's `nextTarget` or voluntarily harder, never easier — there is no
-minimum-target floor and no recovery exception.
+Nexus retargets every block by an **absolute schedule (ASERT)** measured from
+the height-1 anchor of the block's own branch, not by a window over recent
+intervals. A block's target is its parent's `nextTarget` or voluntarily harder,
+never easier — there is no minimum-target floor and no recovery exception.
+`maxTargetChange` is no longer read: an absolute schedule has no proportional
+step to clamp.
 
-Because the window is linearly weighted, the retarget reads the candidate's gap
-from the *mean* of the previous 120 timestamps, and holds difficulty steady when
-that gap is `(120+1)/2 = 60.5` hours. Evenly spaced one-hour blocks produce
-exactly that gap, so steady difficulty still means one-hour spacing; 60.5 hours
-is the distance to the window mean, not a block time. Redistributing timestamps
-within the window can make the next target at most about 2× easier than honest
-spacing, but up to 60.5× harder, with no clamp on the harder direction. A
-clustered window is self-reinforcing and is estimated to need on the order of two
-weeks of elapsed time to walk back even at matched hashrate. See
+The schedule holds difficulty steady at exactly one-hour spacing, and moves one
+doubling per half-life of accumulated drift, where the half-life is
+`retargetWindow × targetBlockTime` = 120 hours. Because the target depends only
+on the anchor and the present block, a stretch of unusual block times stops
+mattering the moment it stops happening — there is no window to drain and no
+clustered-window attractor to walk back out of. Moving a timestamp backwards
+hardens rather than eases, and moving it forwards is capped by the validating
+node's clock and eases only the single successor without compounding. See
 [specification §5.5](../spec.md#55-target-adjustment-retargeting).
 
 The signed `fee` field does not automatically move value. Lattice enforces the
