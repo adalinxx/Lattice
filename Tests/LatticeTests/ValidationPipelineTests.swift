@@ -11,7 +11,11 @@ struct NoopFetcher: Fetcher {
     }
 }
 
-let testFetcher = NoopFetcher()
+/// Storing rather than no-op: these suites build multi-block chains, and the
+/// difficulty schedule is anchored at the height-1 ancestor, so a block past
+/// height 2 must be able to reach back through its own ancestry. A block's
+/// parent is carried by CID alone, so that reach is a real fetch.
+let testFetcher = StorableFetcher()
 
 func testSpec() -> ChainSpec {
     ChainSpec(

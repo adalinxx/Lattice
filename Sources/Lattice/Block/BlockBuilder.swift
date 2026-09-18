@@ -7,6 +7,10 @@ public enum BlockBuilderError: Error {
     case missingSpec
     case heightOverflow
     case invalidTransactionContent
+    /// The height-1 ancestor could not be reached, so the difficulty schedule
+    /// has no origin to measure from. Refusing beats inventing one: a guessed
+    /// anchor produces a target no validator would agree with.
+    case missingDifficultyAnchor
 }
 
 public struct BlockBuildResult: Sendable {
@@ -179,6 +183,7 @@ public struct BlockBuilder {
         target: UInt256? = nil,
         nextTarget: UInt256? = nil,
         nonce: UInt64 = 0,
+        difficultyAnchor: DifficultyAnchor? = nil,
         fetcher: Fetcher
     ) async throws -> Block {
         try await buildBlockWithTransition(
@@ -190,6 +195,7 @@ public struct BlockBuilder {
             target: target,
             nextTarget: nextTarget,
             nonce: nonce,
+            difficultyAnchor: difficultyAnchor,
             fetcher: fetcher
         ).block
     }
@@ -203,6 +209,7 @@ public struct BlockBuilder {
         target: UInt256? = nil,
         nextTarget: UInt256? = nil,
         nonce: UInt64 = 0,
+        difficultyAnchor: DifficultyAnchor? = nil,
         fetcher: Fetcher
     ) async throws -> BlockBuildResult {
         let (height, heightOverflow) = previous.height.addingReportingOverflow(1)
@@ -228,14 +235,29 @@ public struct BlockBuilder {
                 guard let node = resolved.node else { throw BlockBuilderError.missingSpec }
                 specNode = node
             }
-            let ancestorTimestamps = await collectAncestorTimestamps(
-                from: previous,
-                count: specNode.retargetWindow,
-                fetcher: fetcher
-            )
-            blockNextTarget = specNode.calculateWindowedTarget(
-                previousTarget: blockTarget,
-                ancestorTimestamps: [timestamp] + ancestorTimestamps
+            // The schedule is measured from the height-1 ancestor. Building
+            // block 1 itself, that ancestor is this block: its own target
+            // becomes the anchor and the schedule starts here.
+            let anchor: DifficultyAnchor?
+            if height == 1 {
+                anchor = DifficultyAnchor(
+                    blockHash: "", blockHeight: 1,
+                    timestamp: timestamp, target: blockTarget
+                )
+            } else if let supplied = difficultyAnchor {
+                anchor = supplied
+            } else {
+                anchor = try await Self.resolveDifficultyAnchor(
+                    from: previous, fetcher: fetcher
+                )
+            }
+            guard let anchor else { throw BlockBuilderError.missingDifficultyAnchor }
+            blockNextTarget = specNode.calculateAsertTarget(
+                anchorTarget: anchor.target,
+                anchorTimestamp: anchor.timestamp,
+                anchorHeight: anchor.blockHeight,
+                blockTimestamp: timestamp,
+                blockHeight: height
             )
         }
         let previousCID = try BlockHeader(node: previous).rawCID
@@ -287,6 +309,55 @@ public struct BlockBuilder {
             bodies.append(body)
         }
         return bodies
+    }
+
+    /// Walk to the height-1 ancestor, which is the block the difficulty
+    /// schedule is measured from.
+    ///
+    /// ONE implementation, called by both the builder and the validator on
+    /// purpose. The anchor decides every target, so a builder and a validator
+    /// that resolved it differently would disagree about whether a block is
+    /// valid, which is a chain split rather than a bug in one of them.
+    ///
+    /// This is the fallback: callers holding chain state take the inherited
+    /// anchor instead and never walk. Both must produce the same answer, which
+    /// they do because both are the same pure function of the block's ancestry.
+    /// Throws rather than returning nil when an ancestor cannot be FETCHED.
+    /// That distinction is the whole point: a block whose ancestry we merely
+    /// cannot reach yet is unavailable evidence and must stay retriable, while
+    /// nil means the chain structurally has no anchor. Collapsing the two would
+    /// permanently reject a perfectly valid block for a transient fetch failure.
+    static func resolveDifficultyAnchor(
+        from block: Block,
+        fetcher: Fetcher
+    ) async throws -> DifficultyAnchor? {
+        var current = block
+        // Genesis precedes the anchor and has no schedule to measure against.
+        guard current.height > 0 else { return nil }
+        while current.height > 1 {
+            guard let parentRef = current.parent else { return nil }
+            // Prefer a node already carried in memory over fetching it, as the
+            // spec lookup above this does. A caller assembling blocks without
+            // backing storage still has the whole ancestry attached, and a walk
+            // that insisted on the fetcher would fail on chains that are
+            // perfectly well formed.
+            if let attached = parentRef.node {
+                current = attached
+            } else {
+                guard let resolved = try await parentRef.resolve(fetcher: fetcher).node else {
+                    return nil
+                }
+                current = resolved
+            }
+        }
+        guard current.height == 1,
+              let hash = try? BlockHeader(node: current).rawCID else { return nil }
+        return DifficultyAnchor(
+            blockHash: hash,
+            blockHeight: 1,
+            timestamp: current.timestamp,
+            target: current.target
+        )
     }
 
     private static func collectAncestorTimestamps(from block: Block, count: UInt64, fetcher: Fetcher) async -> [Int64] {
