@@ -52,8 +52,16 @@ final class ChildChainDifficultyIndependenceTests: XCTestCase {
         fetcher: StorableFetcher
     ) async throws -> Block {
         let block = try await buildAndStoreBlock(previous: previous, timestamp: timestamp, fetcher: fetcher)
+        // Resolve the anchor exactly as production does, so this asserts the
+        // real builder/validator agreement rather than a value the test chose.
+        let anchor = try await BlockBuilder.resolveDifficultyAnchor(
+            from: previous, fetcher: fetcher
+        ) ?? DifficultyAnchor(
+            blockHeight: 1,
+            timestamp: block.timestamp, target: block.target
+        )
         XCTAssertTrue(
-            block.validateNextTarget(spec: spec, parent: previous, ancestorTimestamps: newestFirstAncestors),
+            block.validateNextTarget(spec: spec, parent: previous, difficultyAnchor: anchor),
             "builder-produced retarget at height \(block.height) must satisfy the consensus gate"
         )
         return block
@@ -77,13 +85,26 @@ final class ChildChainDifficultyIndependenceTests: XCTestCase {
         let parentGenesis = try await genesis(spec: parentSpec, timestamp: 1_000, target: d0, fetcher: fetcher)
         let childGenesis = try await genesis(spec: childSpec, timestamp: 1_000, target: d0, fetcher: fetcher)
 
-        let parentBlock = try await extend(parentGenesis, spec: parentSpec, timestamp: 1_000 + interval,
-                                            newestFirstAncestors: [parentGenesis.timestamp], fetcher: fetcher)
-        let childBlock = try await extend(childGenesis, spec: childSpec, timestamp: 1_000 + interval,
-                                          newestFirstAncestors: [childGenesis.timestamp], fetcher: fetcher)
+        // Height 1 anchors the schedule rather than being measured by it: one
+        // block is not a rate, so both chains necessarily carry their own target
+        // forward here. The comparison has to be made at height 2, the first
+        // block for which an interval since the anchor exists at all.
+        let parentOne = try await extend(parentGenesis, spec: parentSpec, timestamp: 1_000 + interval,
+                                         newestFirstAncestors: [parentGenesis.timestamp], fetcher: fetcher)
+        let childOne = try await extend(childGenesis, spec: childSpec, timestamp: 1_000 + interval,
+                                        newestFirstAncestors: [childGenesis.timestamp], fetcher: fetcher)
+        XCTAssertEqual(parentOne.nextTarget, d0, "the anchor block carries its own target forward")
+        XCTAssertEqual(childOne.nextTarget, d0, "and so does the child's, on its own chain")
 
-        // Same genesis target, same solve interval, different targetBlockTime
-        // ⇒ different retarget. Parent steady; child strictly easier (larger target).
+        let parentBlock = try await extend(parentOne, spec: parentSpec, timestamp: 1_000 + 2 * interval,
+                                           newestFirstAncestors: [parentOne.timestamp, parentGenesis.timestamp], fetcher: fetcher)
+        let childBlock = try await extend(childOne, spec: childSpec, timestamp: 1_000 + 2 * interval,
+                                          newestFirstAncestors: [childOne.timestamp, childGenesis.timestamp], fetcher: fetcher)
+
+        // Same anchor target, same solve interval, different targetBlockTime
+        // ⇒ different retarget. The parent is exactly on its own schedule and
+        // holds steady; the child, for which that same interval is ten times too
+        // slow, eases to a strictly larger target.
         XCTAssertEqual(parentBlock.nextTarget, d0, "parent at exact target cadence holds target steady")
         XCTAssertGreaterThan(childBlock.nextTarget, parentBlock.nextTarget,
                              "the faster child must retarget to a strictly easier target for the same solve cadence")
@@ -103,25 +124,38 @@ final class ChildChainDifficultyIndependenceTests: XCTestCase {
 
         let parentGenesis = try await genesis(spec: parentSpec, timestamp: 1_000, target: d0, fetcher: fetcher)
         let childGenesis = try await genesis(spec: childSpec, timestamp: 1_000, target: d0, fetcher: fetcher)
-        let parentBlock = try await extend(parentGenesis, spec: parentSpec, timestamp: 1_000 + interval,
-                                           newestFirstAncestors: [parentGenesis.timestamp], fetcher: fetcher)
+
+        // Both chains need their anchor block before either has a schedule to
+        // differ about — at height 1 every chain carries its own target forward.
+        let parentOne = try await extend(parentGenesis, spec: parentSpec, timestamp: 1_000 + interval,
+                                         newestFirstAncestors: [parentGenesis.timestamp], fetcher: fetcher)
+        let childOne = try await extend(childGenesis, spec: childSpec, timestamp: 1_000 + interval,
+                                        newestFirstAncestors: [childGenesis.timestamp], fetcher: fetcher)
+        let parentBlock = try await extend(parentOne, spec: parentSpec, timestamp: 1_000 + 2 * interval,
+                                           newestFirstAncestors: [parentOne.timestamp, parentGenesis.timestamp], fetcher: fetcher)
 
         // The child's OWN honest retarget (builder uses the child spec), captured
         // so we can confirm the rejection below is meaningful (values differ).
-        let childHonest = try await buildAndStoreBlock(previous: childGenesis, timestamp: 1_000 + interval, fetcher: fetcher)
+        let childHonest = try await buildAndStoreBlock(previous: childOne, timestamp: 1_000 + 2 * interval, fetcher: fetcher)
         XCTAssertNotEqual(childHonest.nextTarget, parentBlock.nextTarget,
                           "precondition: the two chains' retargets genuinely differ")
 
         // Forge a child block that copies the parent chain's next target.
         let imported = try await buildAndStoreBlock(
-            previous: childGenesis,
-            timestamp: 1_000 + interval,
-            target: childGenesis.nextTarget,
+            previous: childOne,
+            timestamp: 1_000 + 2 * interval,
+            target: childOne.nextTarget,
             nextTarget: parentBlock.nextTarget,
             fetcher: fetcher
         )
+        // The child anchors at ITS OWN height-1 block — `childOne` — not at the
+        // parent chain's, which is the whole point of the independence claim.
+        let childAnchor = DifficultyAnchor(
+            blockHeight: 1,
+            timestamp: childOne.timestamp, target: childOne.target
+        )
         XCTAssertFalse(
-            imported.validateNextTarget(spec: childSpec, parent: childGenesis, ancestorTimestamps: [childGenesis.timestamp]),
+            imported.validateNextTarget(spec: childSpec, parent: childOne, difficultyAnchor: childAnchor),
             "child must reject a next target retargeted under the parent chain's targetBlockTime"
         )
     }

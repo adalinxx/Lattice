@@ -3,6 +3,16 @@ import XCTest
 import UInt256
 import cashew
 
+/// The anchor a height-1 block provides for itself: the schedule starts at the
+/// first real block, so a block built directly on genesis IS its own origin.
+func selfDifficultyAnchor(_ block: Block) -> DifficultyAnchor {
+    DifficultyAnchor(
+        blockHeight: 1,
+        timestamp: block.timestamp, target: block.target
+    )
+}
+
+
 @MainActor
 final class DifficultyRetargetTests: XCTestCase {
     private func spec(window: UInt64 = 120, target: UInt64 = 3_600_000, maxTargetChange: UInt8? = nil) -> ChainSpec {
@@ -306,7 +316,7 @@ final class DifficultyRetargetTests: XCTestCase {
             nextTarget: expected,
             fetcher: fetcher
         )
-        XCTAssertTrue(valid.validateNextTarget(spec: s, parent: parent, ancestorTimestamps: [parent.timestamp]))
+        XCTAssertTrue(valid.validateNextTarget(spec: s, parent: parent, difficultyAnchor: selfDifficultyAnchor(valid)))
 
         let tooEasy = try await makeNext(
             previous: parent,
@@ -315,7 +325,7 @@ final class DifficultyRetargetTests: XCTestCase {
             nextTarget: expected * UInt256(2),
             fetcher: fetcher
         )
-        XCTAssertFalse(tooEasy.validateNextTarget(spec: s, parent: parent, ancestorTimestamps: [parent.timestamp]))
+        XCTAssertFalse(tooEasy.validateNextTarget(spec: s, parent: parent, difficultyAnchor: selfDifficultyAnchor(tooEasy)))
 
         let tooHard = try await makeNext(
             previous: parent,
@@ -324,7 +334,7 @@ final class DifficultyRetargetTests: XCTestCase {
             nextTarget: expected / UInt256(2),
             fetcher: fetcher
         )
-        XCTAssertFalse(tooHard.validateNextTarget(spec: s, parent: parent, ancestorTimestamps: [parent.timestamp]))
+        XCTAssertFalse(tooHard.validateNextTarget(spec: s, parent: parent, difficultyAnchor: selfDifficultyAnchor(tooHard)))
     }
 
     func testEasierThanScheduledTargetRejected() async throws {
@@ -348,7 +358,7 @@ final class DifficultyRetargetTests: XCTestCase {
             fetcher: fetcher
         )
 
-        XCTAssertFalse(block.validateNextTarget(spec: s, parent: parent, ancestorTimestamps: [parent.timestamp]))
+        XCTAssertFalse(block.validateNextTarget(spec: s, parent: parent, difficultyAnchor: selfDifficultyAnchor(block)))
     }
 
     func testHarderThanScheduledTargetAccepted() async throws {
@@ -373,7 +383,7 @@ final class DifficultyRetargetTests: XCTestCase {
             fetcher: fetcher
         )
 
-        XCTAssertTrue(block.validateNextTarget(spec: s, parent: parent, ancestorTimestamps: [parent.timestamp]))
+        XCTAssertTrue(block.validateNextTarget(spec: s, parent: parent, difficultyAnchor: selfDifficultyAnchor(block)))
     }
 
     func testMissingAncestorIsUnavailableInsteadOfTwoBlockFallback() async throws {

@@ -19,7 +19,7 @@ final class ConsensusSimulatorTests: XCTestCase {
         XCTAssertEqual(Set(traces.map(\.scenario)), [
             "equal-work-tie-stable-base",
             "seeded-withhold-release",
-            "proportional-retarget-one-hour",
+            "asert-schedule-one-hour",
         ])
         let tie = try XCTUnwrap(traces.first { $0.scenario == "equal-work-tie-stable-base" })
         XCTAssertEqual(tie.events.map(\.reorged), [true])
@@ -40,7 +40,7 @@ final class ConsensusSimulatorTests: XCTestCase {
         XCTAssertEqual(withheld.events.map(\.tip), ["M2", "F2", "F3"])
         XCTAssertEqual(withheld.events.map(\.reorged), [false, true, true])
 
-        let retarget = try XCTUnwrap(byScenario["proportional-retarget-one-hour"])
+        let retarget = try XCTUnwrap(byScenario["asert-schedule-one-hour"])
         XCTAssertTrue(retarget.events.first?.label.contains("target=3600000ms") ?? false)
         XCTAssertTrue(retarget.events.first?.label.contains("onTarget=00000000000000000000000000000000000000000000000000000000000003e8") ?? false)
         XCTAssertTrue(retarget.events.first?.label.contains("slow=00000000000000000000000000000000000000000000000000000000000007d0") ?? false)
