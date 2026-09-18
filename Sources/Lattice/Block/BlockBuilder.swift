@@ -241,7 +241,7 @@ public struct BlockBuilder {
             let anchor: DifficultyAnchor?
             if height == 1 {
                 anchor = DifficultyAnchor(
-                    blockHash: "", blockHeight: 1,
+                    blockHeight: 1,
                     timestamp: timestamp, target: blockTarget
                 )
             } else if let supplied = difficultyAnchor {
@@ -350,10 +350,8 @@ public struct BlockBuilder {
                 current = resolved
             }
         }
-        guard current.height == 1,
-              let hash = try? BlockHeader(node: current).rawCID else { return nil }
+        guard current.height == 1 else { return nil }
         return DifficultyAnchor(
-            blockHash: hash,
             blockHeight: 1,
             timestamp: current.timestamp,
             target: current.target

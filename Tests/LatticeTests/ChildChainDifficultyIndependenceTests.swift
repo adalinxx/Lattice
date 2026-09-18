@@ -57,7 +57,7 @@ final class ChildChainDifficultyIndependenceTests: XCTestCase {
         let anchor = try await BlockBuilder.resolveDifficultyAnchor(
             from: previous, fetcher: fetcher
         ) ?? DifficultyAnchor(
-            blockHash: "", blockHeight: 1,
+            blockHeight: 1,
             timestamp: block.timestamp, target: block.target
         )
         XCTAssertTrue(
@@ -151,7 +151,7 @@ final class ChildChainDifficultyIndependenceTests: XCTestCase {
         // The child anchors at ITS OWN height-1 block — `childOne` — not at the
         // parent chain's, which is the whole point of the independence claim.
         let childAnchor = DifficultyAnchor(
-            blockHash: "", blockHeight: 1,
+            blockHeight: 1,
             timestamp: childOne.timestamp, target: childOne.target
         )
         XCTAssertFalse(

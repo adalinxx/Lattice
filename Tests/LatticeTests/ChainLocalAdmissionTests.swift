@@ -2949,7 +2949,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             spec: chainLocalSpec(),
             parent: childGenesis,
             difficultyAnchor: DifficultyAnchor(
-                blockHash: "", blockHeight: 1,
+                blockHeight: 1,
                 timestamp: candidate.timestamp, target: candidate.target
             )
         ))

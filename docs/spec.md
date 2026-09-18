@@ -465,121 +465,95 @@ is NOT exempt from meeting it: the securing hash must satisfy `hash <= target`
 like any block — the root genesis's own grind hash, or a child genesis's securing
 root-grind hash (§5.1 rule 5) — so a genesis whose committed target is not met,
 including `target == 0`, is invalid. Its `nextTarget` MUST equal that target. Each non-genesis block's
-`nextTarget` is a **linearly-weighted retarget (LWMA)** recomputed every
-block from the candidate's own ancestor-branch solve times over the most recent
-`spec.retargetWindow` intervals (including the current block's own solve time), targeting
-`spec.targetBlockTime` per block. More recent intervals are weighted more
-heavily: for `N` intervals the `i`-th most-recent (`i = 0` is newest) gets weight
-`w_i = N - i`.
+`nextTarget` is **absolutely scheduled from an anchor (ASERT)**: a pure function
+of one anchor block and the block being targeted, with no window and no
+intervening history.
 
 ```
-solveTime_i    = max(0, timestamp(b_i) - timestamp(b_{i+1}))   // clamped ≥ 0
-weightedActual = Σ_i (w_i · solveTime_i)
-weightedTarget = spec.targetBlockTime · Σ_i w_i
-proposed       = B.target · weightedActual / weightedTarget
-nextTarget     = clampTargetChange(proposed)   // identity unless the chain
-                                               // commits spec.maxTargetChange
+anchor    = the height-1 ancestor of B on B's own branch
+heights   = B.height - anchor.height
+scheduled = spec.targetBlockTime · heights          // where the schedule says we are
+elapsed   = max(0, B.timestamp - anchor.timestamp)  // where we actually are
+drift     = elapsed - scheduled
+halfLife  = spec.retargetWindow · spec.targetBlockTime
+
+nextTarget = anchor.target · 2^(drift / halfLife)
 ```
 
-`spec.maxTargetChange` is **`nil` by default: no clamp.** A chain may commit a
-factor, and a chain that does bounds each step to `B.target / f … B.target · f`
-(saturating). Nexus commits none, so Nexus retargets by the full unclamped
-proportional correction — a single ×1150 step has been observed live and is the
-intended behaviour. The only arithmetic bound is the integer floor of the
-representation: a correction that rounds to zero proposes target 1. There is no
-absolute target floor.
+Behind schedule (`drift > 0`) eases; ahead hardens; exactly on schedule holds the
+anchor's target at any depth. One half-life of drift is exactly one doubling.
+The exponential is evaluated in 16.16 fixed point with a cubic approximation over
+the fractional part — the same shape Bitcoin Cash's `aserti3-2d` uses — so every
+node computes the identical target from identical inputs. No floating point
+appears on the path. The result saturates at both ends: it never exceeds the
+maximum target and never reaches zero (a zero target would reject every hash).
 
-A faster-than-target window shrinks `weightedActual`, lowering the target
-(harder); a slower window raises it (easier — a larger `target` is easier to
-satisfy). Validity requires `B.nextTarget == nextTarget` exactly — there is no
-acceptance band. Because the retarget reads only the candidate's committed
-ancestry, and `B.target` is bound at or below the parent's schedule, validity is
-independent of the current fork-choice projection and a miner can only make its
-own block harder (more work), never easier.
+**There is no window, and that is the point.** A windowed average carries the
+last `retargetWindow` intervals as state, so a stretch of unusual block times
+keeps steering difficulty long after it has passed, and a window perturbed at one
+end oscillates as it drains. This reads only the anchor and the present block, so
+it has nothing to drain: a disturbance stops mattering the moment it stops
+happening. It is also why the genesis timestamp cannot poison the schedule — a
+window reaching back to genesis reads the gap before block 1 as one colossal
+solve time, and on a chain stamping genesis at epoch 0 that gap is decades.
+Anchored at block 1, genesis is never read.
 
-**The control variable is the window mean, not the newest interval.**
-Substituting `w_i = N - i` into `weightedActual` and applying Abel summation
-collapses the weighted sum to a single gap `g`:
+`spec.retargetWindow` is reused as the half-life rather than adding a committed
+half-life field: a `ChainSpec` is content addressed and a chain's genesis commits
+its CID, so adding a field would cost every existing chain its identity. Note
+that this **reinterprets** the field — an N-interval window and an N-block-time
+half-life are not the same quantity, and every already-deployed chain's committed
+`retargetWindow` acquires the new meaning.
 
-```
-weightedActual = N · g,   where g = t_0 - mean(t_1 … t_N)
-```
+`spec.maxTargetChange` is **no longer read.** It clamped the windowed retarget's
+proportional step; an absolute schedule has no step to clamp. The field remains
+in `ChainSpec` because removing it would change every chain's spec CID, but a
+chain that commits one gets no clamp from it.
 
-`t_0` is the candidate's timestamp and `t_1 … t_N` are the previous `N`
-timestamps, so `g` is the candidate's distance from the window mean. Since
-`Σ_i w_i = N(N+1)/2`, difficulty is held steady when
-
-```
-g = (N+1)/2 · spec.targetBlockTime
-```
-
-For Nexus (`N = 120`, `spec.targetBlockTime = 1 hour`) that equilibrium gap is
-**60.5 hours, not one hour**. One hour is the spacing between consecutive blocks
-at equilibrium; the quantity the retarget reads is the candidate's distance from
-the window mean.
+**The anchor is per-branch and inherited, never chain-wide.** A block admitted at
+height 1 anchors itself; every other block inherits its parent's anchor. Two
+branches forking at height 1 therefore carry two anchors and two schedules, each
+internally consistent. A single chain-wide anchor would instead change under
+every block already built on it, retroactively altering targets that were already
+validated. Chain state carries the anchor in O(1); a node without the parent in
+memory resolves it by walking the ancestry to height 1.
 
 **Bound on timestamp manipulation.** Admission enforces only
 `parent.timestamp < B.timestamp` (agreed state) and `B.timestamp <= now`
 (node-local and retriable, §5.2 rule 5). There is no MedianTimePast rule, no
-lower bound against wall clock, and no future-drift constant. For a miner
-producing `N` blocks over real elapsed time `E`, honest even spacing yields a gap
-of `E · (N+1) / 2N`, and the two extremes of redistributing `E` inside the window
-are asymmetric:
+lower bound against wall clock, and no future-drift constant. Under an absolute
+schedule a timestamp buys much less than it did under a window:
 
-| `E` pushed onto | Gap produced | Effect on the next target |
-|---|---|---|
-| the **newest** interval (weight `N`) | `E` | at most `2N/(N+1) ≈ 2×` easier |
-| the **oldest** interval (weight `1`) | `E / N` | `(N+1)/2 = 60.5×` harder |
+- Moving a timestamp **backwards** reduces `elapsed`, which makes `drift` more
+  negative and the target **harder**. Clock manipulation in that direction costs
+  difficulty rather than buying any, so it needs no separate defence.
+- Moving it **forwards** is capped by `B.timestamp <= now`, and eases only the
+  one successor by `2^(Δ / halfLife)`. It does not compound, because the schedule
+  is absolute: the next block's target is measured from the anchor, not from this
+  block. A miner cannot walk the target up by repeating the trick.
+- Mining **harder** than `parent.nextTarget` no longer bends the schedule at all.
+  Under the windowed retarget `nextTarget` was recomputed from the block's own
+  `B.target`, so the level a miner chose became the chain's new floor. Under ASERT
+  the schedule derives from the anchor, so a harder block is simply more work on
+  the same schedule.
 
-The easing direction is bounded at roughly **2×** however the window is arranged,
-because `B.timestamp <= now` anchors `t_0` to real time and `E` cannot exceed
-elapsed time: the retarget cannot be ground to mint cheap work. The hardening
-direction carries no consensus bound — with no committed `maxTargetChange`, one
-step may make the chain ~60.5× harder, and nothing caps it.
+**The anchor's target is the chain's starting difficulty, and it is whatever
+block 1 committed.** Because `nextTarget` moves at most one doubling per
+half-life, an anchor far from what the chain can sustain is approached slowly: at
+`retargetWindow = 120` the schedule hardens by one doubling per 120 blocks mined
+ahead of schedule. A chain whose block 1 commits the maximum target therefore
+spends on the order of `120 · log2(max / sustainable)` blocks at negligible
+difficulty before the schedule catches up — for Nexus, roughly 4,900 blocks to
+reach `2^215`. Genesis commits the maximum by convention, so block 1's committed
+target is the only place a chain states the difficulty it intends to start at,
+and a launch that leaves it at the maximum pays that bootstrap.
 
-**Compressed-window attractor.** The gap `g` evolves by an exact step rule.
-Mining a block with solve time `S` admits `t_0` into the window and drops `t_N`,
-which raises the window mean by `W/N`, where `W = t_0 - t_N` is the previous
-window's span:
-
-```
-g' = g + S - W/N
-```
-
-Even spacing at `S = spec.targetBlockTime` is the fixed point: it gives
-`W = N · spec.targetBlockTime` and `g = (N+1)/2 · spec.targetBlockTime`, so
-`g' = g` — the equilibrium above, reached at exactly one-hour spacing.
-
-A window of tightly clustered timestamps — what a burst of fast blocks from a
-max-target genesis produces — starts from `W ≈ 0` and `g ≈ 0`, so the target
-hardens sharply and each new block must spend more than `W/N` merely to stop the
-gap shrinking. The window is self-reinforcing: a block arriving sooner than
-`(N+1)/2 · spec.targetBlockTime` after the window mean hardens the target again
-rather than easing it.
-
-Recovery is therefore paid in elapsed time, not work. Modeling the walk back from
-a fully compressed window — assuming constant hashrate exactly matched to the
-steady-state target, deterministic solve times equal to their expectation, and no
-representation floor — gives a total of order
-
-```
-Σ_j S_j ≈ T · N(N+1) · H_2N / (2N+1) ≈ 365 · T
-```
-
-(`H_n` is the `n`-th harmonic number, `T = spec.targetBlockTime`), or about **two
-weeks for Nexus**. That closed form is an estimate under those assumptions, not a
-result derived from the step rule above; the order of magnitude is the
-load-bearing claim. A live Nexus chain sat at a single height for 27+ hours under
-exactly this condition.
-
-**A minimum-work filter sets a permanent floor.** `validateNextTarget` recomputes
-`nextTarget` from the block's *own* `B.target`, not from `parent.nextTarget`, so
-a miner-side minimum-work filter that declines to mine easier than some level
-does not merely skip easy blocks: the level it chooses becomes the chain's new
-floor, and every later schedule derives from the harder target actually mined.
-This is the self-penalizing property above seen from the operator's side. Such a
-filter should be set to the work the operator can sustain, not merely to what
-clears an opening burst.
+That cost is bounded by fork choice rather than by a consensus rule. Work is
+`(MAX - target) / (target + 1) + 1`, which is **1** at the maximum target, so a
+branch anchored at the maximum earns one unit of work per block however fast it
+is extended, and any branch whose block 1 committed real work outweighs it
+immediately — at `2^215` by a factor of `2^41` per block. The incentive is
+therefore to anchor as hard as the miner can sustain.
 
 ## 6. State Transitions
 

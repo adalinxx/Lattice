@@ -71,14 +71,13 @@ Let `D` be the expected hashes represented by the current target, approximately
 H ~= D / T
 ```
 
-The LWMA tracks sustained changes in `H`; it does not make a short attack free
-to choose an easier target. The easing direction is bounded independently of the
-absent clamp: because a block's timestamp may not exceed the validating node's
-clock, redistributing timestamps inside the window makes the next target at most
-about 2× easier than honest spacing (see
-[specification §5.5](../spec.md#55-target-adjustment-retargeting)), so the
-retarget cannot be ground down to mint cheap work. The hardening direction is not
-bounded.
+The absolute schedule tracks sustained changes in `H`; it does not make a short
+attack free to choose an easier target. Both directions are bounded without a
+clamp: a block's timestamp may not exceed the validating node's clock, so easing
+is limited to `2^(Δ / halfLife)` on the single successor and does not compound
+(see [specification §5.5](../spec.md#55-target-adjustment-retargeting)), and
+moving a timestamp backwards hardens the target rather than easing it, so the
+retarget cannot be ground down to mint cheap work.
 
 ## Majority-Reorg Estimate
 
