@@ -1,4 +1,5 @@
 import XCTest
+import Foundation
 import UInt256
 import cashew
 @testable import Lattice
@@ -76,27 +77,43 @@ final class AsertDifficultyTests: XCTestCase {
     /// block, so a stretch of unusual block times stops mattering the moment it
     /// stops happening. Two chains that arrive at the same height at the same
     /// time get the same target however differently they got there.
-    func testTargetDependsOnlyOnTheAnchorAndThisBlock() {
-        let s = spec()
-        let anchorTarget = UInt256(1) << 215
-        let anchorTime: Int64 = 1_000_000
-        let arrival = anchorTime + 500 * 3_600_000
+    func testTargetDependsOnlyOnTheAnchorAndThisBlock() async throws {
+        let chainSpec = spec(targetBlockTime: 1_000)
+        let anchorTarget = UInt256(1) << 240
 
-        // The function cannot even see intermediate history — which is the
-        // point — so the same inputs must give the same answer, and that is
-        // what a caller replaying a wildly irregular chain will pass.
-        let first = s.calculateAsertTarget(
-            anchorTarget: anchorTarget, anchorTimestamp: anchorTime,
-            anchorHeight: 1, blockTimestamp: arrival, blockHeight: 400
+        // Two chains that share an anchor and arrive at the SAME height and the
+        // SAME timestamp by completely different routes: one steady, one wildly
+        // irregular. Under a windowed average these diverge, because the window
+        // remembers how the height was reached. Under an absolute schedule they
+        // must not -- that independence from intervening history is the whole
+        // claim, and comparing a call against itself cannot test it.
+        func tipTarget(gaps: [Int64]) async throws -> (UInt256, Int64, UInt64) {
+            let fetcher = StorableFetcher()
+            let genesis = try await buildAndStoreGenesis(
+                spec: chainSpec, timestamp: 1_000, target: anchorTarget, fetcher: fetcher
+            )
+            var previous = genesis
+            for (i, gap) in gaps.enumerated() {
+                previous = try await buildAndStoreBlock(
+                    previous: previous, timestamp: previous.timestamp + gap,
+                    nonce: UInt64(i), fetcher: fetcher
+                )
+            }
+            return (previous.nextTarget, previous.timestamp, previous.height)
+        }
+
+        // The FIRST gap is held identical on purpose: it places block 1, which
+        // is the anchor, and two chains with different anchors are legitimately
+        // on different schedules. What must not matter is everything after it.
+        let steady = try await tipTarget(gaps: [1_000, 1_000, 1_000, 1_000, 1_000, 1_000])
+        let erratic = try await tipTarget(gaps: [1_000, 50, 4_500, 120, 30, 300])
+
+        XCTAssertEqual(steady.1, erratic.1, "precondition: both tips land on the same timestamp")
+        XCTAssertEqual(steady.2, erratic.2, "precondition: both tips land on the same height")
+        XCTAssertEqual(
+            steady.0, erratic.0,
+            "two routes to the same height and time must schedule the same next target"
         )
-        let second = s.calculateAsertTarget(
-            anchorTarget: anchorTarget, anchorTimestamp: anchorTime,
-            anchorHeight: 1, blockTimestamp: arrival, blockHeight: 400
-        )
-        XCTAssertEqual(first, second)
-        // And it is genuinely off-schedule here, so this is not asserting
-        // equality of two unchanged anchors.
-        XCTAssertNotEqual(first, anchorTarget)
     }
 
     /// Moving a block's clock BACKWARDS must not buy an easier target. Elapsed
@@ -167,18 +184,20 @@ final class AsertDifficultyTests: XCTestCase {
             target: UInt256(1_000_000), fetcher: fetcher
         )
         var previous = genesis
-        var blockOneHash: String?
+        var blockOne: Block?
         for i in 1...6 {
             let block = try await buildAndStoreBlock(
                 previous: previous, timestamp: 1_000 + Int64(i) * 1_000, fetcher: fetcher
             )
-            if block.height == 1 { blockOneHash = try BlockHeader(node: block).rawCID }
+            if block.height == 1 { blockOne = block }
             let anchor = try await BlockBuilder.resolveDifficultyAnchor(
                 from: block, fetcher: fetcher
             )
             XCTAssertEqual(anchor?.blockHeight, 1, "every block anchors at height 1")
-            XCTAssertEqual(anchor?.blockHash, blockOneHash,
+            XCTAssertEqual(anchor?.timestamp, blockOne?.timestamp,
                            "and at the SAME height-1 block, not merely some block of height 1")
+            XCTAssertEqual(anchor?.target, blockOne?.target,
+                           "the anchor's target must be block one's own committed target")
             previous = block
         }
     }
@@ -217,7 +236,7 @@ final class AsertDifficultyTests: XCTestCase {
             let anchor = try await BlockBuilder.resolveDifficultyAnchor(
                 from: previous, fetcher: fetcher
             ) ?? DifficultyAnchor(
-                blockHash: "", blockHeight: 1,
+                blockHeight: 1,
                 timestamp: block.timestamp, target: block.target
             )
             XCTAssertTrue(
@@ -250,7 +269,7 @@ final class AsertDifficultyTests: XCTestCase {
         let leftAnchor = try await BlockBuilder.resolveDifficultyAnchor(from: leftOne, fetcher: fetcher)
         let rightAnchor = try await BlockBuilder.resolveDifficultyAnchor(from: rightOne, fetcher: fetcher)
 
-        XCTAssertNotEqual(leftAnchor?.blockHash, rightAnchor?.blockHash,
+        XCTAssertNotEqual(leftAnchor, rightAnchor,
                           "each branch must anchor on its OWN height-1 block")
         XCTAssertEqual(leftAnchor?.timestamp, 2_000)
         XCTAssertEqual(rightAnchor?.timestamp, 5_000)
@@ -273,11 +292,164 @@ final class AsertDifficultyTests: XCTestCase {
     /// blocks is worth almost nothing, so the incentive is neutral rather than
     /// exploitable.
     func testAnEasierAnchorEarnsProportionallyLessWork() {
-        let easyBranch = workForTarget(UInt256.max)
-        let honestBranch = workForTarget(UInt256(1) << 215)
-        XCTAssertEqual(easyBranch, UInt256(1), "a maximum target is worth one unit of work")
-        XCTAssertGreaterThan(honestBranch, easyBranch * UInt256(1_000_000_000),
-                             "an honest target must be worth vastly more per block")
+        let s = spec()
+        let anchorTime: Int64 = 1_000_000
+        let height: UInt64 = 200
+        let onSchedule = anchorTime + Int64(3_600_000 * 199)
+
+        // Drive the schedule itself rather than asserting a property of
+        // `workForTarget`: a branch anchored at the maximum target stays at the
+        // maximum target while on schedule, so every block on it is worth one
+        // unit of work no matter how long it runs. That is what stops a
+        // free-to-mine branch from ever out-weighing an honest one.
+        let easyAnchored = s.calculateAsertTarget(
+            anchorTarget: UInt256.max, anchorTimestamp: anchorTime,
+            anchorHeight: 1, blockTimestamp: onSchedule, blockHeight: height
+        )
+        let honestAnchored = s.calculateAsertTarget(
+            anchorTarget: UInt256(1) << 215, anchorTimestamp: anchorTime,
+            anchorHeight: 1, blockTimestamp: onSchedule, blockHeight: height
+        )
+        XCTAssertEqual(workForTarget(easyAnchored), UInt256(1),
+                       "a branch anchored at the maximum target earns one unit of work per block")
+        XCTAssertGreaterThan(
+            workForTarget(honestAnchored), workForTarget(easyAnchored) * UInt256(1_000_000_000),
+            "an honestly anchored branch must out-earn it by orders of magnitude per block"
+        )
+    }
+
+    // MARK: - Bounded cost on attacker-supplied input
+
+    /// A zero anchor target must not spin. Scaling zero yields zero, so a
+    /// doubling loop driven by the drift would iterate its full count without
+    /// ever leaving zero -- and the walk reads `target` from an ancestor it has
+    /// not validated, so a forged height-1 block can supply exactly this.
+    /// The bound is wall clock on purpose: the defect is unbounded work, and
+    /// only a clock can witness that.
+    func testZeroAnchorTargetTerminatesImmediately() {
+        // The shortest half-life a valid spec can commit, which is what makes
+        // the iteration count enormous: `doublings` is the drift measured in
+        // half-lives, so a one-millisecond half-life turns the bounded drift
+        // into ~1.4e14 iterations. A nonzero anchor escapes this after ~256
+        // steps by crossing the representable ceiling; zero never does, because
+        // doubling zero is zero.
+        let s = spec(targetBlockTime: 1, window: 1)
+        let started = Date()
+        // Height 2 on purpose: a huge height makes `scheduled` saturate to the
+        // same Int64.max as `elapsed`, which cancels to ZERO drift and would
+        // exercise no shift at all. The damage needs a small height and a far
+        // future timestamp, so the schedule is enormously behind.
+        let result = s.calculateAsertTarget(
+            anchorTarget: .zero, anchorTimestamp: 0,
+            anchorHeight: 1, blockTimestamp: Int64.max, blockHeight: 2
+        )
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertEqual(result, UInt256(1), "a zero anchor has no schedule; the hardest target is the safe answer")
+        XCTAssertLessThan(elapsed, 1.0, "a zero anchor must not drive an unbounded shift")
+    }
+
+    /// The same bound on a legitimate saturating path. A chain stalled long
+    /// enough, or a deep fork off an old block, produces a drift of many
+    /// thousands of half-lives; the shift must saturate rather than iterate
+    /// once per doubling.
+    func testExtremeDriftSaturatesInBoundedTime() {
+        let fast = spec(targetBlockTime: 1, window: 1)
+        let started = Date()
+        for anchorTarget in [UInt256(1), UInt256(1) << 128, UInt256.max] {
+            let eased = fast.calculateAsertTarget(
+                anchorTarget: anchorTarget, anchorTimestamp: 0,
+                anchorHeight: 1, blockTimestamp: Int64.max, blockHeight: 2
+            )
+            let hardened = fast.calculateAsertTarget(
+                anchorTarget: anchorTarget, anchorTimestamp: Int64.max,
+                anchorHeight: 1, blockTimestamp: 0, blockHeight: UInt64.max
+            )
+            XCTAssertEqual(eased, UInt256.max, "an unbounded easing saturates at the maximum target")
+            XCTAssertEqual(hardened, UInt256(1), "an unbounded hardening saturates at the hardest target")
+        }
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertLessThan(elapsed, 1.0, "saturation must not cost one iteration per doubling")
+    }
+
+    // MARK: - The two anchor sources must agree
+
+    /// The real split risk in production is not builder-vs-validator (both call
+    /// the same walk) but CHAIN STATE vs the walk: a node with the block in
+    /// `hashToBlock` answers from the anchor inherited at admission, and a node
+    /// without it walks the ancestry. If those two ever disagree the network
+    /// forks, and nothing else in the suite puts them side by side.
+    ///
+    /// Admission is driven out of height order deliberately, so the lazy
+    /// backfill in `difficultyAnchor(forBlockHash:)` is what answers rather
+    /// than a value written on the way in.
+    func testChainStateAndWalkResolveTheSameAnchor() async throws {
+        let fetcher = StorableFetcher()
+        let chainSpec = spec(targetBlockTime: 1_000)
+        let genesis = try await buildAndStoreGenesis(
+            spec: chainSpec, timestamp: 1_000, target: UInt256(1) << 240, fetcher: fetcher
+        )
+        let chain = ChainState.fromGenesis(block: genesis)
+
+        var blocks: [Block] = []
+        var previous = genesis
+        for (i, gap) in [1_000, 300, 7_000, 1_000, 40].enumerated() {
+            let block = try await buildAndStoreBlock(
+                previous: previous, timestamp: previous.timestamp + Int64(gap),
+                nonce: UInt64(i), fetcher: fetcher
+            )
+            blocks.append(block)
+            previous = block
+        }
+
+        for block in blocks {
+            let header = try VolumeImpl<Block>(node: block)
+            _ = await chain.submitTestBlock(blockHeader: header, block: block)
+        }
+
+        for block in blocks {
+            let hash = try VolumeImpl<Block>(node: block).rawCID
+            let carried = await chain.difficultyAnchor(forBlockHash: hash)
+            let walked = try await BlockBuilder.resolveDifficultyAnchor(
+                from: block, fetcher: fetcher
+            )
+            XCTAssertNotNil(carried, "chain state must carry an anchor for an admitted block at height \(block.height)")
+            XCTAssertEqual(
+                carried, walked,
+                "chain-state and walked anchors must agree at height \(block.height); a disagreement forks the network"
+            )
+        }
+    }
+
+    // MARK: - Grindability across the curve
+
+    /// A later timestamp must never yield a HARDER target, at any point on the
+    /// curve. A single violation is a grinding edge: a miner would search for
+    /// the timestamp that buys the easiest target instead of reporting the
+    /// truth. One sample cannot establish this, so the response is swept
+    /// across several half-lives in both directions.
+    func testTargetIsMonotonicInTimestampAcrossTheCurve() {
+        let s = spec(targetBlockTime: 1_000, window: 120)
+        let anchorTarget = UInt256(1) << 200
+        let anchorTime: Int64 = 1_000_000
+        let halfLife: Int64 = 120 * 1_000
+        var previous = UInt256.zero
+        var sawIncrease = false
+        // -3 to +3 half-lives, in steps small enough to land inside the cubic's
+        // fractional part rather than only on doubling boundaries.
+        for step in stride(from: -3 * halfLife, through: 3 * halfLife, by: Int(halfLife / 97)) {
+            let result = s.calculateAsertTarget(
+                anchorTarget: anchorTarget, anchorTimestamp: anchorTime,
+                anchorHeight: 1, blockTimestamp: anchorTime + 60 * 1_000 + step,
+                blockHeight: 61
+            )
+            XCTAssertGreaterThanOrEqual(
+                result, previous,
+                "a later timestamp must never harden the target (step \(step))"
+            )
+            if result > previous { sawIncrease = true }
+            previous = result
+        }
+        XCTAssertTrue(sawIncrease, "the sweep must actually move the target, or it proves nothing")
     }
 
     // MARK: - helpers

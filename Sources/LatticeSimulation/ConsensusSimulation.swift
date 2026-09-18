@@ -239,17 +239,25 @@ public enum LatticeConsensusSimulator {
             halvingInterval: 876_600,
             retargetWindow: 120
         )
-        let previous = UInt256(1000)
-        let onTarget = spec.calculateWindowedTarget(
-            previousTarget: previous,
-            ancestorTimestamps: [7_200_000, 3_600_000, 0]
+        // Drive the CONSENSUS path: the absolute schedule measured from the
+        // height-1 anchor. The windowed retarget this used to call is no longer
+        // read by any consensus path, so simulating it simulated nothing.
+        let anchorTarget = UInt256(1000)
+        let anchorTimestamp: Int64 = 0
+        let onTarget = spec.calculateAsertTarget(
+            anchorTarget: anchorTarget, anchorTimestamp: anchorTimestamp,
+            anchorHeight: 1, blockTimestamp: 7_200_000, blockHeight: 3
         )
-        let slow = spec.calculateWindowedTarget(
-            previousTarget: previous,
-            ancestorTimestamps: [14_400_000, 7_200_000, 0]
+        // Exactly one half-life behind schedule, which is exactly one doubling.
+        // An hour late would move the target ~1%: under an absolute schedule the
+        // unit of easing is the half-life, not the block.
+        let slow = spec.calculateAsertTarget(
+            anchorTarget: anchorTarget, anchorTimestamp: anchorTimestamp,
+            anchorHeight: 1, blockTimestamp: 7_200_000 + 432_000_000, blockHeight: 3
         )
+        let previous = anchorTarget
         return ConsensusSimTrace(
-            scenario: "proportional-retarget-one-hour",
+            scenario: "asert-schedule-one-hour",
             seed: seed,
             finalTip: "retarget-only",
             events: [

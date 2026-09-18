@@ -7,7 +7,7 @@ import cashew
 /// first real block, so a block built directly on genesis IS its own origin.
 func selfDifficultyAnchor(_ block: Block) -> DifficultyAnchor {
     DifficultyAnchor(
-        blockHash: "", blockHeight: 1,
+        blockHeight: 1,
         timestamp: block.timestamp, target: block.target
     )
 }

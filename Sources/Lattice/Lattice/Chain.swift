@@ -79,13 +79,11 @@ public enum ChainStateRestoreError: Error, Sendable, Equatable {
 /// at height 1 simply carry two anchors, each branch internally consistent,
 /// which is exactly what such a reorg means.
 public struct DifficultyAnchor: Sendable, Equatable {
-    public let blockHash: String
     public let blockHeight: UInt64
     public let timestamp: Int64
     public let target: UInt256
 
-    public init(blockHash: String, blockHeight: UInt64, timestamp: Int64, target: UInt256) {
-        self.blockHash = blockHash
+    public init(blockHeight: UInt64, timestamp: Int64, target: UInt256) {
         self.blockHeight = blockHeight
         self.timestamp = timestamp
         self.target = target
@@ -1269,7 +1267,6 @@ public actor ChainState {
         let anchor: DifficultyAnchor?
         if input.blockHeight == 1 {
             anchor = DifficultyAnchor(
-                blockHash: blockHash,
                 blockHeight: 1,
                 timestamp: input.timestamp,
                 target: input.snapshot.target

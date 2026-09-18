@@ -239,8 +239,8 @@ public extension Block {
         // building a mining template — 120 sequential block resolutions per
         // request, redone every round for a list that changes by one entry per
         // block.
-        let (parentDepth, overflow) = parent.height.addingReportingOverflow(1)
-        guard !overflow else { return false }
+        let (_, heightOverflow) = parent.height.addingReportingOverflow(1)
+        guard !heightOverflow else { return false }
         if !validationContext.admits(timestamp: timestamp) {
             if reportTemporalFailure { throw BlockValidationError.notYetAdmissible }
             return false
@@ -258,7 +258,7 @@ public extension Block {
             // This block is height 1: it anchors itself, and its own committed
             // target is where the schedule begins.
             anchor = DifficultyAnchor(
-                blockHash: "", blockHeight: 1, timestamp: timestamp, target: target
+                blockHeight: 1, timestamp: timestamp, target: target
             )
         } else if let chain, let parentHash = self.parent?.rawCID,
                   let carried = await chain.difficultyAnchor(forBlockHash: parentHash) {

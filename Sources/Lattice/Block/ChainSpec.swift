@@ -285,6 +285,11 @@ public extension ChainSpec {
         guard blockHeight > anchorHeight else { return anchorTarget }
         let halfLifeMilliseconds = halfLifeMilliseconds()
         guard halfLifeMilliseconds > 0 else { return anchorTarget }
+        // A zero anchor target expresses no schedule: every scaling of zero is
+        // zero, so the doubling below could never climb out of it however long
+        // it ran. An anchor read from an unvalidated ancestor can carry one, so
+        // this is a reachable input and not merely a defensive check.
+        guard anchorTarget != .zero else { return UInt256(1) }
 
         // How far ahead of (negative) or behind (positive) schedule we are, in
         // milliseconds. Both terms are clamped before use: `blockTimestamp` is
@@ -334,12 +339,20 @@ public extension ChainSpec {
             by: UInt256(factor),
             over: UInt256(UInt64(Self.asertFixedPointOne))
         )
+        // The shift is bounded by the width of the type rather than by the
+        // drift. No 256-bit value survives 256 halvings, and none stays
+        // representable through 256 doublings, so past that the answer is
+        // already saturated -- and the drift feeding it is attacker-supplied,
+        // so the iteration count must not be.
         if doublings > 0 {
+            guard doublings < Self.asertMaximumDoublings else { return UInt256.max }
+            let ceiling = UInt256.max / UInt256(2)
             for _ in 0..<doublings {
-                guard scaled <= UInt256.max / UInt256(2) else { return UInt256.max }
+                guard scaled <= ceiling else { return UInt256.max }
                 scaled = scaled * UInt256(2)
             }
         } else if doublings < 0 {
+            guard -doublings < Self.asertMaximumDoublings else { return UInt256(1) }
             for _ in 0..<(-doublings) {
                 scaled = scaled / UInt256(2)
                 if scaled == .zero { return UInt256(1) }
@@ -361,6 +374,9 @@ public extension ChainSpec {
 
     private static let asertFixedPointBits: Int64 = 16
     private static let asertFixedPointOne: Int64 = 1 << 16
+    /// One more than the width of the target, so the shift saturates instead of
+    /// iterating on an attacker-supplied count.
+    private static let asertMaximumDoublings: Int64 = 256
     // 2^(x/65536) ~= 1 + ax + bx^2 + cx^3 in 16.16, with the sum taken at 2^48
     // and rounded. At the widest fraction (65535) the three terms total just
     // under UInt64.max, which is what fixes these particular constants.
