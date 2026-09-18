@@ -233,28 +233,14 @@ public extension Block {
         reportTemporalFailure: Bool = false,
         validationContext: ValidationContext
     ) async throws -> Bool {
-        // Only the difficulty retarget needs an ancestor-timestamp walk now that
-        // the MedianTimePast rule is gone; retargetWindow is the whole requirement.
-        let walkDepth = spec.retargetWindow
+        // No ancestor-timestamp walk: the schedule is a function of one anchor
+        // and this block, so validating a target no longer requires reading the
+        // last `retargetWindow` blocks. That walk was the dominant cost of
+        // building a mining template — 120 sequential block resolutions per
+        // request, redone every round for a list that changes by one entry per
+        // block.
         let (parentDepth, overflow) = parent.height.addingReportingOverflow(1)
         guard !overflow else { return false }
-        // The walk is bounded by the chain's actual depth, never by the raw
-        // window: `retargetWindow` is an unbounded UInt64 from a spec that is
-        // attacker-supplied while the parent is disconnected.
-        let requiredWalkDepth = min(walkDepth, parentDepth)
-        let ancestorTimestamps: [Int64]
-        if let chain,
-           let parentHash = self.parent?.rawCID,
-           let fast = await chain.getMainChainTimestamps(forParentHash: parentHash, count: requiredWalkDepth),
-           requiredWalkDepth <= UInt64(fast.count) {
-            ancestorTimestamps = fast
-        } else {
-            guard let walked = try await collectAncestorTimestamps(parent: parent, count: requiredWalkDepth, fetcher: fetcher),
-                  requiredWalkDepth <= UInt64(walked.count) else {
-                return false
-            }
-            ancestorTimestamps = walked
-        }
         if !validationContext.admits(timestamp: timestamp) {
             if reportTemporalFailure { throw BlockValidationError.notYetAdmissible }
             return false
@@ -263,7 +249,29 @@ public extension Block {
             parent: parent,
             validationContext: validationContext
         ) { return false }
-        if !validateNextTarget(spec: spec, parent: parent, ancestorTimestamps: ancestorTimestamps) { return false }
+        // Resolve the schedule's origin: the height-1 ancestor of this block.
+        // Chain state carries it, inherited at admission in O(1); without a
+        // chain to ask, fall back to the SAME walk the builder uses, so the two
+        // can never disagree about which block anchors the schedule.
+        let anchor: DifficultyAnchor?
+        if parent.height == 0 {
+            // This block is height 1: it anchors itself, and its own committed
+            // target is where the schedule begins.
+            anchor = DifficultyAnchor(
+                blockHash: "", blockHeight: 1, timestamp: timestamp, target: target
+            )
+        } else if let chain, let parentHash = self.parent?.rawCID,
+                  let carried = await chain.difficultyAnchor(forBlockHash: parentHash) {
+            anchor = carried
+        } else {
+            anchor = try await BlockBuilder.resolveDifficultyAnchor(
+                from: parent, fetcher: fetcher
+            )
+        }
+        guard let anchor else { return false }
+        if !validateNextTarget(
+            spec: spec, parent: parent, difficultyAnchor: anchor
+        ) { return false }
         return true
     }
 
@@ -545,20 +553,31 @@ public extension Block {
         return parent.spec.rawCID == spec.rawCID
     }
 
-    func validateNextTarget(spec: ChainSpec, parent: Block, ancestorTimestamps: [Int64] = []) -> Bool {
+    /// Pure and synchronous on purpose: the caller does the I/O of resolving
+    /// the anchor, and this decides. Keeping the decision free of lookups is
+    /// what lets a test put the builder's anchor and the validator's anchor
+    /// side by side and assert they produce the same target.
+    func validateNextTarget(
+        spec: ChainSpec,
+        parent: Block,
+        difficultyAnchor: DifficultyAnchor
+    ) -> Bool {
         // A block's target need not equal the scheduled `parent.nextTarget` — it
         // may be that or voluntarily HARDER (a smaller target = more work), never
         // easier. A larger (easier) target is rejected. Mining harder only adds
         // weight at proportional cost and cannot lower difficulty: `nextTarget` is
-        // recomputed from the actual `target` below, so overachieving ratchets the
-        // schedule harder, never easier — it is self-penalizing, not gameable.
+        // recomputed below from the anchor rather than from this block's target,
+        // so overachieving buys weight without bending the schedule.
         if target > parent.nextTarget { return false }
         let (parentDepth, overflow) = parent.height.addingReportingOverflow(1)
         guard !overflow else { return false }
-        let requiredRetargetDepth = min(spec.retargetWindow, parentDepth)
-        guard requiredRetargetDepth <= UInt64(ancestorTimestamps.count) else { return false }
-        let windowTimestamps = [timestamp] + Array(ancestorTimestamps.prefix(Int(requiredRetargetDepth)))
-        let expected = spec.calculateWindowedTarget(previousTarget: target, ancestorTimestamps: windowTimestamps)
+        let expected = spec.calculateAsertTarget(
+            anchorTarget: difficultyAnchor.target,
+            anchorTimestamp: difficultyAnchor.timestamp,
+            anchorHeight: difficultyAnchor.blockHeight,
+            blockTimestamp: timestamp,
+            blockHeight: parentDepth
+        )
         return nextTarget == expected
     }
 

@@ -13,7 +13,14 @@ private struct TestFetcher: Fetcher {
     }
 }
 
-private let fetcher = TestFetcher()
+/// Storing, not the throwing stub: these suites build real multi-block chains
+/// and the difficulty schedule is anchored at the height-1 ancestor, so a block
+/// past height 2 has to be able to reach back through its own ancestry. The old
+/// windowed retarget tolerated an unreachable ancestor by silently retargeting
+/// on whatever prefix it could read, which made a non-resolving fetcher look
+/// harmless here; it no longer is, and a chain whose blocks cannot be fetched
+/// was never a realistic thing to assert chain invariants against.
+private let fetcher = StorableFetcher()
 
 private func spec() -> ChainSpec {
     ChainSpec(

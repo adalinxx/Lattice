@@ -239,6 +239,136 @@ public extension ChainSpec {
             : scaledQuotient + scaledRemainder
     }
 
+    /// The difficulty schedule: an absolutely-scheduled exponential target.
+    ///
+    /// The target for a block is a function of ONE anchor and this block's own
+    /// height and timestamp:
+    ///
+    ///     target = anchorTarget * 2^((elapsed - targetBlockTime * heights) / halfLife)
+    ///
+    /// where `elapsed` is the time since the anchor and `heights` is the number
+    /// of blocks since it. When the chain is exactly on schedule the exponent is
+    /// zero and the target is the anchor's. Running ahead of schedule hardens
+    /// it, running behind eases it, smoothly and without bound in either
+    /// direction.
+    ///
+    /// **There is no window, and that is the point.** A windowed average carries
+    /// the last `retargetWindow` intervals as state, so a stretch of unusual
+    /// block times keeps steering difficulty long after it has passed, and a
+    /// window perturbed at one end oscillates as it drains. This reads only the
+    /// anchor and the present block, so it has nothing to drain: a disturbance
+    /// stops mattering the moment it stops happening.
+    ///
+    /// It is also why the genesis timestamp cannot poison this schedule. A
+    /// window that reaches back to genesis reads the gap before block 1 as one
+    /// colossal solve time -- on a chain stamping genesis at epoch 0 that gap is
+    /// decades, and the estimator eases every block until it finally ages out.
+    /// Anchored at block 1, genesis is simply never read.
+    ///
+    /// The anchor must be a block whose target is near what the chain can
+    /// actually sustain. This moves at most one doubling per half-life, so an
+    /// anchor far from the truth is approached slowly -- from a maximum target
+    /// that is dozens of half-lives, spent at negligible difficulty.
+    ///
+    /// Integer-exact by construction. Every node must compute the identical
+    /// target from the identical inputs, so the exponential is evaluated in
+    /// 16.16 fixed point with a cubic approximation over the fractional part --
+    /// the same shape Bitcoin Cash's `aserti3-2d` uses, and for the same reason.
+    /// No floating point appears anywhere in this path.
+    func calculateAsertTarget(
+        anchorTarget: UInt256,
+        anchorTimestamp: Int64,
+        anchorHeight: UInt64,
+        blockTimestamp: Int64,
+        blockHeight: UInt64
+    ) -> UInt256 {
+        guard blockHeight > anchorHeight else { return anchorTarget }
+        let halfLifeMilliseconds = halfLifeMilliseconds()
+        guard halfLifeMilliseconds > 0 else { return anchorTarget }
+
+        // How far ahead of (negative) or behind (positive) schedule we are, in
+        // milliseconds. Both terms are clamped before use: `blockTimestamp` is
+        // attacker-supplied on an unconnected block, and the height difference
+        // is bounded by the chain itself.
+        let heights = blockHeight - anchorHeight
+        let product = heights.multipliedReportingOverflow(by: targetBlockTime)
+        let scheduled = Int64(clamping: product.overflow ? UInt64.max : product.partialValue)
+        // A timestamp at or before the anchor yields zero elapsed, which makes
+        // the drift maximally negative and the target harder. Moving a block's
+        // clock backwards therefore costs the miner difficulty rather than
+        // buying any, so the clamp needs no separate defence.
+        let elapsed = Int64(clamping: elapsedMilliseconds(
+            later: blockTimestamp, earlier: anchorTimestamp
+        ))
+        let deviation = elapsed.subtractingReportingOverflow(scheduled)
+        let driftMilliseconds = deviation.overflow
+            ? (scheduled > 0 ? Int64.min : Int64.max)
+            : deviation.partialValue
+
+        // 16.16 fixed-point exponent. The drift is bounded first so the scaling
+        // multiply cannot overflow: past this magnitude the target saturates
+        // anyway, so the clamp changes no reachable result.
+        let maximumDrift = Int64.max / Self.asertFixedPointOne
+        let boundedDrift = min(max(driftMilliseconds, -maximumDrift), maximumDrift)
+        let exponent = (boundedDrift * Self.asertFixedPointOne) / halfLifeMilliseconds
+
+        // Arithmetic shift floors toward negative infinity, so `fraction` is
+        // always the non-negative remainder and `doublings` carries the sign.
+        let doublings = exponent >> Self.asertFixedPointBits
+        let fraction = UInt64(exponent & (Self.asertFixedPointOne - 1))
+
+        // Cubic approximation of 2^(fraction/65536) in 16.16, exact in integers.
+        // The constants are chosen so the widest intermediate stays inside
+        // UInt64; see the overflow note on `asertCubic*`.
+        let cubic = Self.asertCubicA * fraction
+            + Self.asertCubicB * fraction * fraction
+            + Self.asertCubicC * fraction * fraction * fraction
+            + Self.asertCubicRounding
+        let factor = UInt64(Self.asertFixedPointOne) + (cubic >> 48)
+
+        // target = anchorTarget * factor / 2^16, then shifted by the whole
+        // doublings. Saturating at both ends: a target of zero rejects every
+        // hash and a target above the maximum is not representable.
+        var scaled = multiplyDividingSaturating(
+            anchorTarget,
+            by: UInt256(factor),
+            over: UInt256(UInt64(Self.asertFixedPointOne))
+        )
+        if doublings > 0 {
+            for _ in 0..<doublings {
+                guard scaled <= UInt256.max / UInt256(2) else { return UInt256.max }
+                scaled = scaled * UInt256(2)
+            }
+        } else if doublings < 0 {
+            for _ in 0..<(-doublings) {
+                scaled = scaled / UInt256(2)
+                if scaled == .zero { return UInt256(1) }
+            }
+        }
+        return scaled == .zero ? UInt256(1) : scaled
+    }
+
+    /// The half-life is not a new committed field on purpose: adding one would
+    /// change this spec's CID, and a chain's genesis commits that CID, so the
+    /// chain would lose its identity to a difficulty tweak. `retargetWindow`
+    /// already states how much history informs difficulty, which is exactly the
+    /// quantity a half-life expresses, so it is reused rather than duplicated.
+    func halfLifeMilliseconds() -> Int64 {
+        let product = retargetWindow.multipliedReportingOverflow(by: targetBlockTime)
+        guard !product.overflow else { return Int64.max }
+        return Int64(clamping: product.partialValue)
+    }
+
+    private static let asertFixedPointBits: Int64 = 16
+    private static let asertFixedPointOne: Int64 = 1 << 16
+    // 2^(x/65536) ~= 1 + ax + bx^2 + cx^3 in 16.16, with the sum taken at 2^48
+    // and rounded. At the widest fraction (65535) the three terms total just
+    // under UInt64.max, which is what fixes these particular constants.
+    private static let asertCubicA: UInt64 = 195_766_423_245_049
+    private static let asertCubicB: UInt64 = 971_821_376
+    private static let asertCubicC: UInt64 = 5_127
+    private static let asertCubicRounding: UInt64 = 1 << 47
+
     private func calculatePairTarget(previousTarget: UInt256, actualTime: UInt64) -> UInt256 {
         // Zero elapsed time is rejected at block validation (strictly increasing
         // timestamps), so this is unreachable in consensus; keep the target
