@@ -318,6 +318,88 @@ final class AsertDifficultyTests: XCTestCase {
         )
     }
 
+    /// An anchor at or near the MAXIMUM target must harden by the amount the
+    /// schedule says, not by a whole doubling.
+    ///
+    /// `factor` lies in [1, 2), so scaling first pushes a near-maximum target
+    /// past 256 bits; if the halvings are applied after that saturation they
+    /// come off the maximum rather than off the true product. One block ahead
+    /// of schedule then yields exactly half the maximum instead of 0.994 of it.
+    /// That is the ordinary state of a chain just after launch -- genesis
+    /// commits the maximum, so block 1 anchors there -- which makes this the
+    /// common case, not an edge case.
+    func testNearMaximumAnchorHardensByTheScheduleNotAWholeDoubling() {
+        let s = spec(targetBlockTime: 3_600_000, window: 120)
+        let anchorTime: Int64 = 1_000_000
+        // One block, one millisecond after the anchor: 3_599_999 ms ahead of a
+        // 3_600_000 ms schedule, which is 1/120 of a half-life -- far less than
+        // one doubling.
+        let result = s.calculateAsertTarget(
+            anchorTarget: UInt256.max, anchorTimestamp: anchorTime,
+            anchorHeight: 1, blockTimestamp: anchorTime + 1, blockHeight: 2
+        )
+        XCTAssertGreaterThan(
+            result, UInt256.max / UInt256(2),
+            "1/120 of a half-life ahead of schedule must not cost a full doubling"
+        )
+        // 2^(-1/120) of the maximum, to within a part per thousand.
+        assertWithin(
+            result, of: UInt256.max / UInt256(1_000) * UInt256(994),
+            partsPerThousand: 2,
+            "the target must follow the schedule's own exponent"
+        )
+    }
+
+    /// The same property across the whole near-maximum range: hardening a
+    /// maximum anchor must stay proportional, with no cliff where the
+    /// intermediate would have overflowed.
+    ///
+    /// The drift is driven by HEIGHT, not by the timestamp. `elapsed` clamps at
+    /// zero, so at a low height the schedule is only a block time long and the
+    /// chain cannot be more than that far ahead of it -- a timestamp sweep
+    /// there silently pins every case to the same drift and asserts nothing.
+    /// Pinning `elapsed` at zero and walking the height makes the drift exactly
+    /// `targetBlockTime * (height - 1)`.
+    func testHardeningFromTheMaximumIsSmoothAcrossFractionsOfAHalfLife() {
+        let blockTime: UInt64 = 1_000
+        let window: UInt64 = 120
+        let s = spec(targetBlockTime: blockTime, window: window)
+        let anchorTime: Int64 = 1_000_000
+        var previous = UInt256.max
+        // height - 1 = 15k blocks of schedule is k/8 of a 120-block half-life.
+        for k in 1...16 {
+            let height = UInt64(1 + 15 * k)
+            let result = s.calculateAsertTarget(
+                anchorTarget: UInt256.max, anchorTimestamp: anchorTime,
+                anchorHeight: 1, blockTimestamp: anchorTime, blockHeight: height
+            )
+            XCTAssertLessThan(
+                result, previous,
+                "k=\(k): each further eighth of a half-life ahead must harden further"
+            )
+            XCTAssertGreaterThan(result, .zero)
+            previous = result
+        }
+        // One half-life ahead is one doubling: half the maximum, not a quarter.
+        let oneHalfLife = s.calculateAsertTarget(
+            anchorTarget: UInt256.max, anchorTimestamp: anchorTime,
+            anchorHeight: 1, blockTimestamp: anchorTime, blockHeight: UInt64(1 + window)
+        )
+        assertWithin(
+            oneHalfLife, of: UInt256.max / UInt256(2), partsPerThousand: 2,
+            "one half-life ahead of schedule is exactly one doubling"
+        )
+        // And two half-lives is two doublings: a quarter.
+        let twoHalfLives = s.calculateAsertTarget(
+            anchorTarget: UInt256.max, anchorTimestamp: anchorTime,
+            anchorHeight: 1, blockTimestamp: anchorTime, blockHeight: UInt64(1 + 2 * window)
+        )
+        assertWithin(
+            twoHalfLives, of: UInt256.max / UInt256(4), partsPerThousand: 2,
+            "two half-lives ahead of schedule is exactly two doublings"
+        )
+    }
+
     // MARK: - Bounded cost on attacker-supplied input
 
     /// A zero anchor target must not spin. Scaling zero yields zero, so a
