@@ -331,31 +331,47 @@ public extension ChainSpec {
             + Self.asertCubicRounding
         let factor = UInt64(Self.asertFixedPointOne) + (cubic >> 48)
 
-        // target = anchorTarget * factor / 2^16, then shifted by the whole
-        // doublings. Saturating at both ends: a target of zero rejects every
-        // hash and a target above the maximum is not representable.
+        // target = anchorTarget * factor / 2^16, shifted by the whole doublings.
+        //
+        // HARDENING folds its halvings into the DIVISOR rather than applying
+        // them afterwards. `factor` is in [1, 2), so multiplying first pushes a
+        // target near the maximum past what 256 bits can hold; that saturates,
+        // and the halvings then come off the saturated value instead of the
+        // true product. An anchor at the maximum target one block ahead of
+        // schedule -- the ordinary state of a chain just after launch -- came
+        // out at exactly half the maximum instead of 0.994 of it, a whole
+        // doubling wrong. Dividing once, by 2^(16 + halvings), never overflows
+        // and never saturates early.
+        //
+        // EASING can keep multiplying first: saturation there is the right
+        // answer, because a result too large to represent is the maximum.
+        if doublings < 0 {
+            let halvings = -doublings
+            // Past this the divisor itself leaves 256 bits, so the true value
+            // has already rounded to nothing and the hardest target is correct.
+            guard halvings < Self.asertMaximumDoublings - Int64(Self.asertFixedPointBits)
+            else { return UInt256(1) }
+            let scaled = multiplyDividingSaturating(
+                anchorTarget,
+                by: UInt256(factor),
+                over: UInt256(1) << UInt256(UInt64(halvings) + UInt64(Self.asertFixedPointBits))
+            )
+            return scaled == .zero ? UInt256(1) : scaled
+        }
         var scaled = multiplyDividingSaturating(
             anchorTarget,
             by: UInt256(factor),
             over: UInt256(UInt64(Self.asertFixedPointOne))
         )
         // The shift is bounded by the width of the type rather than by the
-        // drift. No 256-bit value survives 256 halvings, and none stays
-        // representable through 256 doublings, so past that the answer is
-        // already saturated -- and the drift feeding it is attacker-supplied,
-        // so the iteration count must not be.
+        // drift, which is attacker-supplied: no 256-bit value stays
+        // representable through 256 doublings, so past that it is the maximum.
         if doublings > 0 {
             guard doublings < Self.asertMaximumDoublings else { return UInt256.max }
             let ceiling = UInt256.max / UInt256(2)
             for _ in 0..<doublings {
                 guard scaled <= ceiling else { return UInt256.max }
                 scaled = scaled * UInt256(2)
-            }
-        } else if doublings < 0 {
-            guard -doublings < Self.asertMaximumDoublings else { return UInt256(1) }
-            for _ in 0..<(-doublings) {
-                scaled = scaled / UInt256(2)
-                if scaled == .zero { return UInt256(1) }
             }
         }
         return scaled == .zero ? UInt256(1) : scaled
