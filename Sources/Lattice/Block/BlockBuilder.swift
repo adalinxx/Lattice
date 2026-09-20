@@ -329,13 +329,28 @@ public struct BlockBuilder {
     /// permanently reject a perfectly valid block for a transient fetch failure.
     static func resolveDifficultyAnchor(
         from block: Block,
-        fetcher: Fetcher
+        fetcher: Fetcher,
+        chain: ChainState? = nil
     ) async throws -> DifficultyAnchor? {
         var current = block
         // Genesis precedes the anchor and has no schedule to measure against.
         guard current.height > 0 else { return nil }
         while current.height > 1 {
             guard let parentRef = current.parent else { return nil }
+            // The anchor is INHERITED, so any ancestor's anchor is also this
+            // block's. Ask the graph at every step rather than only about the
+            // immediate parent: while a chain is syncing, the parent is
+            // routinely not admitted yet even though its own parent is, and
+            // abandoning the graph after a single miss turns an O(1) lookup
+            // into a walk to height 1 -- once per block, resolving every
+            // ancestor through the fetcher. That cost grows with chain depth
+            // and stalled a live network at ~1,800 blocks.
+            if let chain,
+               let carried = await chain.difficultyAnchor(
+                forBlockHash: parentRef.rawCID
+               ) {
+                return carried
+            }
             // Prefer a node already carried in memory over fetching it, as the
             // spec lookup above this does. A caller assembling blocks without
             // backing storage still has the whole ancestry attached, and a walk

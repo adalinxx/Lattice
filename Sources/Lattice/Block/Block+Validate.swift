@@ -264,8 +264,11 @@ public extension Block {
                   let carried = await chain.difficultyAnchor(forBlockHash: parentHash) {
             anchor = carried
         } else {
+            // Hand the chain down: the walk consults it at every step, so a
+            // parent that is not admitted yet costs a hop or two rather than a
+            // descent to height 1.
             anchor = try await BlockBuilder.resolveDifficultyAnchor(
-                from: parent, fetcher: fetcher
+                from: parent, fetcher: fetcher, chain: chain
             )
         }
         guard let anchor else { return false }
