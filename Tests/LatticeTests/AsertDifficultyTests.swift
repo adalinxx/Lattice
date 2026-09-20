@@ -400,6 +400,67 @@ final class AsertDifficultyTests: XCTestCase {
         )
     }
 
+    /// The anchor walk must stop at the first ancestor the GRAPH already
+    /// knows, not descend to height 1.
+    ///
+    /// The anchor is inherited, so any ancestor's anchor is this block's. The
+    /// validator only reached for chain state when the immediate parent was
+    /// admitted; while a chain syncs, the parent routinely is not, even though
+    /// its own parent is. Abandoning the graph after one miss turned an O(1)
+    /// lookup into a walk to height 1 -- per block, resolving every ancestor
+    /// through the fetcher. Cost grew with depth and stalled a live network at
+    /// ~1,800 blocks, with every node asleep on I/O.
+    ///
+    /// Counting fetches is the assertion: the depth of the walk IS the defect,
+    /// so a test that only checked the returned anchor would have passed
+    /// throughout.
+    func testAnchorWalkStopsAtTheFirstAncestorTheChainKnows() async throws {
+        let fetcher = CountingFetcher()
+        let chainSpec = spec(targetBlockTime: 1_000)
+        let genesis = try await buildAndStoreGenesis(
+            spec: chainSpec, timestamp: 1_000,
+            target: UInt256(1) << 240, fetcher: fetcher
+        )
+        let chain = ChainState.fromGenesis(block: genesis)
+
+        // A chain deep enough that a full descent is unmistakable.
+        var previous = genesis
+        var blocks: [Block] = []
+        for i in 0..<40 {
+            let block = try await buildAndStoreBlock(
+                previous: previous, timestamp: previous.timestamp + 1_000,
+                nonce: UInt64(i), fetcher: fetcher
+            )
+            blocks.append(block)
+            previous = block
+        }
+        // Admit everything EXCEPT the last block, so the deepest block's own
+        // parent is absent from the graph while its grandparent is present --
+        // exactly the shape sync produces.
+        for block in blocks.dropLast() {
+            let header = try VolumeImpl<Block>(node: block)
+            _ = await chain.submitTestBlock(blockHeader: header, block: block)
+        }
+
+        let tip = blocks[blocks.count - 1]
+        fetcher.resetCount()
+        let anchor = try await BlockBuilder.resolveDifficultyAnchor(
+            from: tip, fetcher: fetcher, chain: chain
+        )
+        let fetches = fetcher.count()
+
+        XCTAssertEqual(anchor?.blockHeight, 1, "the anchor is still height 1")
+        XCTAssertEqual(
+            anchor?.timestamp, blocks[0].timestamp,
+            "and is still block one's, whichever route found it"
+        )
+        XCTAssertLessThan(
+            fetches, 5,
+            "the walk must stop at the first known ancestor, not descend to height 1 "
+                + "(took \(fetches) fetches at depth \(tip.height))"
+        )
+    }
+
     // MARK: - Bounded cost on attacker-supplied input
 
     /// A zero anchor target must not spin. Scaling zero yields zero, so a
@@ -544,5 +605,31 @@ final class AsertDifficultyTests: XCTestCase {
         let smaller = actual > expected ? expected : actual
         let slack = expected / UInt256(1_000) * UInt256(partsPerThousand)
         XCTAssertLessThanOrEqual(larger - smaller, slack, message, file: file, line: line)
+    }
+}
+
+/// Wraps the ordinary test store and counts how many objects the walk pulls.
+/// The walk's DEPTH is the property under test, and only a count can see it.
+final class CountingFetcher: Fetcher, Storer, VolumeStorer, @unchecked Sendable {
+    private let inner = StorableFetcher()
+    // NSLock rather than the os-specific lock the neighbouring helper uses:
+    // this needs no platform guard, and the counter is not on a hot path.
+    private let lock = NSLock()
+    private var fetches = 0
+
+    func resetCount() { lock.withLock { fetches = 0 } }
+    func count() -> Int { lock.withLock { fetches } }
+
+    func store(rawCid: String, data: Data) { inner.store(rawCid: rawCid, data: data) }
+    func store(entries: [String: Data]) async { await inner.store(entries: entries) }
+    func store(volume: SerializedVolume) async { await inner.store(volume: volume) }
+    func volumeRoots() -> Set<String> { inner.volumeRoots() }
+    func contains(rawCid: String) -> Bool { inner.contains(rawCid: rawCid) }
+
+    func fetch(rawCid: String) async throws -> Data {
+        // `withLock` is the async-safe scoped form; bare lock()/unlock() is
+        // unavailable from an async context.
+        lock.withLock { fetches += 1 }
+        return try await inner.fetch(rawCid: rawCid)
     }
 }
