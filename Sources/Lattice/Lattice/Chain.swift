@@ -269,19 +269,12 @@ public struct TipBlockSnapshot: Sendable, Equatable {
     public let tipHeight: UInt64
     public let timestamp: Int64
 
-    /// Whether this block's transition was EXECUTED, so `postStateCID` is a
-    /// verified result rather than a declared claim. Gates parent-state
-    /// attestation; see `ChainBlockFact.validated`. Defaults to `false` so any
-    /// construction that cannot prove execution is treated as unverified.
-    public let validated: Bool
-
-    public init(postStateCID: String, prevStateCID: String, specCID: String, target: UInt256, nextTarget: UInt256, tipHeight: UInt64, timestamp: Int64, validated: Bool = false) {
+    public init(postStateCID: String, prevStateCID: String, specCID: String, target: UInt256, nextTarget: UInt256, tipHeight: UInt64, timestamp: Int64) {
         self.postStateCID = postStateCID
         self.prevStateCID = prevStateCID
         self.specCID = specCID
         self.target = target
         self.nextTarget = nextTarget
-        self.validated = validated
         self.tipHeight = tipHeight
         self.timestamp = timestamp
     }
@@ -309,10 +302,7 @@ private struct ConsensusBlockInput: Sendable {
             target: block.target,
             nextTarget: block.nextTarget,
             tipHeight: block.height,
-            timestamp: block.timestamp,
-            // Executed: the whole block is in hand, so its post-state is a
-            // computed result rather than a declared claim.
-            validated: true
+            timestamp: block.timestamp
         )
     }
 
@@ -343,8 +333,7 @@ private struct ConsensusBlockInput: Sendable {
             target: target,
             nextTarget: nextTarget,
             tipHeight: fact.blockHeight,
-            timestamp: fact.timestamp,
-            validated: fact.validated
+            timestamp: fact.timestamp
         )
     }
 }
@@ -384,13 +373,29 @@ private struct TrustedAdmissionBatch {
             id: contributionID,
             work: work.contribution.work
         )
+        // The eager tier weighs and validates in one gate, so its batch may
+        // carry one validation fact alongside the block and work. It must name
+        // the batch's own block: a batch is one block's durability unit, and
+        // admitting a validation for anything else would let one block's
+        // admission silently mark another executed.
+        let validationFacts = batch.facts.compactMap { fact -> ChainValidationFact? in
+            guard case .validation(let value) = fact else { return nil }
+            return value
+        }
+        guard validationFacts.count <= 1,
+              validationFacts.allSatisfy({
+                  CIDIdentity.canonicalString($0.blockHash) == workBlockHash
+              }) else {
+            return nil
+        }
+        let extra = validationFacts.count
 
         switch blockFacts.count {
         case 0:
-            guard batch.facts.count == 1 else { return nil }
+            guard batch.facts.count == 1 + extra else { return nil }
             block = nil
         case 1:
-            guard batch.facts.count == 2,
+            guard batch.facts.count == 2 + extra,
                   let input = ConsensusBlockInput(fact: blockFacts[0]),
                   workBlockHash == input.blockHash else {
                 return nil
@@ -492,6 +497,32 @@ public actor ChainState {
     private var blocksByStateTransition: [StateTransition: Set<String>]
     private var blocksByPostState: [String: Set<String>]
 
+    /// Blocks whose transition this chain EXECUTED, so their `postState` is a
+    /// reproduced result rather than a declared claim. Grows only: execution is
+    /// a fact about immutable bytes, so it is never retracted, and a re-
+    /// delivered weighed fact must never downgrade an executed block.
+    ///
+    /// Kept beside `tipSnapshotsByHash` rather than inside it because snapshot
+    /// equality is used as a corruption predicate: a block whose committed
+    /// fields changed means a corrupt graph, whereas a block that has since
+    /// been executed is ordinary progress.
+    private var validatedBlocks: Set<String>
+
+    /// Blocks reachable from this chain's genesis through an unbroken run of
+    /// EXECUTED blocks — i.e. every state on the path was produced, not merely
+    /// declared.
+    ///
+    /// This is what "the chain produced this state" means, and keeping it as an
+    /// index makes answering it O(1) instead of a walk whose length grows with
+    /// chain height. Block 1 of a child chain anchors against `emptyHeader`,
+    /// which is reachable only at the parent's genesis, so without this the
+    /// anchor cost would grow without bound and a deployment would eventually
+    /// become unanswerable.
+    ///
+    /// Monotone, like `validatedBlocks`: execution is a fact about immutable
+    /// bytes and an ancestor never stops having been executed.
+    private var anchoredBlocks: Set<String>
+
     // Restore validates this invariant; optional access keeps query paths fail-closed.
     var highestBlock: BlockMeta? { hashToBlock[chainTip] }
     var highestBlockHeight: UInt64 { highestBlock?.blockHeight ?? 0 }
@@ -504,6 +535,7 @@ public actor ChainState {
         blockTimestamps: [String: Int64] = [:],
         tipSnapshot: TipBlockSnapshot? = nil,
         tipSnapshotsByHash: [String: TipBlockSnapshot] = [:],
+        validatedBlocks: Set<String> = [],
         mutationGeneration: UInt64 = 0
     ) throws {
         self.chainTip = chainTip
@@ -554,6 +586,10 @@ public actor ChainState {
         if let tipSnapshot {
             self.tipSnapshotsByHash[chainTip] = tipSnapshot
         }
+        self.validatedBlocks = validatedBlocks.union(
+            hashToBlock.values.lazy.filter { $0.blockHeight == 0 }.map(\.blockHash)
+        )
+        self.anchoredBlocks = []
         self.blocksByStateTransition = [:]
         self.blocksByPostState = [:]
         for (blockHash, snapshot) in self.tipSnapshotsByHash
@@ -604,6 +640,32 @@ public actor ChainState {
             }
             self.mainChainBlockAtIndex[height] = hash
         }
+        // Seed the executed-from-genesis frontier. Replay hands validations to
+        // `markValidated` one at a time, but a graph restored wholesale needs
+        // it computed once, downward from every genesis it holds.
+        self.anchoredBlocks = Self.anchoredFrontier(
+            in: self.hashToBlock,
+            validated: self.validatedBlocks
+        )
+    }
+
+    /// Blocks reachable from a genesis through an unbroken run of executed
+    /// blocks. Computed downward so each block is settled once.
+    private static func anchoredFrontier(
+        in hashToBlock: [String: BlockMeta],
+        validated: Set<String>
+    ) -> Set<String> {
+        var anchored: Set<String> = []
+        var pending = hashToBlock.values
+            .filter { $0.blockHeight == 0 && validated.contains($0.blockHash) }
+            .map(\.blockHash)
+        while let hash = pending.popLast() {
+            guard let meta = hashToBlock[hash],
+                  validated.contains(hash),
+                  anchored.insert(hash).inserted else { continue }
+            pending.append(contentsOf: meta.childHashes)
+        }
+        return anchored
     }
 
     package static func fromGenesis(
@@ -790,10 +852,7 @@ public actor ChainState {
             target: block.target,
             nextTarget: block.nextTarget,
             tipHeight: block.height,
-            timestamp: block.timestamp,
-            // Executed: the whole block is in hand, so its post-state is a
-            // computed result rather than a declared claim.
-            validated: true
+            timestamp: block.timestamp
         )
     }
 
@@ -880,7 +939,7 @@ public actor ChainState {
         for block: BlockMeta
     ) -> SameChainPredecessorRequirement? {
         guard let parent = block.parentBlockHash,
-              !hasValidatedAncestry(blockHash: parent) else { return nil }
+              !hasConnectedAncestry(blockHash: parent) else { return nil }
         return SameChainPredecessorRequirement(
             descendantCID: block.blockHash,
             predecessorCID: parent
@@ -888,24 +947,45 @@ public actor ChainState {
     }
 
     /// Whether `blockHash` belongs to a complete accepted path ending at one of
-    /// this path-defined chain's admitted genesis roots. Parent processes issue
-    /// cross-process facts only for blocks with validated ancestry.
-    func hasValidatedAncestry(blockHash: String) -> Bool {
+    /// this path-defined chain's admitted genesis roots — i.e. it is CONNECTED
+    /// and not excluded, so its work routes into fork choice.
+    ///
+    /// This says nothing about whether any block on that path was EXECUTED. The
+    /// weighed tier connects a block from its header alone and records its
+    /// declared `postState` as an unverified claim (§9.9). Anything that must
+    /// distinguish a produced state from a declared one — parent-state
+    /// attestation above all — must also test whether the block was validated;
+    /// connectivity is not verification.
+    func hasConnectedAncestry(blockHash: String) -> Bool {
         subtreeWorkIndex.contains(blockHash)
     }
 
     /// Whether `toStateCID` is reachable from `fromStateCID` through the
     /// connected accepted state-transition graph. Fork choice is irrelevant.
+    /// Continuity is a property of the graph, not of how hard a node is willing
+    /// to look: a visit budget would make the same question answerable on one
+    /// node and unanswerable on another from identical data, splitting honest
+    /// nodes by local policy. Serving RATE is a node's choice; the ANSWER is
+    /// not. The block-1 shape — the one whose cost grew with chain height — is
+    /// answered from the anchored frontier in O(1).
     public func hasStateContinuity(
         from fromStateCID: String,
-        to toStateCID: String,
-        maximumBlockVisits: Int = .max
+        to toStateCID: String
     ) -> Bool {
-        stateContinuityPath(
-            from: fromStateCID,
-            to: toStateCID,
-            maximumBlockVisits: maximumBlockVisits
-        ) != nil
+        guard let from = CIDIdentity.canonicalString(fromStateCID),
+              let to = CIDIdentity.canonicalString(toStateCID) else {
+            return false
+        }
+        if from == to { return true }
+        // A child's block 1 anchors against `emptyHeader`, which is reachable
+        // only at this chain's genesis — so the question is exactly "did this
+        // chain produce that state", which the executed-from-genesis frontier
+        // answers outright. The equivalent walk costs one visit per block of
+        // chain height, which is the shape that used to need a budget.
+        if from == LatticeState.emptyHeader.rawCID {
+            return chainProduced(stateCID: to)
+        }
+        return stateContinuityPath(from: from, to: to) != nil
     }
 
     /// One deterministic accepted-block path proving forward state continuity.
@@ -913,10 +993,8 @@ public actor ChainState {
     /// receiver must still validate those blocks before trusting the path.
     public func stateContinuityPath(
         from fromStateCID: String,
-        to toStateCID: String,
-        maximumBlockVisits: Int = .max
+        to toStateCID: String
     ) -> [String]? {
-        precondition(maximumBlockVisits > 0)
         guard let from = CIDIdentity.canonicalString(fromStateCID),
               let to = CIDIdentity.canonicalString(toStateCID) else {
             return nil
@@ -931,14 +1009,11 @@ public actor ChainState {
         // forged `receiptState` settle a withdrawal that was never paid.
         func isAttestable(_ blockHash: String) -> Bool {
             subtreeWorkIndex.contains(blockHash)
-                && tipSnapshotsByHash[blockHash]?.validated == true
+                && validatedBlocks.contains(blockHash)
         }
-        var remainingVisits = maximumBlockVisits
         if let directCandidates = blocksByStateTransition[
             StateTransition(from: from, to: to)
         ] {
-            guard directCandidates.count <= remainingVisits else { return nil }
-            remainingVisits -= directCandidates.count
             if let direct = directCandidates.lazy.filter({
                 isAttestable($0)
             }).min() {
@@ -947,15 +1022,12 @@ public actor ChainState {
         }
 
         let targetCandidates = blocksByPostState[to] ?? []
-        guard targetCandidates.count <= remainingVisits else { return nil }
         var pending = Array(targetCandidates)
             .filter { isAttestable($0) }
             .sorted(by: >)
         var visited = Set<String>()
         var childTowardTarget: [String: String] = [:]
         while let blockHash = pending.popLast() {
-            guard remainingVisits > 0 else { return nil }
-            remainingVisits -= 1
             guard visited.insert(blockHash).inserted,
                   let block = hashToBlock[blockHash],
                   let snapshot = tipSnapshotsByHash[blockHash] else {
@@ -1795,8 +1867,29 @@ public actor ChainState {
         if let excluded = Self.exclusionTarget(of: batch) {
             return try applyExclusion(blockHash: excluded)
         }
+        if let validated = Self.validationTarget(of: batch) {
+            // A validation for a block this chain does not hold is deferred by
+            // the caller's replay loop exactly as a work fact would be, not an
+            // error: possession and execution arrive independently.
+            guard hashToBlock[validated] != nil else {
+                throw ChainStateRestoreError.missingBlockFact
+            }
+            markValidated(blockHash: validated)
+            return nil
+        }
         guard let trusted = TrustedAdmissionBatch(batch) else {
             throw ChainStateRestoreError.corruptConsensusGraph
+        }
+        defer {
+            // Applied after the block lands: the eager tier weighs and validates
+            // in one gate, so its batch carries a validation alongside the block
+            // and work facts.
+            for fact in batch.facts {
+                guard case .validation(let validation) = fact,
+                      let hash = CIDIdentity.canonicalString(validation.blockHash)
+                else { continue }
+                markValidated(blockHash: hash)
+            }
         }
         if let input = trusted.block {
             if let existing = hashToBlock[input.blockHash] {
@@ -1851,6 +1944,57 @@ public actor ChainState {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
         return submission
+    }
+
+    /// A validation batch is exactly one `.validation` fact: the deferred
+    /// upgrade of an already-possessed block, carrying no new block or work.
+    private static func validationTarget(of batch: ChainAdmissionBatch) -> String? {
+        guard batch.facts.count == 1,
+              case .validation(let fact) = batch.facts[0] else { return nil }
+        return CIDIdentity.canonicalString(fact.blockHash)
+    }
+
+    /// Record that a possessed block's transition was executed. Monotone: the
+    /// marker is a fact about immutable bytes, so it is never retracted, and a
+    /// re-delivered weighed fact must never downgrade it.
+    private func markValidated(blockHash: String) {
+        guard hashToBlock[blockHash] != nil else { return }
+        validatedBlocks.insert(blockHash)
+        propagateAnchored(from: blockHash)
+    }
+
+    /// Extend the executed-from-genesis frontier.
+    ///
+    /// A block is anchored once it is executed and its parent is anchored (a
+    /// genesis anchors itself). Executing one block can therefore also anchor
+    /// descendants that were executed earlier out of order, so the frontier is
+    /// pushed down until it stops moving. Each block is anchored at most once
+    /// for the life of the chain, so the total work is linear overall and the
+    /// amortized cost per admission is constant.
+    private func propagateAnchored(from blockHash: String) {
+        var pending = [blockHash]
+        while let hash = pending.popLast() {
+            guard let meta = hashToBlock[hash],
+                  !anchoredBlocks.contains(hash),
+                  validatedBlocks.contains(hash) else { continue }
+            let parentAnchored = meta.parentBlockHash.map {
+                anchoredBlocks.contains($0)
+            } ?? (meta.blockHeight == 0)
+            guard parentAnchored else { continue }
+            anchoredBlocks.insert(hash)
+            pending.append(contentsOf: meta.childHashes)
+        }
+    }
+
+    /// Whether this chain produced `stateCID` — i.e. some block whose declared
+    /// post-state is `stateCID` was executed, and so was every block between it
+    /// and the genesis.
+    ///
+    /// O(1): the equivalent walk grows with chain height, and it is the shape a
+    /// child's block 1 asks for every time it anchors.
+    private func chainProduced(stateCID: String) -> Bool {
+        guard let candidates = blocksByPostState[stateCID] else { return false }
+        return candidates.contains { anchoredBlocks.contains($0) }
     }
 
     /// An exclusion batch is exactly one `.exclusion` fact. Any other shape is

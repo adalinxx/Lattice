@@ -38,8 +38,7 @@ final class QuotientDeletionCostTests: XCTestCase {
                 target: "1",
                 nextTarget: "1",
                 timestamp: Int64(height),
-                stateDiff: .empty,
-                validated: true
+                stateDiff: .empty
             )),
             .work(ChainWorkFact(
                 blockHash: hash,

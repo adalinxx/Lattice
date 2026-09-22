@@ -41,8 +41,7 @@ final class ReplayProjectionDeferralTests: XCTestCase {
                 target: "1",
                 nextTarget: "1",
                 timestamp: Int64(n.height),
-                stateDiff: .empty,
-                validated: true
+                stateDiff: .empty
             )),
             .work(ChainWorkFact(
                 blockHash: n.hash,

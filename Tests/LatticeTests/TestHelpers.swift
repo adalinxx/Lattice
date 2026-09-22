@@ -377,8 +377,7 @@ func testAdmissionBatch(
             target: block.target.toHexString(),
             nextTarget: block.nextTarget.toHexString(),
             timestamp: block.timestamp,
-            stateDiff: .empty,
-            validated: true
+            stateDiff: .empty
         )),
         .work(ChainWorkFact(blockHash: header.rawCID, contribution: work)),
     ])
@@ -401,8 +400,7 @@ func testAdmissionBatch(
             target: block.target.toHexString(),
             nextTarget: block.nextTarget.toHexString(),
             timestamp: block.timestamp,
-            stateDiff: stateDiff,
-            validated: true
+            stateDiff: stateDiff
         )),
         .work(ChainWorkFact(blockHash: header.rawCID, contribution: contribution))
     ])

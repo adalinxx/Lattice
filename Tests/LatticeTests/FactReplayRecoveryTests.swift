@@ -108,8 +108,7 @@ final class FactReplayRecoveryTests: XCTestCase {
                 target: fact.target,
                 nextTarget: fact.nextTarget,
                 timestamp: fact.timestamp + 1,
-                stateDiff: fact.stateDiff,
-                validated: true
+                stateDiff: fact.stateDiff
             )),
             blockBatch.facts[1],
         ])

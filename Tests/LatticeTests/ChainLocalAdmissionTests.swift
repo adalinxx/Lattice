@@ -113,6 +113,7 @@ private actor AdmissionStageRecorder {
                 case .block(let block): block.blockHash == blockHash
                 case .work(let work): work.blockHash == blockHash
                 case .exclusion(let exclusion): exclusion.blockHash == blockHash
+                case .validation(let validation): validation.blockHash == blockHash
                 }
             }
         }
@@ -1771,9 +1772,12 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let batches = await recorder.recordedBatches()
         XCTAssertEqual(batches.count, 2)
         guard batches.count == 2,
-              batches[0].facts.count == 2,
+              // block + work + validation from the eager tier; the later grind
+              // stages work alone.
+              batches[0].facts.count == 3,
               case .block(let blockFact) = batches[0].facts[0],
               case .work(let initialWork) = batches[0].facts[1],
+              case .validation = batches[0].facts[2],
               batches[1].facts.count == 1,
               case .work(let laterWork) = batches[1].facts[0] else {
             return XCTFail("expected one atomic block/work batch and one work-only batch")

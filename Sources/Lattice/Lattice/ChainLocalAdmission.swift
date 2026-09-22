@@ -34,65 +34,29 @@ public struct ChainBlockFact: Codable, Sendable, Equatable {
     public let timestamp: Int64
     public let stateDiff: StateDiff
 
-    /// Whether this block's transition was EXECUTED, so `postStateCID` is a
-    /// verified result rather than a declared claim. The weighed tier records
-    /// the declaration without executing it (§9.9), and a block that never
-    /// becomes canonical is never validated and therefore never excluded — so
-    /// an unverified claim would otherwise stay in the graph permanently.
-    ///
-    /// This gates parent-state attestation: a child chain settles cross-chain
-    /// withdrawals against an attested parent state, so attesting a state the
-    /// parent never produced lets a forged `receiptState` settle a withdrawal
-    /// that was never paid. Only executed states may be attested.
-    public let validated: Bool
+}
 
-    public init(
-        blockHash: String,
-        parentBlockHash: String?,
-        blockHeight: UInt64,
-        postStateCID: String,
-        prevStateCID: String,
-        specCID: String,
-        target: String,
-        nextTarget: String,
-        timestamp: Int64,
-        stateDiff: StateDiff,
-        validated: Bool
-    ) {
+/// A block's state transition was EXECUTED and its declared `postState`
+/// reproduced. Separate from the block fact because the tiers are separate in
+/// time: the weighed tier possesses and connects a block from its header alone
+/// and records its `postState` as an unverified claim (§9.9); execution is a
+/// later, independent judgment.
+///
+/// It is its own immutable fact rather than a field on `ChainBlockFact` because
+/// the block fact is keyed by block hash and is never rewritten — deferred
+/// execution keeps it as the state-blind consensus-replay record — so a tier
+/// marker stored there could never be updated, and every block would stay
+/// unverified across a restart.
+///
+/// This gates parent-state attestation: a child chain settles cross-chain
+/// withdrawals against an attested parent state, so attesting a state the
+/// parent never produced lets a forged `receiptState` settle a withdrawal that
+/// was never paid.
+public struct ChainValidationFact: Codable, Sendable, Equatable {
+    public let blockHash: String
+
+    public init(blockHash: String) {
         self.blockHash = blockHash
-        self.parentBlockHash = parentBlockHash
-        self.blockHeight = blockHeight
-        self.postStateCID = postStateCID
-        self.prevStateCID = prevStateCID
-        self.specCID = specCID
-        self.target = target
-        self.nextTarget = nextTarget
-        self.timestamp = timestamp
-        self.stateDiff = stateDiff
-        self.validated = validated
-    }
-
-    /// Decoding defaults `validated` to `false`: a record written before this
-    /// field existed carries no proof that its transition was executed, and an
-    /// unproven claim must never be attested. Such a block regains
-    /// attestability when the validate walk re-executes it.
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        blockHash = try container.decode(String.self, forKey: .blockHash)
-        parentBlockHash = try container.decodeIfPresent(
-            String.self, forKey: .parentBlockHash
-        )
-        blockHeight = try container.decode(UInt64.self, forKey: .blockHeight)
-        postStateCID = try container.decode(String.self, forKey: .postStateCID)
-        prevStateCID = try container.decode(String.self, forKey: .prevStateCID)
-        specCID = try container.decode(String.self, forKey: .specCID)
-        target = try container.decode(String.self, forKey: .target)
-        nextTarget = try container.decode(String.self, forKey: .nextTarget)
-        timestamp = try container.decode(Int64.self, forKey: .timestamp)
-        stateDiff = try container.decode(StateDiff.self, forKey: .stateDiff)
-        validated = try container.decodeIfPresent(
-            Bool.self, forKey: .validated
-        ) ?? false
     }
 }
 
@@ -119,12 +83,14 @@ public enum ChainFactID: Codable, Hashable, Sendable {
     case block(String)
     case work(blockHash: String, grindID: String, work: String)
     case exclusion(String)
+    case validation(String)
 }
 
 public enum ChainAdmissionFact: Codable, Sendable, Equatable {
     case block(ChainBlockFact)
     case work(ChainWorkFact)
     case exclusion(ChainExclusionFact)
+    case validation(ChainValidationFact)
 
     public var id: ChainFactID {
         switch self {
@@ -135,6 +101,7 @@ public enum ChainAdmissionFact: Codable, Sendable, Equatable {
             work: fact.contribution.work.toHexString()
         )
         case .exclusion(let fact): .exclusion(fact.blockHash)
+        case .validation(let fact): .validation(fact.blockHash)
         }
     }
 }
@@ -356,7 +323,7 @@ fileprivate struct PreparedAdmission: Sendable {
         }
         var facts: [ChainAdmissionFact] = []
         switch kind {
-        case .block(let stateDiff, _, let validated):
+        case .block(let stateDiff, _, _):
             facts.append(.block(ChainBlockFact(
                 blockHash: resolvedHeader.rawCID,
                 parentBlockHash: block.parent?.rawCID,
@@ -367,8 +334,7 @@ fileprivate struct PreparedAdmission: Sendable {
                 target: block.target.toHexString(),
                 nextTarget: block.nextTarget.toHexString(),
                 timestamp: block.timestamp,
-                stateDiff: stateDiff,
-                validated: validated
+                stateDiff: stateDiff
             )))
         case .evidence, .exclusion:
             break
@@ -377,6 +343,14 @@ fileprivate struct PreparedAdmission: Sendable {
             blockHash: resolvedHeader.rawCID,
             contribution: contribution
         )))
+        // Last: execution is the newest judgment in the batch, and keeping the
+        // block/work prefix stable leaves existing batch-shape expectations
+        // positionally intact.
+        if case .block(_, _, true) = kind {
+            facts.append(.validation(ChainValidationFact(
+                blockHash: resolvedHeader.rawCID
+            )))
+        }
         return ChainAdmissionBatch(facts: facts)
     }
 
@@ -1086,7 +1060,7 @@ private enum ChainLocalAdmission {
         issuableLink: ParentCarrierLink?,
         sameChainPredecessor: SameChainPredecessorRequirement?
     ) {
-        if await level.chain.hasValidatedAncestry(blockHash: blockHash) {
+        if await level.chain.hasConnectedAncestry(blockHash: blockHash) {
             return (candidate, candidate, nil)
         }
         guard let predecessorCID = block.parent?.rawCID else {
@@ -1096,7 +1070,7 @@ private enum ChainLocalAdmission {
                 nil
             )
         }
-        let predecessorIsConnected = await level.chain.hasValidatedAncestry(
+        let predecessorIsConnected = await level.chain.hasConnectedAncestry(
             blockHash: predecessorCID
         )
         guard !predecessorIsConnected else {
@@ -1397,7 +1371,7 @@ public extension ChainLevel {
         guard let duplicate = await preflight.take(for: admissionIdentity) else {
             throw ChainAdmissionPreflightError.invalidToken
         }
-        let isConnected = await chain.hasValidatedAncestry(
+        let isConnected = await chain.hasConnectedAncestry(
             blockHash: duplicate.carrierLink.carrierCID
         )
         let requirement = await chain.sameChainPredecessorRequirement(
@@ -1440,9 +1414,9 @@ public extension ChainLevel {
             stagingContext = preflight.stagingContext
         } else if !prepared.defersHierarchyIssuance,
                   let parentCID = prepared.block.parent?.rawCID,
-                  await chain.hasValidatedAncestry(blockHash: parentCID) {
+                  await chain.hasConnectedAncestry(blockHash: parentCID) {
             // Promotion issues a carrier link when the predecessor connected
-            // after preflight. It keys off `hasValidatedAncestry` (routed, i.e.
+            // after preflight. It keys off `hasConnectedAncestry` (routed, i.e.
             // weighed-inclusive), so it MUST be suppressed for a weighed block —
             // otherwise a deferred, unexecuted block would issue a carrier link a
             // child could bind to. Issuance is re-derived when it is validated.

@@ -22,8 +22,7 @@ final class ParentStateContinuityTests: XCTestCase {
                 target: UInt256.max.toHexString(),
                 nextTarget: UInt256.max.toHexString(),
                 timestamp: nonce,
-                stateDiff: .empty,
-                validated: true
+                stateDiff: .empty
             )),
             .work(ChainWorkFact(
                 blockHash: block,
@@ -32,6 +31,10 @@ final class ParentStateContinuityTests: XCTestCase {
                     work: 1
                 )
             )),
+            // These fixtures model EXECUTED blocks: continuity attests only
+            // states the chain actually produced, so a fixture without this
+            // fact describes a weighed claim and is correctly unattestable.
+            .validation(ChainValidationFact(blockHash: block)),
         ])
     }
 
@@ -89,18 +92,12 @@ final class ParentStateContinuityTests: XCTestCase {
         XCTAssertEqual(repeatedLeft, [leftTip])
         XCTAssertEqual(repeatedRight, [rightTip])
         XCTAssertFalse(disconnected)
-        let budgetExceeded = await chain.stateContinuityPath(
-            from: a,
-            to: c,
-            maximumBlockVisits: 1
-        )
-        let boundedPath = await chain.stateContinuityPath(
-            from: a,
-            to: c,
-            maximumBlockVisits: 2
-        )
-        XCTAssertNil(budgetExceeded)
-        XCTAssertEqual(boundedPath, [root, left])
+        // Continuity carries no visit budget: the answer is a property of the
+        // graph, not of how hard a node is willing to look. A budget would make
+        // the same question answerable on one node and unanswerable on another
+        // from identical data, splitting honest nodes by local policy.
+        let unbudgetedPath = await chain.stateContinuityPath(from: a, to: c)
+        XCTAssertEqual(unbudgetedPath, [root, left])
 #if DEBUG
         let visits = await chain.stateContinuityBlockVisitCount
         let absent = await chain.hasStateContinuity(

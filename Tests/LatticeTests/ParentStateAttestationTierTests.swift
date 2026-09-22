@@ -138,6 +138,257 @@ final class ParentStateAttestationTierTests: XCTestCase {
         )
     }
 
+    /// The upgrade path: executing a weighed block makes it attestable.
+    ///
+    /// Without this, the filter is not a narrowing but a wall — nothing is ever
+    /// attestable, cross-chain settlement stops, and because the resulting
+    /// failure is retriable it fails SILENTLY. A tier marker must therefore live
+    /// somewhere both durable and mutable; folding it into a type whose equality
+    /// is a graph-corruption predicate makes the upgrade throw instead.
+    func testValidatingAWeighedBlockMakesItAttestable() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await buildAndStoreGenesis(
+            spec: spec(), timestamp: 1_000, target: easy, fetcher: fetcher
+        )
+        // A real transition: an identity transition would satisfy continuity via
+        // the `from == to` short-circuit without ever consulting the filter.
+        let keyPair = CryptoUtils.generateKeyPair()
+        let block = try await buildAndStoreBlock(
+            previous: genesis,
+            transactions: [signedTestTransaction(
+                TransactionBody(
+                    accountActions: [], 
+                    actions: [Action(key: "upgrade", oldValue: nil, newValue: "v")],
+                    depositActions: [], genesisActions: [], receiptActions: [],
+                    withdrawalActions: [],
+                    signers: [testAddress(publicKey: keyPair.publicKey)],
+                    fee: 0, nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
+                ),
+                by: keyPair
+            )],
+            timestamp: 2_000, target: easy, nonce: 1, fetcher: fetcher
+        )
+        XCTAssertNotEqual(
+            block.prevState.rawCID, block.postState.rawCID,
+            "the block must change state or continuity short-circuits"
+        )
+
+        let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
+        let header = try BlockHeader(node: block)
+
+        let weighed = try await level.admitBlockHeaderChainLocal(
+            header, fetcher: fetcher,
+            validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
+            mode: .weighed, stage: testAdmissionStage
+        )
+        guard case .accepted = weighed else {
+            return XCTFail("weighed admission must accept, got \(weighed)")
+        }
+        let beforeValidation = await level.chain.hasStateContinuity(
+            from: block.prevState.rawCID, to: block.postState.rawCID
+        )
+        XCTAssertFalse(
+            beforeValidation,
+            "a weighed block's declared post-state is a claim, not a result"
+        )
+
+        // Executing it must promote the block, not throw.
+        let validated = try await level.admitBlockHeaderChainLocal(
+            header, fetcher: fetcher,
+            validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
+            mode: .validate, stage: testAdmissionStage
+        )
+        if case .rejected(let failure, _, _) = validated {
+            return XCTFail("validate tier must not reject an honest block: \(failure)")
+        }
+        let afterValidation = await level.chain.hasStateContinuity(
+            from: block.prevState.rawCID, to: block.postState.rawCID
+        )
+        XCTAssertTrue(
+            afterValidation,
+            """
+            An executed block stayed unattestable. The filter is then a wall \
+            rather than a narrowing: no child chain can admit block 1 and no \
+            existing child can move its parentState, retriably and silently.
+            """
+        )
+    }
+
+    private func legacyBatch(
+        _ block: String, parent: String?, height: UInt64,
+        from: String, to: String, nonce: Int64
+    ) -> ChainAdmissionBatch {
+        // The historical shape: a block fact and its work, and NO validation
+        // fact — the record an upgraded store replays.
+        ChainAdmissionBatch(facts: [
+            .block(ChainBlockFact(
+                blockHash: block, parentBlockHash: parent, blockHeight: height,
+                postStateCID: to, prevStateCID: from,
+                specCID: testCID("legacy-spec"),
+                target: UInt256.max.toHexString(),
+                nextTarget: UInt256.max.toHexString(),
+                timestamp: nonce, stateDiff: .empty
+            )),
+            .work(ChainWorkFact(
+                blockHash: block,
+                contribution: VerifiedWorkContribution(
+                    id: testCID("legacy-grind-\(nonce)"), work: 1
+                )
+            )),
+        ])
+    }
+
+    /// An upgraded store replays facts that predate validation facts. Those
+    /// prove no execution, so they must come back UNVERIFIED — fail-closed.
+    ///
+    /// But the chain's own genesis must stay attestable regardless: it is
+    /// self-contained, commits the empty pre-state, and its transition is what
+    /// defines the chain. Block 1 anchors by walking back to a block whose
+    /// `prevState` is `emptyHeader`, which is the parent's genesis — so an
+    /// unattestable genesis makes that walk unable to terminate and silently
+    /// wedges every child chain.
+    func testLegacyReplayKeepsGenesisAttestableAndTheRestUnverified() async throws {
+        let empty = LatticeState.emptyHeader.rawCID
+        let s1 = testCID("legacy-state-1")
+        let s2 = testCID("legacy-state-2")
+        let genesis = testCID("legacy-genesis")
+        let one = testCID("legacy-one")
+
+        let chain = try await ChainState.restore(replaying: [
+            legacyBatch(genesis, parent: nil, height: 0, from: empty, to: s1, nonce: 1),
+            legacyBatch(one, parent: genesis, height: 1, from: s1, to: s2, nonce: 2),
+        ])
+
+        let genesisAttestable = await chain.hasStateContinuity(from: empty, to: s1)
+        XCTAssertTrue(
+            genesisAttestable,
+            """
+            The chain's own genesis must stay attestable across an upgrade, or \
+            a child's block 1 can never terminate its anchor walk and every \
+            child chain wedges silently.
+            """
+        )
+
+        let replayedBlockAttestable = await chain.hasStateContinuity(from: s1, to: s2)
+        XCTAssertFalse(
+            replayedBlockAttestable,
+            """
+            A replayed record carrying no validation fact proves no execution, \
+            so its declared post-state must not be attestable until the \
+            validate walk re-executes the block.
+            """
+        )
+    }
+
+    /// Block 1 anchors at ANY parent height.
+    ///
+    /// It anchors against `emptyHeader`, which is reachable only at the parent's
+    /// genesis, so the equivalent walk is one visit per parent block. Answering
+    /// that from the executed-from-genesis frontier keeps it O(1), which is what
+    /// lets the query carry no visit budget: a budget would make the same
+    /// question answerable on one node and unanswerable on another from
+    /// identical data — serving RATE is a node's choice, the ANSWER is not.
+    func testBlockOneAnchorsIndependentlyOfChainHeight() async throws {
+        let empty = LatticeState.emptyHeader.rawCID
+
+        func chain(ofHeight height: Int) async throws -> (ChainState, String) {
+            var batches: [ChainAdmissionBatch] = []
+            var prev = empty
+            var parent: String?
+            var last = ""
+            for i in 0...height {
+                let block = testCID("depth-\(height)-\(i)")
+                let post = testCID("depth-state-\(height)-\(i)")
+                batches.append(ChainAdmissionBatch(facts: [
+                    .block(ChainBlockFact(
+                        blockHash: block, parentBlockHash: parent,
+                        blockHeight: UInt64(i), postStateCID: post,
+                        prevStateCID: prev, specCID: testCID("depth-spec"),
+                        target: UInt256.max.toHexString(),
+                        nextTarget: UInt256.max.toHexString(),
+                        timestamp: Int64(i + 1), stateDiff: .empty
+                    )),
+                    .work(ChainWorkFact(
+                        blockHash: block,
+                        contribution: VerifiedWorkContribution(
+                            id: testCID("depth-grind-\(height)-\(i)"), work: 1
+                        )
+                    )),
+                    .validation(ChainValidationFact(blockHash: block)),
+                ]))
+                parent = block; prev = post; last = post
+            }
+            return (try await ChainState.restore(replaying: batches), last)
+        }
+
+        for height in [8, 512] {
+            let (parentChain, tip) = try await chain(ofHeight: height)
+            let anchors = await parentChain.hasStateContinuity(from: empty, to: tip)
+            XCTAssertTrue(
+                anchors,
+                "a child must anchor block 1 against a parent of height \(height)"
+            )
+#if DEBUG
+            // The direct proof that height cannot matter: answering from the
+            // frontier visits NO blocks, so the cost is the same at height 8 as
+            // at 8,000,000. Asserting this beats asserting a large height,
+            // which would only show the cost had not yet become intolerable.
+            let visits = await parentChain.stateContinuityBlockVisitCount
+            XCTAssertEqual(
+                visits, 0,
+                "anchoring block 1 must not walk the parent chain (height \(height))"
+            )
+#endif
+        }
+    }
+
+    /// An unexecuted state stays unanchorable no matter how deep the chain —
+    /// the frontier short-circuit must not become a blanket yes.
+    func testDeepChainStillRefusesAnUnexecutedState() async throws {
+        let empty = LatticeState.emptyHeader.rawCID
+        var batches: [ChainAdmissionBatch] = []
+        var prev = empty
+        var parent: String?
+        var declaredOnly = ""
+        for i in 0...200 {
+            let block = testCID("mix-\(i)")
+            let post = testCID("mix-state-\(i)")
+            // Every tenth block is weighed only: possessed, never executed.
+            let executed = i % 10 != 0 || i == 0
+            var facts: [ChainAdmissionFact] = [
+                .block(ChainBlockFact(
+                    blockHash: block, parentBlockHash: parent,
+                    blockHeight: UInt64(i), postStateCID: post,
+                    prevStateCID: prev, specCID: testCID("mix-spec"),
+                    target: UInt256.max.toHexString(),
+                    nextTarget: UInt256.max.toHexString(),
+                    timestamp: Int64(i + 1), stateDiff: .empty
+                )),
+                .work(ChainWorkFact(
+                    blockHash: block,
+                    contribution: VerifiedWorkContribution(
+                        id: testCID("mix-grind-\(i)"), work: 1
+                    )
+                )),
+            ]
+            if executed {
+                facts.append(.validation(ChainValidationFact(blockHash: block)))
+            } else if declaredOnly.isEmpty {
+                declaredOnly = post
+            }
+            batches.append(ChainAdmissionBatch(facts: facts))
+            parent = block; prev = post
+        }
+        let parentChain = try await ChainState.restore(replaying: batches)
+        XCTAssertFalse(declaredOnly.isEmpty, "fixture must contain a weighed-only block")
+
+        let anchors = await parentChain.hasStateContinuity(from: empty, to: declaredOnly)
+        XCTAssertFalse(
+            anchors,
+            "a declared post-state must stay unanchorable however deep the chain"
+        )
+    }
+
     /// C1: block 1 must prove its `parentState` like every other height.
     ///
     /// Spec §5.3 step 6 has no height-1 exemption: "For non-genesis, compare
