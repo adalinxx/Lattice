@@ -385,7 +385,12 @@ this order:
 6. For non-genesis, compare the predecessor's `parentState` with `B.parentState`.
    Equality is sufficient; otherwise require an exact continuity link proving
    transitive forward reachability through the immediate parent's connected
-   accepted graph.
+   accepted graph. This applies at EVERY height, block 1 included: a genesis
+   commits `emptyHeader` as its `parentState`, and every genesis's `prevState`
+   is `emptyHeader`, so continuity from it terminates at the parent's own
+   genesis. Step 3's terminal binding does not substitute for this — a carrier
+   need not be admitted, connected, valid or canonical, so it establishes no
+   anchor.
 7. Apply the ordinary genesis or non-genesis transition rules to `B`, including
    withdrawal proofs against `B.parentState`.
 
@@ -818,9 +823,25 @@ the same deposit key.
 declared `amountWithdrawn`. A larger declaration fails the state proof.
 
 **No forged parent state**: A withdrawal accepts only a receipt proven in the
-carrier's committed `prevState`, supplied as `parentState`, after the carrier
-and sparse proof path pass consensus validation. Receipt admission itself does
-not assert that a child deposit exists.
+block's `parentState`, and that state MUST be one the parent chain actually
+produced. Two rules establish this, and NEITHER is the proof's terminal
+binding — a carrier is content-addressed bytes that need not be admitted,
+connected, valid, or canonical (§5.3, §9.5), so comparing a child's declared
+`parentState` against a carrier's declared `prevState` compares two values the
+same party may have chosen:
+
+1. Every non-genesis block proves its `parentState` by §5.3 step 6, at every
+   height including block 1. A genesis commits `emptyHeader`, and every
+   genesis's `prevState` is `emptyHeader`, so continuity from it terminates at
+   the parent's own genesis — the anchor is "reachable from real parent
+   history", established inductively thereafter.
+2. State continuity is attested only from blocks whose transition the parent
+   EXECUTED. The weighed tier records a declared `postState` as an unverified
+   claim (§9.9), and a block that never becomes canonical is never validated
+   and therefore never excluded, so an unverified claim would otherwise stay
+   attestable permanently.
+
+Receipt admission itself does not assert that a child deposit exists.
 
 **Cross-chain replay protection**: Each transaction declares a `chainPath` targeting the exact chain hierarchy path. Transactions are rejected if the `chainPath` doesn't match the validating chain.
 
@@ -971,6 +992,16 @@ The immediate parent authenticates only state continuity and child-genesis
 authorization. A continuity fact is bound to the exact parent path and
 `(fromStateCID, toStateCID)` pair. It proves transitive reachability through the
 parent's connected accepted graph, not parent canonicity and not a work total.
+
+A parent MUST attest continuity only across blocks whose transition it
+EXECUTED. Attestation asserts that a state was produced by the parent chain,
+which is exactly what execution establishes and what the weighed tier defers:
+a weighed block's declared `postState` is an unverified claim (§9.9), and a
+block that never becomes canonical is never validated and so never excluded,
+so an unverified claim would otherwise remain attestable permanently. A child
+settles cross-chain withdrawals against an attested state (§8.3), so attesting
+an unexecuted claim admits a forged `receiptState`. Unavailability of a
+validated ancestor makes continuity unprovable-for-now, never invalid (§9.9).
 The fact is immutable and may be relayed independently of its original
 transport.
 

@@ -42,7 +42,8 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
                 target: "1",
                 nextTarget: "1",
                 timestamp: Int64(n.height),
-                stateDiff: .empty
+                stateDiff: .empty,
+                validated: true
             )),
             .work(ChainWorkFact(
                 blockHash: n.hash,

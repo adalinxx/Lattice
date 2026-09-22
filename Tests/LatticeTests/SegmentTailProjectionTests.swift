@@ -307,7 +307,8 @@ private func segmentTailAdmission(_ block: SegmentTailBlock) -> ChainAdmissionBa
             target: "1",
             nextTarget: "1",
             timestamp: Int64(block.height),
-            stateDiff: .empty
+            stateDiff: .empty,
+            validated: true
         )),
         .work(ChainWorkFact(
             blockHash: block.hash,

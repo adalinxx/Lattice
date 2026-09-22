@@ -22,7 +22,8 @@ final class ParentStateContinuityTests: XCTestCase {
                 target: UInt256.max.toHexString(),
                 nextTarget: UInt256.max.toHexString(),
                 timestamp: nonce,
-                stateDiff: .empty
+                stateDiff: .empty,
+                validated: true
             )),
             .work(ChainWorkFact(
                 blockHash: block,

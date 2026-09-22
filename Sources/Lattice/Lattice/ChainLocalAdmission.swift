@@ -33,6 +33,67 @@ public struct ChainBlockFact: Codable, Sendable, Equatable {
     public let nextTarget: String
     public let timestamp: Int64
     public let stateDiff: StateDiff
+
+    /// Whether this block's transition was EXECUTED, so `postStateCID` is a
+    /// verified result rather than a declared claim. The weighed tier records
+    /// the declaration without executing it (§9.9), and a block that never
+    /// becomes canonical is never validated and therefore never excluded — so
+    /// an unverified claim would otherwise stay in the graph permanently.
+    ///
+    /// This gates parent-state attestation: a child chain settles cross-chain
+    /// withdrawals against an attested parent state, so attesting a state the
+    /// parent never produced lets a forged `receiptState` settle a withdrawal
+    /// that was never paid. Only executed states may be attested.
+    public let validated: Bool
+
+    public init(
+        blockHash: String,
+        parentBlockHash: String?,
+        blockHeight: UInt64,
+        postStateCID: String,
+        prevStateCID: String,
+        specCID: String,
+        target: String,
+        nextTarget: String,
+        timestamp: Int64,
+        stateDiff: StateDiff,
+        validated: Bool
+    ) {
+        self.blockHash = blockHash
+        self.parentBlockHash = parentBlockHash
+        self.blockHeight = blockHeight
+        self.postStateCID = postStateCID
+        self.prevStateCID = prevStateCID
+        self.specCID = specCID
+        self.target = target
+        self.nextTarget = nextTarget
+        self.timestamp = timestamp
+        self.stateDiff = stateDiff
+        self.validated = validated
+    }
+
+    /// Decoding defaults `validated` to `false`: a record written before this
+    /// field existed carries no proof that its transition was executed, and an
+    /// unproven claim must never be attested. Such a block regains
+    /// attestability when the validate walk re-executes it.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        blockHash = try container.decode(String.self, forKey: .blockHash)
+        parentBlockHash = try container.decodeIfPresent(
+            String.self, forKey: .parentBlockHash
+        )
+        blockHeight = try container.decode(UInt64.self, forKey: .blockHeight)
+        postStateCID = try container.decode(String.self, forKey: .postStateCID)
+        prevStateCID = try container.decode(String.self, forKey: .prevStateCID)
+        specCID = try container.decode(String.self, forKey: .specCID)
+        target = try container.decode(String.self, forKey: .target)
+        nextTarget = try container.decode(String.self, forKey: .nextTarget)
+        timestamp = try container.decode(Int64.self, forKey: .timestamp)
+        stateDiff = try container.decode(StateDiff.self, forKey: .stateDiff)
+        validated = try container.decodeIfPresent(
+            Bool.self, forKey: .validated
+        ) ?? false
+    }
 }
 
 public struct ChainWorkFact: Codable, Sendable, Equatable {
@@ -248,7 +309,11 @@ public enum ChildChainBootstrapResult: Sendable {
 
 fileprivate struct PreparedAdmission: Sendable {
     enum Kind: Sendable {
-        case block(StateDiff, LatticeState?)
+        /// `validated` records whether the transition was EXECUTED. It is stated
+        /// per tier rather than inferred from the materialized state, because a
+        /// nil state is not a reliable proxy and this flag gates parent-state
+        /// attestation.
+        case block(StateDiff, LatticeState?, validated: Bool)
         case evidence
         /// Validated tier: execution of a previously-weighed block completed and
         /// FAILED deterministically. Stage a single `.exclusion` fact; the block
@@ -291,7 +356,7 @@ fileprivate struct PreparedAdmission: Sendable {
         }
         var facts: [ChainAdmissionFact] = []
         switch kind {
-        case .block(let stateDiff, _):
+        case .block(let stateDiff, _, let validated):
             facts.append(.block(ChainBlockFact(
                 blockHash: resolvedHeader.rawCID,
                 parentBlockHash: block.parent?.rawCID,
@@ -302,7 +367,8 @@ fileprivate struct PreparedAdmission: Sendable {
                 target: block.target.toHexString(),
                 nextTarget: block.nextTarget.toHexString(),
                 timestamp: block.timestamp,
-                stateDiff: stateDiff
+                stateDiff: stateDiff,
+                validated: validated
             )))
         case .evidence, .exclusion:
             break
@@ -348,7 +414,7 @@ fileprivate struct PreparedAdmission: Sendable {
     func storeMaterializedPostState(
         to materializedVolumeStorer: any VolumeStorer
     ) async throws {
-        guard case .block(let stateDiff, let materializedPostState) = kind,
+        guard case .block(let stateDiff, let materializedPostState, _) = kind,
               let materializedPostState else {
             return
         }
@@ -563,17 +629,19 @@ private enum ChainLocalAdmission {
         case .failure(let failure):
             return failure
         }
-        // Block 1 over a self-contained genesis: the genesis carries no parent
-        // state (parentState == empty), so there is no continuity to prove from
-        // it. Block 1's own parentState is validated as a real carrier prevState
-        // by verifySecuringWork (height >= 1) when it is co-mined. No continuity
-        // link is required or permitted here.
-        if predecessor.parent == nil {
-            guard package.parentStateContinuityLink == nil else {
-                return .providerMalformedEvidence
-            }
-            return nil
-        }
+        // Block 1 proves its anchor exactly like every other height (§5.3 step
+        // 6, which carries no height-1 exemption). A genesis's `parentState` is
+        // `emptyHeader` and every genesis's `prevState` is `emptyHeader` too, so
+        // continuity from it terminates at the PARENT's own genesis — i.e. "this
+        // state is reachable from real parent history", which is the anchor
+        // block 1 needs.
+        //
+        // This previously delegated to `verifySecuringWork`'s terminal binding,
+        // which cannot carry it: that compares the child's declared
+        // `parentState` against a CARRIER's `prevState`, and a carrier is
+        // content-addressed bytes that need not be admitted, connected, valid or
+        // canonical (§9.5). Both sides were therefore attacker-chosen, and a
+        // forged `receiptState` could settle a withdrawal that was never paid.
         let fromStateCID = predecessor.parentState.rawCID
         let toStateCID = child.parentState.rawCID
         if fromStateCID == toStateCID {
@@ -784,7 +852,7 @@ private enum ChainLocalAdmission {
                 carrierLink: carrierLink,
                 verifiedCarrierLink: carrier.issuableLink,
                 sameChainPredecessor: carrier.sameChainPredecessor,
-                kind: .block(StateDiff.empty, nil),
+                kind: .block(StateDiff.empty, nil, validated: false),
                 defersHierarchyIssuance: true,
                 defersBodyStore: true
             ))
@@ -843,7 +911,7 @@ private enum ChainLocalAdmission {
                 carrierLink: carrierLink,
                 verifiedCarrierLink: carrier.issuableLink,
                 sameChainPredecessor: carrier.sameChainPredecessor,
-                kind: .block(stateDiff, state)
+                kind: .block(stateDiff, state, validated: true)
             ))
         }
     }
@@ -936,7 +1004,7 @@ private enum ChainLocalAdmission {
                 carrierLink: carrierLink,
                 verifiedCarrierLink: carrier.issuableLink,
                 sameChainPredecessor: carrier.sameChainPredecessor,
-                kind: .block(stateDiff, state)
+                kind: .block(stateDiff, state, validated: true)
             ))
         }
     }
@@ -1109,7 +1177,7 @@ private enum ChainLocalAdmission {
             carrierLink: carrierLink,
             verifiedCarrierLink: carrierLink,
             sameChainPredecessor: nil,
-            kind: .block(transition.0, transition.1)
+            kind: .block(transition.0, transition.1, validated: true)
         )
         try await prepared.cacheValidationContent(to: validationContentStorer)
         let stagingContext = try await prepared.stagingContext()
@@ -1152,7 +1220,7 @@ private enum ChainLocalAdmission {
             )
         }
         let materializedPostState: LatticeState?
-        if case .block(_, let state) = prepared.kind {
+        if case .block(_, let state, _) = prepared.kind {
             materializedPostState = state
         } else {
             materializedPostState = nil

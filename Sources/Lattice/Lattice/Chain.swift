@@ -269,12 +269,19 @@ public struct TipBlockSnapshot: Sendable, Equatable {
     public let tipHeight: UInt64
     public let timestamp: Int64
 
-    public init(postStateCID: String, prevStateCID: String, specCID: String, target: UInt256, nextTarget: UInt256, tipHeight: UInt64, timestamp: Int64) {
+    /// Whether this block's transition was EXECUTED, so `postStateCID` is a
+    /// verified result rather than a declared claim. Gates parent-state
+    /// attestation; see `ChainBlockFact.validated`. Defaults to `false` so any
+    /// construction that cannot prove execution is treated as unverified.
+    public let validated: Bool
+
+    public init(postStateCID: String, prevStateCID: String, specCID: String, target: UInt256, nextTarget: UInt256, tipHeight: UInt64, timestamp: Int64, validated: Bool = false) {
         self.postStateCID = postStateCID
         self.prevStateCID = prevStateCID
         self.specCID = specCID
         self.target = target
         self.nextTarget = nextTarget
+        self.validated = validated
         self.tipHeight = tipHeight
         self.timestamp = timestamp
     }
@@ -289,6 +296,7 @@ private struct ConsensusBlockInput: Sendable {
     let timestamp: Int64
     let snapshot: TipBlockSnapshot
 
+    /// Requires an EXECUTED block.
     init(blockHeader: BlockHeader, block: Block) {
         blockHash = blockHeader.rawCID
         parentBlockHash = block.parent?.rawCID
@@ -301,7 +309,10 @@ private struct ConsensusBlockInput: Sendable {
             target: block.target,
             nextTarget: block.nextTarget,
             tipHeight: block.height,
-            timestamp: block.timestamp
+            timestamp: block.timestamp,
+            // Executed: the whole block is in hand, so its post-state is a
+            // computed result rather than a declared claim.
+            validated: true
         )
     }
 
@@ -332,7 +343,8 @@ private struct ConsensusBlockInput: Sendable {
             target: target,
             nextTarget: nextTarget,
             tipHeight: fact.blockHeight,
-            timestamp: fact.timestamp
+            timestamp: fact.timestamp,
+            validated: fact.validated
         )
     }
 }
@@ -778,7 +790,10 @@ public actor ChainState {
             target: block.target,
             nextTarget: block.nextTarget,
             tipHeight: block.height,
-            timestamp: block.timestamp
+            timestamp: block.timestamp,
+            // Executed: the whole block is in hand, so its post-state is a
+            // computed result rather than a declared claim.
+            validated: true
         )
     }
 
@@ -907,6 +922,17 @@ public actor ChainState {
             return nil
         }
         if from == to { return [] }
+        // Only an EXECUTED transition may be attested. The weighed tier records
+        // a block's declared post-state without running it, and a block that
+        // never becomes canonical is never validated and so never excluded —
+        // so an unverified claim would otherwise stay attestable forever. A
+        // child chain settles cross-chain withdrawals against an attested
+        // parent state, so attesting a state the parent never produced lets a
+        // forged `receiptState` settle a withdrawal that was never paid.
+        func isAttestable(_ blockHash: String) -> Bool {
+            subtreeWorkIndex.contains(blockHash)
+                && tipSnapshotsByHash[blockHash]?.validated == true
+        }
         var remainingVisits = maximumBlockVisits
         if let directCandidates = blocksByStateTransition[
             StateTransition(from: from, to: to)
@@ -914,7 +940,7 @@ public actor ChainState {
             guard directCandidates.count <= remainingVisits else { return nil }
             remainingVisits -= directCandidates.count
             if let direct = directCandidates.lazy.filter({
-                self.subtreeWorkIndex.contains($0)
+                isAttestable($0)
             }).min() {
                 return [direct]
             }
@@ -923,7 +949,7 @@ public actor ChainState {
         let targetCandidates = blocksByPostState[to] ?? []
         guard targetCandidates.count <= remainingVisits else { return nil }
         var pending = Array(targetCandidates)
-            .filter { subtreeWorkIndex.contains($0) }
+            .filter { isAttestable($0) }
             .sorted(by: >)
         var visited = Set<String>()
         var childTowardTarget: [String: String] = [:]
@@ -946,7 +972,7 @@ public actor ChainState {
                 return path
             }
             guard let parentHash = block.parentBlockHash,
-                  subtreeWorkIndex.contains(parentHash),
+                  isAttestable(parentHash),
                   let parent = hashToBlock[parentHash],
                   let parentSnapshot = tipSnapshotsByHash[parentHash],
                   parentSnapshot.postStateCID == snapshot.prevStateCID

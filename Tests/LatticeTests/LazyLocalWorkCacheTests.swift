@@ -86,7 +86,8 @@ private func lazyCacheAdmission(
             target: "1",
             nextTarget: "1",
             timestamp: Int64(index),
-            stateDiff: .empty
+            stateDiff: .empty,
+            validated: true
         )),
         .work(ChainWorkFact(blockHash: hash, contribution: contribution)),
     ])

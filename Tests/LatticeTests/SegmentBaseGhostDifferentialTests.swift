@@ -815,7 +815,8 @@ private func admission(for block: PlannedDifferentialBlock) -> ChainAdmissionBat
             target: "1",
             nextTarget: "1",
             timestamp: Int64(block.index),
-            stateDiff: .empty
+            stateDiff: .empty,
+            validated: true
         )),
         .work(ChainWorkFact(blockHash: block.hash, contribution: contribution)),
     ])
