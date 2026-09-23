@@ -139,6 +139,23 @@ public struct ChainAdmissionBatch: Codable, Sendable, Equatable {
     init(facts: [ChainAdmissionFact]) {
         self.facts = facts
     }
+
+    /// The one batch shape a node may author: "this block's transition was
+    /// executed here".
+    ///
+    /// Deliberately a narrow factory rather than a public initializer. Every
+    /// other fact is a claim Lattice must derive for itself from content —
+    /// exposing general batch construction would let a caller turn wire claims
+    /// into consensus facts. Execution is different in kind: it is a judgment
+    /// the node's own validate walk reaches locally, and the node must be able
+    /// to make it durable, because the durable batch log is the only recovery
+    /// authority and an execution the log forgets is an execution that never
+    /// happened.
+    public static func validation(blockHash: String) -> ChainAdmissionBatch {
+        ChainAdmissionBatch(facts: [
+            .validation(ChainValidationFact(blockHash: blockHash)),
+        ])
+    }
 }
 
 /// The verified, node-owned facts that must become durable with one admission

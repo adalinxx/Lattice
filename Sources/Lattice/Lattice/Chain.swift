@@ -586,9 +586,7 @@ public actor ChainState {
         if let tipSnapshot {
             self.tipSnapshotsByHash[chainTip] = tipSnapshot
         }
-        self.validatedBlocks = validatedBlocks.union(
-            hashToBlock.values.lazy.filter { $0.blockHeight == 0 }.map(\.blockHash)
-        )
+        self.validatedBlocks = validatedBlocks
         self.anchoredBlocks = []
         self.blocksByStateTransition = [:]
         self.blocksByPostState = [:]
@@ -701,7 +699,8 @@ public actor ChainState {
             indexToBlockHash: [0: Set([blockHash])],
             hashToBlock: [blockHash: meta],
             blockTimestamps: [blockHash: block.timestamp],
-            tipSnapshot: Self.snapshot(for: block)
+            tipSnapshot: Self.snapshot(for: block),
+            validatedBlocks: [blockHash]
         )
     }
 
@@ -732,6 +731,7 @@ public actor ChainState {
             hashToBlock: [input.blockHash: meta],
             blockTimestamps: [input.blockHash: input.timestamp],
             tipSnapshot: input.snapshot,
+            validatedBlocks: [input.blockHash],
             mutationGeneration: mutationGeneration
         )
     }
@@ -1880,10 +1880,10 @@ public actor ChainState {
         guard let trusted = TrustedAdmissionBatch(batch) else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
-        defer {
-            // Applied after the block lands: the eager tier weighs and validates
-            // in one gate, so its batch carries a validation alongside the block
-            // and work facts.
+        // Applied only once the batch has landed: `defer` would also run on the
+        // throw paths, marking a block executed out of a batch that was rejected
+        // as graph-inconsistent.
+        func applyValidations() {
             for fact in batch.facts {
                 guard case .validation(let validation) = fact,
                       let hash = CIDIdentity.canonicalString(validation.blockHash)
@@ -1907,6 +1907,7 @@ public actor ChainState {
                     at: input.blockHash
                 ), existing.work >= trusted.contribution.work {
                     hydrateMetadata(from: input)
+                    applyValidations()
                     return nil
                 }
                 guard hasUnreservedMutationCapacity else {
@@ -1920,12 +1921,14 @@ public actor ChainState {
                 guard submission.addedContribution else {
                     throw ChainStateRestoreError.corruptConsensusGraph
                 }
+                applyValidations()
                 return submission
             }
             let submission = submitBlock(input: input, contribution: trusted.contribution)
             guard submission.addedBlock, submission.addedContribution else {
                 throw ChainStateRestoreError.corruptConsensusGraph
             }
+            applyValidations()
             return submission
         }
 
@@ -1980,7 +1983,10 @@ public actor ChainState {
             let parentAnchored = meta.parentBlockHash.map {
                 anchoredBlocks.contains($0)
             } ?? (meta.blockHeight == 0)
-            guard parentAnchored else { continue }
+            // A proven-invalid block extends nothing: its subtree left fork
+            // choice, and the states it declared are not states this chain
+            // stands behind.
+            guard parentAnchored, !excludedClosure.contains(hash) else { continue }
             anchoredBlocks.insert(hash)
             pending.append(contentsOf: meta.childHashes)
         }
@@ -1994,7 +2000,9 @@ public actor ChainState {
     /// child's block 1 asks for every time it anchors.
     private func chainProduced(stateCID: String) -> Bool {
         guard let candidates = blocksByPostState[stateCID] else { return false }
-        return candidates.contains { anchoredBlocks.contains($0) }
+        return candidates.contains {
+            anchoredBlocks.contains($0) && subtreeWorkIndex.contains($0)
+        }
     }
 
     /// An exclusion batch is exactly one `.exclusion` fact. Any other shape is

@@ -30,6 +30,37 @@ final class ParentStateAttestationTierTests: XCTestCase {
         )
     }
 
+    /// A genesis whose post-state is NOT `emptyHeader`.
+    ///
+    /// A transaction-free genesis produces the empty state, and anything
+    /// anchored at it takes the `from == emptyHeader` short-circuit — so a test
+    /// meaning to exercise the walk would quietly not.
+    private func genesisWithState(
+        fetcher: StorableFetcher, timestamp: Int64, nonce: UInt64, key: String
+    ) async throws -> Block {
+        let keyPair = CryptoUtils.generateKeyPair()
+        let block = try await buildAndStoreGenesis(
+            spec: spec(),
+            transactions: [signedTestTransaction(
+                TransactionBody(
+                    accountActions: [],
+                    actions: [Action(key: key, oldValue: nil, newValue: "v")],
+                    depositActions: [], genesisActions: [], receiptActions: [],
+                    withdrawalActions: [],
+                    signers: [testAddress(publicKey: keyPair.publicKey)],
+                    fee: 0, nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
+                ),
+                by: keyPair
+            )],
+            timestamp: timestamp, target: easy, nonce: nonce, fetcher: fetcher
+        )
+        XCTAssertNotEqual(
+            block.postState.rawCID, LatticeState.emptyHeader.rawCID,
+            "fixture genesis must carry state or the walk is bypassed"
+        )
+        return block
+    }
+
     /// A real, well-formed `LatticeState` that the chain under test never
     /// produced — built by executing a transition on an unrelated chain.
     private func stateFromAnUnrelatedChain(
@@ -95,13 +126,16 @@ final class ParentStateAttestationTierTests: XCTestCase {
     /// vouches for the declared state forever.
     func testWeighedDeclaredPostStateIsNotAttestable() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await buildAndStoreGenesis(
-            spec: spec(), timestamp: 1_000, target: easy, fetcher: fetcher
+        let genesis = try await genesisWithState(
+            fetcher: fetcher, timestamp: 1_000, nonce: 0, key: "c2"
         )
         let honest = try await buildAndStoreBlock(
             previous: genesis, timestamp: 2_000, target: easy, nonce: 1,
             fetcher: fetcher
         )
+        // The anchor is the honest sibling's prevState = the genesis post-state,
+        // which is non-empty, so this exercises the walk.
+        XCTAssertNotEqual(honest.prevState.rawCID, LatticeState.emptyHeader.rawCID)
 
         let forgedState = try await stateFromAnUnrelatedChain(fetcher: fetcher)
         let forged = forgedSibling(of: honest, declaring: forgedState, nonce: 7)
@@ -276,6 +310,79 @@ final class ParentStateAttestationTierTests: XCTestCase {
             A replayed record carrying no validation fact proves no execution, \
             so its declared post-state must not be attestable until the \
             validate walk re-executes the block.
+            """
+        )
+    }
+
+    /// T1: executing a block must anchor descendants executed EARLIER.
+    ///
+    /// Possession and execution arrive independently, so a descendant can be
+    /// executed before its ancestor. The frontier is therefore pushed downward
+    /// until it stops moving — and without that cascade the descendant would
+    /// stay unanchored forever while its whole ancestry is executed. Deleting
+    /// the cascade previously left the entire suite green.
+    func testValidationCascadesToDescendantsValidatedEarlier() async throws {
+        let empty = LatticeState.emptyHeader.rawCID
+        let g = testCID("cascade-genesis")
+        let one = testCID("cascade-one")
+        let two = testCID("cascade-two")
+        let sg = testCID("cascade-state-g")
+        let s1 = testCID("cascade-state-1")
+        let s2 = testCID("cascade-state-2")
+
+        func facts(
+            _ block: String, parent: String?, height: UInt64,
+            from: String, to: String, n: Int64, executed: Bool
+        ) -> ChainAdmissionBatch {
+            var list: [ChainAdmissionFact] = [
+                .block(ChainBlockFact(
+                    blockHash: block, parentBlockHash: parent,
+                    blockHeight: height, postStateCID: to, prevStateCID: from,
+                    specCID: testCID("cascade-spec"),
+                    target: UInt256.max.toHexString(),
+                    nextTarget: UInt256.max.toHexString(),
+                    timestamp: n, stateDiff: .empty
+                )),
+                .work(ChainWorkFact(
+                    blockHash: block,
+                    contribution: VerifiedWorkContribution(
+                        id: testCID("cascade-grind-\(n)"), work: 1
+                    )
+                )),
+            ]
+            if executed {
+                list.append(.validation(ChainValidationFact(blockHash: block)))
+            }
+            return ChainAdmissionBatch(facts: list)
+        }
+
+        // Block 2 is executed on arrival; block 1 is possessed but NOT executed
+        // yet, so block 2 cannot be anchored through it.
+        let chain = try await ChainState.restore(replaying: [
+            facts(g, parent: nil, height: 0, from: empty, to: sg, n: 1, executed: true),
+            facts(one, parent: g, height: 1, from: sg, to: s1, n: 2, executed: false),
+            facts(two, parent: one, height: 2, from: s1, to: s2, n: 3, executed: true),
+        ])
+
+        let beforeAncestor = await chain.hasStateContinuity(from: empty, to: s2)
+        XCTAssertFalse(
+            beforeAncestor,
+            "a descendant must not anchor while an ancestor is still unexecuted"
+        )
+
+        // Executing the missing ancestor must carry the frontier past it and
+        // pick up the descendant that was executed earlier.
+        _ = try await chain.applyStaged(ChainAdmissionBatch(facts: [
+            .validation(ChainValidationFact(blockHash: one)),
+        ]))
+
+        let afterAncestor = await chain.hasStateContinuity(from: empty, to: s2)
+        XCTAssertTrue(
+            afterAncestor,
+            """
+            Executing the ancestor did not carry the frontier to a descendant \
+            executed earlier. Out-of-order arrival is the whole reason the \
+            frontier is pushed rather than set.
             """
         )
     }
@@ -506,12 +613,39 @@ final class ParentStateAttestationTierTests: XCTestCase {
     /// continuity outright.
     func testExecutedPostStateRemainsAttestable() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await buildAndStoreGenesis(
-            spec: spec(), timestamp: 1_000, target: easy, fetcher: fetcher
+        // Genesis carries state, so `executed.prevState` is non-empty and this
+        // goes through the WALK rather than the frontier short-circuit. This is
+        // the file's only positive walk assertion: a test asserting `false`
+        // cannot detect an over-restrictive filter, so without this one
+        // `isAttestable -> false` passes the whole file.
+        let genesis = try await genesisWithState(
+            fetcher: fetcher, timestamp: 1_000, nonce: 0, key: "positive-walk"
         )
+        // A transaction-free block is an IDENTITY transition here, which would
+        // take the `from == to` short-circuit and never reach the walk.
+        let keyPair = CryptoUtils.generateKeyPair()
         let executed = try await buildAndStoreBlock(
-            previous: genesis, timestamp: 2_000, target: easy, nonce: 1,
-            fetcher: fetcher
+            previous: genesis,
+            transactions: [signedTestTransaction(
+                TransactionBody(
+                    accountActions: [],
+                    actions: [Action(key: "walked", oldValue: nil, newValue: "v")],
+                    depositActions: [], genesisActions: [], receiptActions: [],
+                    withdrawalActions: [],
+                    signers: [testAddress(publicKey: keyPair.publicKey)],
+                    fee: 0, nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
+                ),
+                by: keyPair
+            )],
+            timestamp: 2_000, target: easy, nonce: 1, fetcher: fetcher
+        )
+        XCTAssertNotEqual(
+            executed.prevState.rawCID, LatticeState.emptyHeader.rawCID,
+            "must exercise the walk, not the empty-anchor short-circuit"
+        )
+        XCTAssertNotEqual(
+            executed.prevState.rawCID, executed.postState.rawCID,
+            "must exercise the walk, not the identity short-circuit"
         )
 
         let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
