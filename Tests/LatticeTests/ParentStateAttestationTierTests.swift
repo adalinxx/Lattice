@@ -387,6 +387,216 @@ final class ParentStateAttestationTierTests: XCTestCase {
         )
     }
 
+    private func executedBatch(
+        _ block: String, parent: String?, height: UInt64,
+        from: String, to: String, n: Int64
+    ) -> ChainAdmissionBatch {
+        ChainAdmissionBatch(facts: [
+            .block(ChainBlockFact(
+                blockHash: block, parentBlockHash: parent, blockHeight: height,
+                postStateCID: to, prevStateCID: from,
+                specCID: testCID("excl-spec"),
+                target: UInt256.max.toHexString(),
+                nextTarget: UInt256.max.toHexString(),
+                timestamp: n, stateDiff: .empty
+            )),
+            .work(ChainWorkFact(
+                blockHash: block,
+                contribution: VerifiedWorkContribution(
+                    id: testCID("excl-grind-\(n)"), work: 1
+                )
+            )),
+            .validation(ChainValidationFact(blockHash: block)),
+        ])
+    }
+
+    /// A state stops being attestable once the block that produced it — or any
+    /// ancestor — is proven invalid.
+    ///
+    /// The ordinary order is execute first, prove invalid later, so refusing to
+    /// EXTEND the frontier through an already-excluded block is not enough: the
+    /// subtree was anchored before the verdict arrived. Checked through both the
+    /// live path and a wholesale restore of the same log, because the two build
+    /// the frontier by different code and a node that disagrees with its own
+    /// restart is a split waiting to happen.
+    func testExclusionRemovesAttestabilityLiveAndAfterRestore() async throws {
+        let empty = LatticeState.emptyHeader.rawCID
+        let g = testCID("excl-genesis")
+        let one = testCID("excl-one")
+        let two = testCID("excl-two")
+        let sg = testCID("excl-state-g")
+        let s1 = testCID("excl-state-1")
+        let s2 = testCID("excl-state-2")
+
+        let history = [
+            executedBatch(g, parent: nil, height: 0, from: empty, to: sg, n: 1),
+            executedBatch(one, parent: g, height: 1, from: sg, to: s1, n: 2),
+            executedBatch(two, parent: one, height: 2, from: s1, to: s2, n: 3),
+        ]
+        let exclusion = ChainAdmissionBatch(facts: [
+            .exclusion(ChainExclusionFact(blockHash: one)),
+        ])
+
+        let live = try await ChainState.restore(replaying: history)
+        let attestableBefore = await live.hasStateContinuity(from: empty, to: s2)
+        XCTAssertTrue(
+            attestableBefore,
+            "the fixture must be attestable before the verdict"
+        )
+        _ = try await live.applyStaged(exclusion)
+
+        // Excluding block 1 must take its descendant with it.
+        let liveOne = await live.hasStateContinuity(from: empty, to: s1)
+        let liveTwo = await live.hasStateContinuity(from: empty, to: s2)
+        XCTAssertFalse(liveOne, "a proven-invalid block's state must not be attestable")
+        XCTAssertFalse(
+            liveTwo,
+            "a descendant of a proven-invalid block must not be attestable either"
+        )
+
+        // The same log restored wholesale must agree: the frontier is built by
+        // different code on that path.
+        let restored = try await ChainState.restore(replaying: history + [exclusion])
+        let restoredOne = await restored.hasStateContinuity(from: empty, to: s1)
+        let restoredTwo = await restored.hasStateContinuity(from: empty, to: s2)
+        XCTAssertEqual(liveOne, restoredOne, "live and restored must agree")
+        XCTAssertEqual(liveTwo, restoredTwo, "live and restored must agree")
+    }
+
+    /// A batch's validation fact must name that batch's own block.
+    ///
+    /// A batch is one block's durability unit. Admitting a validation for some
+    /// other block would let one block's admission silently mark a different
+    /// block executed — and execution is what gates attestation.
+    func testValidationMustNameItsOwnBatchsBlock() async throws {
+        let empty = LatticeState.emptyHeader.rawCID
+        let g = testCID("naming-genesis")
+        let other = testCID("naming-other")
+        let sg = testCID("naming-state-g")
+
+        let crossNamed = ChainAdmissionBatch(facts: [
+            .block(ChainBlockFact(
+                blockHash: g, parentBlockHash: nil, blockHeight: 0,
+                postStateCID: sg, prevStateCID: empty,
+                specCID: testCID("naming-spec"),
+                target: UInt256.max.toHexString(),
+                nextTarget: UInt256.max.toHexString(),
+                timestamp: 1, stateDiff: .empty
+            )),
+            .work(ChainWorkFact(
+                blockHash: g,
+                contribution: VerifiedWorkContribution(
+                    id: testCID("naming-grind"), work: 1
+                )
+            )),
+            .validation(ChainValidationFact(blockHash: other)),
+        ])
+
+        do {
+            _ = try await ChainState.restore(replaying: [crossNamed])
+            XCTFail("a validation naming another block must not be admitted")
+        } catch {
+            // Refused, as a malformed batch.
+        }
+    }
+
+    /// C-1: a weighed predecessor must not vouch for its successor's anchor.
+    ///
+    /// Anchoring by comparing against the PREDECESSOR is an induction, and the
+    /// induction has no base on the weighed tier — a weighed admission never
+    /// runs the parent-fact checks, so a weighed predecessor proved nothing
+    /// about its own `parentState`. A successor matching that unchecked claim
+    /// would take the equality branch and be admitted with zero evidence,
+    /// laundering a forged parent state through the tier that defers
+    /// verification. The attacker needs no parent-chain work: carriers need not
+    /// be admitted, connected, valid or canonical (§9.5).
+    func testWeighedPredecessorCannotVouchForItsSuccessorsAnchor() async throws {
+        let fetcher = StorableFetcher()
+        let childGenesis = try await buildAndStoreGenesis(
+            spec: spec(), timestamp: 1_000, target: easy, nonce: 1, fetcher: fetcher
+        )
+        // A state the child's real parent chain never produced.
+        let unrelated = try await genesisWithState(
+            fetcher: fetcher, timestamp: 500, nonce: 2, key: "induction"
+        )
+        let shell = try await buildAndStoreBlock(
+            previous: unrelated, timestamp: 1_500, target: easy, nonce: 3,
+            fetcher: fetcher
+        )
+
+        func carriedBlock(
+            previous: Block, timestamp: Int64, nonce: UInt64
+        ) async throws -> (Block, ChildValidationPackage) {
+            let block = try await buildAndStoreBlock(
+                previous: previous, parentChainBlock: shell,
+                timestamp: timestamp, target: easy, nonce: nonce, fetcher: fetcher
+            )
+            let carrier = try await buildAndStoreBlock(
+                previous: unrelated, children: ["Child": block],
+                timestamp: timestamp + 1, target: easy, nonce: nonce + 40,
+                fetcher: fetcher
+            )
+            let proof = try await ChildBlockProof.generate(
+                rootHeader: try BlockHeader(node: carrier),
+                childDirectory: "Child",
+                fetcher: fetcher
+            )
+            return (block, try await childValidationPackage(
+                proof: proof, fetcher: fetcher
+            ))
+        }
+
+        let (blockOne, packageOne) = try await carriedBlock(
+            previous: childGenesis, timestamp: 2_000, nonce: 4
+        )
+        let level = ChainLevel(
+            chain: ChainState.fromGenesis(block: childGenesis),
+            context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
+        )
+
+        // Weighed admission does not run the parent-fact checks, so block 1's
+        // forged `parentState` is possessed but unproven. That is by design.
+        let weighed = try await level.admitBlockHeaderChainLocal(
+            try BlockHeader(node: blockOne),
+            fetcher: fetcher, childPackage: packageOne,
+            validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
+            mode: .weighed, stage: testAdmissionStage
+        )
+        guard case .accepted = weighed else {
+            return XCTFail("weighed admission possesses without proving, got \(weighed)")
+        }
+
+        // The successor declares the SAME forged parent state, so an induction
+        // anchored on the predecessor would admit it for free.
+        let (blockTwo, packageTwo) = try await carriedBlock(
+            previous: blockOne, timestamp: 3_000, nonce: 5
+        )
+        XCTAssertEqual(
+            blockOne.parentState.rawCID, blockTwo.parentState.rawCID,
+            "the fixture must exercise the equality branch"
+        )
+
+        let outcome = try await level.admitBlockHeaderChainLocal(
+            try BlockHeader(node: blockTwo),
+            fetcher: fetcher, childPackage: packageTwo,
+            validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
+            mode: .validate, stage: testAdmissionStage
+        )
+        guard case .rejected(let failure, _, _) = outcome else {
+            return XCTFail(
+                """
+                A block inherited its anchor from an UNVERIFIED predecessor. \
+                Cross-chain withdrawals settle against this state, so its \
+                receiptState can be forged; got \(outcome)
+                """
+            )
+        }
+        guard case .crossChainEvidenceRequired(.parentStateContinuity) = failure
+        else {
+            return XCTFail("expected a demand for continuity evidence, got \(failure)")
+        }
+    }
+
     /// Block 1 anchors at ANY parent height.
     ///
     /// It anchors against `emptyHeader`, which is reachable only at the parent's

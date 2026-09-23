@@ -609,16 +609,8 @@ private enum ChainLocalAdmission {
             return nil
         }
 
-        guard package.parentGenesisLink == nil,
-              let predecessorHeader = child.parent else {
+        guard package.parentGenesisLink == nil, child.parent != nil else {
             return .providerMalformedEvidence
-        }
-        let predecessor: Block
-        switch await resolveBlock(predecessorHeader, fetcher: fetcher) {
-        case .success(let resolved):
-            predecessor = resolved.block
-        case .failure(let failure):
-            return failure
         }
         // Block 1 proves its anchor exactly like every other height (§5.3 step
         // 6, which carries no height-1 exemption). A genesis's `parentState` is
@@ -633,9 +625,27 @@ private enum ChainLocalAdmission {
         // content-addressed bytes that need not be admitted, connected, valid or
         // canonical (§9.5). Both sides were therefore attacker-chosen, and a
         // forged `receiptState` could settle a withdrawal that was never paid.
-        let fromStateCID = predecessor.parentState.rawCID
+        // Anchored from the parent chain's GENESIS, not from the predecessor.
+        //
+        // Comparing against the predecessor makes this an induction, and the
+        // induction has no base on the weighed tier: a weighed admission never
+        // runs these checks at all, so a weighed predecessor proved nothing
+        // about its own `parentState`. A block could then match its unchecked
+        // predecessor, take the equality branch, and be admitted with zero
+        // evidence — laundering a forged parent state through the tier that
+        // deliberately defers verification. That is the same shape as the
+        // defect this rule exists to close, one height further along.
+        //
+        // So every block proves its own anchor directly. `emptyHeader` is
+        // reachable only at the parent's genesis, making this "reachable from
+        // real parent history" for each block on its own evidence, and the
+        // executed-from-genesis frontier answers it in O(1) — so the equality
+        // shortcut bought nothing that is worth an induction.
+        let fromStateCID = LatticeState.emptyHeader.rawCID
         let toStateCID = child.parentState.rawCID
         if fromStateCID == toStateCID {
+            // The block commits no parent state at all; there is nothing to
+            // anchor.
             guard package.parentStateContinuityLink == nil else {
                 return .providerMalformedEvidence
             }

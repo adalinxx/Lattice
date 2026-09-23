@@ -643,7 +643,8 @@ public actor ChainState {
         // it computed once, downward from every genesis it holds.
         self.anchoredBlocks = Self.anchoredFrontier(
             in: self.hashToBlock,
-            validated: self.validatedBlocks
+            validated: self.validatedBlocks,
+            excluded: self.excludedClosure
         )
     }
 
@@ -651,15 +652,20 @@ public actor ChainState {
     /// blocks. Computed downward so each block is settled once.
     private static func anchoredFrontier(
         in hashToBlock: [String: BlockMeta],
-        validated: Set<String>
+        validated: Set<String>,
+        excluded: Set<String>
     ) -> Set<String> {
         var anchored: Set<String> = []
+        // Roots keyed on the parent pointer, matching `propagateAnchored` and
+        // the weight-index builder: the graph invariant ties it to height 0, and
+        // three spellings of one predicate is how they drift apart.
         var pending = hashToBlock.values
-            .filter { $0.blockHeight == 0 && validated.contains($0.blockHash) }
+            .filter { $0.parentBlockHash == nil && validated.contains($0.blockHash) }
             .map(\.blockHash)
         while let hash = pending.popLast() {
             guard let meta = hashToBlock[hash],
                   validated.contains(hash),
+                  !excluded.contains(hash),
                   anchored.insert(hash).inserted else { continue }
             pending.append(contentsOf: meta.childHashes)
         }
@@ -1982,7 +1988,7 @@ public actor ChainState {
                   validatedBlocks.contains(hash) else { continue }
             let parentAnchored = meta.parentBlockHash.map {
                 anchoredBlocks.contains($0)
-            } ?? (meta.blockHeight == 0)
+            } ?? true
             // A proven-invalid block extends nothing: its subtree left fork
             // choice, and the states it declared are not states this chain
             // stands behind.
@@ -2000,6 +2006,12 @@ public actor ChainState {
     /// child's block 1 asks for every time it anchors.
     private func chainProduced(stateCID: String) -> Bool {
         guard let candidates = blocksByPostState[stateCID] else { return false }
+        // Both conjuncts, deliberately. The frontier already drops excluded
+        // blocks, so the weight-index check is redundant TODAY — and it is kept
+        // because this is the gate on whether a forged `receiptState` can settle
+        // a withdrawal, where one defence is not enough. Removing either alone
+        // leaves the property intact; removing both breaks it, which is what the
+        // exclusion test pins. Do not simplify this to a single lookup.
         return candidates.contains {
             anchoredBlocks.contains($0) && subtreeWorkIndex.contains($0)
         }
@@ -2027,6 +2039,15 @@ public actor ChainState {
         }
         excludedRoots.insert(blockHash)
         recomputeExcludedClosure()
+        // Rebuild the executed-from-genesis frontier for the same reason the
+        // weight index is rebuilt: the excluded subtree was anchored before it
+        // was proven invalid, and a chain does not stand behind states it has
+        // proven it never legitimately produced.
+        anchoredBlocks = Self.anchoredFrontier(
+            in: hashToBlock,
+            validated: validatedBlocks,
+            excluded: excludedClosure
+        )
         // Rebuild the single weight index from the exclusion-filtered graph
         // ONCE. The excluded subtree was routed before it was proven invalid, so
         // its work must leave the index; rebuilding (vs. an incremental
