@@ -419,13 +419,19 @@ public struct ChildBlockProof: Sendable {
                 // actually beat.
                 //
                 // Previously this was a `max` over every met target. The two
-                // agree whenever targets ease going down the hierarchy, which
-                // is the ordinary case — the root-most met target is then also
-                // the hardest. They differ only when a deeper chain is HARDER
-                // than a shallower one, and there the max let the deeper chain
-                // set the price. Position is the honest denominator: "this hash
-                // was worth a Nexus block, so it is worth Nexus work wherever
-                // it commits", rather than an extremum over a set the prover
+                // agree unless an intermediate chain's target is harder than
+                // both the root's met target and the terminal's own — and that
+                // is NOT an exotic shape. `ChainSpec.targetBlockTime` is a free
+                // per-chain field and retarget drives each chain toward its own
+                // block time, so a chain with far less hashrate than its parent
+                // but a much longer block time sits at a HARDER target. An
+                // inverted hierarchy is a configuration choice an operator may
+                // make without intending it.
+                //
+                // Where they differ, the max let the DEEPER chain set the
+                // price. Position is the honest denominator: "this hash was
+                // worth a Nexus block, so it is worth Nexus work wherever it
+                // commits", rather than an extremum over a set the prover
                 // partly chooses.
                 //
                 // This does not weaken the fabrication bound. A prover who
