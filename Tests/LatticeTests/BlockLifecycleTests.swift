@@ -209,12 +209,16 @@ final class BlockMintingTests: XCTestCase {
 
         let staged = await collector.snapshot()
         XCTAssertEqual(staged.count, 1)
-        XCTAssertEqual(staged[0].facts.count, 2)
-        XCTAssertEqual(Set(staged[0].facts.map(\.id)).count, 2)
+        // block + work + validation, atomically: the eager tier weighs and
+        // validates in one gate, so execution is recorded with possession.
+        XCTAssertEqual(staged[0].facts.count, 3)
+        XCTAssertEqual(Set(staged[0].facts.map(\.id)).count, 3)
         guard case .block(let blockFact) = staged[0].facts[0],
-              case .work(let workFact) = staged[0].facts[1] else {
-            return XCTFail("new block admission should atomically stage block then work facts")
+              case .work(let workFact) = staged[0].facts[1],
+              case .validation(let validationFact) = staged[0].facts[2] else {
+            return XCTFail("new block admission should atomically stage block, work then validation facts")
         }
+        XCTAssertEqual(validationFact.blockHash, block1Hash)
         XCTAssertEqual(blockFact.blockHash, block1Hash)
         XCTAssertEqual(blockFact.stateDiff, built1.stateDiff)
         XCTAssertEqual(workFact.blockHash, block1Hash)
