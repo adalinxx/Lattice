@@ -3901,6 +3901,47 @@ final class ChainLocalAdmissionTests: XCTestCase {
         )
     }
 
+    /// The ORDINARY merged-mining case, and the branch the other tests miss: a
+    /// grind that beats the child's target but NOT the root's own target.
+    ///
+    /// `carriers.first(where:)` does two things — take index 0, and SKIP
+    /// carriers whose target was not met. Every other test here mines hard
+    /// enough that the root is met, so they only ever pin the first behaviour.
+    /// Without this test, dropping the predicate entirely
+    /// (`carriers.first.map { workForTarget($0.block.target) }`) passes the
+    /// whole suite while crediting an UNMET target — work the hash never did.
+    func testUnmetRootIsSkippedRatherThanCredited() async throws {
+        let outerTarget = UInt256.max / UInt256(1024)  // root: far too hard
+        let middleTarget = UInt256.max / UInt256(16)
+        let leafTarget = UInt256.max / UInt256(4)
+
+        let verified = try await verifiedMultiHopContribution(
+            outerTarget: outerTarget,
+            middleTarget: middleTarget,
+            leafTarget: leafTarget,
+            miningTarget: middleTarget
+        )
+
+        // Fixture guard: the root's target must genuinely NOT be met, or this
+        // exercises the take-index-0 path and proves nothing new.
+        XCTAssertGreaterThan(
+            verified.rootHash, outerTarget,
+            "fixture must MISS the root target, or the skip branch is not reached"
+        )
+        XCTAssertLessThanOrEqual(
+            verified.rootHash, middleTarget,
+            "fixture must meet the middle target, or nothing is credited"
+        )
+        XCTAssertEqual(
+            verified.contribution.work, UInt256(16),
+            """
+            Credit must come from the root-most target actually MET (16), never \
+            from an unmet harder one (1024). Crediting an unmet target invents \
+            work the hash did not do.
+            """
+        )
+    }
+
     /// The safety of the change: when targets ease going DOWN the hierarchy —
     /// the ordinary shape, since a child has less hashrate than its parent —
     /// the root-most met target IS the hardest met target, so the new rule and

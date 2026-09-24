@@ -378,8 +378,10 @@ this order:
    every supplied proof entry, and require its terminal CID to equal `CID(B)`.
 3. At every vertical edge, require the nested child's `parentState` to equal the
    carrier's committed `prevState`.
-4. Require `h <= B.target`. Among every content-bound block on the path whose
-   target is beaten by `h`, credit the strongest target-derived quantity.
+4. Require `h <= B.target`. Credit the target-derived quantity of the
+   ROOT-MOST content-bound block on the path whose target is beaten by `h`,
+   raised if greater by `B`'s own target (§9.5). Not the strongest such
+   quantity: a deeper chain must not price a grind.
 5. For genesis, require the exact parent genesis link and the complete genesis
    shape, including `nextTarget == target`.
 6. For non-genesis, compare the predecessor's `parentState` with `B.parentState`.
@@ -1001,9 +1003,13 @@ target that root hash beat — the highest chain the grind legitimately
 participated in — raised, if greater, by the terminal child's own target. It is
 NOT a maximum over every beaten target: a deeper chain must not set the price of
 a grind, because depth is further from the work securing the hierarchy, not
-closer to it. Where targets ease going down the hierarchy — the ordinary shape,
-since a child commands less hashrate than its parent — the root-most beaten
-target is also the hardest, and the two definitions coincide. The terminal
+closer to it. The two definitions coincide unless an intermediate chain's
+target is harder than both the root's beaten target and the terminal's own
+target. That is NOT an exotic shape: `ChainSpec.targetBlockTime` is a free
+per-chain field and retarget drives each chain toward its own block time, so a
+chain with far less hashrate than its parent but a much longer block time can
+sit at a harder target. An inverted hierarchy is therefore a configuration
+choice a chain operator may make without intending it. The terminal
 target must be beaten. The terminal child receives that ordinary
 work fact only after it is accepted and connected.
 
