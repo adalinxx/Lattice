@@ -798,6 +798,15 @@ private enum ChainLocalAdmission {
         }
 
         if knownBlock {
+            // A second, distinct grind on a block already held is new evidence,
+            // not a duplicate — so it does not take the branch above and would
+            // otherwise issue hierarchy facts with issuance still enabled. Gate
+            // it on whether this chain EXECUTED the block: extra work says
+            // nothing about whether the transition is valid, and a child must
+            // not bind to a commitment this chain has not verified.
+            let executed = await level.chain.hasExecutedAncestry(
+                blockHash: blockHash
+            )
             return .ready(PreparedAdmission(
                 resolvedHeader: resolvedHeader,
                 block: block,
@@ -806,7 +815,8 @@ private enum ChainLocalAdmission {
                 carrierLink: carrierLink,
                 verifiedCarrierLink: carrier.issuableLink,
                 sameChainPredecessor: carrier.sameChainPredecessor,
-                kind: .evidence
+                kind: .evidence,
+                defersHierarchyIssuance: !executed
             ))
         }
 
@@ -1398,7 +1408,12 @@ public extension ChainLevel {
         guard let duplicate = await preflight.take(for: admissionIdentity) else {
             throw ChainAdmissionPreflightError.invalidToken
         }
-        let isConnected = await chain.hasConnectedAncestry(
+        // EXECUTED, not merely connected. A weighed block is connected from
+        // its header alone, and re-offering a header — ordinary gossip — takes
+        // this path. Issuing here would hand a child a genesis binding this
+        // chain never verified and may yet prove invalid, which is the rule at
+        // the top of this file, reached through a seam it does not cover.
+        let isExecuted = await chain.hasExecutedAncestry(
             blockHash: duplicate.carrierLink.carrierCID
         )
         let requirement = await chain.sameChainPredecessorRequirement(
@@ -1411,7 +1426,7 @@ public extension ChainLevel {
                 sameChainPredecessor: requirement,
                 promotedCommit: promotedCommit
             ),
-            isConnected ? duplicate.parentGenesisLinks : []
+            isExecuted ? duplicate.parentGenesisLinks : []
         )
     }
 

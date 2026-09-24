@@ -966,6 +966,18 @@ public actor ChainState {
         subtreeWorkIndex.contains(blockHash)
     }
 
+    /// Whether `blockHash` is reachable from this chain's genesis through an
+    /// unbroken run of EXECUTED blocks — the honest form of the question the
+    /// old `hasValidatedAncestry` name promised and did not answer.
+    ///
+    /// Use this, not `hasConnectedAncestry`, for anything a CHILD chain will
+    /// bind to. A weighed block is connected from its header alone; issuing a
+    /// cross-chain fact for one hands a child a commitment this chain has not
+    /// verified and may yet prove invalid.
+    func hasExecutedAncestry(blockHash: String) -> Bool {
+        anchoredBlocks.contains(blockHash)
+    }
+
     /// Whether `toStateCID` is reachable from `fromStateCID` through the
     /// connected accepted state-transition graph. Fork choice is irrelevant.
     /// Continuity is a property of the graph, not of how hard a node is willing

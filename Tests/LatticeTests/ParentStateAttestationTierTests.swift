@@ -14,6 +14,17 @@ import UInt256
 ///
 /// These tests pin the boundary: an unverified declared state MUST NOT be
 /// attestable.
+private actor StagedIssuanceRecorder {
+    private var contexts: [ChainAdmissionStagingContext] = []
+    func record(_ context: ChainAdmissionStagingContext) { contexts.append(context) }
+    func issuedCarrierLinks() -> Int {
+        contexts.filter { $0.issuedCarrierLink != nil }.count
+    }
+    func genesisLinkCount() -> Int {
+        contexts.reduce(0) { $0 + $1.parentGenesisLinks.count }
+    }
+}
+
 final class ParentStateAttestationTierTests: XCTestCase {
     private let easy = UInt256.max
 
@@ -498,6 +509,264 @@ final class ParentStateAttestationTierTests: XCTestCase {
         } catch {
             // Refused, as a malformed batch.
         }
+    }
+
+    /// A block that deploys a child directory, so there is a cross-chain fact
+    /// to issue. Without one, an issuance test passes whatever the gate does.
+    private func deployingBlock(
+        previous: Block, fetcher: StorableFetcher, timestamp: Int64, nonce: UInt64
+    ) async throws -> Block {
+        let childGenesis = try await buildAndStoreGenesis(
+            spec: spec(), timestamp: 10, target: easy, nonce: 77, fetcher: fetcher
+        )
+        let keyPair = CryptoUtils.generateKeyPair()
+        let owner = testAddress(publicKey: keyPair.publicKey)
+        let body = TransactionBody(
+            accountActions: [
+                AccountAction(owner: owner, delta: Int64(spec().initialReward)),
+            ],
+            actions: [],
+            depositActions: [],
+            genesisActions: [GenesisAction(
+                directory: "Deployed",
+                blockCID: try BlockHeader(node: childGenesis).rawCID
+            )],
+            receiptActions: [],
+            withdrawalActions: [],
+            signers: [owner],
+            fee: 0,
+            nonce: 0,
+            chainPath: [DEFAULT_ROOT_DIRECTORY]
+        )
+        return try await buildAndStoreBlock(
+            previous: previous,
+            transactions: [signedTestTransaction(body, by: keyPair)],
+            timestamp: timestamp, target: easy, nonce: nonce, fetcher: fetcher
+        )
+    }
+
+    private func weightedBatch(
+        _ block: String, parent: String?, height: UInt64,
+        from: String, to: String, n: Int64, work: UInt256
+    ) -> ChainAdmissionBatch {
+        ChainAdmissionBatch(facts: [
+            .block(ChainBlockFact(
+                blockHash: block, parentBlockHash: parent, blockHeight: height,
+                postStateCID: to, prevStateCID: from,
+                specCID: testCID("reorg-spec"),
+                target: UInt256.max.toHexString(),
+                nextTarget: UInt256.max.toHexString(),
+                timestamp: n, stateDiff: .empty
+            )),
+            .work(ChainWorkFact(
+                blockHash: block,
+                contribution: VerifiedWorkContribution(
+                    id: testCID("reorg-grind-\(n)"), work: work
+                )
+            )),
+            .validation(ChainValidationFact(blockHash: block)),
+        ])
+    }
+
+    /// A parent reorg must not withdraw attestation for a state it produced.
+    ///
+    /// Canonicity is orthogonal to work and validity (§9.5). Attestation asks
+    /// whether this chain EXECUTED a transition — a fact about immutable bytes,
+    /// which a change of preferred tip cannot unmake — and whether the block is
+    /// still connected and unexcluded, which a reorg also does not change. So a
+    /// child anchored at a state that later falls off the canonical chain must
+    /// keep its anchor: it was produced, and losing a popularity contest is not
+    /// a proof of invalidity.
+    func testParentReorgDoesNotWithdrawAttestation() async throws {
+        let empty = LatticeState.emptyHeader.rawCID
+        let g = testCID("reorg-genesis")
+        let a = testCID("reorg-a")
+        let b = testCID("reorg-b")
+        let c = testCID("reorg-c")
+        let sg = testCID("reorg-state-g")
+        let sa = testCID("reorg-state-a")
+        let sb = testCID("reorg-state-b")
+        let sc = testCID("reorg-state-c")
+
+        // `a` is canonical and executed; a child anchors at the state it made.
+        let chain = try await ChainState.restore(replaying: [
+            weightedBatch(g, parent: nil, height: 0, from: empty, to: sg, n: 1, work: 1),
+            weightedBatch(a, parent: g, height: 1, from: sg, to: sa, n: 2, work: 1),
+        ])
+        let beforeReorg = await chain.hasStateContinuity(from: empty, to: sa)
+        XCTAssertTrue(beforeReorg, "the fixture must be attestable before the reorg")
+        let tipBefore = await chain.getMainChainTip()
+        XCTAssertEqual(tipBefore, a)
+
+        // A heavier sibling branch takes the tip. `a` is now off-canonical —
+        // but nothing about it was disproven.
+        _ = try await chain.applyStaged(
+            weightedBatch(b, parent: g, height: 1, from: sg, to: sb, n: 3, work: 8)
+        )
+        _ = try await chain.applyStaged(
+            weightedBatch(c, parent: b, height: 2, from: sb, to: sc, n: 4, work: 8)
+        )
+        let tipAfter = await chain.getMainChainTip()
+        XCTAssertEqual(tipAfter, c, "the heavier branch must take the tip")
+
+        let afterReorg = await chain.hasStateContinuity(from: empty, to: sa)
+        XCTAssertTrue(
+            afterReorg,
+            """
+            A parent reorg withdrew attestation for a state the chain really \
+            produced. Canonicity is orthogonal to work and validity, so every \
+            child anchored there would be stranded by a contest it took no \
+            part in.
+            """
+        )
+    }
+
+    /// A weighed block issues no cross-chain fact, even when re-offered.
+    ///
+    /// "A weighed admission is not yet executed, so it MUST NOT issue any
+    /// cross-chain hierarchy fact" is enforced on the first-observation path.
+    /// Re-offering the same header — ordinary gossip — takes the DUPLICATE
+    /// path, which gated issuance on connectivity; a weighed block is connected
+    /// from its header alone. A child consuming such a binding would bind its
+    /// directory to a genesis this chain never verified and may yet exclude,
+    /// and because a side block is never validated, it is never excluded
+    /// either, so the binding is permanent.
+    func testWeighedBlockIssuesNoGenesisLinkOnTheDuplicatePath() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await genesisWithState(
+            fetcher: fetcher, timestamp: 1_000, nonce: 0, key: "seam"
+        )
+        let block = try await deployingBlock(
+            previous: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1
+        )
+        let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
+        let header = try BlockHeader(node: block)
+
+        let weighed = try await level.admitBlockHeaderChainLocal(
+            header, fetcher: fetcher,
+            validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
+            mode: .weighed, stage: testAdmissionStage
+        )
+        guard case .accepted = weighed else {
+            return XCTFail("weighed admission must possess the block, got \(weighed)")
+        }
+
+        // Ordinary gossip re-delivery of a header already held.
+        let replay = try await level.preflightBlockHeaderChainLocal(
+            header, fetcher: fetcher, validationContentStorer: fetcher
+        )
+        guard case .duplicate(let preflight) = replay else {
+            return XCTFail("a re-offered header must take the duplicate path")
+        }
+        let resolved = try await level.resolveDuplicatePreflight(preflight)
+        XCTAssertTrue(
+            resolved.parentGenesisLinks.isEmpty,
+            """
+            An UNEXECUTED block issued a child-genesis binding. This is the \
+            gate deciding which genesis a directory resolves to, and the block \
+            may still be proven invalid — a side block never is, so the \
+            binding would be permanent.
+            """
+        )
+    }
+
+    /// The same rule through the EVIDENCE path.
+    ///
+    /// A second, distinct grind on a block already held is new evidence, not a
+    /// duplicate, so it takes a different branch — one where issuance was still
+    /// enabled. Extra work says nothing about whether the transition is valid,
+    /// so an unexecuted block must issue nothing there either.
+    func testSecondGrindOnAWeighedBlockIssuesNoHierarchyFact() async throws {
+        let fetcher = StorableFetcher()
+        let childGenesis = try await buildAndStoreGenesis(
+            spec: spec(), timestamp: 1_000, target: easy, nonce: 1, fetcher: fetcher
+        )
+        let parentGenesis = try await genesisWithState(
+            fetcher: fetcher, timestamp: 500, nonce: 2, key: "evidence-seam"
+        )
+        let shell = try await buildAndStoreBlock(
+            previous: parentGenesis, timestamp: 1_500, target: easy, nonce: 3,
+            fetcher: fetcher
+        )
+        // The child block deploys a grandchild, so there is a binding to issue.
+        let grandchildGenesis = try await buildAndStoreGenesis(
+            spec: spec(), timestamp: 20, target: easy, nonce: 88, fetcher: fetcher
+        )
+        let keyPair = CryptoUtils.generateKeyPair()
+        let owner = testAddress(publicKey: keyPair.publicKey)
+        let body = TransactionBody(
+            accountActions: [
+                AccountAction(owner: owner, delta: Int64(spec().initialReward)),
+            ],
+            actions: [],
+            depositActions: [],
+            genesisActions: [GenesisAction(
+                directory: "Grandchild",
+                blockCID: try BlockHeader(node: grandchildGenesis).rawCID
+            )],
+            receiptActions: [],
+            withdrawalActions: [],
+            signers: [owner],
+            fee: 0,
+            nonce: 0,
+            chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
+        )
+        let childBlock = try await buildAndStoreBlock(
+            previous: childGenesis,
+            transactions: [signedTestTransaction(body, by: keyPair)],
+            parentChainBlock: shell,
+            timestamp: 2_000, target: easy, nonce: 4, fetcher: fetcher
+        )
+
+        // Two DIFFERENT carriers naming the same child block: two distinct
+        // grind identities, so the second is evidence rather than a duplicate.
+        func package(nonce: UInt64) async throws -> ChildValidationPackage {
+            let carrier = try await buildAndStoreBlock(
+                previous: parentGenesis, children: ["Child": childBlock],
+                timestamp: Int64(1_600 + nonce), target: easy, nonce: nonce,
+                fetcher: fetcher
+            )
+            let proof = try await ChildBlockProof.generate(
+                rootHeader: try BlockHeader(node: carrier),
+                childDirectory: "Child", fetcher: fetcher
+            )
+            return try await childValidationPackage(proof: proof, fetcher: fetcher)
+        }
+
+        let level = ChainLevel(
+            chain: ChainState.fromGenesis(block: childGenesis),
+            context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
+        )
+        let recorder = StagedIssuanceRecorder()
+        let record: @Sendable (ChainAdmissionStagingContext) async throws -> Void = {
+            await recorder.record($0)
+        }
+        let header = try BlockHeader(node: childBlock)
+
+        for nonce: UInt64 in [11, 12] {
+            _ = try await level.admitBlockHeaderChainLocal(
+                header, fetcher: fetcher,
+                childPackage: try await package(nonce: nonce),
+                validationContentStorer: fetcher,
+                materializedVolumeStorer: fetcher,
+                mode: .weighed, stage: record
+            )
+        }
+
+        let issued = await recorder.issuedCarrierLinks()
+        let genesisLinks = await recorder.genesisLinkCount()
+        XCTAssertEqual(
+            issued, 0,
+            """
+            An unexecuted block issued a carrier link through the evidence \
+            path. Extra work on a block says nothing about whether its \
+            transition is valid.
+            """
+        )
+        XCTAssertEqual(
+            genesisLinks, 0,
+            "an unexecuted block must issue no child-genesis binding"
+        )
     }
 
     /// C-1: a weighed predecessor must not vouch for its successor's anchor.

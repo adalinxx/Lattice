@@ -391,6 +391,17 @@ this order:
    genesis. Step 3's terminal binding does not substitute for this — a carrier
    need not be admitted, connected, valid or canonical, so it establishes no
    anchor.
+
+   Each block proves its own anchor from `emptyHeader`, NOT from its
+   predecessor's `parentState`. Anchoring against the predecessor is an
+   induction with no base: the weighed tier admits a block without running
+   these checks, so a weighed predecessor proved nothing, and a successor
+   matching its unchecked claim would be admitted with no evidence at all.
+   A consequence of anchoring each block independently is that `parentState`
+   is no longer required to advance monotonically across a chain. That is
+   deliberate: `parentState` is read only to prove a receipt (§8.1 Phase 3),
+   so regressing it can only SHRINK the set of provable receipts, and the
+   matching deposit is spent from the child's own `prevState`.
 7. Apply the ordinary genesis or non-genesis transition rules to `B`, including
    withdrawal proofs against `B.parentState`.
 
@@ -1004,6 +1015,16 @@ an unexecuted claim admits a forged `receiptState`. Unavailability of a
 validated ancestor makes continuity unprovable-for-now, never invalid (§9.9).
 The fact is immutable and may be relayed independently of its original
 transport.
+
+Attestation does NOT depend on canonicity, in either direction. A reorg
+withdraws nothing: execution is a fact about immutable bytes, ancestry does
+not change, and losing a fork-choice contest is not a proof of invalidity, so
+a child anchored at a state that later falls off the canonical chain keeps
+its anchor. Nor does a parent owe execution to a block merely because a child
+anchors there: a parent executes the history it adopts, and attests what it
+executed. A child anchoring elsewhere is anchoring at something this parent
+has not checked, and the correct answer is the retriable "not proven here",
+not a verdict and not an obligation to go and run it.
 
 The parent receives no child topology, validity, work, attachment, recovery
 state, or canonical-tip command. Moving only a parent's canonical pointer
