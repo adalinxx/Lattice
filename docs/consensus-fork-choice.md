@@ -36,7 +36,11 @@ Work verification:
 
 1. recomputes `CID(R)` and the proof-of-work hash;
 2. verifies the sparse path and requires its terminal CID to equal `CID(C)`;
-3. verifies every vertical `child.parentState == carrier.prevState` binding;
+3. verifies every vertical `child.parentState == carrier.prevState` binding
+   — a structural check on the committed path, NOT an anchor: a carrier need
+   not be admitted, connected, valid or canonical, so both sides may be chosen
+   by one party. A block's `parentState` is anchored by admission instead
+   (spec §5.3 step 6, at every height including block 1);
 4. checks the same hash against the terminal target; and
 5. derives the strongest target-derived quantity that hash earns along the
    committed directory path.

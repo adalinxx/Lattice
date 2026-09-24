@@ -53,6 +53,11 @@ final class AdmissionStagingContextTests: XCTestCase {
         XCTAssertEqual(contexts.count, 1)
         XCTAssertEqual(context.issuedCarrierLink, bootstrapped.parentCarrierLink)
         XCTAssertTrue(context.parentGenesisLinks.isEmpty)
-        XCTAssertEqual(context.batch.facts.count, 2)
+        // block + work + validation: the eager tier weighs and validates in
+        // one gate, so it records execution alongside possession.
+        XCTAssertEqual(context.batch.facts.count, 3)
+        guard case .validation = context.batch.facts[2] else {
+            return XCTFail("eager admission must record that it executed the block")
+        }
     }
 }

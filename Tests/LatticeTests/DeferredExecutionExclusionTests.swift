@@ -322,8 +322,8 @@ final class DeferredExecutionExclusionTests: XCTestCase {
         // neither routes: the work is held, fork choice never sees it.
         _ = try await chain.applyStaged(admission(for: b0))
         _ = try await chain.applyStaged(admission(for: b1))
-        let b0Routed = await chain.hasValidatedAncestry(blockHash: b0.hash)
-        let b1Routed = await chain.hasValidatedAncestry(blockHash: b1.hash)
+        let b0Routed = await chain.hasConnectedAncestry(blockHash: b0.hash)
+        let b1Routed = await chain.hasConnectedAncestry(blockHash: b1.hash)
         XCTAssertFalse(b0Routed, "precondition: B0 is weighed but unrouted")
         XCTAssertFalse(b1Routed, "precondition: B1 is weighed but unrouted")
 
