@@ -10,7 +10,8 @@ location in each chain it reaches:
 
 ```text
 identity = CID(root)
-quantity = strongest verified accepted-target bound
+quantity = root-most verified accepted-target bound along the proof,
+           then strongest across repeated observations
 location = exact terminal block in this chain
 ```
 

@@ -3860,7 +3860,16 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(restoredRecord).contribution, fixture.contribution)
     }
 
-    func testMultiHopProofCreditsMiddleTargetWhenItIsStrongest() async throws {
+    /// A grind is priced by the ROOT-MOST carrier whose target it beat, not by
+    /// the hardest one. Here the hierarchy is inverted — the middle chain is
+    /// harder (max/16) than the root above it (max/4) — so the two rules
+    /// disagree, and this pins which one governs.
+    ///
+    /// The old rule took a max over every met target and credited the middle
+    /// chain's 16. That let a DEEPER chain set the price of a grind, which is
+    /// backwards: depth is further from the work that secures the hierarchy,
+    /// not closer to it.
+    func testMultiHopProofCreditsRootMostMetTargetNotTheHardest() async throws {
         let outerTarget = UInt256.max / UInt256(4)
         let middleTarget = UInt256.max / UInt256(16)
         let leafTarget = UInt256.max / UInt256(8)
@@ -3872,9 +3881,55 @@ final class ChainLocalAdmissionTests: XCTestCase {
             miningTarget: middleTarget
         )
 
-        XCTAssertLessThanOrEqual(verified.rootHash, middleTarget)
+        // Fixture guard: the hash must actually beat the harder middle target,
+        // or the two rules would agree here and this would test nothing.
+        XCTAssertLessThanOrEqual(
+            verified.rootHash, middleTarget,
+            "fixture must beat the middle target for the rules to diverge"
+        )
         XCTAssertEqual(verified.contribution.id, verified.rootCID)
-        XCTAssertEqual(verified.contribution.work, UInt256(16))
+        // Root-most met target is the outer chain's max/4 => 4. The leaf's own
+        // max/8 => 8 then wins the final max, so the credit is 8 — NOT the
+        // middle chain's 16.
+        XCTAssertEqual(
+            verified.contribution.work, UInt256(8),
+            """
+            Credit must come from the root-most met target (4), raised only by \
+            the child's own target (8) — never from a deeper chain's harder \
+            target (16).
+            """
+        )
+    }
+
+    /// The safety of the change: when targets ease going DOWN the hierarchy —
+    /// the ordinary shape, since a child has less hashrate than its parent —
+    /// the root-most met target IS the hardest met target, so the new rule and
+    /// the old max agree exactly. The change is a tie-break on an inverted
+    /// hierarchy, not a repricing of ordinary merged mining.
+    func testRootMostCreditEqualsTheOldMaxWhenTargetsEaseDownward() async throws {
+        let outerTarget = UInt256.max / UInt256(16)   // hardest, at the root
+        let middleTarget = UInt256.max / UInt256(8)
+        let leafTarget = UInt256.max / UInt256(4)     // easiest, at the leaf
+
+        let verified = try await verifiedMultiHopContribution(
+            outerTarget: outerTarget,
+            middleTarget: middleTarget,
+            leafTarget: leafTarget,
+            miningTarget: outerTarget
+        )
+
+        XCTAssertLessThanOrEqual(
+            verified.rootHash, outerTarget,
+            "fixture must beat the root target, or no ancestor is credited"
+        )
+        XCTAssertEqual(
+            verified.contribution.work, UInt256(16),
+            """
+            With targets easing downward the root-most met target is also the \
+            hardest, so ordinary merged mining is priced identically before \
+            and after this change.
+            """
+        )
     }
 
     func testMultiHopProofCreditsLeafTargetWhenItIsStrongest() async throws {

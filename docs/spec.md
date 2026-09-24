@@ -9,7 +9,7 @@ order, start with the [documentation index](index.md),
 
 ## 1. Overview
 
-Lattice is a hierarchical proof-of-work protocol, not a single blockchain. Every chain may commit child blocks, and each child may do the same. One mined root therefore commits a nested block tree. **Nexus** is the single outermost chain and the entry point from outside the hierarchy; every absolute chain path begins with `Nexus`. Descendants inherit identity-bearing work from accepted ancestor graphs: the root CID identifies one grind, its strongest verified accepted-target bound fixes its quantity, and its sparse proof terminates at exactly one block per chain. Value moves across chains through a three-phase **deposit/receipt/withdrawal** protocol.
+Lattice is a hierarchical proof-of-work protocol, not a single blockchain. Every chain may commit child blocks, and each child may do the same. One mined root therefore commits a nested block tree. **Nexus** is the single outermost chain and the entry point from outside the hierarchy; every absolute chain path begins with `Nexus`. Descendants inherit identity-bearing work from accepted ancestor graphs: the root CID identifies one grind, the root-most verified accepted-target bound along its proof fixes its quantity, and its sparse proof terminates at exactly one block per chain. Value moves across chains through a three-phase **deposit/receipt/withdrawal** protocol.
 
 Each chain defines its own operations, `ChainSpec`, and chain policies, so chains are heterogeneous; only the organizing protocol -- block structure, proof-of-work, fork choice, and the cross-chain transfer rules -- is shared across the hierarchy.
 
@@ -455,7 +455,8 @@ Bitcoin's chainwork `(~target / (target + 1)) + 1` in 256-bit arithmetic (edge
 cases: `target 0 -> 0`, `target max -> 1`). The exclusive `U256_MAX / target` form
 over-credits by up to ~2x at tiny targets — exploitable now that a miner may
 select any `target <= parent.nextTarget` — so it is not used. For one root CID the
-strongest verified bound is credited; a larger target is easier and is less work.
+root-most verified bound along its proof is credited (§9.5); a larger target is
+easier and is less work.
 
 ### 5.5 Target Adjustment (Retargeting)
 
@@ -995,8 +996,15 @@ A `ChildBlockProof` proves work directly from content-addressed bytes. The root
 grind must beat the terminal child's target and resolve uniquely to that child
 through the sparse directory path. Intermediate carriers need not be admitted,
 connected, valid, or canonical on their own chains. Along one proof, the
-contribution is the maximum target-derived quantity beaten by that root hash;
-the terminal target must be beaten. The terminal child receives that ordinary
+contribution is the target-derived quantity of the ROOT-MOST carrier whose
+target that root hash beat — the highest chain the grind legitimately
+participated in — raised, if greater, by the terminal child's own target. It is
+NOT a maximum over every beaten target: a deeper chain must not set the price of
+a grind, because depth is further from the work securing the hierarchy, not
+closer to it. Where targets ease going down the hierarchy — the ordinary shape,
+since a child commands less hashrate than its parent — the root-most beaten
+target is also the hardest, and the two definitions coincide. The terminal
+target must be beaten. The terminal child receives that ordinary
 work fact only after it is accepted and connected.
 
 The immediate parent authenticates only state continuity and child-genesis
@@ -1224,7 +1232,8 @@ state); withdrawals return it to the block-wide credit budget.
    admission, connectivity, and canonicity
 3. A grind has exactly one terminal location per chain and is deduplicated by
    root CID across observations at that location;
-   its credited quantity is the strongest verified accepted-target bound
+   its credited quantity is the root-most verified accepted-target bound
+   along its proof (§9.5), raised by the terminal child's own target
 4. Work measures union by grind ID before totaling, so shared work is counted once
    while distinct grinds sum
 5. Effective `trueCumWork` contains only connected, accepted same-chain

@@ -413,17 +413,34 @@ public struct ChildBlockProof: Sendable {
                     return .failure(.malformedEvidence)
                 }
 
-                let strongestAncestorWork = carriers.reduce(UInt256.zero) {
-                    guard $1.block.validateProofOfWork(nexusHash: rootHash) else {
-                        return $0
-                    }
-                    return max($0, workForTarget($1.block.target))
-                }
+                // A grind is priced by the HIGHEST chain it legitimately
+                // participated in: walk the carriers root-ward (index 0 is the
+                // mined root) and take the first whose target this hash
+                // actually beat.
+                //
+                // Previously this was a `max` over every met target. The two
+                // agree whenever targets ease going down the hierarchy, which
+                // is the ordinary case — the root-most met target is then also
+                // the hardest. They differ only when a deeper chain is HARDER
+                // than a shallower one, and there the max let the deeper chain
+                // set the price. Position is the honest denominator: "this hash
+                // was worth a Nexus block, so it is worth Nexus work wherever
+                // it commits", rather than an extremum over a set the prover
+                // partly chooses.
+                //
+                // This does not weaken the fabrication bound. A prover who
+                // fabricates carriers would set the ROOT-most target hard too,
+                // and `validateProofOfWork(nexusHash:)` still requires the hash
+                // to beat whatever target is claimed, so no credit is created
+                // that the hash did not earn.
+                let creditedAncestorWork = carriers.first {
+                    $0.block.validateProofOfWork(nexusHash: rootHash)
+                }.map { workForTarget($0.block.target) } ?? UInt256.zero
                 let contribution = child.validateProofOfWork(nexusHash: rootHash)
                     ? VerifiedWorkContribution(
                         id: rootCID,
                         work: max(
-                            strongestAncestorWork,
+                            creditedAncestorWork,
                             workForTarget(child.target)
                         )
                     )
@@ -431,7 +448,7 @@ public struct ChildBlockProof: Sendable {
                 return .success(VerifiedChildEvidence(
                     grindID: rootCID,
                     rootHash: rootHash,
-                    strongestAncestorWork: strongestAncestorWork,
+                    creditedAncestorWork: creditedAncestorWork,
                     childCID: childCID,
                     terminalCarrierCID: deepestCarrier.cid,
                     contribution: contribution
