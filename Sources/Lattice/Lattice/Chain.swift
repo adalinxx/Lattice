@@ -104,6 +104,20 @@ public struct BlockMeta: Sendable {
     public private(set) var work: WorkSum
     public var childHashes: [String]
     public private(set) var workContributions: [String: VerifiedWorkContribution]
+    /// Directory → child block CID this block commits, read from its PoW-bound
+    /// `children` trie at admission and carried on the durable block fact, so
+    /// live admission and replay see the same commitments (§9.10).
+    /// Nil when NOT RECORDED — a fact written before this field existed — which
+    /// is not "commits nothing": replay tolerates it, and a later fact for the
+    /// same block supplies the real map (`adoptChildCommitments`).
+    public private(set) var childCommitments: [String: String]?
+    /// Directory → the nearest block at or above this one, by parent pointer,
+    /// that commits into that directory — this block itself where it commits.
+    /// Held only for the directories this node SERVES runs for (the child
+    /// chains it hosts — an operator choice), so it costs O(#served) per
+    /// block, never O(#directories ever committed); inherited from the parent
+    /// like `difficultyAnchor`, and empty until the block is connected.
+    public private(set) var nearestCommitter: [String: String]
 
     /// Backward cumulative proof-of-work prefix measure from genesis through
     /// this block. Each physical grind has one block location in this chain.
@@ -125,7 +139,9 @@ public struct BlockMeta: Sendable {
         workContributions: [VerifiedWorkContribution],
         cumulativeWork: WorkSum = .zero,
         subtreeWeight: WorkSum? = nil,
-        difficultyAnchor: DifficultyAnchor? = nil
+        difficultyAnchor: DifficultyAnchor? = nil,
+        childCommitments: [String: String]? = nil,
+        nearestCommitter: [String: String] = [:]
     ) {
         let contributions = Dictionary(
             workContributions.map { ($0.id, $0) },
@@ -143,6 +159,25 @@ public struct BlockMeta: Sendable {
         self.cumulativeWork = cumulativeWork
         self.subtreeWeight = subtreeWeight ?? work
         self.difficultyAnchor = difficultyAnchor
+        self.childCommitments = childCommitments
+        self.nearestCommitter = nearestCommitter
+    }
+
+    /// Settle the nearest committers once the block is connected.
+    mutating func adoptNearestCommitter(_ nearest: [String: String]) {
+        nearestCommitter = nearest
+    }
+
+    mutating func forgetNearestCommitter(for directory: String) {
+        nearestCommitter[directory] = nil
+    }
+
+    /// Fill commitments a pre-field fact left unrecorded. Write-once, like the
+    /// difficulty anchor: commitments are PoW-bound content, so a second value
+    /// for a block that has one would mean the content was misread.
+    mutating func adoptChildCommitments(_ commitments: [String: String]) {
+        guard childCommitments == nil else { return }
+        childCommitments = commitments
     }
 
     /// Fill an anchor left absent by out-of-order admission. Write-once: the
@@ -176,6 +211,87 @@ public struct BlockMeta: Sendable {
         return true
     }
 
+}
+
+/// What a parent serves a child about one of its blocks that commits into a
+/// child directory (§9.10): the RUN work at that block, the block's own
+/// credited work, and the revision the pair was read at, for provenance.
+///
+/// The run is the sum of own credited work over every connected parent block
+/// whose nearest committer into `directory` — by parent pointer, never by
+/// canonical chain — is `blockHash`. Runs partition the graph, so each parent
+/// grind is in exactly one run and a fork below the committer puts each branch
+/// in its own branch's run: nothing missed, nothing counted twice. Insert-only
+/// and never revoked. Served in O(1) plus the committer's grind set.
+public struct ParentRunReport: Sendable, Equatable {
+    /// The committing parent block.
+    public let blockHash: String
+    public let directory: String
+    /// The child block `blockHash` commits into `directory` — what the child
+    /// binds the report to before reading any number.
+    public let childBlock: String
+    /// Every grind credited at the committer; the child requires one of them
+    /// at `childBlock`, which is what makes the committer a committer of it.
+    public let grinds: Set<String>
+    public let runWork: WorkSum
+    public let ownWork: WorkSum
+    public let revision: UInt64
+}
+
+/// The identity under which a parent's attributed run work is credited at a
+/// child block: keyed by the committing parent block and the directory — one
+/// run, one identity — so a committer mined under several grinds is credited
+/// once, not once per grind. A SEPARATE identity from any grind, deliberately:
+/// crediting the run by strengthening the grind itself is not idempotent (the
+/// second identical report would count the first attribution as the child's
+/// own price and add it again), whereas a separate contribution ratchets on
+/// its own value.
+public struct AttributedRunIdentity: Hashable, Scalar {
+    public let committerBlockHash: String
+    public let directory: String
+
+    public init(committerBlockHash: String, directory: String) {
+        self.committerBlockHash = committerBlockHash
+        self.directory = directory
+    }
+
+    public var contributionID: String? {
+        try? HeaderImpl<AttributedRunIdentity>(node: self).rawCID
+    }
+}
+
+/// The outcome of applying a parent's run report to a child block. Refusals
+/// are typed so the node can make them VISIBLE: a parent whose reports keep
+/// being refused is the likeliest symptom of a parent-side accounting bug, and
+/// a silent refusal is exactly what would hide it.
+public enum ParentReportStrengthening: Sendable, Equatable {
+    /// Stage this work-only batch durably, then apply it.
+    case strengthened(ChainAdmissionBatch)
+    /// The report does not name this child block, or none of the committer's
+    /// grinds is credited here — so the reported block is not a committer of
+    /// this child block as far as this chain knows.
+    case notCommitterOfChild
+    /// The report is for another directory: a parent committing into several
+    /// directories serves one run per directory, and only this chain's own
+    /// may be applied here.
+    case wrongDirectory
+    /// This committer's run is already credited at ANOTHER child block. A
+    /// location is write-once and never revoked, so unlike every other refusal
+    /// this one is permanent: it is the signature of a parent that once named
+    /// the wrong child block, and it must be visible as exactly that. It must
+    /// also never become a fact: staged anyway, it is a corrupt graph on apply
+    /// and on every restore — derive under the lease held through the write
+    /// (see `strengthenFromParentReport`).
+    case locationConflict
+    /// `ownWork` exceeds `runWork`, which no honest run can do.
+    case malformedReport
+    /// The derived quantity exceeds what one contribution can carry. Refused
+    /// rather than saturated: a saturated value ties with every other and
+    /// erases the ordering fork choice needs (§9.2).
+    case unrepresentable(derived: WorkSum)
+    /// Not a strict increase over what the child already holds. Monotonic
+    /// refusal: a report may only ever raise.
+    case notStronger(existing: WorkSum, derived: WorkSum)
 }
 
 struct WorkContributionRecord: Sendable, Equatable {
@@ -288,6 +404,8 @@ private struct ConsensusBlockInput: Sendable {
     let blockHeight: UInt64
     let timestamp: Int64
     let snapshot: TipBlockSnapshot
+    /// Nil = not recorded on the fact (pre-field), never "commits nothing".
+    let childCommitments: [String: String]?
 
     /// Requires an EXECUTED block.
     init(blockHeader: BlockHeader, block: Block) {
@@ -295,6 +413,9 @@ private struct ConsensusBlockInput: Sendable {
         parentBlockHash = block.parent?.rawCID
         blockHeight = block.height
         timestamp = block.timestamp
+        // Not enumerated on this test-only path: "not recorded", never a
+        // silent "commits nothing".
+        childCommitments = nil
         snapshot = TipBlockSnapshot(
             postStateCID: block.postState.rawCID,
             prevStateCID: block.prevState.rawCID,
@@ -326,6 +447,7 @@ private struct ConsensusBlockInput: Sendable {
         parentBlockHash = normalizedParent
         blockHeight = fact.blockHeight
         timestamp = fact.timestamp
+        childCommitments = fact.childCommitments
         snapshot = TipBlockSnapshot(
             postStateCID: postStateCID,
             prevStateCID: prevStateCID,
@@ -436,6 +558,16 @@ public actor ChainState {
     /// Per-block facts remain the source of truth because scalar weights cannot
     /// preserve grind identity.
     private var subtreeWorkIndex: EulerWorkIndex
+    /// Run work per child directory per committing block (§9.10): the sum of
+    /// own credited work over CONNECTED blocks whose nearest committer into
+    /// that directory is the key. Insert-only, independent of exclusion, and
+    /// maintained by the one reducer live admission and replay both use.
+    /// Served to children; never a fork-choice input on THIS chain.
+    private var runWork: [String: [String: WorkSum]]
+    /// The child directories this node serves run reports for — the child
+    /// chains it hosts. Operator choice, so the per-block run cost is bounded
+    /// by what this node asked for, not by what any block commits into.
+    private var servedDirectories: Set<String>
 #if DEBUG
     /// Test-visible diagnostic for a whole-block canonical materialization.
     var fullCanonicalProjectionCount: UInt64
@@ -452,6 +584,10 @@ public actor ChainState {
     var segmentGraftCount: UInt64
     var segmentGraftBlockVisitCount: UInt64
     var stateContinuityBlockVisitCount: UInt64
+    /// Run-bucket updates. Each connected block costs one per directory it
+    /// has a nearest committer for, so this is O(#directories) per block —
+    /// asserted by ratio, never by stopwatch.
+    var runAttributionUpdateCount: UInt64
 #endif
     /// Diagnostic prefix/subtree totals are derived local views. They are not
     /// fork-choice inputs and are rebuilt only when an API exposes them.
@@ -574,6 +710,7 @@ public actor ChainState {
         self.segmentGraftCount = 0
         self.segmentGraftBlockVisitCount = 0
         self.stateContinuityBlockVisitCount = 0
+        self.runAttributionUpdateCount = 0
 #endif
         self.localWorkCachesDirty = true
         var allByHeight = indexToBlockHash
@@ -637,6 +774,16 @@ public actor ChainState {
                 throw ChainStateRestoreError.corruptConsensusGraph
             }
             self.mainChainBlockAtIndex[height] = hash
+        }
+        // Runs (§9.10) are settled by `serveRuns(for:)`, one directory at a
+        // time, through the same per-block step live admission uses — one
+        // algorithm, not a rebuild twin. Connectivity IS the weight index:
+        // every connected block routes, excluded or not (§9.9).
+        self.runWork = [:]
+        self.servedDirectories = []
+        // Nearest committers are settled by `serveRuns`, never supplied.
+        guard hashToBlock.values.allSatisfy({ $0.nearestCommitter.isEmpty }) else {
+            throw ChainStateRestoreError.corruptConsensusGraph
         }
         // Seed the executed-from-genesis frontier. Replay hands validations to
         // `markValidated` one at a time, but a graph restored wholesale needs
@@ -728,7 +875,8 @@ public actor ChainState {
             blockHeight: 0,
             childHashes: [],
             workContributions: [contribution],
-            cumulativeWork: WorkSum(contribution.work)
+            cumulativeWork: WorkSum(contribution.work),
+            childCommitments: input.childCommitments
         )
         return try ChainState(
             chainTip: input.blockHash,
@@ -1401,7 +1549,8 @@ public actor ChainState {
             workContributions: [],
             cumulativeWork: .zero,
             subtreeWeight: .zero,
-            difficultyAnchor: anchor
+            difficultyAnchor: anchor,
+            childCommitments: input.childCommitments
         )
 
         hashToBlock[blockHash] = meta
@@ -1430,6 +1579,16 @@ public actor ChainState {
                 routeBlock(for: blockHash),
                 "validated leaf could not be routed"
             )
+        }
+        // Runs (§9.10): a block that just routed — alone, or as the root of a
+        // grafted orphan component — is connected, and so is every descendant
+        // it grafted in. Unfiltered: an excluded descendant routes and is
+        // credited like any other. An orphan is not routed and is settled the
+        // moment its component grafts.
+        // Nothing to settle while no directory is served: skip the walk, which
+        // on a graft would otherwise be a third pass over the component.
+        if !servedDirectories.isEmpty, subtreeWorkIndex.contains(blockHash) {
+            connectForRunAttribution(rootedAt: blockHash)
         }
 
         for contribution in contributions {
@@ -1832,7 +1991,17 @@ public actor ChainState {
             return .discarded()
         }
         guard hasUnreservedMutationCapacity else { return .discarded() }
+        let workBefore = hashToBlock[blockHash]?.work ?? .zero
         applyLocalContribution(contribution, to: blockHash)
+        // A strengthening raises this block's own work, so its run (§9.10)
+        // rises by exactly that delta — once the block is connected. An
+        // orphan's work is credited in full at the moment it connects.
+        if subtreeWorkIndex.contains(blockHash),
+           let workAfter = hashToBlock[blockHash]?.work,
+           let delta = workAfter.subtracting(workBefore),
+           let nearest = hashToBlock[blockHash]?.nearestCommitter {
+            creditRun(delta, nearest: nearest)
+        }
         // A stronger observation on an excluded block weighs like any other: it
         // raises every ancestor, and the descent still never steps into the
         // excluded root, so no invalid block is resurrected by piling on work.
@@ -1866,6 +2035,177 @@ public actor ChainState {
         at blockHash: String
     ) -> VerifiedWorkContribution? {
         hashToBlock[blockHash]?.workContributions[id]
+    }
+
+    // MARK: - Parent-attributed run work (§9.10)
+
+    /// Start serving run reports for `directory` — the node hosts a child
+    /// chain there. Settles every connected block's nearest committer and run
+    /// for that one directory, parent before child, over the UNFILTERED graph:
+    /// O(N) once, at the operator's choice, and idempotent. Which directories a
+    /// node serves is its own choice, so a stranger's block committing into ten
+    /// thousand directories costs this node nothing it did not ask for.
+    ///
+    /// The served set is NOT persisted: the node must call this for every
+    /// directory it hosts after every restart, and it runs synchronously on
+    /// the actor — one whole-graph walk per directory.
+    public func serveRuns(for directory: String) {
+        guard servedDirectories.insert(directory).inserted else { return }
+        var stack = hashToBlock.values
+            .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
+            .map(\.blockHash)
+        while let hash = stack.popLast() {
+            guard subtreeWorkIndex.contains(hash), let meta = hashToBlock[hash] else { continue }
+            settleRuns(of: hash, directories: [directory])
+            stack.append(contentsOf: meta.childHashes)
+        }
+    }
+
+    /// Settle a block that just routed and every descendant that routed with
+    /// it: its nearest committers and runs for every served directory, parent
+    /// before child. Nothing below a just-routed block can have been settled
+    /// before — a block never routes under an unrouted parent — so the walk
+    /// needs no record of what it has settled. Unfiltered on purpose: an
+    /// excluded descendant is still connected and still credited.
+    private func connectForRunAttribution(rootedAt rootHash: String) {
+        var stack = [rootHash]
+        var visited = Set<String>()
+        while let hash = stack.popLast() {
+            guard let meta = hashToBlock[hash], visited.insert(hash).inserted else { continue }
+            settleRuns(of: hash, directories: servedDirectories)
+            stack.append(contentsOf: meta.childHashes)
+        }
+    }
+
+    /// The one per-block step of run attribution, for a connected block whose
+    /// parent is already settled: for each directory, the nearest committer is
+    /// this block if it commits there, else the parent's; the block's own work
+    /// is credited to that run. Used both by live connection (every served
+    /// directory) and by `serveRuns(for:)` (one directory over the whole
+    /// graph), so a run has exactly one definition.
+    private func settleRuns(of hash: String, directories: Set<String>) {
+        guard let meta = hashToBlock[hash] else { return }
+        let inherited = meta.parentBlockHash
+            .flatMap { hashToBlock[$0]?.nearestCommitter } ?? [:]
+        var nearest = meta.nearestCommitter
+        var credited: [String: String] = [:]
+        for directory in directories {
+            let committer = meta.childCommitments?[directory] != nil ? hash : inherited[directory]
+            guard let committer else { continue }
+            nearest[directory] = committer
+            credited[directory] = committer
+        }
+        hashToBlock[hash]?.adoptNearestCommitter(nearest)
+        creditRun(meta.work, nearest: credited)
+    }
+
+    private func creditRun(_ work: WorkSum, nearest: [String: String]) {
+        for (directory, committer) in nearest {
+            let current = runWork[directory]?[committer] ?? .zero
+            runWork[directory, default: [:]][committer] = current + work
+#if DEBUG
+            runAttributionUpdateCount &+= 1
+#endif
+        }
+    }
+
+    /// The run report a parent serves for one of its committing blocks. Nil
+    /// when `directory` is not served here (`serveRuns(for:)`), or the block is
+    /// unknown, not connected, or does not commit into `directory` — a child
+    /// must never be handed a number for a block that is not a committer into
+    /// its own directory. O(1).
+    ///
+    /// The connectivity conjunct is redundant by construction (a run entry is
+    /// only ever written for a connected block, so the lookup below already
+    /// fails for an orphan) and is kept as the stated rule rather than an
+    /// accident of the table's maintenance.
+    public func parentRunReport(
+        at blockHash: String,
+        directory: String
+    ) -> ParentRunReport? {
+        guard let hash = CIDIdentity.canonicalString(blockHash),
+              subtreeWorkIndex.contains(hash),
+              let meta = hashToBlock[hash],
+              let childBlock = meta.childCommitments?[directory],
+              let run = runWork[directory]?[hash] else { return nil }
+        return ParentRunReport(
+            blockHash: hash,
+            directory: directory,
+            childBlock: childBlock,
+            grinds: Set(meta.workContributions.keys),
+            runWork: run,
+            ownWork: meta.work,
+            revision: mutationGeneration
+        )
+    }
+
+    /// Derive the strengthening a parent's run report implies for one of this
+    /// chain's blocks, as a work-only batch the node must make durable and
+    /// then apply. This is the ONLY route by which a wire number reaches a
+    /// `VerifiedWorkContribution`, and it does not take the number as-is: the
+    /// quantity is DERIVED here from this chain's own state and refused unless
+    /// it is a strict increase.
+    ///
+    /// The report is BOUND before any number is read: it must name this child
+    /// block as the one its committer commits, it must be for `directory` —
+    /// this chain's own, which the caller knows and this actor does not — and
+    /// one of the grinds the report attributes to the committer must already be
+    /// credited here — the parent's word, like the quantity. The attributed
+    /// quantity is `runWork − ownWork`: the committer's own grinds stay counted
+    /// exactly once, at the child's own price; the run's other blocks are
+    /// credited under `AttributedRunIdentity(committer, directory)`, which
+    /// ratchets on its own value, so a repeated report is a refusal, not a
+    /// second addition.
+    ///
+    /// The QUANTITY is the parent's word. The child already trusts its
+    /// configured parent process for state continuity (§5.3), which gates
+    /// minting outright, so this is not a new trust class; a verified path can
+    /// replace it later with no consensus change (§9.10).
+    ///
+    /// Everything downstream is the existing work path: `applyStaged`
+    /// re-checks strict increase and returns nil on a stale or duplicate batch,
+    /// so a report computed before a concurrent STRONGER one applied is a
+    /// harmless no-op, live and on replay alike. A report naming a DIFFERENT
+    /// child block for a committer whose run is already located is another
+    /// matter: a location is write-once, and a durable fact that loses that
+    /// race is a corrupt graph on apply and on every restore, exactly as a
+    /// second location for any grind is. So the node MUST hold its mutation
+    /// lease from a derive through the durable write and `replay` — derive
+    /// once to decide, and again under the lease to write; the cost is O(1)
+    /// plus the report's grind set — the same shape as `commitPreflight`'s
+    /// exclusion re-check. `.locationConflict` is then a refusal, never a fact.
+    public func strengthenFromParentReport(
+        child childHash: String,
+        directory: String,
+        report: ParentRunReport
+    ) -> ParentReportStrengthening {
+        guard report.directory == directory else { return .wrongDirectory }
+        guard let hash = CIDIdentity.canonicalString(childHash),
+              CIDIdentity.canonicalString(report.childBlock) == hash,
+              let committer = CIDIdentity.canonicalString(report.blockHash),
+              report.grinds.contains(where: { workContribution(id: $0, at: hash) != nil }),
+              let attributedID = AttributedRunIdentity(
+                  committerBlockHash: committer, directory: directory
+              ).contributionID else {
+            return .notCommitterOfChild
+        }
+        guard acceptsLocation(of: attributedID, at: hash) else { return .locationConflict }
+        guard let derived = report.runWork.subtracting(report.ownWork) else {
+            return .malformedReport
+        }
+        guard let derivedWork = derived.uint256Value else {
+            return .unrepresentable(derived: derived)
+        }
+        let existing = workContribution(id: attributedID, at: hash)?.work ?? .zero
+        guard derivedWork > existing else {
+            return .notStronger(existing: WorkSum(existing), derived: derived)
+        }
+        return .strengthened(ChainAdmissionBatch(facts: [
+            .work(ChainWorkFact(
+                blockHash: hash,
+                contribution: VerifiedWorkContribution(id: attributedID, work: derivedWork)
+            )),
+        ]))
     }
 
     /// Apply one already-durable, locally authenticated admission batch. Live
@@ -2024,6 +2364,12 @@ public actor ChainState {
         return CIDIdentity.canonicalString(fact.blockHash)
     }
 
+    /// The commitments recorded for a possessed block, or nil when the block
+    /// is unknown or its fact predates the field (§9.10).
+    public func recordedChildCommitments(of blockHash: String) -> [String: String]? {
+        CIDIdentity.canonicalString(blockHash).flatMap { hashToBlock[$0]?.childCommitments }
+    }
+
     /// Whether some OTHER genesis root of this chain is on the executed
     /// frontier — "is there a chain to stand on", the test a producer runs
     /// before it may exclude a root (§9.9).
@@ -2137,6 +2483,12 @@ public actor ChainState {
         meta.blockHash == input.blockHash
             && meta.parentBlockHash == input.parentBlockHash
             && meta.blockHeight == input.blockHeight
+            // Commitments are PoW-bound content, so two honest facts for one
+            // block agree; a disagreement is a graph conflict, rejected — never
+            // resolved by whichever fact happened to replay first. A fact that
+            // recorded none (pre-field) conflicts with nothing.
+            && (meta.childCommitments == nil || input.childCommitments == nil
+                || meta.childCommitments == input.childCommitments)
     }
 
     private func hydrateMetadata(from input: ConsensusBlockInput) {
@@ -2144,6 +2496,27 @@ public actor ChainState {
         indexStateTransition(input.snapshot, blockHash: input.blockHash)
         if chainTip == input.blockHash {
             tipSnapshot = input.snapshot
+        }
+        if let commitments = input.childCommitments {
+            adoptChildCommitments(commitments, at: input.blockHash)
+        }
+    }
+
+    /// A later fact supplies commitments a pre-field fact left unrecorded. If
+    /// the block was already settled as a non-committer in a served directory
+    /// it now commits into, that directory's runs are re-settled from scratch:
+    /// O(N), exact, and reachable only at the upgrade boundary.
+    private func adoptChildCommitments(_ commitments: [String: String], at hash: String) {
+        guard let meta = hashToBlock[hash], meta.childCommitments == nil else { return }
+        hashToBlock[hash]?.adoptChildCommitments(commitments)
+        guard subtreeWorkIndex.contains(hash) else { return }
+        for directory in servedDirectories where commitments[directory] != nil {
+            servedDirectories.remove(directory)
+            runWork[directory] = nil
+            for block in hashToBlock.keys {
+                hashToBlock[block]?.forgetNearestCommitter(for: directory)
+            }
+            serveRuns(for: directory)
         }
     }
 
