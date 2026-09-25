@@ -1469,18 +1469,29 @@ public extension ChainLevel {
                 sameChainPredecessor: prepared.sameChainPredecessor
             )
         }
-        // A root exclusion may stand only on another EXECUTED root (§9.9).
-        // Preflight checked this outside the lease; the other root could have
-        // been excluded since. Re-check here, under the lease and BEFORE the
-        // durable write, so a fact the reducer would refuse is never written.
-        if case .exclusion = prepared.kind, prepared.block.parent == nil,
-           await !chain.hasExecutedRoot(besides: prepared.resolvedHeader.rawCID) {
-            await chain.releaseAdmissionRevision()
-            return .rejected(
-                .notYetAdmissible,
-                parentCarrierLink: prepared.carrierLink,
-                sameChainPredecessor: prepared.sameChainPredecessor
-            )
+        // Every refusal the reducer can make of an exclusion is made HERE,
+        // under the lease and BEFORE the durable write, so a fact the reducer
+        // would refuse is never written: the block must be possessed, and a
+        // root exclusion may stand only on another EXECUTED root (§9.9).
+        // Preflight checked the latter outside the lease; the other root could
+        // have been excluded since.
+        if case .exclusion = prepared.kind {
+            let target = prepared.resolvedHeader.rawCID
+            let possessed = await chain.contains(blockHash: target)
+            let standsOnAnotherRoot: Bool
+            if prepared.block.parent == nil {
+                standsOnAnotherRoot = await chain.hasExecutedRoot(besides: target)
+            } else {
+                standsOnAnotherRoot = true
+            }
+            guard possessed, standsOnAnotherRoot else {
+                await chain.releaseAdmissionRevision()
+                return .rejected(
+                    .notYetAdmissible,
+                    parentCarrierLink: prepared.carrierLink,
+                    sameChainPredecessor: prepared.sameChainPredecessor
+                )
+            }
         }
         let stagingContext: ChainAdmissionStagingContext
         if preflight.stagingContext.issuedCarrierLink != nil {
