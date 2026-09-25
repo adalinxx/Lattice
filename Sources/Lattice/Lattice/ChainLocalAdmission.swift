@@ -720,12 +720,10 @@ private enum ChainLocalAdmission {
         let context = level.context
         let resolvedHeader: BlockHeader
         let block: Block
-        let commitments: [String: String]
         switch await resolveBlock(blockHeader, fetcher: fetcher) {
         case .success(let resolved):
             resolvedHeader = resolved.header
             block = resolved.block
-            commitments = resolved.childCommitments
         case .failure(let failure):
             return .result(.rejected(failure))
         }
@@ -782,6 +780,21 @@ private enum ChainLocalAdmission {
             return .result(.carrier(
                 carrier.relayLink,
                 sameChainPredecessor: nil
+            ))
+        }
+
+        // §9.10: enumerate the block's child commitments only NOW — its work
+        // is verified above, so walking an attacker-sized `children` trie
+        // costs proof-of-work — and only on paths that emit a block fact (the
+        // carrier path above relays and stores nothing). Required content,
+        // like the rest of the boundary: an unavailable trie must not degrade
+        // to "commits nothing", which would route parent work to an older
+        // committer and let availability decide a consensus-visible number.
+        guard let commitments = await childCommitments(of: resolvedHeader, fetcher: fetcher) else {
+            return .result(.rejected(
+                .unavailableEvidence,
+                parentCarrierLink: carrier.relayLink,
+                sameChainPredecessor: carrier.sameChainPredecessor
             ))
         }
 
@@ -1112,13 +1125,10 @@ private enum ChainLocalAdmission {
     }
 
     /// Every child commitment this block makes, `directory → child CID`, read
-    /// from its PoW-bound `children` trie (§9.10). The trie is part of the
-    /// block BOUNDARY every tier stores (`storeBlockBoundary` resolves it with
-    /// `.list`), so requiring it here adds no availability demand admission
-    /// did not already make — and it must be required: an unavailable trie
-    /// taken as "commits nothing" would silently route parent work to an
-    /// older committer, letting availability decide a consensus-visible
-    /// number. Nil means unavailable; the caller rejects retriably.
+    /// from its PoW-bound `children` trie (§9.10). Called only after the
+    /// block's work is verified and only on paths that emit a block fact, so
+    /// the walk is never spent on an unauthenticated header. Nil means
+    /// unavailable; the caller rejects retriably.
     static func childCommitments(
         of blockHeader: BlockHeader,
         fetcher: any Fetcher
@@ -1137,10 +1147,7 @@ private enum ChainLocalAdmission {
     static func resolveBlock(
         _ blockHeader: BlockHeader,
         fetcher: any Fetcher
-    ) async -> Result<
-        (header: BlockHeader, block: Block, childCommitments: [String: String]),
-        ChainAdmissionFailure
-    > {
+    ) async -> Result<(header: BlockHeader, block: Block), ChainAdmissionFailure> {
         do {
             let resolved = try await blockHeader.resolve(fetcher: fetcher)
             guard let block = resolved.node else {
@@ -1150,16 +1157,7 @@ private enum ChainLocalAdmission {
                   canonicalCID == resolved.rawCID else {
                 return .failure(.providerMalformedEvidence)
             }
-            // §9.10: the block's child commitments ride on its durable fact so
-            // live admission and replay see the same runs. Required content,
-            // like the rest of the boundary — an unavailable trie must not
-            // degrade to "commits nothing".
-            guard let commitments = await childCommitments(
-                of: resolved, fetcher: fetcher
-            ) else {
-                return .failure(.unavailableEvidence)
-            }
-            return .success((resolved, block, commitments))
+            return .success((resolved, block))
         } catch {
             return .failure(classifyResolutionFailure(error))
         }
@@ -1698,9 +1696,7 @@ public extension ChainLevel {
         let resolved: (header: BlockHeader, block: Block)
         switch await ChainLocalAdmission.resolveBlock(genesisHeader, fetcher: fetcher) {
         case .failure(let failure): throw failure
-        // Genesis commits nothing via `children` by convention (§9.10); the
-        // enumerated commitments are not needed on this path.
-        case .success(let value): resolved = (value.header, value.block)
+        case .success(let value): resolved = value
         }
         guard resolved.block.parent == nil, resolved.block.height == 0 else {
             throw ChainAdmissionFailure.protocolInvalid
@@ -1759,9 +1755,7 @@ public extension ChainLevel {
         let resolved: (header: BlockHeader, block: Block)
         switch await ChainLocalAdmission.resolveBlock(genesisHeader, fetcher: fetcher) {
         case .failure(let failure): throw failure
-        // Genesis commits nothing via `children` by convention (§9.10); the
-        // enumerated commitments are not needed on this path.
-        case .success(let value): resolved = (value.header, value.block)
+        case .success(let value): resolved = value
         }
         guard resolved.block.parent == nil, resolved.block.height == 0 else {
             throw ChainAdmissionFailure.protocolInvalid

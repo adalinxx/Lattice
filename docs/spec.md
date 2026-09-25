@@ -1158,26 +1158,35 @@ the child block indirectly, and its work secures the child. Effective
 The parent partitions its connected graph into RUNS, one per commitment into
 each child directory `d`: a parent block `Q` belongs to the run of the nearest
 block at or above it — by parent pointer, never by canonical chain — that
-commits into `d`. `nearestCommitter(Q, d)` is inherited at admission in O(1),
-exactly as `DifficultyAnchor` is, so it is reorg-safe and replay-identical.
+commits into `d`. `nearestCommitter(Q, d)` is inherited from `Q`'s parent at
+admission, like `DifficultyAnchor`, so it is reorg-safe and replay-identical;
+it is held only for the directories a node SERVES — the child chains it hosts,
+an operator choice — so the cost per block is O(#served), never O(height) and
+never a function of how many directories a stranger's block commits into.
 `runWork(P, d)` is the sum of own credited work over the connected blocks whose
 nearest committer into `d` is `P`. Runs partition the graph: each parent grind
-is in exactly one run, and a parent fork below `P` places each branch's blocks
+is in at most one run per directory — none where no ancestor commits into it —
+and a parent fork below `P` places each branch's blocks
 in the run of that branch's own nearest committer — no branch missed, none
 counted twice. A block's commitments are read from its PoW-bound `children`
 trie at admission and carried on its durable block fact, so live admission and
-replay see the same commitments. The parent serves `runWork(P, d)` in O(1).
+replay see the same commitments. The parent serves, in O(1), the run report
+`(P, d, childBlock, grinds(P), runWork(P, d), ownWork(P), revision)`.
 
-The child credits the run under an identity derived from the grind it was
-committed under, separate from the grind itself:
+The child first binds the report: it must be for the child's own directory,
+must name `C` as the block `P` commits, and one of `P`'s grinds must already be
+credited at `C` — otherwise it is refused, visibly. It then credits the run
+under an identity keyed by the committer and the directory, separate from any
+grind:
 
 ```text
-attributed(C, g) = runWork(P, d) − ownWork(P)
+attributed(C, P, d) = runWork(P, d) − ownWork(P)
 ```
 
-`P`'s own grind `g` is already credited at `C` at this chain's price (§9.5)
-and stays so; subtracting `ownWork` keeps it counted exactly once and leaves
-the child's terminal-target raise untouched. The attributed contribution is
+`P`'s own grinds are already credited at `C` at this chain's price (§9.5) and
+stay so; subtracting `ownWork` keeps them counted exactly once — once, not
+once per grind, because the identity is the committer's, not a grind's — and
+leaves the child's terminal-target raise untouched. The attributed contribution is
 its own location-bound value: a repeated report is not a strict increase and
 is refused, so the crediting is idempotent. It is applied only if it is a
 strict increase over the attributed value already held, as a work-only batch
@@ -1195,7 +1204,10 @@ maintained independently of exclusion and are not rebuilt by it.
 This is an EVIDENCE path, not a change to what `trueCumWork` means: the same
 number is reachable by a child that verifies the parent's blocks itself, so the
 reported path may later be replaced by a verified one with no change to
-consensus. Child weight never depends on parent CANONICITY: runs follow parent
+consensus. The quantity is the configured immediate parent process's word —
+the child already trusts that process for state continuity (§5.3), which
+gates minting outright, so no new trust class is introduced; the location and
+the binding are checked locally. Child weight never depends on parent CANONICITY: runs follow parent
 pointers, not the parent's canonical chain.
 
 ## 10. Economic Model
@@ -1322,7 +1334,8 @@ state); withdrawals return it to the block-wide credit budget.
 5. Effective `trueCumWork` contains only connected, accepted same-chain
    locations derived from verified proof bytes; a location's quantity may be
    strengthened by its parent's run work at the committing block (§9.10),
-   derived locally and only ever raised
+   reported by the configured parent process, bound locally to this child
+   block and directory, and only ever raised
 6. Equal-work same-chain child blocks prefer the lexicographically smaller
    canonical block CID; `nextTarget` is not a comparator
 7. Parent canonicity alone cannot change child validity, weight, or fork choice

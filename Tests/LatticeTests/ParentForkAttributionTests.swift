@@ -136,9 +136,15 @@ final class ParentForkAttributionTests: XCTestCase {
         // The genesis must seed the restore; everything else in the given order.
         let genesisIndex = s.parent.firstIndex { $0.parent == nil }!
         let parent = try await ChainState.restore(replaying: [batches[genesisIndex]])
+        // Serve the directory before OR after the graph exists — the two paths
+        // (per-block settle, whole-graph settle) must agree, so alternate by
+        // the order's shape and let the oracle judge both.
+        let serveFirst = order.first.map { $0 % 2 == 0 } ?? true
+        if serveFirst { await parent.serveRuns(for: s.directory) }
         for i in order where i != genesisIndex {
             _ = try await parent.replay(batches[i])
         }
+        if !serveFirst { await parent.serveRuns(for: s.directory) }
 
         // Child: every committer's grind at the child's price; genesis its own.
         var carriers: [String: [String]] = [:]
@@ -166,7 +172,7 @@ final class ParentForkAttributionTests: XCTestCase {
                     continue
                 }
                 let outcome = await child.strengthenFromParentReport(
-                    child: h(target), grindID: grind(p.name), report: report
+                    child: h(target), directory: s.directory, report: report
                 )
                 if case .strengthened(let batch) = outcome { _ = try await child.replay(batch) }
             }
@@ -411,7 +417,14 @@ final class ParentForkAttributionTests: XCTestCase {
                 if let t = q.commits[d], !keptNames.contains(t) { q.commits[d] = nil }
                 return q
             }
-            let s = Scenario(directory: d, parent: live, child: keep)
+            var s = Scenario(directory: d, parent: live, child: keep)
+            // Never a vacuous trial: at least one committer into d, so the
+            // mechanism is exercised every time the oracle is consulted.
+            if !s.parent.contains(where: { $0.commits[d] != nil }) {
+                var p = s.parent[1]
+                p.commits[d] = "cg"
+                s = Scenario(directory: d, parent: [s.parent[0], p] + s.parent.dropFirst(2), child: s.child)
+            }
             let order = Array(s.parent.indices).shuffled(using: &rng)
             try await assertMatchesOracle(s, order: order, "trial \(trial) (\(live.count) parent, \(keep.count) child)")
         }
@@ -461,7 +474,7 @@ final class ParentForkAttributionTests: XCTestCase {
             let served = await parent.parentRunReport(at: h(committer), directory: d)
             let report = try XCTUnwrap(served)
             guard case .strengthened(let batch) = await live.strengthenFromParentReport(
-                child: h(target), grindID: grind(committer), report: report
+                child: h(target), directory: d, report: report
             ) else { return XCTFail("\(committer) must strengthen") }
             _ = try await live.replay(batch)
             facts.append(batch)
