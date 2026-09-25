@@ -23,9 +23,9 @@
 /// Balance is AVL. Its ±1 balance factor is a structural property of the
 /// algorithm, not a tunable ceiling: there is no fanout, node size, load factor
 /// or rebalance threshold to pick, so this introduces no configurable number.
-/// The tree is INSERT-ONLY — an exclusion rebuilds the whole index from the
-/// filtered graph rather than deleting — which removes the hardest half of the
-/// implementation and every case that would need one.
+/// The tree is INSERT-ONLY — nothing is ever removed from fork choice, an
+/// exclusion included (work weighs, §9.9) — which removes the hardest half of
+/// the implementation and every case that would need one.
 struct EulerWorkIndex: Sendable {
     /// One step of an Euler tour. `close` carries no work; all of a block's
     /// direct work sits on its `open`, so a subtree range sums each block once.
@@ -197,7 +197,7 @@ struct EulerWorkIndex: Sendable {
     }
 
     /// Build the whole index from an Euler tour in one linear pass. Recovery
-    /// and the exclusion rebuild use this; every live mutation is incremental.
+    /// uses this; every live mutation is incremental.
     static func build(events: [Event]) -> EulerWorkIndex {
         var index = EulerWorkIndex()
         index.nodes.reserveCapacity(events.count)

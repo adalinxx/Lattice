@@ -1457,6 +1457,38 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(validatedBlockFact, eagerBlockFact)
     }
 
+    /// A root exclusion may stand only on another EXECUTED root (§9.9). On the
+    /// only deployed shape — one root — the validate tier's verdict on a
+    /// parentless block is therefore parked as a non-verdict at the PRODUCER:
+    /// nothing is staged, nothing is excluded, and recovery has no fact whose
+    /// replay could depend on order.
+    func testValidateTierParksARootExclusionWithNoOtherExecutedRoot() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let level = makeLevel(genesis: genesis)
+        let genesisHash = try BlockHeader(node: genesis).rawCID
+        actor StageCounter { var count = 0; func bump() { count += 1 } }
+        let stagedCounter = StageCounter()
+        let result = try await level.admitBlockHeaderChainLocal(
+            try BlockHeader(node: genesis),
+            fetcher: fetcher,
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
+            mode: .validate,
+            stage: { _ in await stagedCounter.bump() }
+        )
+        let staged = await stagedCounter.count
+        guard case .rejected(let failure, _, _) = result else {
+            return XCTFail("a root exclusion with nothing to stand on must be parked, got \(result)")
+        }
+        XCTAssertEqual(failure, .notYetAdmissible, "a non-verdict, retried — never a written fact")
+        XCTAssertEqual(staged, 0, "nothing is made durable")
+        let roots = await level.chain.excludedRootsForTesting
+        XCTAssertTrue(roots.isEmpty)
+        let tip = await level.chain.getMainChainTip()
+        XCTAssertEqual(tip, genesisHash, "the only root stays selectable")
+    }
+
     func testUnknownErrorClassifiesAsRetryableNotExcluding() {
         // Fail-safe: an unenumerated error type is not a completed deterministic
         // check, so both classifier catch-alls must route it to retryable
