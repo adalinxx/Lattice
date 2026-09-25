@@ -362,11 +362,11 @@ fileprivate struct PreparedAdmission: Sendable {
     /// if/when the block is validated (`.validate`/`.eager` keep storing it).
     /// `var` only so the synthesized memberwise init can default it; never mutated.
     var defersBodyStore: Bool = false
-    /// This block's child commitments (§9.10), enumerated once in `prepare`
-    /// and carried onto the durable block fact. `var` only so the synthesized
-    /// memberwise init can default it for the bootstrap-genesis path, which
-    /// commits nothing via `children`; never mutated.
-    var childCommitments: [String: String] = [:]
+    /// This block's child commitments (§9.10), enumerated in `prepare` where a
+    /// block fact is emitted and carried onto it. Nil = not recorded (the
+    /// evidence and bootstrap-genesis paths, which emit no block fact or a
+    /// genesis that commits nothing by convention); never mutated.
+    var childCommitments: [String: String]? = nil
 
     var facts: ChainAdmissionBatch {
         // An exclusion is a standalone verdict: exactly one `.exclusion` fact,
@@ -783,20 +783,20 @@ private enum ChainLocalAdmission {
             ))
         }
 
-        // §9.10: enumerate the block's child commitments only NOW — its work
-        // is verified above, so walking an attacker-sized `children` trie
-        // costs proof-of-work — and only on paths that emit a block fact (the
-        // carrier path above relays and stores nothing). Required content,
-        // like the rest of the boundary: an unavailable trie must not degrade
-        // to "commits nothing", which would route parent work to an older
-        // committer and let availability decide a consensus-visible number.
-        guard let commitments = await childCommitments(of: resolvedHeader, fetcher: fetcher) else {
-            return .result(.rejected(
-                .unavailableEvidence,
-                parentCarrierLink: carrier.relayLink,
-                sameChainPredecessor: carrier.sameChainPredecessor
-            ))
-        }
+        // §9.10: the block's child commitments are enumerated only where a
+        // block fact is emitted — after its work is verified (walking an
+        // attacker-sized `children` trie costs proof-of-work) and after the
+        // duplicate and evidence short-circuits (a re-delivered block costs
+        // nothing here). Required content, like the rest of the boundary: an
+        // unavailable trie must not degrade to "commits nothing", which would
+        // route parent work to an older committer and let availability decide
+        // a consensus-visible number.
+        let enumerate = { await childCommitments(of: resolvedHeader, fetcher: fetcher) }
+        let commitmentsUnavailable: Preparation = .result(.rejected(
+            .unavailableEvidence,
+            parentCarrierLink: carrier.relayLink,
+            sameChainPredecessor: carrier.sameChainPredecessor
+        ))
 
         // Validated tier: the block was already weighed (its work is verified
         // above and durable). Execute it now and record a validity verdict,
@@ -804,6 +804,7 @@ private enum ChainLocalAdmission {
         // first-observation of the header. Isolated so the eager and weighed
         // paths are untouched.
         if case .validate = mode {
+            guard let commitments = await enumerate() else { return commitmentsUnavailable }
             return await prepareValidatedTier(
                 resolvedHeader: resolvedHeader,
                 block: block,
@@ -871,8 +872,7 @@ private enum ChainLocalAdmission {
                 verifiedCarrierLink: carrier.issuableLink,
                 sameChainPredecessor: carrier.sameChainPredecessor,
                 kind: .evidence,
-                defersHierarchyIssuance: !executed,
-                childCommitments: commitments
+                defersHierarchyIssuance: !executed
             ))
         }
 
@@ -911,6 +911,7 @@ private enum ChainLocalAdmission {
                     )
                 ))
             }
+            guard let commitments = await enumerate() else { return commitmentsUnavailable }
             return .ready(PreparedAdmission(
                 resolvedHeader: resolvedHeader,
                 block: block,
@@ -971,6 +972,7 @@ private enum ChainLocalAdmission {
                     sameChainPredecessor: carrier.sameChainPredecessor
                 ))
             }
+            guard let commitments = await enumerate() else { return commitmentsUnavailable }
             return .ready(PreparedAdmission(
                 resolvedHeader: resolvedHeader,
                 block: block,

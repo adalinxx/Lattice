@@ -107,7 +107,10 @@ public struct BlockMeta: Sendable {
     /// Directory → child block CID this block commits, read from its PoW-bound
     /// `children` trie at admission and carried on the durable block fact, so
     /// live admission and replay see the same commitments (§9.10).
-    public private(set) var childCommitments: [String: String]
+    /// Nil when NOT RECORDED — a fact written before this field existed — which
+    /// is not "commits nothing": replay tolerates it, and a later fact for the
+    /// same block supplies the real map (`adoptChildCommitments`).
+    public private(set) var childCommitments: [String: String]?
     /// Directory → the nearest block at or above this one, by parent pointer,
     /// that commits into that directory — this block itself where it commits.
     /// Held only for the directories this node SERVES runs for (the child
@@ -137,7 +140,7 @@ public struct BlockMeta: Sendable {
         cumulativeWork: WorkSum = .zero,
         subtreeWeight: WorkSum? = nil,
         difficultyAnchor: DifficultyAnchor? = nil,
-        childCommitments: [String: String] = [:],
+        childCommitments: [String: String]? = nil,
         nearestCommitter: [String: String] = [:]
     ) {
         let contributions = Dictionary(
@@ -163,6 +166,18 @@ public struct BlockMeta: Sendable {
     /// Settle the nearest committers once the block is connected.
     mutating func adoptNearestCommitter(_ nearest: [String: String]) {
         nearestCommitter = nearest
+    }
+
+    mutating func forgetNearestCommitter(for directory: String) {
+        nearestCommitter[directory] = nil
+    }
+
+    /// Fill commitments a pre-field fact left unrecorded. Write-once, like the
+    /// difficulty anchor: commitments are PoW-bound content, so a second value
+    /// for a block that has one would mean the content was misread.
+    mutating func adoptChildCommitments(_ commitments: [String: String]) {
+        guard childCommitments == nil else { return }
+        childCommitments = commitments
     }
 
     /// Fill an anchor left absent by out-of-order admission. Write-once: the
@@ -207,7 +222,7 @@ public struct BlockMeta: Sendable {
 /// canonical chain — is `blockHash`. Runs partition the graph, so each parent
 /// grind is in exactly one run and a fork below the committer puts each branch
 /// in its own branch's run: nothing missed, nothing counted twice. Insert-only
-/// and never revoked. Served in O(1).
+/// and never revoked. Served in O(1) plus the committer's grind set.
 public struct ParentRunReport: Sendable, Equatable {
     /// The committing parent block.
     public let blockHash: String
@@ -260,6 +275,11 @@ public enum ParentReportStrengthening: Sendable, Equatable {
     /// directories serves one run per directory, and only this chain's own
     /// may be applied here.
     case wrongDirectory
+    /// This committer's run is already credited at ANOTHER child block. A
+    /// location is write-once and never revoked, so unlike every other refusal
+    /// this one is permanent: it is the signature of a parent that once named
+    /// the wrong child block, and it must be visible as exactly that.
+    case locationConflict
     /// `ownWork` exceeds `runWork`, which no honest run can do.
     case malformedReport
     /// The derived quantity exceeds what one contribution can carry. Refused
@@ -381,7 +401,8 @@ private struct ConsensusBlockInput: Sendable {
     let blockHeight: UInt64
     let timestamp: Int64
     let snapshot: TipBlockSnapshot
-    let childCommitments: [String: String]
+    /// Nil = not recorded on the fact (pre-field), never "commits nothing".
+    let childCommitments: [String: String]?
 
     /// Requires an EXECUTED block.
     init(blockHeader: BlockHeader, block: Block) {
@@ -389,7 +410,9 @@ private struct ConsensusBlockInput: Sendable {
         parentBlockHash = block.parent?.rawCID
         blockHeight = block.height
         timestamp = block.timestamp
-        childCommitments = [:]
+        // Not enumerated on this test-only path: "not recorded", never a
+        // silent "commits nothing".
+        childCommitments = nil
         snapshot = TipBlockSnapshot(
             postStateCID: block.postState.rawCID,
             prevStateCID: block.prevState.rawCID,
@@ -421,7 +444,7 @@ private struct ConsensusBlockInput: Sendable {
         parentBlockHash = normalizedParent
         blockHeight = fact.blockHeight
         timestamp = fact.timestamp
-        childCommitments = fact.childCommitments ?? [:]
+        childCommitments = fact.childCommitments
         snapshot = TipBlockSnapshot(
             postStateCID: postStateCID,
             prevStateCID: prevStateCID,
@@ -761,6 +784,10 @@ public actor ChainState {
         self.connectedBlocks = Self.connectedBlocks(in: self.hashToBlock)
         self.runWork = [:]
         self.servedDirectories = []
+        // Nearest committers are settled by `serveRuns`, never supplied.
+        guard hashToBlock.values.allSatisfy({ $0.nearestCommitter.isEmpty }) else {
+            throw ChainStateRestoreError.corruptConsensusGraph
+        }
         // Seed the executed-from-genesis frontier. Replay hands validations to
         // `markValidated` one at a time, but a graph restored wholesale needs
         // it computed once, downward from every genesis it holds.
@@ -2034,6 +2061,10 @@ public actor ChainState {
     /// O(N) once, at the operator's choice, and idempotent. Which directories a
     /// node serves is its own choice, so a stranger's block committing into ten
     /// thousand directories costs this node nothing it did not ask for.
+    ///
+    /// The served set is NOT persisted: the node must call this for every
+    /// directory it hosts after every restart, and it runs synchronously on
+    /// the actor — one whole-graph walk per directory.
     public func serveRuns(for directory: String) {
         guard servedDirectories.insert(directory).inserted else { return }
         var stack = hashToBlock.values
@@ -2074,7 +2105,7 @@ public actor ChainState {
         var nearest = meta.nearestCommitter
         var credited: [String: String] = [:]
         for directory in directories {
-            let committer = meta.childCommitments[directory] != nil ? hash : inherited[directory]
+            let committer = meta.childCommitments?[directory] != nil ? hash : inherited[directory]
             guard let committer else { continue }
             nearest[directory] = committer
             credited[directory] = committer
@@ -2110,7 +2141,7 @@ public actor ChainState {
         guard let hash = CIDIdentity.canonicalString(blockHash),
               connectedBlocks.contains(hash),
               let meta = hashToBlock[hash],
-              let childBlock = meta.childCommitments[directory],
+              let childBlock = meta.childCommitments?[directory],
               let run = runWork[directory]?[hash] else { return nil }
         return ParentRunReport(
             blockHash: hash,
@@ -2162,10 +2193,10 @@ public actor ChainState {
               report.grinds.contains(where: { workContribution(id: $0, at: hash) != nil }),
               let attributedID = AttributedRunIdentity(
                   committerBlockHash: committer, directory: directory
-              ).contributionID,
-              acceptsLocation(of: attributedID, at: hash) else {
+              ).contributionID else {
             return .notCommitterOfChild
         }
+        guard acceptsLocation(of: attributedID, at: hash) else { return .locationConflict }
         guard let derived = report.runWork.subtracting(report.ownWork) else {
             return .malformedReport
         }
@@ -2455,8 +2486,10 @@ public actor ChainState {
             && meta.blockHeight == input.blockHeight
             // Commitments are PoW-bound content, so two honest facts for one
             // block agree; a disagreement is a graph conflict, rejected — never
-            // resolved by whichever fact happened to replay first.
-            && meta.childCommitments == input.childCommitments
+            // resolved by whichever fact happened to replay first. A fact that
+            // recorded none (pre-field) conflicts with nothing.
+            && (meta.childCommitments == nil || input.childCommitments == nil
+                || meta.childCommitments == input.childCommitments)
     }
 
     private func hydrateMetadata(from input: ConsensusBlockInput) {
@@ -2464,6 +2497,27 @@ public actor ChainState {
         indexStateTransition(input.snapshot, blockHash: input.blockHash)
         if chainTip == input.blockHash {
             tipSnapshot = input.snapshot
+        }
+        if let commitments = input.childCommitments {
+            adoptChildCommitments(commitments, at: input.blockHash)
+        }
+    }
+
+    /// A later fact supplies commitments a pre-field fact left unrecorded. If
+    /// the block was already settled as a non-committer in a served directory
+    /// it now commits into, that directory's runs are re-settled from scratch:
+    /// O(N), exact, and reachable only at the upgrade boundary.
+    private func adoptChildCommitments(_ commitments: [String: String], at hash: String) {
+        guard let meta = hashToBlock[hash], meta.childCommitments == nil else { return }
+        hashToBlock[hash]?.adoptChildCommitments(commitments)
+        guard connectedBlocks.contains(hash) else { return }
+        for directory in servedDirectories where commitments[directory] != nil {
+            servedDirectories.remove(directory)
+            runWork[directory] = nil
+            for block in hashToBlock.keys {
+                hashToBlock[block]?.forgetNearestCommitter(for: directory)
+            }
+            serveRuns(for: directory)
         }
     }
 

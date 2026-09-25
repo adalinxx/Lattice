@@ -54,7 +54,7 @@ final class ParentRunAttributionTests: XCTestCase {
     /// batch at a time in an arrival order of the test's choosing.
     private func batch(
         _ hash: String, parent: String?, height: UInt64, work: UInt64,
-        commits: [String: String] = [:]
+        commits: [String: String] = [:], recorded: Bool = true
     ) -> ChainAdmissionBatch {
         let fact = ChainBlockFact(
             blockHash: h(hash), parentBlockHash: parent.map(h), blockHeight: height,
@@ -64,7 +64,7 @@ final class ParentRunAttributionTests: XCTestCase {
             target: "1", nextTarget: "1",
             timestamp: Int64(1_000 + height),
             stateDiff: .empty,
-            childCommitments: commits
+            childCommitments: recorded ? commits : nil
         )
         return ChainAdmissionBatch(facts: [
             .block(fact),
@@ -227,6 +227,54 @@ final class ParentRunAttributionTests: XCTestCase {
         XCTAssertNil(g, "genesis commits nothing")
         XCTAssertNil(unknown, "unknown block")
         XCTAssertNil(wrongDirectory, "wrong directory")
+    }
+
+    /// A fact written before `childCommitments` existed records nothing — not
+    /// "commits nothing". It is no committer until a later fact for the same
+    /// block supplies the map; that fact is not a conflict, and the runs it
+    /// changes are re-settled. A fact that DISAGREES with a recorded map is a
+    /// graph conflict, never first-writer-wins.
+    func testUnrecordedCommitmentsAreAdoptedFromALaterFactNotTreatedAsNone() async throws {
+        let chain = try await ChainState.restore(replaying: [batch("g", parent: nil, height: 0, work: 1)])
+        await chain.serveRuns(for: d)
+        _ = try await chain.replay(batch("p1", parent: "g", height: 1, work: 5, commits: [d: testCID("c")], recorded: false))
+        _ = try await chain.replay(batch("p2", parent: "p1", height: 2, work: 3))
+        let unrecorded = await chain.parentRunReport(at: h("p1"), directory: d)
+        XCTAssertNil(unrecorded, "an unrecorded map makes no committer")
+        // The validated tier re-emits the block fact with the real map.
+        let later = try await chain.replay(batch("p1", parent: "g", height: 1, work: 5, commits: [d: testCID("c")]))
+        XCTAssertNil(later, "same block, same work: a no-op replay, not a conflict")
+        let adopted = await chain.parentRunReport(at: h("p1"), directory: d)
+        XCTAssertEqual(adopted?.runWork, sum(5, 3), "the run is re-settled over the whole graph")
+        XCTAssertEqual(adopted?.childBlock, testCID("c"))
+        let again = try await chain.replay(batch("p1", parent: "g", height: 1, work: 5, commits: [d: testCID("c")]))
+        XCTAssertNil(again)
+        let stillOnce = await chain.parentRunReport(at: h("p1"), directory: d)
+        XCTAssertEqual(stillOnce?.runWork, sum(5, 3), "re-adopting the same map credits nothing twice")
+        // A different recorded map for the same block is a conflict.
+        do {
+            _ = try await chain.replay(batch("p1", parent: "g", height: 1, work: 5, commits: [d: testCID("other")]))
+            XCTFail("disagreeing commitments must be rejected")
+        } catch ChainStateRestoreError.corruptConsensusGraph {}
+    }
+
+    /// A committer's run is credited at ONE child block for the life of the
+    /// chain. A second report naming another block is refused with a refusal
+    /// distinct from the routine ones: it is the one that is permanent.
+    func testLocationConflictIsVisiblyDistinct() async throws {
+        let child = makeChain(blocks: [
+            meta("cg", parent: nil, height: 0, children: ["c", "c2"], work: 1),
+            childMeta("c", parent: "cg", height: 1, grind: grind("p1"), work: UInt256(5)),
+            childMeta("c2", parent: "cg", height: 1, grind: grind("p1-alt"), work: UInt256(5)),
+        ])
+        let first = await strengthen(child, report(sum(5, 3), own: sum(5)))
+        guard case .strengthened(let batch) = first else { return XCTFail("first: \(first)") }
+        _ = try await child.replay(batch)
+        // A buggy parent now names c2 for the same committer, with a grind c2 holds.
+        let conflict = await strengthen(child, child: "c2", report(sum(5, 9), own: sum(5), child: "c2", grinds: [grind("p1-alt")]))
+        XCTAssertEqual(conflict, .locationConflict)
+        let atC = await attributed(child)
+        XCTAssertEqual(atC, UInt256(3), "the first location stands; nothing moved")
     }
 
     /// Runs exist only for directories this node serves: a block committing

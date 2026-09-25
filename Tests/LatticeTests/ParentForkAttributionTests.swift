@@ -130,7 +130,7 @@ final class ParentForkAttributionTests: XCTestCase {
     /// applied `passes` times, in `order`, so idempotence is exercised too.
     private func run(
         _ s: Scenario, order: [Int], passes: Int = 2
-    ) async throws -> (parent: ChainState, child: ChainState) {
+    ) async throws -> (parent: ChainState, child: ChainState, strengthened: Int) {
         let ph = heights(s.parent, name: \.name, parent: \.parent)
         let batches = s.parent.map { parentBatch($0, height: ph[$0.name]!) }
         // The genesis must seed the restore; everything else in the given order.
@@ -163,6 +163,7 @@ final class ParentForkAttributionTests: XCTestCase {
             )
         })
 
+        var strengthened = 0
         for _ in 0..<passes {
             for i in order {
                 let p = s.parent[i]
@@ -174,16 +175,21 @@ final class ParentForkAttributionTests: XCTestCase {
                 let outcome = await child.strengthenFromParentReport(
                     child: h(target), directory: s.directory, report: report
                 )
-                if case .strengthened(let batch) = outcome { _ = try await child.replay(batch) }
+                if case .strengthened(let batch) = outcome {
+                    _ = try await child.replay(batch)
+                    strengthened += 1
+                }
             }
         }
-        return (parent, child)
+        return (parent, child, strengthened)
     }
 
     private func assertMatchesOracle(_ s: Scenario, order: [Int]? = nil, _ label: String,
                                      file: StaticString = #filePath, line: UInt = #line) async throws {
         let expected = oracle(s)
         let built = try await run(s, order: order ?? Array(s.parent.indices))
+        XCTAssertGreaterThan(built.strengthened, 0, "\(label): the mechanism must actually have credited something",
+                             file: file, line: line)
         for c in s.child {
             let weight = await built.child.subtreeWeight(forHash: h(c.name))
             XCTAssertEqual(weight, expected[c.name], "\(label): child block \(c.name)", file: file, line: line)
@@ -425,6 +431,13 @@ final class ParentForkAttributionTests: XCTestCase {
                 p.commits[d] = "cg"
                 s = Scenario(directory: d, parent: [s.parent[0], p] + s.parent.dropFirst(2), child: s.child)
             }
+            // ... and at least one non-committing descendant under a committer,
+            // so at least one run is larger than its committer's own work and
+            // the credit path is exercised, not just refused.
+            let firstCommitter = s.parent.first { $0.commits[d] != nil }!.name
+            s = Scenario(directory: d, parent: s.parent + [
+                ParentBlock(name: "tail", parent: firstCommitter, work: 1 + rng.next() % 20),
+            ], child: s.child)
             let order = Array(s.parent.indices).shuffled(using: &rng)
             try await assertMatchesOracle(s, order: order, "trial \(trial) (\(live.count) parent, \(keep.count) child)")
         }

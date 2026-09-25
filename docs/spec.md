@@ -1159,10 +1159,12 @@ The parent partitions its connected graph into RUNS, one per commitment into
 each child directory `d`: a parent block `Q` belongs to the run of the nearest
 block at or above it — by parent pointer, never by canonical chain — that
 commits into `d`. `nearestCommitter(Q, d)` is inherited from `Q`'s parent at
-admission, like `DifficultyAnchor`, so it is reorg-safe and replay-identical;
+connection, like `DifficultyAnchor`, so it is reorg-safe and replay-identical;
 it is held only for the directories a node SERVES — the child chains it hosts,
-an operator choice — so the cost per block is O(#served), never O(height) and
-never a function of how many directories a stranger's block commits into.
+an operator choice — so the run bookkeeping per block is O(#served), never
+O(height) and never a function of how many directories a stranger's block
+commits into. (The block's commitment map itself is stored in full, bounded by
+the `children` trie the boundary already retains.)
 `runWork(P, d)` is the sum of own credited work over the connected blocks whose
 nearest committer into `d` is `P`. Runs partition the graph: each parent grind
 is in at most one run per directory — none where no ancestor commits into it —
@@ -1170,11 +1172,14 @@ and a parent fork below `P` places each branch's blocks
 in the run of that branch's own nearest committer — no branch missed, none
 counted twice. A block's commitments are read from its PoW-bound `children`
 trie at admission and carried on its durable block fact, so live admission and
-replay see the same commitments. The parent serves, in O(1), the run report
-`(P, d, childBlock, grinds(P), runWork(P, d), ownWork(P), revision)`.
+replay see the same commitments. A fact written before this field existed
+records NO commitments, which is not "commits nothing": replay tolerates it,
+and a later fact for the same block supplies them. The parent serves the run
+report `(P, d, childBlock, grinds(P), runWork(P, d), ownWork(P), revision)` in
+O(1) plus `P`'s grind set.
 
 The child first binds the report: it must be for the child's own directory,
-must name `C` as the block `P` commits, and one of `P`'s grinds must already be
+must name `C` as the block it claims `P` commits, and one of `P`'s grinds must already be
 credited at `C` — otherwise it is refused, visibly. It then credits the run
 under an identity keyed by the committer and the directory, separate from any
 grind:
