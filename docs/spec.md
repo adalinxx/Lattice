@@ -1165,11 +1165,12 @@ an operator choice — so the run bookkeeping per block is O(#served), never
 O(height) and never a function of how many directories a stranger's block
 commits into. (The block's commitment map itself is stored in full — on disk,
 where the boundary already retains the trie, and in memory, per block, for
-the life of the graph. The `children` trie lies outside `maxBlockSize` (§4),
-which counts transaction content only, so one proof-of-work buys an entry
-count bounded by nothing but what the boundary store will fetch; whether the
-chain's committed size rule should cover the trie is a separate consensus
-decision, not settled here.)
+the life of the graph. The trie is inside `maxBlockSize` (§3.5), which counts
+the block boundary including the child index, so a validated block's entry
+count is bounded by the chain's committed size rule. The weighed tier cannot
+evaluate that rule — it has no body — so until the validate tier applies §3.5
+a not-yet-validated block's map is bounded only by what the boundary store
+will fetch, and it is retained through a later exclusion.)
 `runWork(P, d)` is the sum of own credited work over the connected blocks whose
 nearest committer into `d` is `P`. Runs partition the graph: each parent grind
 is in at most one run per directory — none where no ancestor commits into it —
