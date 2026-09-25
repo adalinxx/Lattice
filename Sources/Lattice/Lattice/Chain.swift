@@ -278,7 +278,10 @@ public enum ParentReportStrengthening: Sendable, Equatable {
     /// This committer's run is already credited at ANOTHER child block. A
     /// location is write-once and never revoked, so unlike every other refusal
     /// this one is permanent: it is the signature of a parent that once named
-    /// the wrong child block, and it must be visible as exactly that.
+    /// the wrong child block, and it must be visible as exactly that. It must
+    /// also never become a fact: staged anyway, it is a corrupt graph on apply
+    /// and on every restore — derive under the lease held through the write
+    /// (see `strengthenFromParentReport`).
     case locationConflict
     /// `ownWork` exceeds `runWork`, which no honest run can do.
     case malformedReport
@@ -2166,11 +2169,11 @@ public actor ChainState {
     /// child block for a committer whose run is already located is another
     /// matter: a location is write-once, and a durable fact that loses that
     /// race is a corrupt graph on apply and on every restore, exactly as a
-    /// second location for any grind is. So the node MUST derive under its
-    /// mutation lease, immediately before staging — this is O(1); derive once
-    /// to decide, and again under the lease to write — the same shape as
-    /// `commitPreflight`'s exclusion re-check. `.locationConflict` is then a
-    /// refusal, never a fact.
+    /// second location for any grind is. So the node MUST hold its mutation
+    /// lease from a derive through the durable write and `replay` — derive
+    /// once to decide, and again under the lease to write; the cost is O(1)
+    /// plus the report's grind set — the same shape as `commitPreflight`'s
+    /// exclusion re-check. `.locationConflict` is then a refusal, never a fact.
     public func strengthenFromParentReport(
         child childHash: String,
         directory: String,
@@ -2359,6 +2362,12 @@ public actor ChainState {
         guard batch.facts.count == 1,
               case .exclusion(let fact) = batch.facts[0] else { return nil }
         return CIDIdentity.canonicalString(fact.blockHash)
+    }
+
+    /// The commitments recorded for a possessed block, or nil when the block
+    /// is unknown or its fact predates the field (§9.10).
+    public func recordedChildCommitments(of blockHash: String) -> [String: String]? {
+        CIDIdentity.canonicalString(blockHash).flatMap { hashToBlock[$0]?.childCommitments }
     }
 
     /// Whether some OTHER genesis root of this chain is on the executed

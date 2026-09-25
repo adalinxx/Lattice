@@ -795,7 +795,9 @@ private enum ChainLocalAdmission {
             .result(.rejected(
                 failure,
                 parentCarrierLink: carrier.relayLink,
-                sameChainPredecessor: carrier.sameChainPredecessor
+                sameChainPredecessor: predecessorRequirement(
+                    carrier.sameChainPredecessor, after: failure
+                )
             ))
         }
 
@@ -805,15 +807,9 @@ private enum ChainLocalAdmission {
         // first-observation of the header. Isolated so the eager and weighed
         // paths are untouched.
         if case .validate = mode {
-            let commitments: [String: String]
-            switch await childCommitments(of: resolvedHeader, fetcher: fetcher) {
-            case .success(let enumerated): commitments = enumerated
-            case .failure(let failure): return commitmentsRejection(failure)
-            }
             return await prepareValidatedTier(
                 resolvedHeader: resolvedHeader,
                 block: block,
-                childCommitments: commitments,
                 blockHash: blockHash,
                 fetcher: fetcher,
                 contribution: contribution,
@@ -1007,7 +1003,6 @@ private enum ChainLocalAdmission {
     private static func prepareValidatedTier(
         resolvedHeader: BlockHeader,
         block: Block,
-        childCommitments commitments: [String: String],
         blockHash: String,
         fetcher: any Fetcher,
         contribution: VerifiedWorkContribution,
@@ -1049,8 +1044,7 @@ private enum ChainLocalAdmission {
                 carrierLink: carrierLink,
                 verifiedCarrierLink: carrier.issuableLink,
                 sameChainPredecessor: carrier.sameChainPredecessor,
-                kind: .exclusion,
-                childCommitments: commitments
+                kind: .exclusion
             ))
         }
         func rejected(_ failure: ChainAdmissionFailure) -> Preparation {
@@ -1099,6 +1093,21 @@ private enum ChainLocalAdmission {
                    fetcher: fetcher
                ) {
                 return rejected(failure)
+            }
+            // Commitments (§9.10) only on the one outcome that emits a block
+            // fact, and after every verdict above — so a malformed trie is
+            // classified by the same funnel as any other deterministic
+            // invalidity, and an unavailable one never blocks an exclusion.
+            // A possessed block already carries its map; enumerate only when
+            // none was recorded (a pre-field fact).
+            let commitments: [String: String]
+            if let recorded = await level.chain.recordedChildCommitments(of: blockHash) {
+                commitments = recorded
+            } else {
+                switch await childCommitments(of: resolvedHeader, fetcher: fetcher) {
+                case .success(let enumerated): commitments = enumerated
+                case .failure(let failure): return rejected(failure)
+                }
             }
             return .ready(PreparedAdmission(
                 resolvedHeader: resolvedHeader,
