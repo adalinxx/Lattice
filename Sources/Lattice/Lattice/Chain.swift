@@ -1169,7 +1169,7 @@ public actor ChainState {
     /// bind to. A weighed block is connected from its header alone; issuing a
     /// cross-chain fact for one hands a child a commitment this chain has not
     /// verified and may yet prove invalid.
-    func hasExecutedAncestry(blockHash: String) -> Bool {
+    public func hasExecutedAncestry(blockHash: String) -> Bool {
         anchoredBlocks.contains(blockHash)
     }
 
