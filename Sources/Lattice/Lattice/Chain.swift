@@ -109,9 +109,6 @@ public struct BlockMeta: Sendable {
     /// child already holds — so a run attributed AT the committer stays in the
     /// run it serves and reaches the next level down.
     public private(set) var attributedRuns: Set<String>
-    /// The part of `work` under `attributedRuns`; `work − attributedWork` is
-    /// the committer's own grinds, the `ownWork` a run report carries.
-    public private(set) var attributedWork: WorkSum
     /// Directory → child block CID this block commits, read from its PoW-bound
     /// `children` trie at admission and carried on the durable block fact, so
     /// live admission and replay see the same commitments (§9.10).
@@ -149,8 +146,7 @@ public struct BlockMeta: Sendable {
         subtreeWeight: WorkSum? = nil,
         difficultyAnchor: DifficultyAnchor? = nil,
         childCommitments: [String: String]? = nil,
-        nearestCommitter: [String: String] = [:],
-        attributedRuns: Set<String> = []
+        nearestCommitter: [String: String] = [:]
     ) {
         let contributions = Dictionary(
             workContributions.map { ($0.id, $0) },
@@ -170,10 +166,9 @@ public struct BlockMeta: Sendable {
         self.difficultyAnchor = difficultyAnchor
         self.childCommitments = childCommitments
         self.nearestCommitter = nearestCommitter
-        self.attributedRuns = attributedRuns
-        self.attributedWork = WorkMeasure(
-            contributions.values.filter { attributedRuns.contains($0.id) }
-        ).total
+        // Attributed runs arrive as work-only facts after the block; a block is
+        // built with its grinds alone.
+        self.attributedRuns = []
     }
 
     /// Settle the nearest committers once the block is connected.
@@ -219,22 +214,18 @@ public struct BlockMeta: Sendable {
            existing.work >= contribution.work {
             return false
         }
-        // Only what was added to `attributedWork` is subtracted from it: a
-        // fact for this id that arrived without the marker was counted as a
-        // grind, and a marked one now reclassifies it, in full.
-        let wasAttributed = attributedRuns.contains(contribution.id)
-        let attributed = attributed || wasAttributed
         if let existing = workContributions[contribution.id] {
             work = work.subtracting(WorkSum(existing.work))!
-            if wasAttributed {
-                attributedWork = attributedWork.subtracting(WorkSum(existing.work))!
-            }
         }
         workContributions[contribution.id] = contribution
         work = work + contribution.work
+        // Once attributed, always attributed: the marker is a function of the
+        // id. A fact for this id that arrived without the marker (the shape
+        // written before the field existed) counts as a grind until a marked,
+        // STRONGER one reclassifies it — the strict-increase gate above admits
+        // nothing weaker or equal, marked or not.
         if attributed {
             attributedRuns.insert(contribution.id)
-            attributedWork = attributedWork + contribution.work
         }
         return true
     }
@@ -244,19 +235,18 @@ public struct BlockMeta: Sendable {
         Set(workContributions.keys.filter { !attributedRuns.contains($0) })
     }
 
-    /// The credited work of this block's grinds alone.
+    /// The credited work of this block's grinds alone. Derived from the
+    /// contributions, never cached beside `work`, so it cannot drift from it.
     var grindWork: WorkSum {
-        guard let grindWork = work.subtracting(attributedWork) else {
-            preconditionFailure("attributed work exceeds the block's work: bookkeeping drift")
-        }
-        return grindWork
+        WorkMeasure(workContributions.values.filter { !attributedRuns.contains($0.id) }).total
     }
 
 }
 
 /// What a parent serves a child about one of its blocks that commits into a
-/// child directory (§9.10): the RUN work at that block, the block's own
-/// credited work, and the revision the pair was read at, for provenance.
+/// child directory (§9.10): the RUN work at that block, the credited work of
+/// the block's own grinds, and the revision the pair was read at, for
+/// provenance.
 ///
 /// The run is the sum of credited work — grinds and attributed runs alike —
 /// over every connected parent block
@@ -640,8 +630,9 @@ public actor ChainState {
     private var subtreeWorkIndex: EulerWorkIndex
     /// Run work per child directory per committing block (§9.10): the sum of
     /// credited work — grinds and attributed runs alike — over CONNECTED
-    /// blocks whose nearest committer into that directory is the key. Insert-only, independent of exclusion, and
-    /// maintained by the one reducer live admission and replay both use.
+    /// blocks whose nearest committer into that directory is the key.
+    /// Insert-only, independent of exclusion, and maintained by the one
+    /// reducer live admission and replay both use.
     /// Served to children; never a fork-choice input on THIS chain.
     private var runWork: [String: [String: WorkSum]]
     /// The child directories this node serves run reports for — the child
@@ -2166,9 +2157,10 @@ public actor ChainState {
     /// The one per-block step of run attribution, for a connected block whose
     /// parent is already settled: for each directory, the nearest committer is
     /// this block if it commits there, else the parent's; the block's credited
-    /// work — grinds and attributed runs alike — is credited to that run. Used both by live connection (every served
-    /// directory) and by `serveRuns(for:)` (one directory over the whole
-    /// graph), so a run has exactly one definition.
+    /// work — grinds and attributed runs alike — is credited to that run.
+    /// Used both by live connection (every served directory) and by
+    /// `serveRuns(for:)` (one directory over the whole graph), so a run has
+    /// exactly one definition.
     private func settleRuns(of hash: String, directories: Set<String>) {
         guard let meta = hashToBlock[hash] else { return }
         let inherited = meta.parentBlockHash
