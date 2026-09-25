@@ -946,7 +946,7 @@ private func assertMatchesReferenceWithExclusions(
     line: UInt = #line
 ) async {
     let blocks = await chain.hashToBlock
-    let closure = await chain.excludedClosureForTesting
+    let closure = await chain.excludedRootsForTesting
     let liveTip = await chain.getMainChainTip()
     let livePath = await chain.mainChainHashes
     guard let expected = ChainState.referenceCanonicalProjection(

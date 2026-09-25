@@ -2,11 +2,12 @@ import XCTest
 import UInt256
 @testable import Lattice
 
-/// The invalidity-exclusion seam of deferred execution: a proven-invalid
-/// subtree is removed from THIS chain's own effective weight and fork choice
-/// re-projects onto the heaviest VALID chain — while the excluded facts remain
-/// present in `hashToBlock` (served/exported, never pruned) and untouched in the
-/// per-block work evidence.
+/// The invalidity-exclusion seam of deferred execution — work weighs, validity
+/// selects (§9.9): a proven-invalid subtree keeps weighing for its ancestors
+/// exactly as any work does, and fork choice never STEPS INTO it, so the tip
+/// is the heaviest selectable path — while the excluded facts remain present in
+/// `hashToBlock` (served/exported, never pruned) and untouched in the per-block
+/// work evidence.
 @MainActor
 final class DeferredExecutionExclusionTests: XCTestCase {
     // MARK: - Fixtures
@@ -117,7 +118,7 @@ final class DeferredExecutionExclusionTests: XCTestCase {
         _ = try await chain.applyStaged(exclusion(of: h[0]))
 
         let blocks = await chain.hashToBlock
-        let excluded = await chain.excludedClosureForTesting
+        let excluded = await chain.excludedRootsForTesting
         guard let expected = ChainState.referenceCanonicalProjection(
             in: blocks,
             excluding: excluded
@@ -152,11 +153,11 @@ final class DeferredExecutionExclusionTests: XCTestCase {
         XCTAssertEqual(restoredPath, expectedPath)
     }
 
-    /// Closure completeness under orphan admission: a descendant admitted BEFORE
-    /// its excluded parent connects (child-before-parent via orphan attach) is
-    /// still folded into the excluded closure and contributes zero to both fork
-    /// choice and its subtree weight.
-    func testOrphanDescendantOfExcludedRootIsFoldedAndZeroWeight() async throws {
+    /// Orphan admission under an exclusion: a descendant admitted BEFORE its
+    /// excluded parent connects (child-before-parent via orphan attach) weighs
+    /// for its ancestors like any block and is still never selected — with no
+    /// per-descendant bookkeeping, because the descent never reaches it.
+    func testOrphanDescendantOfExcludedRootWeighsButIsNeverSelected() async throws {
         // G → R (excluded) → B → C, plus a valid competing chain L1 → L2.
         let g = block("g", parent: nil, work: 3)
         let r = block("r", parent: g, work: 5)
@@ -174,24 +175,27 @@ final class DeferredExecutionExclusionTests: XCTestCase {
         // Prove R invalid while B, C are still absent.
         _ = try await chain.applyStaged(exclusion(of: r))
 
-        // C arrives before its parent B — an orphan attach (C routes normally,
-        // since B is not yet in the closure).
+        // C arrives before its parent B — an orphan attach.
         _ = try await chain.applyStaged(admission(for: c))
-        // B connects under the excluded root R, folding B AND the already-present
-        // orphan C into the closure.
+        // B connects under the excluded root R, grafting C with it. Nothing is
+        // folded anywhere: descendants of an excluded root need no bookkeeping,
+        // because the descent never reaches them.
         _ = try await chain.applyStaged(admission(for: b))
 
-        let closure = await chain.excludedClosureForTesting
-        XCTAssertTrue(closure.contains(r.hash))
-        XCTAssertTrue(closure.contains(b.hash))
-        XCTAssertTrue(
-            closure.contains(c.hash),
-            "orphan descendant folded into the excluded closure"
-        )
+        let roots = await chain.excludedRootsForTesting
+        XCTAssertEqual(roots, [r.hash], "only the proven-invalid root is recorded")
 
-        // C weighs zero and is not on the main chain; the tip is the valid chain.
+        // C weighs its work — validity never subtracts weight — and so does the
+        // whole excluded subtree for its ancestors; yet nothing below R is ever
+        // selected: the tip is the valid chain.
         let cWeight = await chain.subtreeWeight(forHash: c.hash)
-        XCTAssertEqual(cWeight, .zero)
+        XCTAssertEqual(cWeight, WorkSum(UInt256(c.work)))
+        let gWeight = await chain.subtreeWeight(forHash: g.hash)
+        XCTAssertEqual(
+            gWeight,
+            [g, r, b, c, l1, l2].reduce(WorkSum.zero) { $0 + UInt256($1.work) },
+            "the excluded subtree still weighs for its ancestors"
+        )
         let path = await chain.mainChainHashes
         XCTAssertFalse(path.contains(c.hash))
         XCTAssertFalse(path.contains(b.hash))
@@ -201,7 +205,7 @@ final class DeferredExecutionExclusionTests: XCTestCase {
         // Matches the reference oracle over the same exclusion.
         let blocks = await chain.hashToBlock
         let expected = ChainState.referenceCanonicalProjection(
-            in: blocks, excluding: closure
+            in: blocks, excluding: roots
         )
         XCTAssertEqual(tip, expected?.chainTip)
         XCTAssertEqual(path, expected?.mainChainHashes)
@@ -257,10 +261,12 @@ final class DeferredExecutionExclusionTests: XCTestCase {
         XCTAssertEqual(restoredTip, expectedTip)
         XCTAssertEqual(restoredPath, expectedPath)
 
-        // And the excluded subtree is genuinely excluded after recovery.
-        let closure = await restored.excludedClosureForTesting
+        // And the excluded root is genuinely recorded after recovery; its
+        // descendants need no record, since the descent never reaches them.
+        let roots = await restored.excludedRootsForTesting
+        XCTAssertEqual(roots, [h[0].hash])
         for excluded in h {
-            XCTAssertTrue(closure.contains(excluded.hash))
+            XCTAssertFalse(restoredPath.contains(excluded.hash), "\(excluded.hash) is never canonical")
         }
     }
 
@@ -299,8 +305,10 @@ final class DeferredExecutionExclusionTests: XCTestCase {
     ///
     /// Work comes from the fixture alone, chosen so the VALID part of the P
     /// branch (P + B0) is lighter than V1, while the P branch counted WITH the
-    /// excluded B1 is heavier. Fork choice must prefer V1; preferring the P
-    /// branch is exactly the resurrection spec 9.9 forbids.
+    /// excluded B1 is heavier. Work weighs, validity selects (§9.9): B1's work
+    /// votes for its valid ancestors P and B0, so the P branch wins at G — and
+    /// the descent stops at B0, because B1 is never stepped into. What §9.9
+    /// forbids is B1 itself, or anything below it, ever being selected.
     private func buildGraftedExclusionChain() async throws -> (
         chain: ChainState,
         g: PlannedBlock,
@@ -329,9 +337,9 @@ final class DeferredExecutionExclusionTests: XCTestCase {
 
         // The verdict lands on an unrouted block.
         _ = try await chain.applyStaged(exclusion(of: b1))
-        let closure = await chain.excludedClosureForTesting
+        let roots = await chain.excludedRootsForTesting
         XCTAssertTrue(
-            closure.contains(b1.hash),
+            roots.contains(b1.hash),
             "precondition: durable exclusion recorded on an unrouted block"
         )
 
@@ -340,74 +348,66 @@ final class DeferredExecutionExclusionTests: XCTestCase {
         return (chain, g, p, b0, b1, v1)
     }
 
-    /// The component tour must skip the excluded closure. Otherwise the
-    /// proven-invalid elements are spliced inside every ancestor's Euler range,
-    /// and `subtreeWork` is a RANGE SUM - so each ancestor is permanently
-    /// over-weighted by work that was proven invalid.
-    ///
-    /// Oracle: while an exclusion is present, `subtreeWeight(forHash:)`
-    /// recomputes with `excluding:` and never reads the live index, so the
-    /// live range sum and the recomputation are two independent numbers that
-    /// must agree.
-    func testGraftDoesNotSpliceExcludedWorkIntoAncestorRanges() async throws {
+    /// The grafted component splices the excluded block into every ancestor's
+    /// Euler range like any other block: `subtreeWork` is a pure-work RANGE
+    /// SUM, and validity never subtracts from it. The live range sum and the
+    /// independent recomputation must agree, with B1 in both.
+    func testGraftSplicesExcludedWorkIntoAncestorRangesLikeAnyOther() async throws {
         let (chain, g, p, b0, b1, v1) = try await buildGraftedExclusionChain()
 
-        // Each range's valid membership, summed from the fixture's own planned
-        // work - every bound derives from the fixture, not from a constant.
+        // Every bound derives from the fixture's own planned work, not from a
+        // constant.
         func plannedWork(_ blocks: [PlannedBlock]) -> WorkSum {
             blocks.reduce(WorkSum.zero) { $0 + UInt256($1.work) }
         }
 
-        // Genesis range: G + P + B0 + V1. The excluded B1 must not appear.
+        // Genesis range: G + P + B0 + B1 + V1. The excluded B1 weighs.
         let snapG = await chain.forkChoiceSnapshot(startingAt: g.hash)
         let liveG = snapG?.subtreeWork
         let oracleG = await chain.subtreeWeight(forHash: g.hash)
         XCTAssertEqual(
             liveG,
-            plannedWork([g, p, b0, v1]),
-            "genesis range must count only non-excluded work"
+            plannedWork([g, p, b0, b1, v1]),
+            "genesis range counts every block's work, excluded or not"
         )
-        XCTAssertEqual(
-            liveG,
-            oracleG,
-            "genesis: live index must match the excluding: recomputation"
-        )
+        XCTAssertEqual(liveG, oracleG, "genesis: live index must match the recomputation")
 
-        // The grafted component's own root: P + B0 only.
+        // The grafted component's own root: P + B0 + B1.
         let snapP = await chain.forkChoiceSnapshot(startingAt: p.hash)
         let liveP = snapP?.subtreeWork
         let oracleP = await chain.subtreeWeight(forHash: p.hash)
-        XCTAssertEqual(
-            liveP,
-            plannedWork([p, b0]),
-            "grafted root must count only non-excluded work"
-        )
-        XCTAssertEqual(
-            liveP,
-            oracleP,
-            "grafted root: live index must match the recomputation"
-        )
+        XCTAssertEqual(liveP, plannedWork([p, b0, b1]), "grafted root counts its excluded descendant")
+        XCTAssertEqual(liveP, oracleP, "grafted root: live index must match the recomputation")
 
         let held = await chain.contains(blockHash: b1.hash)
         XCTAssertTrue(held, "excluded block remains served")
         let excludedWeight = await chain.subtreeWeight(forHash: b1.hash)
-        XCTAssertEqual(excludedWeight, .zero)
+        XCTAssertEqual(excludedWeight, plannedWork([b1]), "an excluded block weighs its own work")
+        // ... and descends nowhere.
+        let snapB1 = await chain.forkChoiceSnapshot(startingAt: b1.hash)
+        XCTAssertEqual(snapB1?.tipHash, b1.hash)
+        XCTAssertEqual(snapB1?.subtreeWork, plannedWork([b1]))
     }
 
-    /// The safety consequence: excluded work carried in by a graft must not
-    /// win fork choice against a genuinely heavier valid branch.
-    func testGraftedExcludedWorkNeverOutweighsHeavierValidBranch() async throws {
-        let (chain, _, p, b0, _, v1) = try await buildGraftedExclusionChain()
+    /// The selection consequence: the excluded work carried in by the graft
+    /// makes the P branch the heavier one at G, so the descent takes it — and
+    /// stops at B0, the last selectable block above the exclusion. B1 is never
+    /// the tip, however heavy; V1 loses because it is lighter, not because B1
+    /// was discounted.
+    func testExcludedWorkVotesForItsValidAncestorsButIsNeverSelected() async throws {
+        let (chain, _, p, b0, b1, v1) = try await buildGraftedExclusionChain()
 
         let tip = await chain.getMainChainTip()
-        XCTAssertEqual(tip, v1.hash, "heavier VALID branch must win")
+        XCTAssertEqual(tip, b0.hash, "the descent stops at the last selectable block above the exclusion")
         let path = await chain.mainChainHashes
-        XCTAssertFalse(path.contains(b0.hash))
-        XCTAssertFalse(path.contains(p.hash))
+        XCTAssertTrue(path.contains(p.hash))
+        XCTAssertTrue(path.contains(b0.hash))
+        XCTAssertFalse(path.contains(b1.hash), "an excluded block is never canonical")
+        XCTAssertFalse(path.contains(v1.hash))
 
         // The live projection agrees with the reference oracle.
         let blocks = await chain.hashToBlock
-        let closure = await chain.excludedClosureForTesting
+        let closure = await chain.excludedRootsForTesting
         let expected = ChainState.referenceCanonicalProjection(
             in: blocks, excluding: closure
         )

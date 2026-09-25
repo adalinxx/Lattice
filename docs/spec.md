@@ -1117,15 +1117,25 @@ and treats missing bodies of a heavier weighed branch as an availability gap
 
 Failure to obtain a body is availability, never invalidity. Only a **completed**
 deterministic check — a `postState` mismatch or a committed validity rule —
-records an **invalidity exclusion** of the block. Exclusion removes the block's
-subtree from *this chain's own* effective weight, and fork choice re-projects
-onto the heaviest validated chain (9.4). Exclusion is a chain-local weighting
-decision, not pruning: the excluded block and its work facts remain in the
-graph, served and exported unchanged, and are never treated as invalid by any
-peer on that account. An excluded subtree is never resurrected by later work
-added beneath it. Exclusion is durable and replayed like any other fact:
-recovery reconstructs the excluded set and reprojects identically, independent
-of arrival order.
+records an **invalidity exclusion** of the block.
+
+**Work weighs; validity selects.** Exclusion removes no weight: the excluded
+block's work, and its descendants', stays in every ancestor's `trueCumWork`
+exactly as any other verified work does, because proof-of-work is a physical
+fact and invalidity is a judgment about state (9.5). What exclusion changes is
+selection: the canonical descent (9.4) never steps into an excluded block, so
+the tip is the heaviest *selectable* path through pure-work weights, and
+nothing at or below an excluded block is ever the tip, extended, or attested
+(5.3). A miner who spends work on an invalid block therefore still votes for
+that block's valid ancestors — which the same work on a valid block would also
+have done — and gains nothing else; an excluded subtree is never resurrected by
+later work added beneath it, however heavy. Exclusion is a chain-local
+selection decision, not pruning: the excluded block and its work facts remain
+in the graph, served and exported unchanged, and are never treated as invalid
+by any peer on that account. It is durable and replayed like any other fact:
+recovery reconstructs the excluded set and selects identically, independent of
+arrival order. Validity is consulted lazily — only where the descent would
+step into an unexecuted block — and never retracted.
 
 Deferral and exclusion are one mechanism: a node MUST NOT let unexecuted weight
 be acted upon without the ability to exclude a subtree it later proves invalid.

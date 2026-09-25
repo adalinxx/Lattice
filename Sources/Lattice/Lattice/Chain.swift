@@ -460,15 +460,17 @@ public actor ChainState {
 
     /// Roots of proven-invalid subtrees (deferred-execution validated tier: a
     /// block whose execution completed and FAILED). Rebuilt on recovery from the
-    /// durable `.exclusion` facts. `excludedClosure` is the derived set of every
-    /// block reachable from an excluded root, extended as descendants arrive.
+    /// durable `.exclusion` facts. Insert-only.
     ///
-    /// These express a CHAIN-LOCAL weighting decision only: excluded blocks and
-    /// their work facts stay in `hashToBlock`/`workContributions`, served and
-    /// exported unchanged. They are simply subtracted from this node's own fork
-    /// choice — the invalidity-exclusion seam of weight-first-acquisition.
+    /// Work weighs; validity selects (§9.9). An excluded block's work — and its
+    /// descendants' — stays in every ancestor's weight exactly as any other
+    /// work does: proof-of-work is a physical fact and invalidity is a judgment
+    /// about state. What exclusion changes is SELECTION: the canonical descent
+    /// never steps into an excluded root, so nothing below one is ever the tip
+    /// or attested (§5.3). No weight is ever removed, so no index is ever
+    /// rebuilt, and a descendant of an excluded root needs no bookkeeping at
+    /// all — the descent cannot reach it.
     private var excludedRoots: Set<String> = []
-    private var excludedClosure: Set<String> = []
 
     var mainChainBlockAtIndex: [UInt64: String]
     /// Generation at which the canonical projection was last brought current
@@ -644,7 +646,7 @@ public actor ChainState {
         self.anchoredBlocks = Self.anchoredFrontier(
             in: self.hashToBlock,
             validated: self.validatedBlocks,
-            excluded: self.excludedClosure
+            excluded: self.excludedRoots
         )
     }
 
@@ -1124,20 +1126,7 @@ public actor ChainState {
     /// The same-chain subtree measure of `hash`, deduplicated by grind identity.
     public func subtreeWeight(forHash hash: String) -> WorkSum? {
         guard hashToBlock[hash] != nil else { return nil }
-        if !excludedClosure.isEmpty {
-            // Excluded (or excluded-descendant) blocks weigh zero; every other
-            // block's subtree is measured with the excluded subtrees skipped, so
-            // this stays consistent with the live filtered fork choice.
-            guard !excludedClosure.contains(hash) else { return .zero }
-            let measures = Self.effectiveSubtreeMeasures(
-                startingAt: [hash],
-                retaining: [hash],
-                in: hashToBlock,
-                strongestWork: Self.strongestWorkByGrind(in: hashToBlock),
-                excluding: excludedClosure
-            )
-            return measures[hash]?.total ?? .zero
-        }
+        // Pure work, excluded subtrees included: validity never subtracts weight.
         materializeLocalWorkCachesIfNeeded()
         return hashToBlock[hash]?.subtreeWeight
     }
@@ -1145,7 +1134,6 @@ public actor ChainState {
     /// Public simulator/test view of the real local fork-choice descent.
     public func forkChoiceSnapshot(startingAt hash: String) -> ForkChoiceSnapshot? {
         guard let meta = hashToBlock[hash],
-              !excludedClosure.contains(hash),
               subtreeWorkIndex.contains(hash) else { return nil }
         let choice = chainWithMostWork(startingBlock: meta)
         return ForkChoiceSnapshot(
@@ -1189,7 +1177,7 @@ public actor ChainState {
     )? {
         let roots = Array(indexToBlockHash[0] ?? []).filter {
             hashToBlock[$0]?.parentBlockHash == nil
-                && !excludedClosure.contains($0)
+                && !excludedRoots.contains($0)
         }
         guard let root = Self.preferred(among: roots, workIndex: subtreeWorkIndex)
         else { return nil }
@@ -1197,22 +1185,22 @@ public actor ChainState {
             from: root,
             in: hashToBlock,
             workIndex: subtreeWorkIndex,
-            excluding: excludedClosure
+            excluding: excludedRoots
         ) {
             return (descent.tipHash, descent.blocks)
         }
         let direct = Self.referenceGhostDescent(
             from: root,
             in: hashToBlock,
-            excluding: excludedClosure
+            excluding: excludedRoots
         )
         return (direct.tipHash, direct.blocks)
     }
 
-    /// Test-only view of the derived exclusion closure so a differential test
-    /// can drive the reference oracle over the same filtered graph.
-    var excludedClosureForTesting: Set<String> {
-        excludedClosure
+    /// Test-only view of the excluded roots so a differential test can drive
+    /// the reference oracle with the same unselectable set.
+    var excludedRootsForTesting: Set<String> {
+        excludedRoots
     }
 #endif
 
@@ -1317,22 +1305,10 @@ public actor ChainState {
             graftsExistingComponent: graftsExistingComponent
         )
         if !result.addedBlock { return result }
-        let excludedInsertion = input.parentBlockHash
-            .map { excludedClosure.contains($0) } ?? false
-        let needsRebuild = noteInsertionForExclusion(
-            blockHash: blockHash,
-            parentHash: input.parentBlockHash
-        )
         mutationGeneration += 1
-        if needsRebuild { rebuildForkChoiceIndices() }
 
         let canonicalChange: ChainCommit?
         if deferProjectionForReplay {
-            canonicalChange = nil
-        } else if needsRebuild {
-            canonicalChange = projectCanonicalChain(forceFull: true)
-        } else if excludedInsertion {
-            // Gated excluded insert: never entered fork choice, nothing reorgs.
             canonicalChange = nil
         } else {
             // A validated insert either adds one leaf or grafts one component
@@ -1413,34 +1389,26 @@ public actor ChainState {
         for contribution in contributions {
             applyLocalContribution(contribution, to: blockHash)
         }
-        // Insert gate: a block descending from an excluded (proven-invalid) block
-        // is stored and served but MUST NOT enter fork choice — it never routes
-        // into the weight index and its work is never contributed. This keeps
-        // the single index filtered incrementally, so no per-insert rebuild is
-        // needed for excluded-subtree spam. (An out-of-order orphan routed before
-        // its excluded parent connected is folded and reconciled by a one-time
-        // rebuild in `noteInsertionForExclusion`.)
-        let isExcludedInsertion = input.parentBlockHash
-            .map { excludedClosure.contains($0) } ?? false
-        if !isExcludedInsertion {
-            if graftsExistingComponent {
-                // These graph and work-location invariants were validated before
-                // this private reducer. Never continue with a partial consensus
-                // index if an internal invariant is broken.
-                precondition(
-                    graftConnectedComponent(rootedAt: blockHash),
-                    "validated orphan component could not be routed"
-                )
-            } else if childHashes.isEmpty {
-                precondition(
-                    routeBlock(for: blockHash),
-                    "validated leaf could not be routed"
-                )
-            }
+        // Every connected block routes, a descendant of an excluded root
+        // included: work weighs unconditionally, and validity is applied by the
+        // descent, which never steps into an excluded root (§9.9).
+        if graftsExistingComponent {
+            // These graph and work-location invariants were validated before
+            // this private reducer. Never continue with a partial consensus
+            // index if an internal invariant is broken.
+            precondition(
+                graftConnectedComponent(rootedAt: blockHash),
+                "validated orphan component could not be routed"
+            )
+        } else if childHashes.isEmpty {
+            precondition(
+                routeBlock(for: blockHash),
+                "validated leaf could not be routed"
+            )
+        }
 
-            for contribution in contributions {
-                applyForkChoiceContribution(contribution, to: blockHash)
-            }
+        for contribution in contributions {
+            applyForkChoiceContribution(contribution, to: blockHash)
         }
 
         guard let previousBlockCID = input.parentBlockHash else {
@@ -1661,7 +1629,6 @@ public actor ChainState {
             // events: the tour below only follows children that are in
             // componentHashes.
             guard !subtreeWorkIndex.contains(hash),
-                  !excludedClosure.contains(hash),
                   componentHashes.insert(hash).inserted,
                   let block = hashToBlock[hash] else { continue }
             pending.append(contentsOf: block.childHashes)
@@ -1840,19 +1807,16 @@ public actor ChainState {
         }
         guard hasUnreservedMutationCapacity else { return .discarded() }
         applyLocalContribution(contribution, to: blockHash)
-        // A stronger observation on an excluded block is stored and served, but
-        // its work never re-enters this node's fork choice — an excluded subtree
-        // is never resurrected by piling on work.
-        let excluded = excludedClosure.contains(blockHash)
-        if !excluded {
-            applyForkChoiceContribution(contribution, to: blockHash)
-        }
+        // A stronger observation on an excluded block weighs like any other: it
+        // raises every ancestor, and the descent still never steps into the
+        // excluded root, so no invalid block is resurrected by piling on work.
+        applyForkChoiceContribution(contribution, to: blockHash)
         mutationGeneration += 1
 
         // A contribution only reaches here when it is strictly stronger than what
         // this block already held, so fork choice saw a positive increase at
         // exactly one point.
-        let canonicalChange = (deferProjectionForReplay || excluded)
+        let canonicalChange = deferProjectionForReplay
             ? nil
             : projectCanonicalChain(monotoneIncreaseAt: blockHash)
         if canonicalChange != nil {
@@ -2004,7 +1968,7 @@ public actor ChainState {
             // A proven-invalid block extends nothing: its subtree left fork
             // choice, and the states it declared are not states this chain
             // stands behind.
-            guard parentAnchored, !excludedClosure.contains(hash) else { continue }
+            guard parentAnchored, !excludedRoots.contains(hash) else { continue }
             anchoredBlocks.insert(hash)
             pending.append(contentsOf: meta.childHashes)
         }
@@ -2050,25 +2014,17 @@ public actor ChainState {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
         excludedRoots.insert(blockHash)
-        recomputeExcludedClosure()
-        // Rebuild the executed-from-genesis frontier for the same reason the
-        // weight index is rebuilt: the excluded subtree was anchored before it
-        // was proven invalid, and a chain does not stand behind states it has
-        // proven it never legitimately produced.
-        anchoredBlocks = Self.anchoredFrontier(
-            in: hashToBlock,
-            validated: validatedBlocks,
-            excluded: excludedClosure
-        )
-        // Rebuild the single weight index from the exclusion-filtered graph
-        // ONCE. The excluded subtree was routed before it was proven invalid, so
-        // its work must leave the index; rebuilding (vs. an incremental
-        // subtraction fighting the graft accounting) reuses the exact,
-        // tested restore builders. O(N) only at this rare, work-gated event —
-        // never per read or per insert.
-        rebuildForkChoiceIndices()
+        // The excluded subtree may have been anchored before it was proven
+        // invalid, and a chain does not stand behind states it has proven it
+        // never legitimately produced: un-anchor it, and nothing else.
+        unanchor(subtreeRootedAt: blockHash)
+        // No weight moves — work weighs regardless of validity — so nothing is
+        // rebuilt. Selection moves only if the excluded block was on the
+        // canonical path; otherwise the descent never reached it and every
+        // decision stands.
+        let wasCanonical = mainChainHashes.contains(blockHash)
         mutationGeneration += 1
-        let canonicalChange = deferProjectionForReplay
+        let canonicalChange = (deferProjectionForReplay || !wasCanonical)
             ? nil
             : projectCanonicalChain(forceFull: true)
         if canonicalChange != nil {
@@ -2083,77 +2039,16 @@ public actor ChainState {
         )
     }
 
-    /// The transitive closure of `excludedRoots` over the current graph. Called
-    /// when a root is recorded; the insert path extends it incrementally as
-    /// descendants of an already-excluded block arrive.
-    private func recomputeExcludedClosure() {
-        var closure = Set<String>()
-        var pending = Array(excludedRoots)
+    /// Remove a proven-invalid root and everything below it from the executed
+    /// frontier. Bounded by the excluded subtree; a root that was never
+    /// anchored has no anchored descendants, so the walk stops at once.
+    private func unanchor(subtreeRootedAt rootHash: String) {
+        var pending = [rootHash]
         while let hash = pending.popLast() {
-            guard closure.insert(hash).inserted,
+            guard anchoredBlocks.remove(hash) != nil,
                   let meta = hashToBlock[hash] else { continue }
             pending.append(contentsOf: meta.childHashes)
         }
-        excludedClosure = closure
-    }
-
-    /// The fork-choice view of the graph: `hashToBlock` with excluded subtrees
-    /// removed and excluded children stripped from their parents. Identical to
-    /// `hashToBlock` (no copy) when nothing is excluded. Materialized only to
-    /// rebuild the weight index at an exclusion event — never per projection.
-    private func forkChoiceBlocks() -> [String: BlockMeta] {
-        guard !excludedClosure.isEmpty else { return hashToBlock }
-        var filtered: [String: BlockMeta] = [:]
-        filtered.reserveCapacity(hashToBlock.count)
-        for (hash, meta) in hashToBlock where !excludedClosure.contains(hash) {
-            var visible = meta
-            visible.childHashes = meta.childHashes.filter {
-                !excludedClosure.contains($0)
-            }
-            filtered[hash] = visible
-        }
-        return filtered
-    }
-
-    /// Rebuild the weight index from the current exclusion-filtered graph, using
-    /// the same builder as restore. The caller forces a re-projection after it,
-    /// because an exclusion is the one mutation that removes weight.
-    private func rebuildForkChoiceIndices() {
-        let filtered = forkChoiceBlocks()
-        workByGrind = Self.workIndex(in: filtered)
-        subtreeWorkIndex = Self.buildSubtreeWorkIndex(
-            in: filtered,
-            workByGrind: &workByGrind
-        )
-        localWorkCachesDirty = true
-#if DEBUG
-        segmentCacheRebuildCount += 1
-#endif
-    }
-
-    /// Fold a freshly inserted block that descends from an excluded block into
-    /// the closure. Its work never counts in this node's fork choice, though the
-    /// block and its facts remain served. Returns `true` when a folded block had
-    /// already been routed (an out-of-order orphan attached before its excluded
-    /// parent connected), so the caller rebuilds the filtered index once.
-    private func noteInsertionForExclusion(
-        blockHash: String,
-        parentHash: String?
-    ) -> Bool {
-        guard let parentHash, excludedClosure.contains(parentHash) else {
-            return false
-        }
-        var routedBlockFolded = false
-        var pending = [blockHash]
-        while let hash = pending.popLast() {
-            guard excludedClosure.insert(hash).inserted,
-                  let meta = hashToBlock[hash] else { continue }
-            if subtreeWorkIndex.contains(hash) {
-                routedBlockFolded = true
-            }
-            pending.append(contentsOf: meta.childHashes)
-        }
-        return routedBlockFolded
     }
 
     /// Rebuild one already-durable admission fact during recovery. Callers must
@@ -2282,28 +2177,23 @@ public actor ChainState {
         startingAt startHashes: [String],
         retaining retainedHashes: Set<String>,
         in blocks: [String: BlockMeta],
-        strongestWork: [String: UInt256],
-        excluding: Set<String> = []
+        strongestWork: [String: UInt256]
     ) -> [String: WorkMeasure] {
         var order: [String] = []
-        var pending = startHashes.filter { !excluding.contains($0) }
+        var pending = startHashes
         var visited = Set<String>()
         while let hash = pending.popLast() {
             guard visited.insert(hash).inserted,
                   let meta = blocks[hash] else { continue }
             order.append(hash)
-            pending.append(contentsOf: meta.childHashes.filter {
-                !excluding.contains($0)
-            })
+            pending.append(contentsOf: meta.childHashes)
         }
 
         var accumulators: [String: WorkMeasure] = [:]
         var retained: [String: WorkMeasure] = [:]
         for hash in order.reversed() {
             guard let meta = blocks[hash] else { continue }
-            let children = excluding.isEmpty
-                ? meta.childHashes
-                : meta.childHashes.filter { !excluding.contains($0) }
+            let children = meta.childHashes
             let largestChild = children.max {
                 (accumulators[$0]?.entries.count ?? 0)
                     < (accumulators[$1]?.entries.count ?? 0)
@@ -2457,21 +2347,22 @@ public actor ChainState {
     func chainWithMostWork(
         startingBlock: BlockMeta
     ) -> (subtreeWork: WorkSum, tipHash: String, blocks: Set<String>) {
-        // An excluded start point contributes nothing and descends nowhere.
-        if excludedClosure.contains(startingBlock.blockHash) {
-            return (.zero, startingBlock.blockHash, [startingBlock.blockHash])
+        // An excluded start point weighs what its work weighs and descends
+        // nowhere: nothing below a proven-invalid block is selectable.
+        if excludedRoots.contains(startingBlock.blockHash) {
+            let weight = subtreeWorkIndex.subtreeWork(startingBlock.blockHash)
+                ?? effectiveSubtreeWork(for: startingBlock.blockHash)
+            return (weight, startingBlock.blockHash, [startingBlock.blockHash])
         }
-        // The weight index is kept filtered (excluded work removed at exclusion
-        // time, excluded inserts never routed), so its weights are already
-        // exclusion-correct. `excluding` only steers the childHashes traversal
-        // past excluded siblings still present in the served graph. Both are
-        // no-ops when nothing is excluded — the steady-state path is unchanged.
+        // Weights are pure work; `excluding` only steers the descent past
+        // excluded roots, which are never stepped into. No-op when nothing is
+        // excluded — the steady-state path is unchanged.
         let start = hashToBlock[startingBlock.blockHash] ?? startingBlock
         if let descent = Self.blockGhostDescent(
             from: start.blockHash,
             in: hashToBlock,
             workIndex: subtreeWorkIndex,
-            excluding: excludedClosure
+            excluding: excludedRoots
         ) {
             let baseWeight = subtreeWorkIndex.subtreeWork(start.blockHash)
                 ?? effectiveSubtreeWork(for: start.blockHash)
@@ -2480,7 +2371,7 @@ public actor ChainState {
         let direct = Self.referenceGhostDescent(
             from: start.blockHash,
             in: hashToBlock,
-            excluding: excludedClosure
+            excluding: excludedRoots
         )
         return (
             effectiveSubtreeWork(for: start.blockHash),
@@ -2494,8 +2385,7 @@ public actor ChainState {
             startingAt: [blockHash],
             retaining: [blockHash],
             in: hashToBlock,
-            strongestWork: Self.strongestWorkByGrind(in: hashToBlock),
-            excluding: excludedClosure
+            strongestWork: Self.strongestWorkByGrind(in: hashToBlock)
         )
         return measure[blockHash]?.total ?? .zero
     }
@@ -2577,8 +2467,7 @@ public actor ChainState {
             startingAt: [startHash],
             retaining: Set(blocksByHash.keys),
             in: blocksByHash,
-            strongestWork: strongestWorkByGrind(in: blocksByHash),
-            excluding: excluding
+            strongestWork: strongestWorkByGrind(in: blocksByHash)
         )
         return referenceGhostDescent(
             from: startHash,
@@ -2647,26 +2536,32 @@ public actor ChainState {
         return (direct.tipHash, direct.blocks)
     }
 
-    /// Reference oracle over an exclusion-filtered graph, used by differential
-    /// tests: the same slow per-block projection, applied to `blocksByHash` with
-    /// the excluded closure removed and excluded children stripped.
+    /// Reference oracle with exclusions, used by differential tests: weights
+    /// are pure work over the whole graph, and the descent never steps into an
+    /// excluded root — work weighs, validity selects.
     nonisolated static func referenceCanonicalProjection(
         in blocksByHash: [String: BlockMeta],
-        excluding excludedClosure: Set<String>
+        excluding excludedRoots: Set<String>
     ) -> (chainTip: String, mainChainHashes: Set<String>)? {
-        guard !excludedClosure.isEmpty else {
-            return referenceCanonicalProjection(in: blocksByHash)
-        }
-        var filtered: [String: BlockMeta] = [:]
-        filtered.reserveCapacity(blocksByHash.count)
-        for (hash, meta) in blocksByHash where !excludedClosure.contains(hash) {
-            var visible = meta
-            visible.childHashes = meta.childHashes.filter {
-                !excludedClosure.contains($0)
-            }
-            filtered[hash] = visible
-        }
-        return referenceCanonicalProjection(in: filtered)
+        let roots = blocksByHash.values
+            .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
+            .map(\.blockHash)
+        let measures = effectiveSubtreeMeasures(
+            startingAt: roots,
+            retaining: Set(blocksByHash.keys),
+            in: blocksByHash,
+            strongestWork: strongestWorkByGrind(in: blocksByHash)
+        )
+        let weights = measures.mapValues(\.total)
+        let selectable = roots.filter { !excludedRoots.contains($0) }
+        guard let root = preferred(among: selectable, weights: weights) else { return nil }
+        let descent = referenceGhostDescent(
+            from: root,
+            in: blocksByHash,
+            weights: weights,
+            excluding: excludedRoots
+        )
+        return (descent.tipHash, descent.blocks)
     }
 
     nonisolated private static func referenceCanonicalProjection(
@@ -2712,14 +2607,13 @@ public actor ChainState {
             return outcome.commit
         }
 
-        // Whole-chain fallback. The weight index is kept filtered, so ONE
-        // projection path serves both the exclusion-free and exclusion-present
-        // cases. `excluding` is empty in the common case (zero cost); when set
-        // it only steers traversal past excluded siblings still present in the
-        // served graph — no parallel path.
+        // Whole-chain fallback. Weights are pure work, so ONE projection path
+        // serves the exclusion-free and exclusion-present cases alike;
+        // `excluding` is empty in the common case (zero cost) and otherwise
+        // only steers the descent past excluded roots — no parallel path.
         let roots = Array(indexToBlockHash[0] ?? []).filter {
             hashToBlock[$0]?.parentBlockHash == nil
-                && !excludedClosure.contains($0)
+                && !excludedRoots.contains($0)
         }
         guard let root = Self.preferred(among: roots, workIndex: subtreeWorkIndex)
         else { return nil }
@@ -2730,11 +2624,11 @@ public actor ChainState {
             from: root,
             in: hashToBlock,
             workIndex: subtreeWorkIndex,
-            excluding: excludedClosure
+            excluding: excludedRoots
         ) ?? Self.referenceGhostDescent(
             from: root,
             in: hashToBlock,
-            excluding: excludedClosure
+            excluding: excludedRoots
         )
 #if DEBUG
         // Descent steps ARE blocks now: with no quotient there is no hop to
@@ -2838,18 +2732,15 @@ public actor ChainState {
         else { return nil }
         let (suffixHeight, overflow) = divergenceHeight.addingReportingOverflow(1)
         guard !overflow else { return nil }
-        let children = excludedClosure.isEmpty
+        let children = excludedRoots.isEmpty
             ? (hashToBlock[divergence]?.childHashes ?? [])
             : (hashToBlock[divergence]?.childHashes ?? []).filter {
-                !excludedClosure.contains($0)
+                !excludedRoots.contains($0)
             }
-        // Every child of the divergence point is out of fork choice. This looks
-        // unreachable — `childHashes` is appended unconditionally on insert, and
-        // the excluded closure is closed under descendants, so an excluded
-        // ancestor implies an excluded `mutatedAt`, which never reaches here.
-        // Reachable or not, mutating out of a guard would contradict this
-        // function's contract that every guard fails closed, so it hands the
-        // case to the whole-chain projection like every other guard does.
+        // Every child of the divergence point is unselectable: the mutation
+        // landed under an excluded root that is the tip's only child. Nothing
+        // can have moved, but a guard here fails closed like every other and
+        // hands the case to the whole-chain projection.
         guard !children.isEmpty else { return nil }
         // One GHOST step, taken exactly as the descent takes it: a lone child is
         // followed WITHOUT a weight lookup, matching the reference walk, so a
@@ -2885,7 +2776,7 @@ public actor ChainState {
                   from: chosen,
                   in: hashToBlock,
                   workIndex: subtreeWorkIndex,
-                  excluding: excludedClosure
+                  excluding: excludedRoots
               )
         else { return nil }
 #if DEBUG
