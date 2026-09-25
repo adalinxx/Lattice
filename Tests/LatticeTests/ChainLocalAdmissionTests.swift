@@ -3794,7 +3794,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(result.failure, .protocolInvalid)
     }
 
-    func testMultiHopProofCreditsOuterTargetWhenItIsStrongest() async throws {
+    func testCreditComesFromTheRootMostMetTargetWhenTargetsEaseDownward() async throws {
         let outerTarget = UInt256.max / UInt256(16)
         let middleTarget = UInt256.max / UInt256(8)
         let leafTarget = UInt256.max / UInt256(4)
@@ -3811,7 +3811,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(verified.contribution.work, UInt256(16))
     }
 
-    func testMultiHopStrongestWorkSurvivesAdmissionAndReplay() async throws {
+    func testCreditedWorkSurvivesAdmissionAndReplay() async throws {
         let fixture = try await verifiedMultiHopContribution(
             outerTarget: UInt256.max / UInt256(16),
             middleTarget: UInt256.max / UInt256(8),
@@ -3860,7 +3860,16 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(restoredRecord).contribution, fixture.contribution)
     }
 
-    func testMultiHopProofCreditsMiddleTargetWhenItIsStrongest() async throws {
+    /// A grind is priced by the ROOT-MOST carrier whose target it beat, not by
+    /// the hardest one. Here the hierarchy is inverted — the middle chain is
+    /// harder (max/16) than the root above it (max/4) — so the two rules
+    /// disagree, and this pins which one governs.
+    ///
+    /// The old rule took a max over every met target and credited the middle
+    /// chain's 16. That let a DEEPER chain set the price of a grind, which is
+    /// backwards: depth is further from the work that secures the hierarchy,
+    /// not closer to it.
+    func testMultiHopProofCreditsRootMostMetTargetNotTheHardest() async throws {
         let outerTarget = UInt256.max / UInt256(4)
         let middleTarget = UInt256.max / UInt256(16)
         let leafTarget = UInt256.max / UInt256(8)
@@ -3872,12 +3881,68 @@ final class ChainLocalAdmissionTests: XCTestCase {
             miningTarget: middleTarget
         )
 
-        XCTAssertLessThanOrEqual(verified.rootHash, middleTarget)
+        // Fixture guard: the hash must actually beat the harder middle target,
+        // or the two rules would agree here and this would test nothing.
+        XCTAssertLessThanOrEqual(
+            verified.rootHash, middleTarget,
+            "fixture must beat the middle target for the rules to diverge"
+        )
         XCTAssertEqual(verified.contribution.id, verified.rootCID)
-        XCTAssertEqual(verified.contribution.work, UInt256(16))
+        // Root-most met target is the outer chain's max/4 => 4. The leaf's own
+        // max/8 => 8 then wins the final max, so the credit is 8 — NOT the
+        // middle chain's 16.
+        XCTAssertEqual(
+            verified.contribution.work, UInt256(8),
+            """
+            Credit must come from the root-most met target (4), raised only by \
+            the child's own target (8) — never from a deeper chain's harder \
+            target (16).
+            """
+        )
     }
 
-    func testMultiHopProofCreditsLeafTargetWhenItIsStrongest() async throws {
+    /// The ORDINARY merged-mining case, and the branch the other tests miss: a
+    /// grind that beats the child's target but NOT the root's own target.
+    ///
+    /// `carriers.first(where:)` does two things — take index 0, and SKIP
+    /// carriers whose target was not met. Every other test here mines hard
+    /// enough that the root is met, so they only ever pin the first behaviour.
+    /// Without this test, dropping the predicate entirely
+    /// (`carriers.first.map { workForTarget($0.block.target) }`) passes the
+    /// whole suite while crediting an UNMET target — work the hash never did.
+    func testUnmetRootIsSkippedRatherThanCredited() async throws {
+        let outerTarget = UInt256.max / UInt256(1024)  // root: far too hard
+        let middleTarget = UInt256.max / UInt256(16)
+        let leafTarget = UInt256.max / UInt256(4)
+
+        let verified = try await verifiedMultiHopContribution(
+            outerTarget: outerTarget,
+            middleTarget: middleTarget,
+            leafTarget: leafTarget,
+            miningTarget: middleTarget
+        )
+
+        // Fixture guard: the root's target must genuinely NOT be met, or this
+        // exercises the take-index-0 path and proves nothing new.
+        XCTAssertGreaterThan(
+            verified.rootHash, outerTarget,
+            "fixture must MISS the root target, or the skip branch is not reached"
+        )
+        XCTAssertLessThanOrEqual(
+            verified.rootHash, middleTarget,
+            "fixture must meet the middle target, or nothing is credited"
+        )
+        XCTAssertEqual(
+            verified.contribution.work, UInt256(16),
+            """
+            Credit must come from the root-most target actually MET (16), never \
+            from an unmet harder one (1024). Crediting an unmet target invents \
+            work the hash did not do.
+            """
+        )
+    }
+
+    func testTerminalTargetRaisesCreditWhenItExceedsTheMetAncestor() async throws {
         let outerTarget = UInt256.max / UInt256(4)
         let middleTarget = UInt256.max / UInt256(8)
         let leafTarget = UInt256.max / UInt256(16)

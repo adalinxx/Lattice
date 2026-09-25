@@ -36,8 +36,9 @@ revision only on an actual change, returns `nil` otherwise.
 
 Inherited/merged parent weight is not a separate fork-choice term: it is folded
 into a child block's `VerifiedWorkContribution.work`
-(`= max(strongestAncestorWork, workForTarget(child.target))`,
-`ChildBlockProof.swift:416-430`) and routed into `segmentWorkIndex`. So a genuine
+(`= max(creditedAncestorWork, workForTarget(child.target))`,
+`ChildBlockProof.swift`; the ancestor term was a max over every beaten target
+when this was written, and is now the root-most beaten one) and routed into `segmentWorkIndex`. So a genuine
 weight increase for a block flows through `addWorkContribution` and *does* re-run
 fork choice. The gap is only the **no-new-work re-admission** path.
 

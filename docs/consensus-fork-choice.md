@@ -10,7 +10,9 @@ location in each chain it reaches:
 
 ```text
 identity = CID(root)
-quantity = strongest verified accepted-target bound
+quantity = root-most beaten accepted-target bound along the proof,
+           raised if greater by the terminal child's own target,
+           then strongest across repeated observations
 location = exact terminal block in this chain
 ```
 
@@ -42,8 +44,9 @@ Work verification:
    by one party. A block's `parentState` is anchored by admission instead
    (spec §5.3 step 6, at every height including block 1);
 4. checks the same hash against the terminal target; and
-5. derives the strongest target-derived quantity that hash earns along the
-   committed directory path.
+5. derives the target-derived quantity of the ROOT-MOST block on the committed
+   directory path whose target that hash beat, raised if greater by the
+   terminal child's own target.
 
 A carrier may fail its own chain's target or validity rules and still prove real
 work for the terminal child. The work affects fork choice only after `C` is
