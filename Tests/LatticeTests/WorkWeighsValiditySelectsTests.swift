@@ -29,7 +29,10 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
         ChainAdmissionBatch(facts: [
             .block(ChainBlockFact(
                 blockHash: h(b.name), parentBlockHash: b.parent.map(h), blockHeight: height,
-                postStateCID: testCID("wv-post:\(b.name)"), prevStateCID: testCID("wv-prev:\(b.name)"),
+                // States chain parent → child, so continuity paths exist to be
+                // (or, through an excluded block, NOT to be) attested.
+                postStateCID: testCID("wv-post:\(b.name)"),
+                prevStateCID: b.parent.map { testCID("wv-post:\($0)") } ?? testCID("wv-prev:genesis"),
                 specCID: testCID("wv-spec"), target: "1", nextTarget: "1",
                 timestamp: Int64(1_000 + height), stateDiff: .empty
             )),
@@ -80,7 +83,9 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
             guard let next = candidates.max(by: { a, b in
                 let wa = total(a), wb = total(b)
                 if wa != wb { return wa < wb }
-                return h(a) > h(b) // max picks the smaller CID on a tie
+                // The consensus tie rule itself (CID bytes), not a restatement
+                // of it: a restated order diverges from it on ~4% of CID pairs.
+                return forkChoicePrefersBlock(h(b), over: h(a))
             }) else { break }
             current = next
             path.insert(current)
@@ -203,7 +208,6 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
         var rng = SeededRNG(seed: 3)
         let (live, _) = try await build(blocks, excluded: [], order: Array(blocks.indices), rng: &rng)
         await live.resetFullCanonicalProjectionCount()
-        let rebuildsBefore = await live.segmentCacheRebuildCount
         _ = try await live.replay(exclusion("b"))
         let fullAfterSide = await live.fullCanonicalProjectionCount
         XCTAssertEqual(fullAfterSide, 0, "a non-canonical exclusion projects nothing")
@@ -214,9 +218,96 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
         XCTAssertEqual(fullAfterCanonical, 1, "a canonical exclusion re-selects once")
         tip = await live.getMainChainTip()
         XCTAssertEqual(tip, h("g"), "both children excluded: the genesis is the last selectable block")
-        let rebuildsAfter = await live.segmentCacheRebuildCount
-        XCTAssertEqual(rebuildsAfter, rebuildsBefore, "no weight moved, so no index was rebuilt")
         await assertMatches(live, blocks, excluded: ["a", "b"], "both excluded")
+    }
+
+    /// Right after a canonical exclusion, miners that have not executed the
+    /// block keep extending it. Each such block lands under an excluded root
+    /// that is its canonical parent's only child; nothing can move, and it
+    /// must be decided without a whole-chain projection.
+    func testBlocksUnderAnExcludedSoleChildCostNoProjection() async throws {
+        var blocks = [Planned(name: "g", parent: nil, work: 1)]
+        var parent = "g"
+        for i in 1...60 {
+            blocks.append(Planned(name: "n\(i)", parent: parent, work: 2))
+            parent = "n\(i)"
+        }
+        var rng = SeededRNG(seed: 5)
+        let (live, _) = try await build(blocks, excluded: ["n60"], order: Array(blocks.indices), rng: &rng)
+        var tip = await live.getMainChainTip()
+        XCTAssertEqual(tip, h("n59"))
+        await live.resetFullCanonicalProjectionCount()
+        let visitsBefore = await live.canonicalProjectionBlockVisitCount
+        var under = "n60"
+        for i in 61...70 {
+            let b = Planned(name: "n\(i)", parent: under, work: 2)
+            _ = try await live.replay(admission(b, height: UInt64(i)))
+            blocks.append(b)
+            under = "n\(i)"
+        }
+        let full = await live.fullCanonicalProjectionCount
+        let visitsAfter = await live.canonicalProjectionBlockVisitCount
+        XCTAssertEqual(full, 0, "ten blocks under the excluded sole child: zero whole-chain projections")
+        XCTAssertEqual(visitsAfter, visitsBefore, "and zero descent steps")
+        tip = await live.getMainChainTip()
+        XCTAssertEqual(tip, h("n59"))
+        await assertMatches(live, blocks, excluded: ["n60"], "after extension")
+    }
+
+    /// Ties are broken by the consensus rule on CID bytes; an excluded
+    /// tie-winner yields to the other. Deterministic equal-weight siblings so
+    /// the tie path is exercised, not left to the random generator.
+    func testEqualWeightSiblingsBreakTiesByTheConsensusRuleAndExclusionYields() async throws {
+        let blocks = [
+            Planned(name: "g", parent: nil, work: 1),
+            Planned(name: "x", parent: "g", work: 7),
+            Planned(name: "y", parent: "g", work: 7),
+        ]
+        var rng = SeededRNG(seed: 6)
+        let (live, _) = try await build(blocks, excluded: [], order: Array(blocks.indices), rng: &rng)
+        let winner = forkChoicePrefersBlock(h("x"), over: h("y")) ? "x" : "y"
+        let loser = winner == "x" ? "y" : "x"
+        let tip = await live.getMainChainTip()
+        XCTAssertEqual(tip, h(winner))
+        await assertMatches(live, blocks, excluded: [], "tie")
+        _ = try await live.replay(exclusion(winner))
+        let after = await live.getMainChainTip()
+        XCTAssertEqual(after, h(loser), "the excluded tie-winner yields")
+        await assertMatches(live, blocks, excluded: [winner], "tie, winner excluded")
+    }
+
+    /// A chain whose every root is proven invalid has nothing to stand on:
+    /// the exclusion is refused, fail closed, rather than leaving a stale
+    /// canonical path to be extended beneath an invalid genesis. With another
+    /// selectable root present, the exclusion moves selection there.
+    func testExcludingTheLastSelectableRootIsRefused() async throws {
+        let blocks = [
+            Planned(name: "g", parent: nil, work: 1),
+            Planned(name: "a", parent: "g", work: 5),
+        ]
+        var rng = SeededRNG(seed: 7)
+        let (live, _) = try await build(blocks, excluded: [], order: Array(blocks.indices), rng: &rng)
+        do {
+            _ = try await live.replay(exclusion("g"))
+            XCTFail("excluding the only root must be refused")
+        } catch ChainStateRestoreError.corruptConsensusGraph {}
+        let roots = await live.excludedRootsForTesting
+        XCTAssertTrue(roots.isEmpty, "a refused exclusion records nothing")
+        let tip = await live.getMainChainTip()
+        XCTAssertEqual(tip, h("a"))
+        // A second, lighter root: excluding the first now moves selection to it.
+        let g2 = Planned(name: "g2", parent: nil, work: 1)
+        _ = try await live.replay(admission(g2, height: 0))
+        _ = try await live.replay(exclusion("g"))
+        let moved = await live.getMainChainTip()
+        XCTAssertEqual(moved, h("g2"), "selection moves to the remaining selectable root")
+        let path = await live.mainChainHashes
+        XCTAssertFalse(path.contains(h("g")), "an excluded root is never canonical")
+        XCTAssertFalse(path.contains(h("a")))
+        // And nothing is extended beneath the excluded root.
+        _ = try await live.replay(admission(Planned(name: "a2", parent: "a", work: 50), height: 2))
+        let still = await live.getMainChainTip()
+        XCTAssertEqual(still, h("g2"))
     }
 
     /// Continuity: an excluded subtree that had been executed is un-anchored
@@ -244,6 +335,12 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
         XCTAssertTrue(b, "the rest of the frontier is untouched")
         let weightA = await live.subtreeWeight(forHash: h("a"))
         XCTAssertEqual(weightA, WorkSum(UInt256(4)), "and its weight is untouched too")
+        // Attestation between two states never passes through an excluded
+        // block — the withdrawal-settlement gate — even though a2 was executed.
+        let through = await live.hasStateContinuity(from: testCID("wv-post:g"), to: testCID("wv-post:a2"))
+        XCTAssertFalse(through, "no continuity through a proven-invalid block")
+        let valid = await live.hasStateContinuity(from: testCID("wv-post:g"), to: testCID("wv-post:b"))
+        XCTAssertTrue(valid, "continuity along the valid branch is untouched")
     }
 
     // MARK: - Random shapes

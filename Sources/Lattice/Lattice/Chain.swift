@@ -448,7 +448,6 @@ public actor ChainState {
     /// PER projection, which is what live-sync admission actually pays.
     var canonicalProjectionBlockVisitCount: UInt64
     var canonicalProjectionSegmentVisitCount: UInt64
-    var segmentCacheRebuildCount: UInt64
     var segmentWorkUpdateCellCount: UInt64
     var segmentGraftCount: UInt64
     var segmentGraftBlockVisitCount: UInt64
@@ -571,7 +570,6 @@ public actor ChainState {
         self.truncatedCanonicalProjectionCount = 0
         self.canonicalProjectionBlockVisitCount = 0
         self.canonicalProjectionSegmentVisitCount = 0
-        self.segmentCacheRebuildCount = 0
         self.segmentWorkUpdateCellCount = 0
         self.segmentGraftCount = 0
         self.segmentGraftBlockVisitCount = 0
@@ -955,8 +953,8 @@ public actor ChainState {
     }
 
     /// Whether `blockHash` belongs to a complete accepted path ending at one of
-    /// this path-defined chain's admitted genesis roots — i.e. it is CONNECTED
-    /// and not excluded, so its work routes into fork choice.
+    /// this path-defined chain's admitted genesis roots — i.e. it is CONNECTED,
+    /// so its work routes into fork choice (excluded or not: work weighs, §9.9).
     ///
     /// This says nothing about whether any block on that path was EXECUTED. The
     /// weighed tier connects a block from its header alone and records its
@@ -1020,16 +1018,17 @@ public actor ChainState {
             return nil
         }
         if from == to { return [] }
-        // Only an EXECUTED transition may be attested. The weighed tier records
-        // a block's declared post-state without running it, and a block that
-        // never becomes canonical is never validated and so never excluded —
-        // so an unverified claim would otherwise stay attestable forever. A
+        // Only a transition on the executed-from-genesis frontier may be
+        // attested: executed, every ancestor executed, and not under an
+        // excluded root. The weighed tier records a block's declared
+        // post-state without running it, so an unverified claim would
+        // otherwise stay attestable forever; and the weight index says nothing
+        // about validity any more (work weighs, §9.9), so it is not a gate. A
         // child chain settles cross-chain withdrawals against an attested
         // parent state, so attesting a state the parent never produced lets a
         // forged `receiptState` settle a withdrawal that was never paid.
         func isAttestable(_ blockHash: String) -> Bool {
-            subtreeWorkIndex.contains(blockHash)
-                && validatedBlocks.contains(blockHash)
+            anchoredBlocks.contains(blockHash)
         }
         if let directCandidates = blocksByStateTransition[
             StateTransition(from: from, to: to)
@@ -1624,10 +1623,10 @@ public actor ChainState {
         var pending = [rootHash]
         var componentHashes = Set<String>()
         while let hash = pending.popLast() {
-            // An excluded (proven-invalid) member must not re-enter fork
-            // choice. Skipping it here also strips it from the spliced
-            // events: the tour below only follows children that are in
-            // componentHashes.
+            // A member already routed — an out-of-order orphan attached before
+            // this component's root connected — is skipped, which also strips
+            // it from the spliced events: the tour below only follows children
+            // that are in componentHashes.
             guard !subtreeWorkIndex.contains(hash),
                   componentHashes.insert(hash).inserted,
                   let block = hashToBlock[hash] else { continue }
@@ -1982,15 +1981,12 @@ public actor ChainState {
     /// child's block 1 asks for every time it anchors.
     private func chainProduced(stateCID: String) -> Bool {
         guard let candidates = blocksByPostState[stateCID] else { return false }
-        // Both conjuncts, deliberately. The frontier already drops excluded
-        // blocks, so the weight-index check is redundant TODAY — and it is kept
-        // because this is the gate on whether a forged `receiptState` can settle
-        // a withdrawal, where one defence is not enough. Removing either alone
-        // leaves the property intact; removing both breaks it, which is what the
-        // exclusion test pins. Do not simplify this to a single lookup.
-        return candidates.contains {
-            anchoredBlocks.contains($0) && subtreeWorkIndex.contains($0)
-        }
+        // The frontier is the one authority: executed from genesis and not
+        // under an excluded root. The weight index used to be a second defence
+        // here, but it no longer says anything about validity (work weighs,
+        // §9.9), so it is not consulted — a vacuous conjunct would only read as
+        // a defence it is not.
+        return candidates.contains { anchoredBlocks.contains($0) }
     }
 
     /// An exclusion batch is exactly one `.exclusion` fact. Any other shape is
@@ -2012,6 +2008,19 @@ public actor ChainState {
         if excludedRoots.contains(blockHash) { return nil }
         guard hasUnreservedMutationCapacity else {
             throw ChainStateRestoreError.corruptConsensusGraph
+        }
+        // A chain whose every root is proven invalid has no history to stand
+        // on. Fail closed rather than leave a stale canonical path that the
+        // truncated projection would keep extending beneath an invalid genesis.
+        if hashToBlock[blockHash]?.parentBlockHash == nil {
+            let otherSelectableRoots = (indexToBlockHash[0] ?? []).contains {
+                $0 != blockHash
+                    && hashToBlock[$0]?.parentBlockHash == nil
+                    && !excludedRoots.contains($0)
+            }
+            guard otherSelectableRoots else {
+                throw ChainStateRestoreError.corruptConsensusGraph
+            }
         }
         excludedRoots.insert(blockHash)
         // The excluded subtree may have been anchored before it was proven
@@ -2217,8 +2226,8 @@ public actor ChainState {
     }
 
     /// Build the derived GHOST weight index as one Euler tour of the routed
-    /// graph. Recovery and the exclusion rebuild use this linear builder; every
-    /// live mutation is incremental.
+    /// graph. Recovery uses this linear builder; every live mutation is
+    /// incremental.
     ///
     /// The tour visits routed blocks only, children sorted, so a rebuild is
     /// deterministic. Its ORDER differs from the one live insertion produces,
@@ -2299,9 +2308,9 @@ public actor ChainState {
         among hashes: [String],
         weights: [String: WorkSum]
     ) -> String? {
-        // Skip candidates with no weight (e.g. an excluded base whose subtree
-        // was removed from fork choice) rather than bailing when the FIRST is
-        // weightless — selection must not depend on child ordering.
+        // Skip candidates with no weight (a block not yet routed) rather than
+        // bailing when the FIRST is weightless — selection must not depend on
+        // child ordering.
         var selected: String?
         for candidate in hashes {
             guard let candidateWork = weights[candidate] else { continue }
@@ -2593,8 +2602,9 @@ public actor ChainState {
     /// it previously won, since it now wins strictly. No decision below that
     /// point can flip, so the path below it needs no recomputation.
     ///
-    /// Exclusion removes weight and therefore must never pass it; it forces a
-    /// whole-chain projection, as do restore-replay and a never-projected state.
+    /// Exclusion removes no weight but changes which child is selectable, so a
+    /// canonical exclusion forces a whole-chain projection, as do restore-replay
+    /// and a never-projected state.
     private func projectCanonicalChain(
         forceFull: Bool = false,
         monotoneIncreaseAt mutatedAt: String? = nil
@@ -2738,10 +2748,13 @@ public actor ChainState {
                 !excludedRoots.contains($0)
             }
         // Every child of the divergence point is unselectable: the mutation
-        // landed under an excluded root that is the tip's only child. Nothing
-        // can have moved, but a guard here fails closed like every other and
-        // hands the case to the whole-chain projection.
-        guard !children.isEmpty else { return nil }
+        // landed under an excluded root that is the only child of a canonical
+        // block. The descent from the root provably ends at that block, so it
+        // already is the tip and nothing moved. Decided in O(1) — this is the
+        // steady state right after a canonical exclusion, when miners that have
+        // not yet executed the block keep extending it, and it must not cost a
+        // whole-chain projection per such block.
+        guard !children.isEmpty else { return TruncatedProjectionOutcome(commit: nil) }
         // One GHOST step, taken exactly as the descent takes it: a lone child is
         // followed WITHOUT a weight lookup, matching the reference walk, so a
         // single-child step cannot depend on a weight comparison at all.
