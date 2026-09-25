@@ -849,11 +849,12 @@ same party may have chosen:
    genesis's `prevState` is `emptyHeader`, so continuity from it terminates at
    the parent's own genesis — the anchor is "reachable from real parent
    history", established inductively thereafter.
-2. State continuity is attested only from blocks whose transition the parent
-   EXECUTED. The weighed tier records a declared `postState` as an unverified
-   claim (§9.9), and a block that never becomes canonical is never validated
-   and therefore never excluded, so an unverified claim would otherwise stay
-   attestable permanently.
+2. State continuity is attested only across blocks on the parent's
+   EXECUTED-FROM-GENESIS FRONTIER: executed, every ancestor executed, and not
+   under an excluded block (§9.9). Execution alone is not enough — a block
+   executed against a fetched parent state proves nothing about the parent
+   having produced that state. The weighed tier records a declared `postState`
+   as an unverified claim, so an unverified claim is never attestable.
 
 Receipt admission itself does not assert that a child deposit exists.
 
@@ -1027,9 +1028,11 @@ authorization. A continuity fact is bound to the exact parent path and
 `(fromStateCID, toStateCID)` pair. It proves transitive reachability through the
 parent's connected accepted graph, not parent canonicity and not a work total.
 
-A parent MUST attest continuity only across blocks whose transition it
-EXECUTED. Attestation asserts that a state was produced by the parent chain,
-which is exactly what execution establishes and what the weighed tier defers:
+A parent MUST attest continuity only across blocks on its executed-from-genesis
+frontier — executed, every ancestor executed, none under an excluded block
+(§9.9). Attestation asserts that a state was produced by the parent chain,
+which is exactly what an unbroken run of execution from the genesis establishes
+and what the weighed tier defers:
 a weighed block's declared `postState` is an unverified claim (§9.9), and a
 block that never becomes canonical is never validated and so never excluded,
 so an unverified claim would otherwise remain attestable permanently. A child
@@ -1044,8 +1047,8 @@ withdraws nothing: execution is a fact about immutable bytes, ancestry does
 not change, and losing a fork-choice contest is not a proof of invalidity, so
 a child anchored at a state that later falls off the canonical chain keeps
 its anchor. Nor does a parent owe execution to a block merely because a child
-anchors there: a parent executes the history it adopts, and attests what it
-executed. A child anchoring elsewhere is anchoring at something this parent
+anchors there: a parent executes the history it adopts, and attests what lies
+on its executed-from-genesis frontier. A child anchoring elsewhere is anchoring at something this parent
 has not checked, and the correct answer is the retriable "not proven here",
 not a verdict and not an obligation to go and run it.
 
@@ -1117,15 +1120,30 @@ and treats missing bodies of a heavier weighed branch as an availability gap
 
 Failure to obtain a body is availability, never invalidity. Only a **completed**
 deterministic check — a `postState` mismatch or a committed validity rule —
-records an **invalidity exclusion** of the block. Exclusion removes the block's
-subtree from *this chain's own* effective weight, and fork choice re-projects
-onto the heaviest validated chain (9.4). Exclusion is a chain-local weighting
-decision, not pruning: the excluded block and its work facts remain in the
-graph, served and exported unchanged, and are never treated as invalid by any
-peer on that account. An excluded subtree is never resurrected by later work
-added beneath it. Exclusion is durable and replayed like any other fact:
-recovery reconstructs the excluded set and reprojects identically, independent
-of arrival order.
+records an **invalidity exclusion** of the block.
+
+**Work weighs; validity selects.** Exclusion removes no weight: the excluded
+block's work, and its descendants', stays in every ancestor's `trueCumWork`
+exactly as any other verified work does, because proof-of-work is a physical
+fact and invalidity is a judgment about state (9.5). What exclusion changes is
+selection: the canonical descent (9.4) never steps into an excluded block, so
+the tip is the heaviest *selectable* path through pure-work weights, and
+nothing at or below an excluded block is ever the tip, extended, or attested
+(5.3). A miner who spends work on an invalid block therefore still votes for
+that block's valid ancestors — which the same work on a valid block would also
+have done — and gains nothing else; an excluded subtree is never resurrected by
+later work added beneath it, however heavy. Exclusion is a chain-local
+selection decision, not pruning: the excluded block and its work facts remain
+in the graph, served and exported unchanged, and are never treated as invalid
+by any peer on that account. It is durable and replayed like any other fact:
+recovery reconstructs the excluded set and selects identically, independent of
+arrival order. Validity is consulted lazily — only where the descent would
+step into an unexecuted block — and never retracted. A genesis root may be
+excluded only while the chain has ANOTHER executed root to stand on; otherwise
+the verdict is not recorded at all and the validated tier stops there — a
+stall the node must surface, since a parked verdict is not itself a fact —
+because a chain whose every root is invalid has no selectable history, and a
+recorded fact recovery could not replay would make restart order-dependent.
 
 Deferral and exclusion are one mechanism: a node MUST NOT let unexecuted weight
 be acted upon without the ability to exclude a subtree it later proves invalid.

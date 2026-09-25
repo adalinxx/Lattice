@@ -948,8 +948,26 @@ private enum ChainLocalAdmission {
         level: ChainLevel,
         validationContext: ValidationContext
     ) async -> Preparation {
+        // A root may be excluded only while this chain has ANOTHER executed
+        // root to stand on (§9.9). Otherwise the verdict is parked as a
+        // non-verdict: never written, so recovery cannot depend on the order
+        // it replays in, and the validated tier stops here — visibly — rather
+        // than leave a canonical path beneath a proven-invalid genesis.
+        let mayExclude: Bool
+        if block.parent == nil {
+            mayExclude = await level.chain.hasExecutedRoot(besides: blockHash)
+        } else {
+            mayExclude = true
+        }
         func excluded() -> Preparation {
-            .ready(PreparedAdmission(
+            guard mayExclude else {
+                return .result(.rejected(
+                    .notYetAdmissible,
+                    parentCarrierLink: carrier.relayLink,
+                    sameChainPredecessor: carrier.sameChainPredecessor
+                ))
+            }
+            return .ready(PreparedAdmission(
                 resolvedHeader: resolvedHeader,
                 block: block,
                 fetcher: fetcher,
@@ -1450,6 +1468,30 @@ public extension ChainLevel {
                 parentCarrierLink: prepared.carrierLink,
                 sameChainPredecessor: prepared.sameChainPredecessor
             )
+        }
+        // Every refusal the reducer can make of an exclusion is made HERE,
+        // under the lease and BEFORE the durable write, so a fact the reducer
+        // would refuse is never written: the block must be possessed, and a
+        // root exclusion may stand only on another EXECUTED root (§9.9).
+        // Preflight checked the latter outside the lease; the other root could
+        // have been excluded since.
+        if case .exclusion = prepared.kind {
+            let target = prepared.resolvedHeader.rawCID
+            let possessed = await chain.contains(blockHash: target)
+            let standsOnAnotherRoot: Bool
+            if prepared.block.parent == nil {
+                standsOnAnotherRoot = await chain.hasExecutedRoot(besides: target)
+            } else {
+                standsOnAnotherRoot = true
+            }
+            guard possessed, standsOnAnotherRoot else {
+                await chain.releaseAdmissionRevision()
+                return .rejected(
+                    .notYetAdmissible,
+                    parentCarrierLink: prepared.carrierLink,
+                    sameChainPredecessor: prepared.sameChainPredecessor
+                )
+            }
         }
         let stagingContext: ChainAdmissionStagingContext
         if preflight.stagingContext.issuedCarrierLink != nil {
