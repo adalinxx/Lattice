@@ -412,10 +412,13 @@ final class ParentRunAttributionTests: XCTestCase {
         _ = try await chain.replay(ChainAdmissionBatch(facts: [
             .exclusion(ChainExclusionFact(blockHash: h("p2"))),
         ]))
-        // Fixture guard: the exclusion really removed p2 from THIS chain's
-        // fork choice, or the invariant below is not being exercised.
-        let p2Weight = await chain.subtreeWeight(forHash: h("p2"))
-        XCTAssertEqual(p2Weight, WorkSum.zero, "p2 must be excluded from fork choice")
+        // Fixture guard: the exclusion really took p2 out of THIS chain's
+        // selection (work weighs, validity selects — §9.9), or the invariant
+        // below is not being exercised.
+        let path = await chain.mainChainHashes
+        XCTAssertFalse(path.contains(h("p2")), "p2 must be unselectable")
+        let tip = await chain.chainTip
+        XCTAssertEqual(tip, h("p1"), "the descent stops above the excluded block")
         let afterExclusion = await run(chain, at: "p1")
         XCTAssertEqual(afterExclusion, before, "a run is never revoked by exclusion")
         // A new block under the excluded p2 is still connected and credited.

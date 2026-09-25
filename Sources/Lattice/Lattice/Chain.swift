@@ -564,7 +564,6 @@ public actor ChainState {
     /// Blocks reachable from a genesis by parent pointers, excluded or not.
     /// Euler routing means connected-AND-not-excluded; runs must not depend on
     /// exclusion (never revoked), so connectivity is tracked on its own.
-    private var connectedBlocks: Set<String>
     /// The child directories this node serves run reports for — the child
     /// chains it hosts. Operator choice, so the per-block run cost is bounded
     /// by what this node asked for, not by what any block commits into.
@@ -776,12 +775,10 @@ public actor ChainState {
             }
             self.mainChainBlockAtIndex[height] = hash
         }
-        // Connectivity (§9.10), settled once downward from every genesis over
-        // the UNFILTERED graph — excluded blocks included, since a run is never
-        // revoked. Runs themselves are settled by `serveRuns(for:)`, one
-        // directory at a time, through the same per-block step live admission
-        // uses — one algorithm, not a rebuild twin.
-        self.connectedBlocks = Self.connectedBlocks(in: self.hashToBlock)
+        // Runs (§9.10) are settled by `serveRuns(for:)`, one directory at a
+        // time, through the same per-block step live admission uses — one
+        // algorithm, not a rebuild twin. Connectivity IS the weight index:
+        // every connected block routes, excluded or not (§9.9).
         self.runWork = [:]
         self.servedDirectories = []
         // Nearest committers are settled by `serveRuns`, never supplied.
@@ -1566,15 +1563,6 @@ public actor ChainState {
         for contribution in contributions {
             applyLocalContribution(contribution, to: blockHash)
         }
-        // Runs and connectivity (§9.10), unfiltered: a block that descends
-        // from an excluded block is still connected and its work still lands
-        // in its run.
-        if input.parentBlockHash == nil {
-            if input.blockHeight == 0 { connectForRunAttribution(rootedAt: blockHash) }
-        } else if let parentHash = input.parentBlockHash,
-                  connectedBlocks.contains(parentHash) {
-            connectForRunAttribution(rootedAt: blockHash)
-        }
         // Every connected block routes, a descendant of an excluded root
         // included: work weighs unconditionally, and validity is applied by the
         // descent, which never steps into an excluded root (§9.9).
@@ -1591,6 +1579,14 @@ public actor ChainState {
                 routeBlock(for: blockHash),
                 "validated leaf could not be routed"
             )
+        }
+        // Runs (§9.10): a block that just routed — alone, or as the root of a
+        // grafted orphan component — is connected, and so is every descendant
+        // it grafted in. Unfiltered: an excluded descendant routes and is
+        // credited like any other. An orphan is not routed and is settled the
+        // moment its component grafts.
+        if subtreeWorkIndex.contains(blockHash) {
+            connectForRunAttribution(rootedAt: blockHash)
         }
 
         for contribution in contributions {
@@ -1998,7 +1994,7 @@ public actor ChainState {
         // A strengthening raises this block's own work, so its run (§9.10)
         // rises by exactly that delta — once the block is connected. An
         // orphan's work is credited in full at the moment it connects.
-        if connectedBlocks.contains(blockHash),
+        if subtreeWorkIndex.contains(blockHash),
            let workAfter = hashToBlock[blockHash]?.work,
            let delta = workAfter.subtracting(workBefore),
            let nearest = hashToBlock[blockHash]?.nearestCommitter {
@@ -2041,20 +2037,6 @@ public actor ChainState {
 
     // MARK: - Parent-attributed run work (§9.10)
 
-    /// Every block reachable from a genesis by parent pointers, over the
-    /// UNFILTERED graph.
-    nonisolated static func connectedBlocks(in blocks: [String: BlockMeta]) -> Set<String> {
-        var connected = Set<String>()
-        var stack = blocks.values
-            .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
-            .map(\.blockHash)
-        while let hash = stack.popLast() {
-            guard let meta = blocks[hash], connected.insert(hash).inserted else { continue }
-            stack.append(contentsOf: meta.childHashes)
-        }
-        return connected
-    }
-
     /// Start serving run reports for `directory` — the node hosts a child
     /// chain there. Settles every connected block's nearest committer and run
     /// for that one directory, parent before child, over the UNFILTERED graph:
@@ -2071,22 +2053,23 @@ public actor ChainState {
             .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
             .map(\.blockHash)
         while let hash = stack.popLast() {
-            guard connectedBlocks.contains(hash), let meta = hashToBlock[hash] else { continue }
+            guard subtreeWorkIndex.contains(hash), let meta = hashToBlock[hash] else { continue }
             settleRuns(of: hash, directories: [directory])
             stack.append(contentsOf: meta.childHashes)
         }
     }
 
-    /// Connect one block whose parent is connected (or which is a genesis):
-    /// settle its nearest committers and runs for every served directory, then
-    /// do the same for every already-present descendant — an orphan component
-    /// connects the moment its root does. Unfiltered on purpose: an excluded
-    /// descendant is still connected and still credited.
+    /// Settle a block that just routed and every descendant that routed with
+    /// it: its nearest committers and runs for every served directory, parent
+    /// before child. Nothing below a just-routed block can have been settled
+    /// before — a block never routes under an unrouted parent — so the walk
+    /// needs no record of what it has settled. Unfiltered on purpose: an
+    /// excluded descendant is still connected and still credited.
     private func connectForRunAttribution(rootedAt rootHash: String) {
         var stack = [rootHash]
+        var visited = Set<String>()
         while let hash = stack.popLast() {
-            guard let meta = hashToBlock[hash],
-                  connectedBlocks.insert(hash).inserted else { continue }
+            guard let meta = hashToBlock[hash], visited.insert(hash).inserted else { continue }
             settleRuns(of: hash, directories: servedDirectories)
             stack.append(contentsOf: meta.childHashes)
         }
@@ -2139,7 +2122,7 @@ public actor ChainState {
         directory: String
     ) -> ParentRunReport? {
         guard let hash = CIDIdentity.canonicalString(blockHash),
-              connectedBlocks.contains(hash),
+              subtreeWorkIndex.contains(hash),
               let meta = hashToBlock[hash],
               let childBlock = meta.childCommitments?[directory],
               let run = runWork[directory]?[hash] else { return nil }
@@ -2510,7 +2493,7 @@ public actor ChainState {
     private func adoptChildCommitments(_ commitments: [String: String], at hash: String) {
         guard let meta = hashToBlock[hash], meta.childCommitments == nil else { return }
         hashToBlock[hash]?.adoptChildCommitments(commitments)
-        guard connectedBlocks.contains(hash) else { return }
+        guard subtreeWorkIndex.contains(hash) else { return }
         for directory in servedDirectories where commitments[directory] != nil {
             servedDirectories.remove(directory)
             runWork[directory] = nil
