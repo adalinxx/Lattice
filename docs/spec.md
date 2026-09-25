@@ -849,11 +849,12 @@ same party may have chosen:
    genesis's `prevState` is `emptyHeader`, so continuity from it terminates at
    the parent's own genesis — the anchor is "reachable from real parent
    history", established inductively thereafter.
-2. State continuity is attested only from blocks whose transition the parent
-   EXECUTED. The weighed tier records a declared `postState` as an unverified
-   claim (§9.9), and a block that never becomes canonical is never validated
-   and therefore never excluded, so an unverified claim would otherwise stay
-   attestable permanently.
+2. State continuity is attested only across blocks on the parent's
+   EXECUTED-FROM-GENESIS FRONTIER: executed, every ancestor executed, and not
+   under an excluded root (§9.9). Execution alone is not enough — a block
+   executed against a fetched parent state proves nothing about the parent
+   having produced that state. The weighed tier records a declared `postState`
+   as an unverified claim, so an unverified claim is never attestable.
 
 Receipt admission itself does not assert that a child deposit exists.
 
@@ -1027,9 +1028,11 @@ authorization. A continuity fact is bound to the exact parent path and
 `(fromStateCID, toStateCID)` pair. It proves transitive reachability through the
 parent's connected accepted graph, not parent canonicity and not a work total.
 
-A parent MUST attest continuity only across blocks whose transition it
-EXECUTED. Attestation asserts that a state was produced by the parent chain,
-which is exactly what execution establishes and what the weighed tier defers:
+A parent MUST attest continuity only across blocks on its executed-from-genesis
+frontier — executed, every ancestor executed, none under an excluded root
+(§9.9). Attestation asserts that a state was produced by the parent chain,
+which is exactly what an unbroken run of execution from the genesis establishes
+and what the weighed tier defers:
 a weighed block's declared `postState` is an unverified claim (§9.9), and a
 block that never becomes canonical is never validated and so never excluded,
 so an unverified claim would otherwise remain attestable permanently. A child
@@ -1135,7 +1138,11 @@ in the graph, served and exported unchanged, and are never treated as invalid
 by any peer on that account. It is durable and replayed like any other fact:
 recovery reconstructs the excluded set and selects identically, independent of
 arrival order. Validity is consulted lazily — only where the descent would
-step into an unexecuted block — and never retracted.
+step into an unexecuted block — and never retracted. A genesis root may be
+excluded only while the chain has ANOTHER executed root to stand on; otherwise
+the verdict is not recorded at all — the validated tier stops there, visibly —
+because a chain whose every root is invalid has no selectable history, and a
+recorded fact recovery could not replay would make restart order-dependent.
 
 Deferral and exclusion are one mechanism: a node MUST NOT let unexecuted weight
 be acted upon without the ability to exclude a subtree it later proves invalid.

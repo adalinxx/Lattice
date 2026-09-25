@@ -806,7 +806,7 @@ public actor ChainState {
         var pending = batches.map { batch in
             (batch: batch, key: TrustedAdmissionBatch(batch))
         }
-        pending.sort { replayPrecedes($0.key, $1.key) }
+        pending.sort { replayPrecedes($0, $1) }
         while !pending.isEmpty {
             var deferred: [(batch: ChainAdmissionBatch, key: TrustedAdmissionBatch?)] = []
             var completed = false
@@ -825,11 +825,35 @@ public actor ChainState {
         }
     }
 
+    /// A strict weak ordering over EVERY batch, fact-only ones included: block
+    /// batches by height, then work-only batches, then exclusions and
+    /// validations by their target. A batch with no key must still compare
+    /// consistently — a key that compared "equal" to everything would let the
+    /// sort leave it wherever enumeration put it.
     private static func replayPrecedes(
-        _ left: TrustedAdmissionBatch?,
-        _ right: TrustedAdmissionBatch?
+        _ left: (batch: ChainAdmissionBatch, key: TrustedAdmissionBatch?),
+        _ right: (batch: ChainAdmissionBatch, key: TrustedAdmissionBatch?)
     ) -> Bool {
-        guard let left, let right else { return false }
+        switch (left.key, right.key) {
+        case let (leftKey?, rightKey?):
+            return replayPrecedes(leftKey, rightKey)
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        case (nil, nil):
+            let l = exclusionTarget(of: left.batch).map { ("e", $0) }
+                ?? validationTarget(of: left.batch).map { ("v", $0) } ?? ("z", "")
+            let r = exclusionTarget(of: right.batch).map { ("e", $0) }
+                ?? validationTarget(of: right.batch).map { ("v", $0) } ?? ("z", "")
+            return l.0 != r.0 ? l.0 < r.0 : l.1 < r.1
+        }
+    }
+
+    private static func replayPrecedes(
+        _ left: TrustedAdmissionBatch,
+        _ right: TrustedAdmissionBatch
+    ) -> Bool {
         switch (left.block, right.block) {
         case let (leftBlock?, rightBlock?)
         where leftBlock.blockHeight != rightBlock.blockHeight:
@@ -1623,10 +1647,11 @@ public actor ChainState {
         var pending = [rootHash]
         var componentHashes = Set<String>()
         while let hash = pending.popLast() {
-            // A member already routed — an out-of-order orphan attached before
-            // this component's root connected — is skipped, which also strips
-            // it from the spliced events: the tour below only follows children
-            // that are in componentHashes.
+            // Defensive: a member of a disconnected component cannot already be
+            // routed (`routeBlock` refuses to route under an unrouted parent),
+            // so this guard never fires; if an invariant ever broke, skipping
+            // also strips the block from the spliced events, since the tour
+            // below only follows children that are in componentHashes.
             guard !subtreeWorkIndex.contains(hash),
                   componentHashes.insert(hash).inserted,
                   let block = hashToBlock[hash] else { continue }
@@ -1997,6 +2022,17 @@ public actor ChainState {
         return CIDIdentity.canonicalString(fact.blockHash)
     }
 
+    /// Whether some OTHER genesis root of this chain is on the executed
+    /// frontier — "is there a chain to stand on", the test a producer runs
+    /// before it may exclude a root (§9.9).
+    func hasExecutedRoot(besides blockHash: String) -> Bool {
+        (indexToBlockHash[0] ?? []).contains {
+            $0 != blockHash
+                && hashToBlock[$0]?.parentBlockHash == nil
+                && anchoredBlocks.contains($0)
+        }
+    }
+
     /// Record a proven-invalid subtree root. The block must already be present:
     /// a not-yet-connected exclusion defers exactly like a work fact whose block
     /// has not arrived, so replay retries it once the subtree exists.
@@ -2010,17 +2046,18 @@ public actor ChainState {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
         // A chain whose every root is proven invalid has no history to stand
-        // on. Fail closed rather than leave a stale canonical path that the
-        // truncated projection would keep extending beneath an invalid genesis.
-        if hashToBlock[blockHash]?.parentBlockHash == nil {
-            let otherSelectableRoots = (indexToBlockHash[0] ?? []).contains {
-                $0 != blockHash
-                    && hashToBlock[$0]?.parentBlockHash == nil
-                    && !excludedRoots.contains($0)
-            }
-            guard otherSelectableRoots else {
-                throw ChainStateRestoreError.corruptConsensusGraph
-            }
+        // on, so a root may be excluded only while another root this chain has
+        // EXECUTED remains. The producer (`prepareValidatedTier`) refuses
+        // before any fact is written; this reducer is the fail-closed twin.
+        // During replay the other root's validation may simply not have
+        // replayed yet, so the exclusion defers like any fact whose
+        // prerequisites are missing — order-independent — and only a live
+        // exclusion with nothing to stand on is a corrupt graph.
+        if hashToBlock[blockHash]?.parentBlockHash == nil,
+           !hasExecutedRoot(besides: blockHash) {
+            throw deferProjectionForReplay
+                ? ChainStateRestoreError.missingBlockFact
+                : ChainStateRestoreError.corruptConsensusGraph
         }
         excludedRoots.insert(blockHash)
         // The excluded subtree may have been anchored before it was proven

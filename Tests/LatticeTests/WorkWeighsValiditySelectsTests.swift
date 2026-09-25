@@ -295,19 +295,52 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
         XCTAssertTrue(roots.isEmpty, "a refused exclusion records nothing")
         let tip = await live.getMainChainTip()
         XCTAssertEqual(tip, h("a"))
-        // A second, lighter root: excluding the first now moves selection to it.
-        let g2 = Planned(name: "g2", parent: nil, work: 1)
-        _ = try await live.replay(admission(g2, height: 0))
+        // A second, lighter root: merely PRESENT it is not a chain to stand
+        // on; once EXECUTED, excluding the first moves selection to it. Named
+        // so that `g` stays the restore seed (the seed is the smallest genesis
+        // CID and is executed by fiat) — asserted, since the cold-restore
+        // halves below depend on which root is trusted.
+        let z = Planned(name: "z", parent: nil, work: 1)
+        XCTAssertLessThan(h("g"), h("z"), "fixture: g must remain the restore seed")
+        _ = try await live.replay(admission(z, height: 0))
+        do {
+            _ = try await live.replay(exclusion("g"))
+            XCTFail("an unexecuted second root is not a chain to stand on")
+        } catch ChainStateRestoreError.corruptConsensusGraph {}
+        _ = try await live.replay(ChainAdmissionBatch.validation(blockHash: h("z")))
         _ = try await live.replay(exclusion("g"))
         let moved = await live.getMainChainTip()
-        XCTAssertEqual(moved, h("g2"), "selection moves to the remaining selectable root")
+        XCTAssertEqual(moved, h("z"), "selection moves to the remaining executed root")
         let path = await live.mainChainHashes
         XCTAssertFalse(path.contains(h("g")), "an excluded root is never canonical")
         XCTAssertFalse(path.contains(h("a")))
         // And nothing is extended beneath the excluded root.
         _ = try await live.replay(admission(Planned(name: "a2", parent: "a", work: 50), height: 2))
         let still = await live.getMainChainTip()
-        XCTAssertEqual(still, h("g2"))
+        XCTAssertEqual(still, h("z"))
+        // Recovery is order-independent: the root exclusion defers until the
+        // other root's validation has replayed, in every enumeration order.
+        let facts = [
+            admission(blocks[0], height: 0), admission(blocks[1], height: 1),
+            admission(z, height: 0), ChainAdmissionBatch.validation(blockHash: h("z")),
+            exclusion("g"), admission(Planned(name: "a2", parent: "a", work: 50), height: 2),
+        ]
+        for trial in 0..<12 {
+            let cold = try await ChainState.restore(replaying: facts.shuffled(using: &rng))
+            let coldTip = await cold.getMainChainTip()
+            let coldRoots = await cold.excludedRootsForTesting
+            XCTAssertEqual(coldTip, h("z"), "cold \(trial)")
+            XCTAssertEqual(coldRoots, [h("g")], "cold \(trial)")
+        }
+        // With no validation of the other root on record, recovery fails
+        // closed deterministically — in every order — rather than by luck.
+        let unexecuted = facts.filter { $0 != ChainAdmissionBatch.validation(blockHash: h("z")) }
+        for trial in 0..<6 {
+            do {
+                _ = try await ChainState.restore(replaying: unexecuted.shuffled(using: &rng))
+                XCTFail("order \(trial): a root exclusion with no executed root to stand on cannot replay")
+            } catch ChainStateRestoreError.corruptConsensusGraph {}
+        }
     }
 
     /// Continuity: an excluded subtree that had been executed is un-anchored
