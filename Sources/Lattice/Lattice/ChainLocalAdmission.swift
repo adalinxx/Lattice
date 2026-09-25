@@ -791,12 +791,13 @@ private enum ChainLocalAdmission {
         // unavailable trie must not degrade to "commits nothing", which would
         // route parent work to an older committer and let availability decide
         // a consensus-visible number.
-        let enumerate = { await childCommitments(of: resolvedHeader, fetcher: fetcher) }
-        let commitmentsUnavailable: Preparation = .result(.rejected(
-            .unavailableEvidence,
-            parentCarrierLink: carrier.relayLink,
-            sameChainPredecessor: carrier.sameChainPredecessor
-        ))
+        func commitmentsRejection(_ failure: ChainAdmissionFailure) -> Preparation {
+            .result(.rejected(
+                failure,
+                parentCarrierLink: carrier.relayLink,
+                sameChainPredecessor: carrier.sameChainPredecessor
+            ))
+        }
 
         // Validated tier: the block was already weighed (its work is verified
         // above and durable). Execute it now and record a validity verdict,
@@ -804,7 +805,11 @@ private enum ChainLocalAdmission {
         // first-observation of the header. Isolated so the eager and weighed
         // paths are untouched.
         if case .validate = mode {
-            guard let commitments = await enumerate() else { return commitmentsUnavailable }
+            let commitments: [String: String]
+            switch await childCommitments(of: resolvedHeader, fetcher: fetcher) {
+            case .success(let enumerated): commitments = enumerated
+            case .failure(let failure): return commitmentsRejection(failure)
+            }
             return await prepareValidatedTier(
                 resolvedHeader: resolvedHeader,
                 block: block,
@@ -911,7 +916,11 @@ private enum ChainLocalAdmission {
                     )
                 ))
             }
-            guard let commitments = await enumerate() else { return commitmentsUnavailable }
+            let commitments: [String: String]
+            switch await childCommitments(of: resolvedHeader, fetcher: fetcher) {
+            case .success(let enumerated): commitments = enumerated
+            case .failure(let failure): return commitmentsRejection(failure)
+            }
             return .ready(PreparedAdmission(
                 resolvedHeader: resolvedHeader,
                 block: block,
@@ -972,7 +981,11 @@ private enum ChainLocalAdmission {
                     sameChainPredecessor: carrier.sameChainPredecessor
                 ))
             }
-            guard let commitments = await enumerate() else { return commitmentsUnavailable }
+            let commitments: [String: String]
+            switch await childCommitments(of: resolvedHeader, fetcher: fetcher) {
+            case .success(let enumerated): commitments = enumerated
+            case .failure(let failure): return commitmentsRejection(failure)
+            }
             return .ready(PreparedAdmission(
                 resolvedHeader: resolvedHeader,
                 block: block,
@@ -1129,21 +1142,25 @@ private enum ChainLocalAdmission {
     /// Every child commitment this block makes, `directory → child CID`, read
     /// from its PoW-bound `children` trie (§9.10). Called only after the
     /// block's work is verified and only on paths that emit a block fact, so
-    /// the walk is never spent on an unauthenticated header. Nil means
-    /// unavailable; the caller rejects retriably.
+    /// the walk is never spent on an unauthenticated header. A failure is
+    /// classified like any other boundary resolution: an unavailable node is
+    /// retriable, a malformed one is a verdict (§9.9).
     static func childCommitments(
         of blockHeader: BlockHeader,
         fetcher: any Fetcher
-    ) async -> [String: String]? {
-        guard let resolved = try? await blockHeader.resolve(
-                  paths: [[CHILDREN_PROPERTY, ""]: .list],
-                  fetcher: fetcher
-              ),
-              let children = resolved.node?.children.node,
-              let entries = try? children.allKeysAndValues() else {
-            return nil
+    ) async -> Result<[String: String], ChainAdmissionFailure> {
+        do {
+            let resolved = try await blockHeader.resolve(
+                paths: [[CHILDREN_PROPERTY, ""]: .list],
+                fetcher: fetcher
+            )
+            guard let children = resolved.node?.children.node else {
+                return .failure(.unavailableEvidence)
+            }
+            return .success(try children.allKeysAndValues().mapValues(\.rawCID))
+        } catch {
+            return .failure(classifyResolutionFailure(error))
         }
-        return entries.mapValues(\.rawCID)
     }
 
     static func resolveBlock(

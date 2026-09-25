@@ -1163,8 +1163,10 @@ connection, like `DifficultyAnchor`, so it is reorg-safe and replay-identical;
 it is held only for the directories a node SERVES — the child chains it hosts,
 an operator choice — so the run bookkeeping per block is O(#served), never
 O(height) and never a function of how many directories a stranger's block
-commits into. (The block's commitment map itself is stored in full, bounded by
-the `children` trie the boundary already retains.)
+commits into. (The block's commitment map itself is stored in full — on disk,
+where the boundary already retains the trie, and in memory, where it costs
+O(#entries) per block like the block's own work map; both are gated by that
+block's proof-of-work.)
 `runWork(P, d)` is the sum of own credited work over the connected blocks whose
 nearest committer into `d` is `P`. Runs partition the graph: each parent grind
 is in at most one run per directory — none where no ancestor commits into it —

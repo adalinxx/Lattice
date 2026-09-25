@@ -561,9 +561,6 @@ public actor ChainState {
     /// maintained by the one reducer live admission and replay both use.
     /// Served to children; never a fork-choice input on THIS chain.
     private var runWork: [String: [String: WorkSum]]
-    /// Blocks reachable from a genesis by parent pointers, excluded or not.
-    /// Euler routing means connected-AND-not-excluded; runs must not depend on
-    /// exclusion (never revoked), so connectivity is tracked on its own.
     /// The child directories this node serves run reports for — the child
     /// chains it hosts. Operator choice, so the per-block run cost is bounded
     /// by what this node asked for, not by what any block commits into.
@@ -1585,7 +1582,9 @@ public actor ChainState {
         // it grafted in. Unfiltered: an excluded descendant routes and is
         // credited like any other. An orphan is not routed and is settled the
         // moment its component grafts.
-        if subtreeWorkIndex.contains(blockHash) {
+        // Nothing to settle while no directory is served: skip the walk, which
+        // on a graft would otherwise be a third pass over the component.
+        if !servedDirectories.isEmpty, subtreeWorkIndex.contains(blockHash) {
             connectForRunAttribution(rootedAt: blockHash)
         }
 
@@ -2147,8 +2146,8 @@ public actor ChainState {
     /// The report is BOUND before any number is read: it must name this child
     /// block as the one its committer commits, it must be for `directory` —
     /// this chain's own, which the caller knows and this actor does not — and
-    /// one of the committer's grinds must already be credited here (the proof
-    /// through that committer is what made this a child block). The attributed
+    /// one of the grinds the report attributes to the committer must already be
+    /// credited here — the parent's word, like the quantity. The attributed
     /// quantity is `runWork − ownWork`: the committer's own grinds stay counted
     /// exactly once, at the child's own price; the run's other blocks are
     /// credited under `AttributedRunIdentity(committer, directory)`, which
@@ -2161,9 +2160,17 @@ public actor ChainState {
     /// replace it later with no consensus change (§9.10).
     ///
     /// Everything downstream is the existing work path: `applyStaged`
-    /// re-checks strict increase and returns nil on a stale or duplicate batch
-    /// — never a throw — so a report computed before a concurrent stronger one
-    /// applied is a harmless no-op, live and on replay alike.
+    /// re-checks strict increase and returns nil on a stale or duplicate batch,
+    /// so a report computed before a concurrent STRONGER one applied is a
+    /// harmless no-op, live and on replay alike. A report naming a DIFFERENT
+    /// child block for a committer whose run is already located is another
+    /// matter: a location is write-once, and a durable fact that loses that
+    /// race is a corrupt graph on apply and on every restore, exactly as a
+    /// second location for any grind is. So the node MUST derive under its
+    /// mutation lease, immediately before staging — this is O(1); derive once
+    /// to decide, and again under the lease to write — the same shape as
+    /// `commitPreflight`'s exclusion re-check. `.locationConflict` is then a
+    /// refusal, never a fact.
     public func strengthenFromParentReport(
         child childHash: String,
         directory: String,
