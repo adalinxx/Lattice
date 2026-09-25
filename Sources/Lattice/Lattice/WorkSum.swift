@@ -98,6 +98,20 @@ public struct WorkSum: Codable, Hashable, Sendable, Comparable, CustomStringConv
         limbs.count <= 1 ? (limbs.first ?? 0) : nil
     }
 
+    /// The value as one `UInt256`, or nil when it does not fit. Mirrors
+    /// `uint64Value`. A caller that must produce a fixed-width quantity (a
+    /// `VerifiedWorkContribution`) uses this to REFUSE rather than saturate:
+    /// a saturated sum ties with every other saturated sum and erases the
+    /// ordering fork choice depends on (§9.2).
+    public var uint256Value: UInt256? {
+        guard limbs.count <= UInt256.bitWidth / UInt64.bitWidth else { return nil }
+        var value = UInt256.zero
+        for limb in limbs.reversed() {
+            value = (value << UInt64.bitWidth) | UInt256(limb)
+        }
+        return value
+    }
+
     public func toHexString() -> String {
         guard let mostSignificant = limbs.last else {
             return String(repeating: "0", count: 64)

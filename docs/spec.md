@@ -1148,6 +1148,56 @@ recorded fact recovery could not replay would make restart order-dependent.
 Deferral and exclusion are one mechanism: a node MUST NOT let unexecuted weight
 be acted upon without the ability to exclude a subtree it later proves invalid.
 
+### 9.10 Parent-Attributed Run Work
+
+A child block's `parentState` is committed by a block on its parent chain
+(§5.3). Every parent-chain block that DESCENDS from that committer commits to
+the child block indirectly, and its work secures the child. Effective
+`trueCumWork` therefore counts it — once.
+
+The parent partitions its connected graph into RUNS, one per commitment into
+each child directory `d`: a parent block `Q` belongs to the run of the nearest
+block at or above it — by parent pointer, never by canonical chain — that
+commits into `d`. `nearestCommitter(Q, d)` is inherited at admission in O(1),
+exactly as `DifficultyAnchor` is, so it is reorg-safe and replay-identical.
+`runWork(P, d)` is the sum of own credited work over the connected blocks whose
+nearest committer into `d` is `P`. Runs partition the graph: each parent grind
+is in exactly one run, and a parent fork below `P` places each branch's blocks
+in the run of that branch's own nearest committer — no branch missed, none
+counted twice. A block's commitments are read from its PoW-bound `children`
+trie at admission and carried on its durable block fact, so live admission and
+replay see the same commitments. The parent serves `runWork(P, d)` in O(1).
+
+The child credits the run under an identity derived from the grind it was
+committed under, separate from the grind itself:
+
+```text
+attributed(C, g) = runWork(P, d) − ownWork(P)
+```
+
+`P`'s own grind `g` is already credited at `C` at this chain's price (§9.5)
+and stays so; subtracting `ownWork` keeps it counted exactly once and leaves
+the child's terminal-target raise untouched. The attributed contribution is
+its own location-bound value: a repeated report is not a strict increase and
+is refused, so the crediting is idempotent. It is applied only if it is a
+strict increase over the attributed value already held, as a work-only batch
+(§9.8). `trueCumWork` of a child block is then its subtree total as always —
+each child block's own grinds plus each committer's attributed run — so a
+parent fork whose branches commit into different blocks of one child subtree
+contributes every branch exactly once, wherever the fork sits.
+The child never accepts a decrease; never accepts a value one contribution
+cannot represent — it refuses rather than saturates, which would erase the
+ordering §9.2 requires; and never revokes. A run only grows, including when a
+block in it is later excluded on the parent chain: proof-of-work is a physical
+fact and exclusion is a judgment about state (§9.5, §9.9), so runs are
+maintained independently of exclusion and are not rebuilt by it.
+
+This is an EVIDENCE path, not a change to what `trueCumWork` means: the same
+number is reachable by a child that verifies the parent's blocks itself, so the
+reported path may later be replaced by a verified one with no change to
+consensus. Child weight never depends on parent CANONICITY: runs follow parent
+pointers, not the parent's canonical chain.
+
 ## 10. Economic Model
 
 ### 10.1 Reward Schedule
@@ -1270,7 +1320,9 @@ state); withdrawals return it to the block-wide credit budget.
 4. Work measures union by grind ID before totaling, so shared work is counted once
    while distinct grinds sum
 5. Effective `trueCumWork` contains only connected, accepted same-chain
-   locations derived from verified proof bytes
+   locations derived from verified proof bytes; a location's quantity may be
+   strengthened by its parent's run work at the committing block (§9.10),
+   derived locally and only ever raised
 6. Equal-work same-chain child blocks prefer the lexicographically smaller
    canonical block CID; `nextTarget` is not a comparator
 7. Parent canonicity alone cannot change child validity, weight, or fork choice

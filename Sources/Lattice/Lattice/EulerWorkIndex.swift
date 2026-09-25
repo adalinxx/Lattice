@@ -402,6 +402,36 @@ struct EulerWorkIndex: Sendable {
     // MARK: - Test seams
 
 #if DEBUG
+    /// The subtree total together with the sequence-tree nodes visited to
+    /// compute it. The production `subtreeWork` is untouched; this twin exists
+    /// so the O(log n) claim is asserted as a COUNTER (like
+    /// `stateContinuityBlockVisitCount`), never as a stopwatch. Two prefix
+    /// walks, each bounded by AVL height.
+    func subtreeWorkVisiting(_ blockHash: String) -> (work: WorkSum, visits: Int)? {
+        guard let open = openNode[blockHash],
+              let close = closeNode[blockHash] else { return nil }
+        var visits = 0
+        func walk(_ node: Int) -> WorkSum {
+            visits += 1
+            var total = aggregate(nodes[node].left) + nodes[node].value
+            var current = node
+            var up = nodes[current].parent
+            while up >= 0 {
+                visits += 1
+                if nodes[up].right == current {
+                    total = total + aggregate(nodes[up].left) + nodes[up].value
+                }
+                current = up
+                up = nodes[current].parent
+            }
+            return total
+        }
+        guard let between = walk(close).subtracting(walk(open)) else { return nil }
+        return (between + nodes[open].value, visits)
+    }
+#endif
+
+#if DEBUG
     /// The sequence in order, as (blockHash, isOpen, value). Structural tests
     /// assert this is a valid Euler tour rather than trusting the inserts.
     var debugSequence: [(hash: String, isOpen: Bool, value: WorkSum)] {

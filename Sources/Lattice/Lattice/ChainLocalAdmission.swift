@@ -33,7 +33,40 @@ public struct ChainBlockFact: Codable, Sendable, Equatable {
     public let nextTarget: String
     public let timestamp: Int64
     public let stateDiff: StateDiff
+    /// Directory → child block CID this block commits, from its PoW-bound
+    /// `children` trie (§9.10). Optional so facts written before it existed
+    /// still decode; absent means "commits nothing", which is what those
+    /// blocks were treated as.
+    public let childCommitments: [String: String]?
 
+    /// Explicit so `childCommitments` can default to nil: a defaulted `let`
+    /// would drop it from the synthesized memberwise init entirely, and the
+    /// one real construction site (`PreparedAdmission.facts`) must set it.
+    public init(
+        blockHash: String,
+        parentBlockHash: String?,
+        blockHeight: UInt64,
+        postStateCID: String,
+        prevStateCID: String,
+        specCID: String,
+        target: String,
+        nextTarget: String,
+        timestamp: Int64,
+        stateDiff: StateDiff,
+        childCommitments: [String: String]? = nil
+    ) {
+        self.blockHash = blockHash
+        self.parentBlockHash = parentBlockHash
+        self.blockHeight = blockHeight
+        self.postStateCID = postStateCID
+        self.prevStateCID = prevStateCID
+        self.specCID = specCID
+        self.target = target
+        self.nextTarget = nextTarget
+        self.timestamp = timestamp
+        self.stateDiff = stateDiff
+        self.childCommitments = childCommitments
+    }
 }
 
 /// A block's state transition was EXECUTED and its declared `postState`
@@ -329,6 +362,11 @@ fileprivate struct PreparedAdmission: Sendable {
     /// if/when the block is validated (`.validate`/`.eager` keep storing it).
     /// `var` only so the synthesized memberwise init can default it; never mutated.
     var defersBodyStore: Bool = false
+    /// This block's child commitments (§9.10), enumerated once in `prepare`
+    /// and carried onto the durable block fact. `var` only so the synthesized
+    /// memberwise init can default it for the bootstrap-genesis path, which
+    /// commits nothing via `children`; never mutated.
+    var childCommitments: [String: String] = [:]
 
     var facts: ChainAdmissionBatch {
         // An exclusion is a standalone verdict: exactly one `.exclusion` fact,
@@ -351,7 +389,8 @@ fileprivate struct PreparedAdmission: Sendable {
                 target: block.target.toHexString(),
                 nextTarget: block.nextTarget.toHexString(),
                 timestamp: block.timestamp,
-                stateDiff: stateDiff
+                stateDiff: stateDiff,
+                childCommitments: childCommitments
             )))
         case .evidence, .exclusion:
             break
@@ -681,10 +720,12 @@ private enum ChainLocalAdmission {
         let context = level.context
         let resolvedHeader: BlockHeader
         let block: Block
+        let commitments: [String: String]
         switch await resolveBlock(blockHeader, fetcher: fetcher) {
         case .success(let resolved):
             resolvedHeader = resolved.header
             block = resolved.block
+            commitments = resolved.childCommitments
         case .failure(let failure):
             return .result(.rejected(failure))
         }
@@ -753,6 +794,7 @@ private enum ChainLocalAdmission {
             return await prepareValidatedTier(
                 resolvedHeader: resolvedHeader,
                 block: block,
+                childCommitments: commitments,
                 blockHash: blockHash,
                 fetcher: fetcher,
                 contribution: contribution,
@@ -816,7 +858,8 @@ private enum ChainLocalAdmission {
                 verifiedCarrierLink: carrier.issuableLink,
                 sameChainPredecessor: carrier.sameChainPredecessor,
                 kind: .evidence,
-                defersHierarchyIssuance: !executed
+                defersHierarchyIssuance: !executed,
+                childCommitments: commitments
             ))
         }
 
@@ -865,7 +908,8 @@ private enum ChainLocalAdmission {
                 sameChainPredecessor: carrier.sameChainPredecessor,
                 kind: .block(StateDiff.empty, nil, validated: false),
                 defersHierarchyIssuance: true,
-                defersBodyStore: true
+                defersBodyStore: true,
+                childCommitments: commitments
             ))
         }
 
@@ -922,7 +966,8 @@ private enum ChainLocalAdmission {
                 carrierLink: carrierLink,
                 verifiedCarrierLink: carrier.issuableLink,
                 sameChainPredecessor: carrier.sameChainPredecessor,
-                kind: .block(stateDiff, state, validated: true)
+                kind: .block(stateDiff, state, validated: true),
+                childCommitments: commitments
             ))
         }
     }
@@ -934,6 +979,7 @@ private enum ChainLocalAdmission {
     private static func prepareValidatedTier(
         resolvedHeader: BlockHeader,
         block: Block,
+        childCommitments commitments: [String: String],
         blockHash: String,
         fetcher: any Fetcher,
         contribution: VerifiedWorkContribution,
@@ -975,7 +1021,8 @@ private enum ChainLocalAdmission {
                 carrierLink: carrierLink,
                 verifiedCarrierLink: carrier.issuableLink,
                 sameChainPredecessor: carrier.sameChainPredecessor,
-                kind: .exclusion
+                kind: .exclusion,
+                childCommitments: commitments
             ))
         }
         func rejected(_ failure: ChainAdmissionFailure) -> Preparation {
@@ -1033,7 +1080,8 @@ private enum ChainLocalAdmission {
                 carrierLink: carrierLink,
                 verifiedCarrierLink: carrier.issuableLink,
                 sameChainPredecessor: carrier.sameChainPredecessor,
-                kind: .block(stateDiff, state, validated: true)
+                kind: .block(stateDiff, state, validated: true),
+                childCommitments: commitments
             ))
         }
     }
@@ -1063,10 +1111,36 @@ private enum ChainLocalAdmission {
         }
     }
 
+    /// Every child commitment this block makes, `directory → child CID`, read
+    /// from its PoW-bound `children` trie (§9.10). The trie is part of the
+    /// block BOUNDARY every tier stores (`storeBlockBoundary` resolves it with
+    /// `.list`), so requiring it here adds no availability demand admission
+    /// did not already make — and it must be required: an unavailable trie
+    /// taken as "commits nothing" would silently route parent work to an
+    /// older committer, letting availability decide a consensus-visible
+    /// number. Nil means unavailable; the caller rejects retriably.
+    static func childCommitments(
+        of blockHeader: BlockHeader,
+        fetcher: any Fetcher
+    ) async -> [String: String]? {
+        guard let resolved = try? await blockHeader.resolve(
+                  paths: [[CHILDREN_PROPERTY, ""]: .list],
+                  fetcher: fetcher
+              ),
+              let children = resolved.node?.children.node,
+              let entries = try? children.allKeysAndValues() else {
+            return nil
+        }
+        return entries.mapValues(\.rawCID)
+    }
+
     static func resolveBlock(
         _ blockHeader: BlockHeader,
         fetcher: any Fetcher
-    ) async -> Result<(header: BlockHeader, block: Block), ChainAdmissionFailure> {
+    ) async -> Result<
+        (header: BlockHeader, block: Block, childCommitments: [String: String]),
+        ChainAdmissionFailure
+    > {
         do {
             let resolved = try await blockHeader.resolve(fetcher: fetcher)
             guard let block = resolved.node else {
@@ -1076,7 +1150,16 @@ private enum ChainLocalAdmission {
                   canonicalCID == resolved.rawCID else {
                 return .failure(.providerMalformedEvidence)
             }
-            return .success((resolved, block))
+            // §9.10: the block's child commitments ride on its durable fact so
+            // live admission and replay see the same runs. Required content,
+            // like the rest of the boundary — an unavailable trie must not
+            // degrade to "commits nothing".
+            guard let commitments = await childCommitments(
+                of: resolved, fetcher: fetcher
+            ) else {
+                return .failure(.unavailableEvidence)
+            }
+            return .success((resolved, block, commitments))
         } catch {
             return .failure(classifyResolutionFailure(error))
         }
@@ -1615,7 +1698,9 @@ public extension ChainLevel {
         let resolved: (header: BlockHeader, block: Block)
         switch await ChainLocalAdmission.resolveBlock(genesisHeader, fetcher: fetcher) {
         case .failure(let failure): throw failure
-        case .success(let value): resolved = value
+        // Genesis commits nothing via `children` by convention (§9.10); the
+        // enumerated commitments are not needed on this path.
+        case .success(let value): resolved = (value.header, value.block)
         }
         guard resolved.block.parent == nil, resolved.block.height == 0 else {
             throw ChainAdmissionFailure.protocolInvalid
@@ -1674,7 +1759,9 @@ public extension ChainLevel {
         let resolved: (header: BlockHeader, block: Block)
         switch await ChainLocalAdmission.resolveBlock(genesisHeader, fetcher: fetcher) {
         case .failure(let failure): throw failure
-        case .success(let value): resolved = value
+        // Genesis commits nothing via `children` by convention (§9.10); the
+        // enumerated commitments are not needed on this path.
+        case .success(let value): resolved = (value.header, value.block)
         }
         guard resolved.block.parent == nil, resolved.block.height == 0 else {
             throw ChainAdmissionFailure.protocolInvalid
