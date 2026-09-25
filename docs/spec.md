@@ -851,7 +851,7 @@ same party may have chosen:
    history", established inductively thereafter.
 2. State continuity is attested only across blocks on the parent's
    EXECUTED-FROM-GENESIS FRONTIER: executed, every ancestor executed, and not
-   under an excluded root (§9.9). Execution alone is not enough — a block
+   under an excluded block (§9.9). Execution alone is not enough — a block
    executed against a fetched parent state proves nothing about the parent
    having produced that state. The weighed tier records a declared `postState`
    as an unverified claim, so an unverified claim is never attestable.
@@ -1029,7 +1029,7 @@ authorization. A continuity fact is bound to the exact parent path and
 parent's connected accepted graph, not parent canonicity and not a work total.
 
 A parent MUST attest continuity only across blocks on its executed-from-genesis
-frontier — executed, every ancestor executed, none under an excluded root
+frontier — executed, every ancestor executed, none under an excluded block
 (§9.9). Attestation asserts that a state was produced by the parent chain,
 which is exactly what an unbroken run of execution from the genesis establishes
 and what the weighed tier defers:
@@ -1047,8 +1047,8 @@ withdraws nothing: execution is a fact about immutable bytes, ancestry does
 not change, and losing a fork-choice contest is not a proof of invalidity, so
 a child anchored at a state that later falls off the canonical chain keeps
 its anchor. Nor does a parent owe execution to a block merely because a child
-anchors there: a parent executes the history it adopts, and attests what it
-executed. A child anchoring elsewhere is anchoring at something this parent
+anchors there: a parent executes the history it adopts, and attests what lies
+on its executed-from-genesis frontier. A child anchoring elsewhere is anchoring at something this parent
 has not checked, and the correct answer is the retriable "not proven here",
 not a verdict and not an obligation to go and run it.
 
@@ -1140,7 +1140,8 @@ recovery reconstructs the excluded set and selects identically, independent of
 arrival order. Validity is consulted lazily — only where the descent would
 step into an unexecuted block — and never retracted. A genesis root may be
 excluded only while the chain has ANOTHER executed root to stand on; otherwise
-the verdict is not recorded at all — the validated tier stops there, visibly —
+the verdict is not recorded at all and the validated tier stops there — a
+stall the node must surface, since a parked verdict is not itself a fact —
 because a chain whose every root is invalid has no selectable history, and a
 recorded fact recovery could not replay would make restart order-dependent.
 

@@ -152,8 +152,9 @@ establish that the state is real. A carrier need not be admitted, connected,
 valid or canonical, so both sides of it may be chosen by the same party. What
 makes `parentState` trustworthy is admission: every block proves its
 `parentState` by continuity at every height including block 1, rooted in the
-genesis's `emptyHeader`, and a parent attests continuity only across blocks
-whose transition it executed. See spec §5.3 step 6, §8.3 and §9.5.
+genesis's `emptyHeader`, and a parent attests continuity only across blocks on
+its executed-from-genesis frontier — executed, every ancestor executed, none
+under an excluded block. See spec §5.3 step 6, §8.3 and §9.5.
 
 ## Variable-Rate Transfers
 

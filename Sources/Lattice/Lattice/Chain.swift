@@ -842,9 +842,11 @@ public actor ChainState {
         case (nil, _?):
             return false
         case (nil, nil):
-            let l = exclusionTarget(of: left.batch).map { ("e", $0) }
+            // Validations before exclusions: a root exclusion waits on the other
+            // root's validation, so this order settles it in the same round.
+            let l = exclusionTarget(of: left.batch).map { ("x", $0) }
                 ?? validationTarget(of: left.batch).map { ("v", $0) } ?? ("z", "")
-            let r = exclusionTarget(of: right.batch).map { ("e", $0) }
+            let r = exclusionTarget(of: right.batch).map { ("x", $0) }
                 ?? validationTarget(of: right.batch).map { ("v", $0) } ?? ("z", "")
             return l.0 != r.0 ? l.0 < r.0 : l.1 < r.1
         }

@@ -1469,6 +1469,19 @@ public extension ChainLevel {
                 sameChainPredecessor: prepared.sameChainPredecessor
             )
         }
+        // A root exclusion may stand only on another EXECUTED root (§9.9).
+        // Preflight checked this outside the lease; the other root could have
+        // been excluded since. Re-check here, under the lease and BEFORE the
+        // durable write, so a fact the reducer would refuse is never written.
+        if case .exclusion = prepared.kind, prepared.block.parent == nil,
+           await !chain.hasExecutedRoot(besides: prepared.resolvedHeader.rawCID) {
+            await chain.releaseAdmissionRevision()
+            return .rejected(
+                .notYetAdmissible,
+                parentCarrierLink: prepared.carrierLink,
+                sameChainPredecessor: prepared.sameChainPredecessor
+            )
+        }
         let stagingContext: ChainAdmissionStagingContext
         if preflight.stagingContext.issuedCarrierLink != nil {
             stagingContext = preflight.stagingContext
