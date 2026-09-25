@@ -97,6 +97,43 @@ public struct ChainValidationFact: Codable, Sendable, Equatable {
 public struct ChainWorkFact: Codable, Sendable, Equatable {
     public let blockHash: String
     public let contribution: VerifiedWorkContribution
+    /// Set when the contribution is a parent's attributed run (§9.10), whose
+    /// `contributionID` is then `contribution.id`; absent — the shape every
+    /// fact before this field carried — for a grind. Replay reads it so a
+    /// restored parent serves the same `ownWork` the live one did: a run
+    /// attributed AT a committer is no grind of it and stays in the run it
+    /// serves.
+    public let attributedRun: AttributedRunIdentity?
+
+    public init(
+        blockHash: String,
+        contribution: VerifiedWorkContribution,
+        attributedRun: AttributedRunIdentity? = nil
+    ) {
+        self.blockHash = blockHash
+        self.contribution = contribution
+        self.attributedRun = attributedRun
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case blockHash
+        case contribution
+        case attributedRun
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        blockHash = try container.decode(String.self, forKey: .blockHash)
+        contribution = try container.decode(VerifiedWorkContribution.self, forKey: .contribution)
+        attributedRun = try container.decodeIfPresent(AttributedRunIdentity.self, forKey: .attributedRun)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(blockHash, forKey: .blockHash)
+        try container.encode(contribution, forKey: .contribution)
+        try container.encodeIfPresent(attributedRun, forKey: .attributedRun)
+    }
 }
 
 /// A deterministic, replayable judgment that a possessed block is invalid — its

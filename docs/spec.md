@@ -1182,7 +1182,14 @@ replay see the same commitments. A fact written before this field existed
 records NO commitments, which is not "commits nothing": replay tolerates it,
 and a later fact for the same block supplies them. The parent serves the run
 report `(P, d, childBlock, grinds(P), runWork(P, d), ownWork(P), revision)` in
-O(1) plus `P`'s grind set.
+O(1) plus `P`'s grind set. `grinds(P)` is `P`'s proofs of work — never an
+attributed run — and `ownWork(P)` is their credited work. A run `P`'s OWN
+parent attributed at `P` is part of `runWork(P, d)` and no part of
+`ownWork(P)`: it is work the child does not hold, so it reaches the child
+through `P` exactly as the run's other blocks do, and the recursion
+Nexus → A → B holds at the committer itself, not only at the blocks above it.
+A work fact records whether its contribution is an attributed run, so a
+restored parent serves the same `ownWork` the live one did.
 
 The child first binds the report: it must be for the child's own directory,
 must name `C` as the block it claims `P` commits, and one of `P`'s grinds must already be
