@@ -236,6 +236,27 @@ public struct ParentRunReport: Sendable, Equatable {
     public let runWork: WorkSum
     public let ownWork: WorkSum
     public let revision: UInt64
+
+    /// Public so a node can rebuild the report it received on the wire; the
+    /// binding and the quantity are checked by `strengthenFromParentReport`,
+    /// never by construction.
+    public init(
+        blockHash: String,
+        directory: String,
+        childBlock: String,
+        grinds: Set<String>,
+        runWork: WorkSum,
+        ownWork: WorkSum,
+        revision: UInt64
+    ) {
+        self.blockHash = blockHash
+        self.directory = directory
+        self.childBlock = childBlock
+        self.grinds = grinds
+        self.runWork = runWork
+        self.ownWork = ownWork
+        self.revision = revision
+    }
 }
 
 /// The identity under which a parent's attributed run work is credited at a
@@ -1148,7 +1169,7 @@ public actor ChainState {
     /// bind to. A weighed block is connected from its header alone; issuing a
     /// cross-chain fact for one hands a child a commitment this chain has not
     /// verified and may yet prove invalid.
-    func hasExecutedAncestry(blockHash: String) -> Bool {
+    public func hasExecutedAncestry(blockHash: String) -> Bool {
         anchoredBlocks.contains(blockHash)
     }
 
