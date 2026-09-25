@@ -29,8 +29,9 @@ absolute chain path, such as `Nexus/Payments`. Node software runs additional
 processes and moves authenticated evidence between them.
 
 A physical grind is identified by its root CID. It may prove coverage for any
-number of blocks or chain levels, but its strongest verified quantity is counted
-once. Distinct grind identities sum.
+number of blocks or chain levels; its quantity is fixed by the root-most level
+whose target it beat (raised by the terminal's own target), and is counted once.
+Distinct grind identities sum.
 
 Lattice also defines a parent-child transfer protocol: a demander authorizes a
 child transaction that locks value, a withdrawer pays the demander on the

@@ -9,7 +9,7 @@ order, start with the [documentation index](index.md),
 
 ## 1. Overview
 
-Lattice is a hierarchical proof-of-work protocol, not a single blockchain. Every chain may commit child blocks, and each child may do the same. One mined root therefore commits a nested block tree. **Nexus** is the single outermost chain and the entry point from outside the hierarchy; every absolute chain path begins with `Nexus`. Descendants inherit identity-bearing work from accepted ancestor graphs: the root CID identifies one grind, its strongest verified accepted-target bound fixes its quantity, and its sparse proof terminates at exactly one block per chain. Value moves across chains through a three-phase **deposit/receipt/withdrawal** protocol.
+Lattice is a hierarchical proof-of-work protocol, not a single blockchain. Every chain may commit child blocks, and each child may do the same. One mined root therefore commits a nested block tree. **Nexus** is the single outermost chain and the entry point from outside the hierarchy; every absolute chain path begins with `Nexus`. Descendants inherit identity-bearing work from accepted ancestor graphs: the root CID identifies one grind, the root-most verified accepted-target bound along its proof fixes its quantity, and its sparse proof terminates at exactly one block per chain. Value moves across chains through a three-phase **deposit/receipt/withdrawal** protocol.
 
 Each chain defines its own operations, `ChainSpec`, and chain policies, so chains are heterogeneous; only the organizing protocol -- block structure, proof-of-work, fork choice, and the cross-chain transfer rules -- is shared across the hierarchy.
 
@@ -378,8 +378,10 @@ this order:
    every supplied proof entry, and require its terminal CID to equal `CID(B)`.
 3. At every vertical edge, require the nested child's `parentState` to equal the
    carrier's committed `prevState`.
-4. Require `h <= B.target`. Among every content-bound block on the path whose
-   target is beaten by `h`, credit the strongest target-derived quantity.
+4. Require `h <= B.target`. Credit the target-derived quantity of the
+   ROOT-MOST content-bound block on the path whose target is beaten by `h`,
+   raised if greater by `B`'s own target (§9.5). Not the strongest such
+   quantity: a deeper chain must not price a grind.
 5. For genesis, require the exact parent genesis link and the complete genesis
    shape, including `nextTarget == target`.
 6. For non-genesis, compare the predecessor's `parentState` with `B.parentState`.
@@ -455,7 +457,8 @@ Bitcoin's chainwork `(~target / (target + 1)) + 1` in 256-bit arithmetic (edge
 cases: `target 0 -> 0`, `target max -> 1`). The exclusive `U256_MAX / target` form
 over-credits by up to ~2x at tiny targets — exploitable now that a miner may
 select any `target <= parent.nextTarget` — so it is not used. For one root CID the
-strongest verified bound is credited; a larger target is easier and is less work.
+root-most verified bound along its proof is credited (§9.5); a larger target is
+easier and is less work.
 
 ### 5.5 Target Adjustment (Retargeting)
 
@@ -860,17 +863,23 @@ Receipt admission itself does not assert that a child deposit exists.
 
 ### 9.1 Verified Work Contributions
 
-The root CID identifies one physical grind. Every level `B_i` that accepts its
-root hash proves a conservative lower bound for that same identity:
+The root CID identifies one physical grind. Along one proof its quantity is
+fixed by the ROOT-MOST carrier whose target that root hash beat, raised if
+greater by the terminal child's own target (§9.5):
 
 ```text
 contribution.id   = rootCID
-contribution.work = workForTarget(target(B_i))   // floor(2^256 / (target + 1))
+contribution.work = max(workForTarget(T_rootmost_beaten),
+                        workForTarget(target(B_terminal)))
 ```
 
-Grind identity is immutable. Its credited quantity is the maximum of all verified
-accepted-target bounds observed for that identity, so it can strengthen but never
-decrease. Its sparse proof has exactly one terminal block in each chain it
+This is NOT a maximum over the beaten targets of every level `B_i`; see §9.5.
+
+Grind identity is immutable. Across REPEATED OBSERVATIONS of that identity at
+one location, the credited quantity is the strongest verified bound seen, so it
+can strengthen but never decrease. That per-location ratchet and the
+along-the-proof selection above are different rules: the first chooses among
+observations, the second among carriers. Its sparse proof has exactly one terminal block in each chain it
 reaches. One block may be secured by many distinct grinds, but one grind MUST NOT
 be placed at multiple blocks in the same chain. Same-chain ancestry makes a
 descendant's work support its ancestors without creating more locations. The
@@ -995,8 +1004,22 @@ A `ChildBlockProof` proves work directly from content-addressed bytes. The root
 grind must beat the terminal child's target and resolve uniquely to that child
 through the sparse directory path. Intermediate carriers need not be admitted,
 connected, valid, or canonical on their own chains. Along one proof, the
-contribution is the maximum target-derived quantity beaten by that root hash;
-the terminal target must be beaten. The terminal child receives that ordinary
+contribution is the target-derived quantity of the ROOT-MOST carrier whose
+target that root hash beat — the highest chain the grind legitimately
+participated in — raised, if greater, by the terminal child's own target. It is
+NOT a maximum over every beaten target. The two differ only where the old rule
+credited MORE, so this is the conservative variant: it removes an over-credit
+the maximum allowed on an inverted hierarchy. It is not an anti-fabrication
+measure — a carrier need not be valid, so a prover who fabricates a ladder
+chooses the pricing target as freely under either rule. The two definitions coincide unless some carrier's target is
+harder than both the ROOT-MOST beaten target and the terminal's own target.
+(Stated against the root-most BEATEN carrier, not the root: when the root's own
+target is unmet the selection falls through to the first carrier that was met.) That is NOT an exotic shape: `ChainSpec.targetBlockTime` is a free
+per-chain field and retarget drives each chain toward its own block time, so a
+chain with far less hashrate than its parent but a much longer block time can
+sit at a harder target. An inverted hierarchy is therefore a configuration
+choice a chain operator may make without intending it. The terminal
+target must be beaten. The terminal child receives that ordinary
 work fact only after it is accepted and connected.
 
 The immediate parent authenticates only state continuity and child-genesis
@@ -1224,7 +1247,8 @@ state); withdrawals return it to the block-wide credit budget.
    admission, connectivity, and canonicity
 3. A grind has exactly one terminal location per chain and is deduplicated by
    root CID across observations at that location;
-   its credited quantity is the strongest verified accepted-target bound
+   its credited quantity is the root-most verified accepted-target bound
+   along its proof (§9.5), raised by the terminal child's own target
 4. Work measures union by grind ID before totaling, so shared work is counted once
    while distinct grinds sum
 5. Effective `trueCumWork` contains only connected, accepted same-chain

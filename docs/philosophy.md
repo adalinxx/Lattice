@@ -39,8 +39,10 @@ child valid or choose its preferred branch.
 
 The root CID identifies one physical grind. At each chain level that grind has
 one terminal block location; an exact parent-child commitment may project the
-same identity to the next level. Lattice keeps the strongest verified quantity
-for that identity and sums only distinct identities.
+same identity to the next level. Its quantity is fixed by the root-most level
+whose target it beat, raised by the terminal's own target; across repeated
+observations at one location Lattice keeps the strongest verified value. It
+sums only distinct identities.
 
 This is the central economic abstraction: miners may reuse one nonce search
 across subscribed chains, while consensus never treats repeated evidence as

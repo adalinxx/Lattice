@@ -189,7 +189,10 @@ public enum ChildProofVerificationFailure: Error, Sendable, Equatable {
 public struct VerifiedChildEvidence: Sendable {
     public let grindID: String
     public let rootHash: UInt256
-    public let strongestAncestorWork: UInt256
+    /// Work of the root-most carrier whose target this grind's hash beat —
+    /// the highest chain the grind legitimately participated in. Not a max
+    /// over every met target: see `verifySecuringWork`.
+    public let creditedAncestorWork: UInt256
     public let childCID: String
     public let terminalCarrierCID: String
     public let contribution: VerifiedWorkContribution?
@@ -197,14 +200,14 @@ public struct VerifiedChildEvidence: Sendable {
     init(
         grindID: String,
         rootHash: UInt256,
-        strongestAncestorWork: UInt256,
+        creditedAncestorWork: UInt256,
         childCID: String,
         terminalCarrierCID: String,
         contribution: VerifiedWorkContribution?
     ) {
         self.grindID = grindID
         self.rootHash = rootHash
-        self.strongestAncestorWork = strongestAncestorWork
+        self.creditedAncestorWork = creditedAncestorWork
         self.childCID = childCID
         self.terminalCarrierCID = terminalCarrierCID
         self.contribution = contribution

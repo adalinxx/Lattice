@@ -413,17 +413,47 @@ public struct ChildBlockProof: Sendable {
                     return .failure(.malformedEvidence)
                 }
 
-                let strongestAncestorWork = carriers.reduce(UInt256.zero) {
-                    guard $1.block.validateProofOfWork(nexusHash: rootHash) else {
-                        return $0
-                    }
-                    return max($0, workForTarget($1.block.target))
-                }
+                // A grind is priced by the HIGHEST chain it legitimately
+                // participated in: walk the carriers root-ward (index 0 is the
+                // mined root) and take the first whose target this hash
+                // actually beat.
+                //
+                // Previously this was a `max` over every met target. The two
+                // agree unless some carrier's target is harder than both the
+                // ROOT-MOST met target and the terminal's own — and that
+                // is NOT an exotic shape. `ChainSpec.targetBlockTime` is a free
+                // per-chain field and retarget drives each chain toward its own
+                // block time, so a chain with far less hashrate than its parent
+                // but a much longer block time sits at a HARDER target. An
+                // inverted hierarchy is a configuration choice an operator may
+                // make without intending it.
+                //
+                // Where they differ, the old max credited MORE. This is the
+                // conservative variant: it removes an over-credit the maximum
+                // allowed on an inverted hierarchy.
+                //
+                // It is NOT an anti-fabrication measure, and must not be
+                // described as one. A carrier need not be valid
+                // (`verifiedRoot()` only content-binds and re-hashes), so a
+                // prover fabricating a ladder picks the pricing target just as
+                // freely here as under the max — they simply build it
+                // root-hardest instead of leaf-hardest. The adversarial
+                // maximum is unchanged; only non-optimal, i.e. honest, ladder
+                // shapes are repriced.
+                //
+                // This does not weaken the fabrication bound. A prover who
+                // fabricates carriers would set the ROOT-most target hard too,
+                // and `validateProofOfWork(nexusHash:)` still requires the hash
+                // to beat whatever target is claimed, so no credit is created
+                // that the hash did not earn.
+                let creditedAncestorWork = carriers.first {
+                    $0.block.validateProofOfWork(nexusHash: rootHash)
+                }.map { workForTarget($0.block.target) } ?? UInt256.zero
                 let contribution = child.validateProofOfWork(nexusHash: rootHash)
                     ? VerifiedWorkContribution(
                         id: rootCID,
                         work: max(
-                            strongestAncestorWork,
+                            creditedAncestorWork,
                             workForTarget(child.target)
                         )
                     )
@@ -431,7 +461,7 @@ public struct ChildBlockProof: Sendable {
                 return .success(VerifiedChildEvidence(
                     grindID: rootCID,
                     rootHash: rootHash,
-                    strongestAncestorWork: strongestAncestorWork,
+                    creditedAncestorWork: creditedAncestorWork,
                     childCID: childCID,
                     terminalCarrierCID: deepestCarrier.cid,
                     contribution: contribution
