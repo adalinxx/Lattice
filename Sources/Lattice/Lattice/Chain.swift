@@ -104,6 +104,11 @@ public struct BlockMeta: Sendable {
     public private(set) var work: WorkSum
     public var childHashes: [String]
     public private(set) var workContributions: [String: VerifiedWorkContribution]
+    /// The contribution IDs here that are a parent's attributed runs (§9.10),
+    /// not grinds. A run report subtracts the committer's GRINDS — what the
+    /// child already holds — so a run attributed AT the committer stays in the
+    /// run it serves and reaches the next level down.
+    public private(set) var attributedRuns: Set<String>
     /// Directory → child block CID this block commits, read from its PoW-bound
     /// `children` trie at admission and carried on the durable block fact, so
     /// live admission and replay see the same commitments (§9.10).
@@ -161,6 +166,9 @@ public struct BlockMeta: Sendable {
         self.difficultyAnchor = difficultyAnchor
         self.childCommitments = childCommitments
         self.nearestCommitter = nearestCommitter
+        // Attributed runs arrive as work-only facts after the block; a block is
+        // built with its grinds alone.
+        self.attributedRuns = []
     }
 
     /// Settle the nearest committers once the block is connected.
@@ -198,7 +206,10 @@ public struct BlockMeta: Sendable {
         subtreeWeight = value
     }
 
-    mutating func setWorkContribution(_ contribution: VerifiedWorkContribution) -> Bool {
+    mutating func setWorkContribution(
+        _ contribution: VerifiedWorkContribution,
+        attributed: Bool = false
+    ) -> Bool {
         if let existing = workContributions[contribution.id],
            existing.work >= contribution.work {
             return false
@@ -208,16 +219,37 @@ public struct BlockMeta: Sendable {
         }
         workContributions[contribution.id] = contribution
         work = work + contribution.work
+        // Once attributed, always attributed: the marker is a function of the
+        // id. A fact for this id that arrived without the marker (the shape
+        // written before the field existed) counts as a grind until a marked,
+        // STRONGER one reclassifies it — the strict-increase gate above admits
+        // nothing weaker or equal, marked or not.
+        if attributed {
+            attributedRuns.insert(contribution.id)
+        }
         return true
+    }
+
+    /// This block's grinds: every contribution that is not an attributed run.
+    var grinds: Set<String> {
+        Set(workContributions.keys.filter { !attributedRuns.contains($0) })
+    }
+
+    /// The credited work of this block's grinds alone. Derived from the
+    /// contributions, never cached beside `work`, so it cannot drift from it.
+    var grindWork: WorkSum {
+        WorkMeasure(workContributions.values.filter { !attributedRuns.contains($0.id) }).total
     }
 
 }
 
 /// What a parent serves a child about one of its blocks that commits into a
-/// child directory (§9.10): the RUN work at that block, the block's own
-/// credited work, and the revision the pair was read at, for provenance.
+/// child directory (§9.10): the RUN work at that block, the credited work of
+/// the block's own grinds, and the revision the pair was read at, for
+/// provenance.
 ///
-/// The run is the sum of own credited work over every connected parent block
+/// The run is the sum of credited work — grinds and attributed runs alike —
+/// over every connected parent block
 /// whose nearest committer into `directory` — by parent pointer, never by
 /// canonical chain — is `blockHash`. Runs partition the graph, so each parent
 /// grind is in exactly one run and a fork below the committer puts each branch
@@ -230,10 +262,14 @@ public struct ParentRunReport: Sendable, Equatable {
     /// The child block `blockHash` commits into `directory` — what the child
     /// binds the report to before reading any number.
     public let childBlock: String
-    /// Every grind credited at the committer; the child requires one of them
-    /// at `childBlock`, which is what makes the committer a committer of it.
+    /// Every grind — never an attributed run — credited at the committer; the
+    /// child requires one of them at `childBlock`, which is what makes the
+    /// committer a committer of it.
     public let grinds: Set<String>
     public let runWork: WorkSum
+    /// The credited work of the committer's own grinds: what the child already
+    /// holds, at its own price. A run the committer's OWN parent attributed at
+    /// it is in `runWork` and not here, so it flows down another level.
     public let ownWork: WorkSum
     public let revision: UInt64
 
@@ -487,6 +523,8 @@ private struct TrustedAdmissionBatch {
     let block: ConsensusBlockInput?
     let workBlockHash: String
     let contribution: VerifiedWorkContribution
+    /// Set when the work fact is a parent's attributed run, not a grind.
+    let attributedRun: AttributedRunIdentity?
 
     init?(_ batch: ChainAdmissionBatch) {
         guard !batch.facts.isEmpty,
@@ -516,6 +554,17 @@ private struct TrustedAdmissionBatch {
             id: contributionID,
             work: work.contribution.work
         )
+        // An attributed run's marker names the identity its contribution ID is
+        // the CID of, and only a work-only batch carries one: a block's own
+        // work fact is its grind.
+        if let attributedRun = work.attributedRun {
+            guard blockFacts.isEmpty,
+                  attributedRun.contributionID.flatMap(CIDIdentity.canonicalString)
+                      == contributionID else {
+                return nil
+            }
+        }
+        self.attributedRun = work.attributedRun
         // The eager tier weighs and validates in one gate, so its batch may
         // carry one validation fact alongside the block and work. It must name
         // the batch's own block: a batch is one block's durability unit, and
@@ -580,9 +629,10 @@ public actor ChainState {
     /// preserve grind identity.
     private var subtreeWorkIndex: EulerWorkIndex
     /// Run work per child directory per committing block (§9.10): the sum of
-    /// own credited work over CONNECTED blocks whose nearest committer into
-    /// that directory is the key. Insert-only, independent of exclusion, and
-    /// maintained by the one reducer live admission and replay both use.
+    /// credited work — grinds and attributed runs alike — over CONNECTED
+    /// blocks whose nearest committer into that directory is the key.
+    /// Insert-only, independent of exclusion, and maintained by the one
+    /// reducer live admission and replay both use.
     /// Served to children; never a fork-choice input on THIS chain.
     private var runWork: [String: [String: WorkSum]]
     /// The child directories this node serves run reports for — the child
@@ -1582,7 +1632,9 @@ public actor ChainState {
             hashToBlock[prevHash]?.childHashes.append(blockHash)
         }
         for contribution in contributions {
-            applyLocalContribution(contribution, to: blockHash)
+            // A block arrives with its grinds; attributed runs come later, as
+            // work-only facts.
+            applyLocalContribution(contribution, to: blockHash, attributed: false)
         }
         // Every connected block routes, a descendant of an excluded root
         // included: work weighs unconditionally, and validity is applied by the
@@ -1933,9 +1985,12 @@ public actor ChainState {
 
     private func applyLocalContribution(
         _ contribution: VerifiedWorkContribution,
-        to blockHash: String
+        to blockHash: String,
+        attributed: Bool
     ) {
-        guard hashToBlock[blockHash]?.setWorkContribution(contribution) == true else {
+        guard hashToBlock[blockHash]?.setWorkContribution(
+            contribution, attributed: attributed
+        ) == true else {
             return
         }
         localWorkCachesDirty = true
@@ -2001,7 +2056,8 @@ public actor ChainState {
 
     func addWorkContribution(
         _ contribution: VerifiedWorkContribution,
-        to blockHash: String
+        to blockHash: String,
+        attributedRun: AttributedRunIdentity? = nil
     ) -> SubmissionResult {
         guard hashToBlock[blockHash] != nil,
               acceptsLocation(of: contribution.id, at: blockHash) else {
@@ -2013,7 +2069,7 @@ public actor ChainState {
         }
         guard hasUnreservedMutationCapacity else { return .discarded() }
         let workBefore = hashToBlock[blockHash]?.work ?? .zero
-        applyLocalContribution(contribution, to: blockHash)
+        applyLocalContribution(contribution, to: blockHash, attributed: attributedRun != nil)
         // A strengthening raises this block's own work, so its run (§9.10)
         // rises by exactly that delta — once the block is connected. An
         // orphan's work is credited in full at the moment it connects.
@@ -2100,10 +2156,11 @@ public actor ChainState {
 
     /// The one per-block step of run attribution, for a connected block whose
     /// parent is already settled: for each directory, the nearest committer is
-    /// this block if it commits there, else the parent's; the block's own work
-    /// is credited to that run. Used both by live connection (every served
-    /// directory) and by `serveRuns(for:)` (one directory over the whole
-    /// graph), so a run has exactly one definition.
+    /// this block if it commits there, else the parent's; the block's credited
+    /// work — grinds and attributed runs alike — is credited to that run.
+    /// Used both by live connection (every served directory) and by
+    /// `serveRuns(for:)` (one directory over the whole graph), so a run has
+    /// exactly one definition.
     private func settleRuns(of hash: String, directories: Set<String>) {
         guard let meta = hashToBlock[hash] else { return }
         let inherited = meta.parentBlockHash
@@ -2153,9 +2210,9 @@ public actor ChainState {
             blockHash: hash,
             directory: directory,
             childBlock: childBlock,
-            grinds: Set(meta.workContributions.keys),
+            grinds: meta.grinds,
             runWork: run,
-            ownWork: meta.work,
+            ownWork: meta.grindWork,
             revision: mutationGeneration
         )
     }
@@ -2176,7 +2233,9 @@ public actor ChainState {
     /// exactly once, at the child's own price; the run's other blocks are
     /// credited under `AttributedRunIdentity(committer, directory)`, which
     /// ratchets on its own value, so a repeated report is a refusal, not a
-    /// second addition.
+    /// second addition. A run the committer was itself attributed by ITS
+    /// parent is in the run and none of its grinds, so it is credited here
+    /// too: the recursion holds at the committer, not only above it.
     ///
     /// The QUANTITY is the parent's word. The child already trusts its
     /// configured parent process for state continuity (§5.3), which gates
@@ -2224,7 +2283,10 @@ public actor ChainState {
         return .strengthened(ChainAdmissionBatch(facts: [
             .work(ChainWorkFact(
                 blockHash: hash,
-                contribution: VerifiedWorkContribution(id: attributedID, work: derivedWork)
+                contribution: VerifiedWorkContribution(id: attributedID, work: derivedWork),
+                attributedRun: AttributedRunIdentity(
+                    committerBlockHash: committer, directory: directory
+                )
             )),
         ]))
     }
@@ -2285,7 +2347,8 @@ public actor ChainState {
                 hydrateMetadata(from: input)
                 let submission = addWorkContribution(
                     trusted.contribution,
-                    to: input.blockHash
+                    to: input.blockHash,
+                    attributedRun: trusted.attributedRun
                 )
                 guard submission.addedContribution else {
                     throw ChainStateRestoreError.corruptConsensusGraph
@@ -2311,7 +2374,9 @@ public actor ChainState {
         ), existing.work >= trusted.contribution.work {
             return nil
         }
-        let submission = addWorkContribution(trusted.contribution, to: blockHash)
+        let submission = addWorkContribution(
+            trusted.contribution, to: blockHash, attributedRun: trusted.attributedRun
+        )
         guard submission.addedContribution else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }

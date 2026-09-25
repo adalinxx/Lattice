@@ -673,6 +673,140 @@ final class ParentRunAttributionTests: XCTestCase {
         XCTAssertEqual(served?.runWork, sum(5, 3, 107), "B sees, through A, the work Nexus attributed to A")
     }
 
+    /// The recursion at the COMMITTER itself (Nexus → A → B): the run Nexus
+    /// attributes to A's committing block is work B does not hold, so it is
+    /// in the run A serves and NOT in the `ownWork` B subtracts. Pinned end
+    /// to end, and restart-invariant.
+    func testRunAttributedToTheCommitterItselfFlowsToTheChildItCommits() async throws {
+        let facts = [
+            batch("g", parent: nil, height: 0, work: 1),
+            batch("p1", parent: "g", height: 1, work: 5, commits: [d: h("c")]),
+            batch("p2", parent: "p1", height: 2, work: 3),
+            batch("p3", parent: "p2", height: 3, work: 7),
+        ]
+        let a = try await ChainState.restore(replaying: [facts[0]])
+        await a.serveRuns(for: d)
+        for fact in facts.dropFirst() { _ = try await a.replay(fact) }
+        // A's parent serves p1's run there: p1 is that chain's child block,
+        // held under grind("p1"); 100 lies beyond p1's own grind.
+        let fromAbove = ParentRunReport(
+            blockHash: h("n"), directory: "A", childBlock: h("p1"), grinds: [grind("p1")],
+            runWork: sum(5, 100), ownWork: sum(5), revision: 1
+        )
+        let above = await a.strengthenFromParentReport(child: h("p1"), directory: "A", report: fromAbove)
+        guard case .strengthened(let credit) = above else { return XCTFail("A must credit: \(above)") }
+        let applied = try await a.replay(credit)
+        XCTAssertNotNil(applied)
+        let servedValue = await a.parentRunReport(at: h("p1"), directory: d)
+        let served = try XCTUnwrap(servedValue)
+        XCTAssertEqual(served.runWork, sum(5, 100, 3, 7), "the run holds what was attributed to p1")
+        XCTAssertEqual(served.ownWork, sum(5), "own is p1's GRIND, not what A's parent attributed")
+        XCTAssertEqual(served.grinds, [grind("p1")], "an attributed run is not a grind")
+
+        // B holds c under grind("p1") at its own price and credits the rest.
+        let b = childChain(existing: UInt256(5))
+        let below = await strengthen(b, served)
+        guard case .strengthened(let batch) = below else { return XCTFail("B must credit: \(below)") }
+        _ = try await b.replay(batch)
+        let extra = await attributed(b)
+        XCTAssertEqual(extra, UInt256(110), "3 + 7 + 100: two levels down, once")
+
+        // The credit landing before p1's block fact is deferred, not lost —
+        // then applied — and a cold restore serves the same report.
+        let late = try await ChainState.restore(replaying: [facts[0]])
+        await late.serveRuns(for: d)
+        do {
+            _ = try await late.replay(credit)
+            XCTFail("a credit for a block not yet held is deferred")
+        } catch ChainStateRestoreError.missingBlockFact {}
+        for fact in facts.dropFirst() { _ = try await late.replay(fact) }
+        _ = try await late.replay(credit)
+        let cold = try await ChainState.restore(replaying: facts + [credit])
+        await cold.serveRuns(for: d)
+        for chain in [late, cold] {
+            let againValue = await chain.parentRunReport(at: h("p1"), directory: d)
+            let again = try XCTUnwrap(againValue)
+            XCTAssertEqual(again.runWork, served.runWork)
+            XCTAssertEqual(again.ownWork, served.ownWork)
+            XCTAssertEqual(again.grinds, served.grinds)
+        }
+    }
+
+    /// A fact for an attributed-run id that arrived WITHOUT the marker (the
+    /// shape written before the field existed) counts as a grind until a
+    /// marked, stronger one reclassifies it — in full, and without a halt.
+    func testUnmarkedAttributedFactIsReclassifiedByAMarkedOne() async throws {
+        let a = try await linearByReplay()
+        let identity = AttributedRunIdentity(committerBlockHash: h("n"), directory: "A")
+        let id = identity.contributionID!
+        _ = try await a.replay(ChainAdmissionBatch(facts: [.work(ChainWorkFact(
+            blockHash: h("p1"), contribution: VerifiedWorkContribution(id: id, work: UInt256(100))
+        ))]))
+        let unmarked = await a.parentRunReport(at: h("p1"), directory: d)
+        XCTAssertEqual(unmarked?.ownWork, sum(5, 100), "unmarked: counted as a grind")
+        XCTAssertEqual(unmarked?.grinds, [grind("p1"), id])
+        _ = try await a.replay(ChainAdmissionBatch(facts: [.work(ChainWorkFact(
+            blockHash: h("p1"), contribution: VerifiedWorkContribution(id: id, work: UInt256(200)),
+            attributedRun: identity
+        ))]))
+        let marked = await a.parentRunReport(at: h("p1"), directory: d)
+        XCTAssertEqual(marked?.ownWork, sum(5), "marked: the whole contribution is the run's")
+        XCTAssertEqual(marked?.grinds, [grind("p1")])
+        XCTAssertEqual(marked?.runWork, sum(5, 200, 3, 7))
+    }
+
+    /// A grind's work fact encodes exactly as it did before the marker
+    /// existed; an attributed one round-trips; a marker that does not name
+    /// its own contribution, or rides a block's admission batch, is a corrupt
+    /// fact, refused on replay.
+    func testAttributedRunMarkerIsDurableAndAbsentFromGrindFacts() async throws {
+        let grindFact = ChainWorkFact(
+            blockHash: h("p1"), contribution: VerifiedWorkContribution(id: grind("p1"), work: UInt256(5))
+        )
+        let encoded = try JSONEncoder().encode(grindFact)
+        XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains("attributedRun"))
+        XCTAssertEqual(try JSONDecoder().decode(ChainWorkFact.self, from: encoded), grindFact)
+        let identity = AttributedRunIdentity(committerBlockHash: h("n"), directory: "A")
+        let attributedFact = ChainWorkFact(
+            blockHash: h("p1"),
+            contribution: VerifiedWorkContribution(id: identity.contributionID!, work: UInt256(100)),
+            attributedRun: identity
+        )
+        let roundTripped = try JSONDecoder().decode(
+            ChainWorkFact.self, from: try JSONEncoder().encode(attributedFact)
+        )
+        XCTAssertEqual(roundTripped, attributedFact)
+
+        let a = try await linearByReplay()
+        let mislabeled = ChainAdmissionBatch(facts: [.work(ChainWorkFact(
+            blockHash: h("p1"),
+            contribution: VerifiedWorkContribution(id: grind("p1"), work: UInt256(50)),
+            attributedRun: identity
+        ))])
+        do {
+            _ = try await a.replay(mislabeled)
+            XCTFail("a marker naming another contribution is corrupt")
+        } catch ChainStateRestoreError.corruptConsensusGraph {}
+        let p4 = batch("p4", parent: "p3", height: 4, work: 2)
+        let blockWithMarker = ChainAdmissionBatch(facts: p4.facts.map { fact in
+            guard case .work(let work) = fact else { return fact }
+            return .work(ChainWorkFact(
+                blockHash: work.blockHash,
+                contribution: VerifiedWorkContribution(
+                    id: identity.contributionID!, work: work.contribution.work
+                ),
+                attributedRun: identity
+            ))
+        })
+        do {
+            _ = try await a.replay(blockWithMarker)
+            XCTFail("a block's own work fact is its grind, never an attributed run")
+        } catch ChainStateRestoreError.corruptConsensusGraph {}
+        let report = await a.parentRunReport(at: h("p1"), directory: d)
+        XCTAssertEqual(report?.ownWork, sum(5), "refused facts changed nothing")
+        XCTAssertEqual(report?.runWork, sum(5, 3, 7))
+    }
+
     // MARK: - Cost, as counters
 
     /// Run bookkeeping is O(#directories with a nearest committer) per
