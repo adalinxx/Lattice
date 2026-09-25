@@ -1171,8 +1171,8 @@ count is bounded by the chain's committed size rule. The weighed tier cannot
 evaluate that rule — it has no body — so until the validate tier applies §3.5
 a not-yet-validated block's map is bounded only by what the boundary store
 will fetch, and it is retained through a later exclusion.)
-`runWork(P, d)` is the sum of own credited work over the connected blocks whose
-nearest committer into `d` is `P`. Runs partition the graph: each parent grind
+`runWork(P, d)` is the sum of credited work — grinds and attributed runs
+alike — over the connected blocks whose nearest committer into `d` is `P`. Runs partition the graph: each parent grind
 is in at most one run per directory — none where no ancestor commits into it —
 and a parent fork below `P` places each branch's blocks
 in the run of that branch's own nearest committer — no branch missed, none
@@ -1182,7 +1182,14 @@ replay see the same commitments. A fact written before this field existed
 records NO commitments, which is not "commits nothing": replay tolerates it,
 and a later fact for the same block supplies them. The parent serves the run
 report `(P, d, childBlock, grinds(P), runWork(P, d), ownWork(P), revision)` in
-O(1) plus `P`'s grind set.
+O(1) plus `P`'s grind set. `grinds(P)` is `P`'s proofs of work — never an
+attributed run — and `ownWork(P)` is their credited work. A run `P`'s OWN
+parent attributed at `P` is part of `runWork(P, d)` and no part of
+`ownWork(P)`: it is work the child does not hold, so it reaches the child
+through `P` exactly as the run's other blocks do, and the recursion
+Nexus → A → B holds at the committer itself, not only at the blocks above it.
+A work fact records whether its contribution is an attributed run, so a
+restored parent serves the same `ownWork` the live one did.
 
 The child first binds the report: it must be for the child's own directory,
 must name `C` as the block it claims `P` commits, and one of `P`'s grinds must already be
