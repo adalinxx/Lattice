@@ -71,8 +71,13 @@ struct EulerWorkIndex: Sendable {
         // close prefix always dominates the open prefix and this cannot fail.
         // The open element is added back because the difference of prefixes
         // excludes it and the subtree includes it.
-        guard let between = prefixThrough(close)
-            .subtracting(prefixThrough(open)) else { return nil }
+        var visits = 0
+        return subtreeWork(open: open, close: close, visits: &visits)
+    }
+
+    private func subtreeWork(open: Int, close: Int, visits: inout Int) -> WorkSum? {
+        guard let between = prefixThrough(close, visits: &visits)
+            .subtracting(prefixThrough(open, visits: &visits)) else { return nil }
         return between + nodes[open].value
     }
 
@@ -384,12 +389,20 @@ struct EulerWorkIndex: Sendable {
         refresh(pivot)
     }
 
-    /// Sum of every element at or before `node` in sequence order.
-    private func prefixThrough(_ node: Int) -> WorkSum {
+    /// Sum of every element at or before `node` in sequence order. `visits`
+    /// counts sequence-tree nodes touched — compiled out in release — so the
+    /// O(log n) claim is asserted as a counter on THIS walk, not on a copy.
+    private func prefixThrough(_ node: Int, visits: inout Int) -> WorkSum {
+#if DEBUG
+        visits += 1
+#endif
         var total = aggregate(nodes[node].left) + nodes[node].value
         var current = node
         var up = nodes[current].parent
         while up >= 0 {
+#if DEBUG
+            visits += 1
+#endif
             if nodes[up].right == current {
                 total = total + aggregate(nodes[up].left) + nodes[up].value
             }
@@ -400,6 +413,20 @@ struct EulerWorkIndex: Sendable {
     }
 
     // MARK: - Test seams
+
+#if DEBUG
+    /// The subtree total together with the sequence-tree nodes visited to
+    /// compute it, through the production walk itself, so the O(log n) claim
+    /// is asserted as a COUNTER (like `stateContinuityBlockVisitCount`), never
+    /// as a stopwatch. Two prefix walks, each bounded by AVL height.
+    func subtreeWorkVisiting(_ blockHash: String) -> (work: WorkSum, visits: Int)? {
+        guard let open = openNode[blockHash],
+              let close = closeNode[blockHash] else { return nil }
+        var visits = 0
+        guard let work = subtreeWork(open: open, close: close, visits: &visits) else { return nil }
+        return (work, visits)
+    }
+#endif
 
 #if DEBUG
     /// The sequence in order, as (blockHash, isOpen, value). Structural tests
