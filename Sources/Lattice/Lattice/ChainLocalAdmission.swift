@@ -166,6 +166,9 @@ public enum ChainAdmissionFact: Codable, Sendable, Equatable {
     public var id: ChainFactID {
         switch self {
         case .block(let fact): .block(fact.blockHash)
+        // The attributed-run marker is not part of the identity: it is a
+        // function of the contribution ID (the one identity that ID is the
+        // CID of), so two facts differing only in the marker are one fact.
         case .work(let fact): .work(
             blockHash: fact.blockHash,
             grindID: fact.contribution.id,

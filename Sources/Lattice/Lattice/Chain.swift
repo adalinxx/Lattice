@@ -219,10 +219,14 @@ public struct BlockMeta: Sendable {
            existing.work >= contribution.work {
             return false
         }
-        let attributed = attributed || attributedRuns.contains(contribution.id)
+        // Only what was added to `attributedWork` is subtracted from it: a
+        // fact for this id that arrived without the marker was counted as a
+        // grind, and a marked one now reclassifies it, in full.
+        let wasAttributed = attributedRuns.contains(contribution.id)
+        let attributed = attributed || wasAttributed
         if let existing = workContributions[contribution.id] {
             work = work.subtracting(WorkSum(existing.work))!
-            if attributed {
+            if wasAttributed {
                 attributedWork = attributedWork.subtracting(WorkSum(existing.work))!
             }
         }
@@ -242,7 +246,10 @@ public struct BlockMeta: Sendable {
 
     /// The credited work of this block's grinds alone.
     var grindWork: WorkSum {
-        work.subtracting(attributedWork)!
+        guard let grindWork = work.subtracting(attributedWork) else {
+            preconditionFailure("attributed work exceeds the block's work: bookkeeping drift")
+        }
+        return grindWork
     }
 
 }
@@ -251,7 +258,8 @@ public struct BlockMeta: Sendable {
 /// child directory (§9.10): the RUN work at that block, the block's own
 /// credited work, and the revision the pair was read at, for provenance.
 ///
-/// The run is the sum of own credited work over every connected parent block
+/// The run is the sum of credited work — grinds and attributed runs alike —
+/// over every connected parent block
 /// whose nearest committer into `directory` — by parent pointer, never by
 /// canonical chain — is `blockHash`. Runs partition the graph, so each parent
 /// grind is in exactly one run and a fork below the committer puts each branch
@@ -631,8 +639,8 @@ public actor ChainState {
     /// preserve grind identity.
     private var subtreeWorkIndex: EulerWorkIndex
     /// Run work per child directory per committing block (§9.10): the sum of
-    /// own credited work over CONNECTED blocks whose nearest committer into
-    /// that directory is the key. Insert-only, independent of exclusion, and
+    /// credited work — grinds and attributed runs alike — over CONNECTED
+    /// blocks whose nearest committer into that directory is the key. Insert-only, independent of exclusion, and
     /// maintained by the one reducer live admission and replay both use.
     /// Served to children; never a fork-choice input on THIS chain.
     private var runWork: [String: [String: WorkSum]]
@@ -2157,8 +2165,8 @@ public actor ChainState {
 
     /// The one per-block step of run attribution, for a connected block whose
     /// parent is already settled: for each directory, the nearest committer is
-    /// this block if it commits there, else the parent's; the block's own work
-    /// is credited to that run. Used both by live connection (every served
+    /// this block if it commits there, else the parent's; the block's credited
+    /// work — grinds and attributed runs alike — is credited to that run. Used both by live connection (every served
     /// directory) and by `serveRuns(for:)` (one directory over the whole
     /// graph), so a run has exactly one definition.
     private func settleRuns(of hash: String, directories: Set<String>) {

@@ -711,19 +711,48 @@ final class ParentRunAttributionTests: XCTestCase {
         let extra = await attributed(b)
         XCTAssertEqual(extra, UInt256(110), "3 + 7 + 100: two levels down, once")
 
-        // Cold restore serves the same report whichever order the facts land.
-        var generator = SystemRandomNumberGenerator()
-        for _ in 0..<5 {
-            let cold = try await ChainState.restore(
-                replaying: (facts + [credit]).shuffled(using: &generator)
-            )
-            await cold.serveRuns(for: d)
-            let againValue = await cold.parentRunReport(at: h("p1"), directory: d)
+        // The credit landing before p1's block fact is deferred, not lost —
+        // then applied — and a cold restore serves the same report.
+        let late = try await ChainState.restore(replaying: [facts[0]])
+        await late.serveRuns(for: d)
+        do {
+            _ = try await late.replay(credit)
+            XCTFail("a credit for a block not yet held is deferred")
+        } catch ChainStateRestoreError.missingBlockFact {}
+        for fact in facts.dropFirst() { _ = try await late.replay(fact) }
+        _ = try await late.replay(credit)
+        let cold = try await ChainState.restore(replaying: facts + [credit])
+        await cold.serveRuns(for: d)
+        for chain in [late, cold] {
+            let againValue = await chain.parentRunReport(at: h("p1"), directory: d)
             let again = try XCTUnwrap(againValue)
             XCTAssertEqual(again.runWork, served.runWork)
             XCTAssertEqual(again.ownWork, served.ownWork)
             XCTAssertEqual(again.grinds, served.grinds)
         }
+    }
+
+    /// A fact for an attributed-run id that arrived WITHOUT the marker (the
+    /// shape written before the field existed) counts as a grind until a
+    /// marked, stronger one reclassifies it — in full, and without a halt.
+    func testUnmarkedAttributedFactIsReclassifiedByAMarkedOne() async throws {
+        let a = try await linearByReplay()
+        let identity = AttributedRunIdentity(committerBlockHash: h("n"), directory: "A")
+        let id = identity.contributionID!
+        _ = try await a.replay(ChainAdmissionBatch(facts: [.work(ChainWorkFact(
+            blockHash: h("p1"), contribution: VerifiedWorkContribution(id: id, work: UInt256(100))
+        ))]))
+        let unmarked = await a.parentRunReport(at: h("p1"), directory: d)
+        XCTAssertEqual(unmarked?.ownWork, sum(5, 100), "unmarked: counted as a grind")
+        XCTAssertEqual(unmarked?.grinds, [grind("p1"), id])
+        _ = try await a.replay(ChainAdmissionBatch(facts: [.work(ChainWorkFact(
+            blockHash: h("p1"), contribution: VerifiedWorkContribution(id: id, work: UInt256(200)),
+            attributedRun: identity
+        ))]))
+        let marked = await a.parentRunReport(at: h("p1"), directory: d)
+        XCTAssertEqual(marked?.ownWork, sum(5), "marked: the whole contribution is the run's")
+        XCTAssertEqual(marked?.grinds, [grind("p1")])
+        XCTAssertEqual(marked?.runWork, sum(5, 200, 3, 7))
     }
 
     /// A grind's work fact encodes exactly as it did before the marker

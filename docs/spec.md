@@ -1171,8 +1171,8 @@ count is bounded by the chain's committed size rule. The weighed tier cannot
 evaluate that rule — it has no body — so until the validate tier applies §3.5
 a not-yet-validated block's map is bounded only by what the boundary store
 will fetch, and it is retained through a later exclusion.)
-`runWork(P, d)` is the sum of own credited work over the connected blocks whose
-nearest committer into `d` is `P`. Runs partition the graph: each parent grind
+`runWork(P, d)` is the sum of credited work — grinds and attributed runs
+alike — over the connected blocks whose nearest committer into `d` is `P`. Runs partition the graph: each parent grind
 is in at most one run per directory — none where no ancestor commits into it —
 and a parent fork below `P` places each branch's blocks
 in the run of that branch's own nearest committer — no branch missed, none
