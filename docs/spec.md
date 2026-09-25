@@ -1165,9 +1165,11 @@ an operator choice — so the run bookkeeping per block is O(#served), never
 O(height) and never a function of how many directories a stranger's block
 commits into. (The block's commitment map itself is stored in full — on disk,
 where the boundary already retains the trie, and in memory, per block, for
-the life of the graph. One proof-of-work buys an entry count bounded only by
-what the boundary store will fetch; that is a cost of possessing the block,
-not of serving runs.)
+the life of the graph. The `children` trie lies outside `maxBlockSize` (§4),
+which counts transaction content only, so one proof-of-work buys an entry
+count bounded by nothing but what the boundary store will fetch; whether the
+chain's committed size rule should cover the trie is a separate consensus
+decision, not settled here.)
 `runWork(P, d)` is the sum of own credited work over the connected blocks whose
 nearest committer into `d` is `P`. Runs partition the graph: each parent grind
 is in at most one run per directory — none where no ancestor commits into it —

@@ -1457,6 +1457,49 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(validatedBlockFact, eagerBlockFact)
     }
 
+    /// The validate tier promotes an already-weighed block — it does not emit
+    /// a second block fact — and reads the map the weighed tier recorded
+    /// rather than walking the trie again: the weighed fact carries a non-nil
+    /// map, and after promotion the recorded map is exactly that one.
+    func testValidateTierPromotesAWeighedBlockKeepingItsRecordedCommitments() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let candidate = try await makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
+        let candidateHash = try BlockHeader(node: candidate).rawCID
+        let level = makeLevel(genesis: genesis)
+        let weighed = try await level.admitBlockHeaderChainLocal(
+            try BlockHeader(node: candidate), fetcher: fetcher,
+            validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
+            mode: .weighed, stage: testAdmissionStage
+        )
+        guard case .accepted(let weighedAcceptance) = weighed else {
+            return XCTFail("weighed admission must accept, got \(weighed)")
+        }
+        func blockFact(_ acceptance: ChainAcceptance) -> ChainBlockFact? {
+            for case .block(let fact) in acceptance.facts.facts { return fact }
+            return nil
+        }
+        let weighedFact = try XCTUnwrap(blockFact(weighedAcceptance))
+        let weighedMap = try XCTUnwrap(weighedFact.childCommitments, "the weighed tier records the map")
+        let recordedBefore = await level.chain.recordedChildCommitments(of: candidateHash)
+        XCTAssertEqual(recordedBefore, weighedMap)
+        let executedBefore = await level.chain.hasExecutedAncestry(blockHash: candidateHash)
+        XCTAssertFalse(executedBefore, "weighed, not yet executed")
+
+        let validated = try await level.admitBlockHeaderChainLocal(
+            try BlockHeader(node: candidate), fetcher: fetcher,
+            validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
+            mode: .validate, stage: testAdmissionStage
+        )
+        guard case .duplicate = validated else {
+            return XCTFail("validating a weighed block is a promotion, got \(validated)")
+        }
+        let executedAfter = await level.chain.hasExecutedAncestry(blockHash: candidateHash)
+        XCTAssertTrue(executedAfter, "promotion executed the block")
+        let recordedAfter = await level.chain.recordedChildCommitments(of: candidateHash)
+        XCTAssertEqual(recordedAfter, weighedMap, "the recorded map is untouched by promotion")
+    }
+
     /// A root exclusion may stand only on another EXECUTED root (§9.9). On the
     /// only deployed shape — one root — the validate tier's verdict on a
     /// parentless block is therefore parked as a non-verdict at the PRODUCER:

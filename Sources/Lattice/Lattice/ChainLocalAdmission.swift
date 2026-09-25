@@ -35,8 +35,9 @@ public struct ChainBlockFact: Codable, Sendable, Equatable {
     public let stateDiff: StateDiff
     /// Directory → child block CID this block commits, from its PoW-bound
     /// `children` trie (§9.10). Optional so facts written before it existed
-    /// still decode; absent means "commits nothing", which is what those
-    /// blocks were treated as.
+    /// still decode; absent means NOT RECORDED — never "commits nothing" — and
+    /// a later fact for the same block supplies the map (see
+    /// `BlockMeta.childCommitments`, `matchesGraph`).
     public let childCommitments: [String: String]?
 
     /// Explicit so `childCommitments` can default to nil: a defaulted `let`
@@ -362,10 +363,10 @@ fileprivate struct PreparedAdmission: Sendable {
     /// if/when the block is validated (`.validate`/`.eager` keep storing it).
     /// `var` only so the synthesized memberwise init can default it; never mutated.
     var defersBodyStore: Bool = false
-    /// This block's child commitments (§9.10), enumerated in `prepare` where a
-    /// block fact is emitted and carried onto it. Nil = not recorded (the
-    /// evidence and bootstrap-genesis paths, which emit no block fact or a
-    /// genesis that commits nothing by convention); never mutated.
+    /// This block's child commitments (§9.10), enumerated where a block fact
+    /// is emitted and carried onto it. Nil wherever no block fact is emitted
+    /// (evidence, exclusion) and for the bootstrap genesis, which commits
+    /// nothing by convention; never mutated.
     var childCommitments: [String: String]? = nil
 
     var facts: ChainAdmissionBatch {
@@ -783,14 +784,16 @@ private enum ChainLocalAdmission {
             ))
         }
 
-        // §9.10: the block's child commitments are enumerated only where a
-        // block fact is emitted — after its work is verified (walking an
-        // attacker-sized `children` trie costs proof-of-work) and after the
-        // duplicate and evidence short-circuits (a re-delivered block costs
-        // nothing here). Required content, like the rest of the boundary: an
-        // unavailable trie must not degrade to "commits nothing", which would
-        // route parent work to an older committer and let availability decide
-        // a consensus-visible number.
+        // §9.10: the weighed and eager sites below enumerate the block's child
+        // commitments only where a block fact is emitted — after its work is
+        // verified (walking an attacker-sized `children` trie costs
+        // proof-of-work) and after the duplicate and evidence short-circuits (a
+        // re-delivered block costs nothing here). The validate tier orders its
+        // own enumeration after its verdict funnel, in `prepareValidatedTier`.
+        // Required content, like the rest of the boundary: an unavailable trie
+        // must not degrade to "commits nothing", which would route parent work
+        // to an older committer and let availability decide a
+        // consensus-visible number.
         func commitmentsRejection(_ failure: ChainAdmissionFailure) -> Preparation {
             .result(.rejected(
                 failure,
@@ -838,9 +841,12 @@ private enum ChainLocalAdmission {
                         fetcher: fetcher
                     )
                 } catch {
+                    let failure = classifyValidationFailure(error)
                     return .result(.rejected(
-                        classifyValidationFailure(error),
-                        sameChainPredecessor: carrier.sameChainPredecessor
+                        failure,
+                        sameChainPredecessor: predecessorRequirement(
+                            carrier.sameChainPredecessor, after: failure
+                        )
                     ))
                 }
                 return .duplicate(PreparedDuplicateAdmissionState(
@@ -974,7 +980,9 @@ private enum ChainLocalAdmission {
                 return .result(.rejected(
                     failure,
                     parentCarrierLink: carrier.relayLink,
-                    sameChainPredecessor: carrier.sameChainPredecessor
+                    sameChainPredecessor: predecessorRequirement(
+                        carrier.sameChainPredecessor, after: failure
+                    )
                 ))
             }
             let commitments: [String: String]
