@@ -863,17 +863,23 @@ Receipt admission itself does not assert that a child deposit exists.
 
 ### 9.1 Verified Work Contributions
 
-The root CID identifies one physical grind. Every level `B_i` that accepts its
-root hash proves a conservative lower bound for that same identity:
+The root CID identifies one physical grind. Along one proof its quantity is
+fixed by the ROOT-MOST carrier whose target that root hash beat, raised if
+greater by the terminal child's own target (§9.5):
 
 ```text
 contribution.id   = rootCID
-contribution.work = workForTarget(target(B_i))   // floor(2^256 / (target + 1))
+contribution.work = max(workForTarget(T_rootmost_beaten),
+                        workForTarget(target(B_terminal)))
 ```
 
-Grind identity is immutable. Its credited quantity is the maximum of all verified
-accepted-target bounds observed for that identity, so it can strengthen but never
-decrease. Its sparse proof has exactly one terminal block in each chain it
+This is NOT a maximum over the beaten targets of every level `B_i`; see §9.5.
+
+Grind identity is immutable. Across REPEATED OBSERVATIONS of that identity at
+one location, the credited quantity is the strongest verified bound seen, so it
+can strengthen but never decrease. That per-location ratchet and the
+along-the-proof selection above are different rules: the first chooses among
+observations, the second among carriers. Its sparse proof has exactly one terminal block in each chain it
 reaches. One block may be secured by many distinct grinds, but one grind MUST NOT
 be placed at multiple blocks in the same chain. Same-chain ancestry makes a
 descendant's work support its ancestors without creating more locations. The
@@ -1001,11 +1007,14 @@ connected, valid, or canonical on their own chains. Along one proof, the
 contribution is the target-derived quantity of the ROOT-MOST carrier whose
 target that root hash beat — the highest chain the grind legitimately
 participated in — raised, if greater, by the terminal child's own target. It is
-NOT a maximum over every beaten target: a deeper chain must not set the price of
-a grind, because depth is further from the work securing the hierarchy, not
-closer to it. The two definitions coincide unless an intermediate chain's
-target is harder than both the root's beaten target and the terminal's own
-target. That is NOT an exotic shape: `ChainSpec.targetBlockTime` is a free
+NOT a maximum over every beaten target. The two differ only where the old rule
+credited MORE, so this is the conservative variant: it removes an over-credit
+the maximum allowed on an inverted hierarchy. It is not an anti-fabrication
+measure — a carrier need not be valid, so a prover who fabricates a ladder
+chooses the pricing target as freely under either rule. The two definitions coincide unless some carrier's target is
+harder than both the ROOT-MOST beaten target and the terminal's own target.
+(Stated against the root-most BEATEN carrier, not the root: when the root's own
+target is unmet the selection falls through to the first carrier that was met.) That is NOT an exotic shape: `ChainSpec.targetBlockTime` is a free
 per-chain field and retarget drives each chain toward its own block time, so a
 chain with far less hashrate than its parent but a much longer block time can
 sit at a harder target. An inverted hierarchy is therefore a configuration
