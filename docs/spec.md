@@ -123,18 +123,12 @@ transaction Volume and transaction body. Each CID's canonical bytes count once.
 The contents of the chain spec, wasm modules, parent blocks, all state Volumes,
 child blocks, and admission evidence are independent Volumes and do not count.
 
-**Chain-committed retarget clamp (opt-in):**
-
-```
-maxTargetChange = nil   // ChainSpec default: no clamp; a chain may commit one
-```
-
-The per-retarget clamp factor is the chain's own committed
-`ChainSpec.maxTargetChange`; a chain that commits none retargets by the
-unclamped proportional correction — there is no protocol default. The only
-arithmetic bound is the integer floor of the representation: a correction that
-rounds to zero proposes target 1 (the smallest representable difficulty), never
-the unmineable zero target. There is no protocol-imposed difficulty floor and no protocol-wide difficulty
+**No retarget clamp.** `ChainSpec.maxTargetChange` is a retained field that
+the absolute schedule of section 5.5 never reads; there is no per-retarget step
+to clamp and no protocol default. The only arithmetic bound is the integer floor
+of the representation: a schedule that rounds to zero yields target 1 (the
+smallest representable difficulty), never the unmineable zero target. There is
+no protocol-imposed difficulty floor and no protocol-wide difficulty
 constant. The positive `ChainSpec` values are chain-selected validity. Storage, transport,
 bootstrap-spec, and parent-witness ceilings are node-local acquisition policy,
 not common consensus constants. A node may decline to operate a chain whose
@@ -321,8 +315,8 @@ A non-genesis nexus block `B` with previous block `P` is valid if and only if:
    admission — a future block is deferred until real time reaches its timestamp,
    never permanently rejected. The attempt captures `validationContext.now` once.
 6. `B.target <= P.nextTarget` (as hard or harder than scheduled, never easier),
-   and `B.nextTarget` equals section 5.5's proportional retarget computed from
-   `B.target` (clamped only by the chain's committed `maxTargetChange`, if any)
+   and `B.nextTarget` equals section 5.5's absolute schedule computed from the
+   branch's height-1 anchor and `B` (`maxTargetChange` is not read)
 7. All transactions pass `validateTransactionForNexus()`:
    - Signatures are valid over the `lattice-tx-v1` envelope
    - Signers match signature public keys
@@ -442,7 +436,7 @@ The absent genesis predecessor contributes the empty field between separators.
 For a nested tree, only the outer root's hash `h` is evaluated:
 
 ```text
-workForHash(h) = h == 0 ? U256_MAX : floor(U256_MAX / h)
+workForHash(h) = h == 0 ? U256_MAX : h == U256_MAX ? 1 : floor(2^256 / (h + 1))
 ```
 
 Every level compares the same `h` with its own target. `h <= target(B)` accepts
@@ -1368,5 +1362,5 @@ state); withdrawals return it to the block-wide credit budget.
 
 | Constant | Value | Description |
 |---|---|---|
-| `maxTargetChange` | `nil` (default: no clamp) | Optional per-block target adjustment clamp factor, chain-committed via `ChainSpec`. Unset means the proportional correction applies unclamped; Nexus commits none. Not a protocol-wide constant. |
+| `maxTargetChange` | `nil` | Retained `ChainSpec` field, not read: the absolute schedule (5.5) has no step to clamp. Kept so no chain's spec CID changes; Nexus commits none. |
 | `totalExponent` | 64 | Bit width of the reward/halving system |

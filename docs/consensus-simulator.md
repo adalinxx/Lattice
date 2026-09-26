@@ -14,7 +14,8 @@ The three default scenarios pin the chain-local edges in the current library:
 
 - equal subtree work chooses by canonical same-chain child block CID bytes only;
 - a seeded withhold/release schedule converges to the heavier GHOST subtree;
-- the 1h proportional retarget path uses `ChainSpec.calculateWindowedTarget`.
+- the 1h absolute schedule uses `ChainSpec.calculateAsertTarget` from a
+  height-1 anchor, on time and running slow.
 
 For custom fixtures, `LatticeConsensusSimulator.runDiscreteEventScenario(_:)`
 accepts a `ConsensusSimScenarioSpec` with block topology, release times
