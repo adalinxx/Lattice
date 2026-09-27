@@ -437,7 +437,10 @@ public actor ChainState {
         validatedBlocks: Set<String> = [],
         mutationGeneration: UInt64 = 0
     ) throws {
-        guard hashToBlock.values.allSatisfy({ meta in
+        // Every graph read keys a block by its own hash, so a map entry filed
+        // under any other key is a corrupt graph, not a second name.
+        guard hashToBlock.allSatisfy({ $0.key == $0.value.blockHash }),
+              hashToBlock.values.allSatisfy({ meta in
             guard Set(meta.childHashes).count == meta.childHashes.count,
                   (meta.parentBlockHash == nil) == (meta.blockHeight == 0)
             else { return false }
