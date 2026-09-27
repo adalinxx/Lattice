@@ -171,6 +171,8 @@ final class ForkChoiceOracleTests: XCTestCase {
         )
         XCTAssertFalse(live.addedContribution, "the live path discards a second location")
         XCTAssertFalse(live.addedBlock)
+        let location = await chain.workContribution(id: cid("shared"))?.blockHash
+        XCTAssertEqual(location, cid("a"), "the grind stays where it was first located")
 
         // Replay reducer: the same work-only fact is a corrupt graph.
         let relocated = work("b", grind: "shared", work: 9)

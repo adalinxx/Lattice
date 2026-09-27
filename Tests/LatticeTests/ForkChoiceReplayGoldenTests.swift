@@ -43,9 +43,19 @@ struct ForkChoiceGoldenGraph {
     }
 
     static let directory = "Child"
-    /// Exclusions the script plans ON the canonical selection, past the
-    /// halfway and nine-tenths marks. Each must move the tip when it lands.
-    static let plannedDecisiveExclusions = 2
+    /// Exclusions the script plans ON the canonical selection: past the
+    /// halfway and nine-tenths marks, and at the final arrival. Each must
+    /// move the tip when it lands. The last one has nothing planned after
+    /// it, so its subtree is never overtaken on weight and the FINAL state
+    /// is exclusion-sensitive too, not only the trace.
+    static let plannedDecisiveExclusions = 3
+
+    /// Arrival counts past which each planned decisive exclusion fires.
+    static func decisiveMarks(blockCount: Int) -> [Int] {
+        let marks = [blockCount / 2, blockCount * 9 / 10, blockCount - 1]
+        precondition(marks.count == plannedDecisiveExclusions)
+        return marks
+    }
 
     let seed: UInt64
     let blocks: [Block]
@@ -125,16 +135,21 @@ struct ForkChoiceGoldenGraph {
         // 1. Blocks are planned in index order, each choosing a parent among
         // the blocks planned so far: the rival root's subtree occasionally,
         // a deep fork sometimes, mostly one of the highest blocks — competing
-        // tips — and never a block under an excluded root. Planning runs just
-        // ahead of arrival (step 3), so the verdicts recorded so far shape
-        // what gets built next, as they do for a live miner.
+        // tips — and never a block under an excluded root AS KNOWN WHEN IT IS
+        // PLANNED. Planning runs just ahead of arrival (step 3: at most three
+        // blocks, the reach of the arrival swaps in step 2), so a block planned
+        // in that window before a verdict lands may still extend the excluded
+        // block — exactly a miner that had not yet heard the verdict. The
+        // coverage test bounds that look-ahead.
         func plan(_ index: Int) {
             precondition(blocks.count == index, "blocks are planned in index order")
             let parent: Block?
             if index < 2 {
                 parent = nil
             } else if random.chance(6) {
-                let parentIndex = secondarySubtree[random.nextInt(secondarySubtree.count)]
+                let selectable = secondarySubtree.filter { !underExcludedRoot($0) }
+                precondition(!selectable.isEmpty, "the rival root is never excluded")
+                let parentIndex = selectable[random.nextInt(selectable.count)]
                 secondarySubtree.append(index)
                 parent = blocks[parentIndex]
             } else {
@@ -241,12 +256,12 @@ struct ForkChoiceGoldenGraph {
                 validated.insert(index)
                 add(.validation, block, ChainAdmissionBatch.validation(blockHash: block.hash))
             }
-            // A DECISIVE exclusion, planned past the halfway and nine-tenths
-            // marks: a block ON the canonical selection, so the tip must move
-            // and the golden pins a canonical retreat onto the heaviest
-            // selectable branch. Forced at the first arrival past the mark
-            // that offers a candidate, so the planned count is met.
-            let marks = [blockCount / 2, blockCount * 9 / 10]
+            // A DECISIVE exclusion, planned past each mark: a block ON the
+            // canonical selection, so the tip must move and the golden pins a
+            // canonical retreat onto the heaviest selectable branch. Forced at
+            // the first arrival past the mark that offers a candidate, so the
+            // planned count is met; the last mark is the final arrival.
+            let marks = Self.decisiveMarks(blockCount: blockCount)
             if decisiveExclusionEvents.count < plannedDecisiveExclusions,
                arrived.count > marks[decisiveExclusionEvents.count] {
                 let candidates = exclusionCandidates(onCanonical: true)
@@ -525,10 +540,10 @@ struct ForkChoiceTraceGolden: Codable, Equatable {
 
     struct OrderTrace: Codable, Equatable {
         let reorgCommits: Int
-        /// Reorg commits AFTER the first decisive exclusion: selection must
-        /// keep moving once a verdict has retreated it, or the rest of the
-        /// script pins a frozen tip.
-        let reorgCommitsAfterFirstDecisiveExclusion: Int
+        /// Reorg commits after each decisive exclusion, up to the next one
+        /// (or the end): selection must keep moving once a verdict has
+        /// retreated it, or the rest of the script pins a frozen tip.
+        let reorgCommitsAfterDecisiveExclusion: [Int]
         let decisiveExclusions: Int
         let checkpoints: [Checkpoint]
     }
@@ -544,9 +559,9 @@ struct ForkChoiceTraceGolden: Codable, Equatable {
         ] {
             lines += GoldenFile.fieldDiff(order, [
                 ("reorgCommits", "\(expectedTrace.reorgCommits)", "\(actualTrace.reorgCommits)"),
-                ("reorgCommitsAfterFirstDecisiveExclusion",
-                 "\(expectedTrace.reorgCommitsAfterFirstDecisiveExclusion)",
-                 "\(actualTrace.reorgCommitsAfterFirstDecisiveExclusion)"),
+                ("reorgCommitsAfterDecisiveExclusion",
+                 "\(expectedTrace.reorgCommitsAfterDecisiveExclusion)",
+                 "\(actualTrace.reorgCommitsAfterDecisiveExclusion)"),
                 ("decisiveExclusions", "\(expectedTrace.decisiveExclusions)", "\(actualTrace.decisiveExclusions)"),
                 ("checkpointCount", "\(expectedTrace.checkpoints.count)", "\(actualTrace.checkpoints.count)"),
             ])
@@ -593,7 +608,7 @@ final class ForkChoiceReplayGoldenTests: XCTestCase {
         let chain = try await ChainState.restore(replaying: [order[0].batch])
         await chain.serveRuns(for: ForkChoiceGoldenGraph.directory)
         var reorgCommits = 0
-        var reorgCommitsAfterFirstDecisiveExclusion = 0
+        var reorgCommitsAfterDecisiveExclusion: [Int] = []
         var decisiveExclusions = 0
         var checkpoints: [ForkChoiceTraceGolden.Checkpoint] = []
         for (position, event) in order.enumerated().dropFirst() {
@@ -605,11 +620,13 @@ final class ForkChoiceReplayGoldenTests: XCTestCase {
                 throw error
             }
             let removed = commit?.mainChainBlocksRemoved ?? []
-            if !removed.isEmpty {
-                reorgCommits += 1
-                if decisiveExclusions > 0 { reorgCommitsAfterFirstDecisiveExclusion += 1 }
+            if event.kind == .exclusion, !removed.isEmpty {
+                decisiveExclusions += 1
+                reorgCommitsAfterDecisiveExclusion.append(0)
+            } else if !removed.isEmpty, !reorgCommitsAfterDecisiveExclusion.isEmpty {
+                reorgCommitsAfterDecisiveExclusion[reorgCommitsAfterDecisiveExclusion.count - 1] += 1
             }
-            if event.kind == .exclusion, !removed.isEmpty { decisiveExclusions += 1 }
+            if !removed.isEmpty { reorgCommits += 1 }
             if position % 25 == 0 || event.kind == .exclusion {
                 let tip = await chain.getMainChainTip()
                 let tipHeight = await chain.getHighestBlockHeight()
@@ -627,7 +644,7 @@ final class ForkChoiceReplayGoldenTests: XCTestCase {
         XCTAssertTrue(unresolved.isEmpty, "every block must connect once all have arrived")
         return (chain, ForkChoiceTraceGolden.OrderTrace(
             reorgCommits: reorgCommits,
-            reorgCommitsAfterFirstDecisiveExclusion: reorgCommitsAfterFirstDecisiveExclusion,
+            reorgCommitsAfterDecisiveExclusion: reorgCommitsAfterDecisiveExclusion,
             decisiveExclusions: decisiveExclusions,
             checkpoints: checkpoints
         ))
@@ -683,10 +700,21 @@ final class ForkChoiceReplayGoldenTests: XCTestCase {
             graph.decisiveExclusionEvents,
             "the exclusions that moved the tip must be exactly the planned ones"
         )
-        XCTAssertGreaterThan(
-            arrival.reorgCommitsAfterFirstDecisiveExclusion, 0,
-            "selection must keep moving after a decisive exclusion, not freeze"
-        )
+        // Selection keeps moving after every decisive exclusion that blocks
+        // still arrive after. The last one lands at the final arrival by
+        // design (its subtree must not be overtaken), so only the trailing
+        // fact-only events follow it and movement is not required there.
+        let followedByArrivals = graph.decisiveExclusionEvents.filter { decisive in
+            graph.events.contains { $0.index > decisive && $0.kind == .block }
+        }
+        XCTAssertEqual(followedByArrivals.count, ForkChoiceGoldenGraph.plannedDecisiveExclusions - 1)
+        for (position, reorgs) in arrival.reorgCommitsAfterDecisiveExclusion.enumerated()
+        where position < followedByArrivals.count {
+            XCTAssertGreaterThan(
+                reorgs, 0,
+                "selection must keep moving after decisive exclusion \(position) (event \(followedByArrivals[position])), not freeze"
+            )
+        }
         try GoldenFile.assert(
             ForkChoiceTraceGolden(arrival: arrival, alternate: alternate),
             matches: Self.traceGoldenName,
@@ -732,10 +760,9 @@ final class ForkChoiceReplayGoldenTests: XCTestCase {
         )
 
         // Each planned decisive exclusion is decisive by the spec oracle,
-        // independent of the chain: at that moment, weight alone selects
-        // THROUGH the excluded block, and the verdict moves the tip (§9.9).
-        // (Not asserted on the final graph: nothing extends an excluded
-        // subtree afterwards, so by the end it loses on weight as well.)
+        // independent of the chain: the selection just before the verdict
+        // (earlier verdicts applied) runs through the block, and the verdict
+        // moves the tip (§9.9).
         XCTAssertEqual(graph.decisiveExclusionEvents.count, ForkChoiceGoldenGraph.plannedDecisiveExclusions)
         var oracle = ForkChoiceOracle()
         for event in graph.events {
@@ -747,12 +774,51 @@ final class ForkChoiceReplayGoldenTests: XCTestCase {
             let before = try XCTUnwrap(oracle.view().canonicalProjection(), "event \(event.index): no selection")
             XCTAssertTrue(
                 before.path.contains(excludedHash),
-                "event \(event.index): weight alone must select through \(event.subject)"
+                "event \(event.index): selection before the verdict must run through \(event.subject)"
             )
             oracle.apply(event.batch)
             let after = try XCTUnwrap(oracle.view().canonicalProjection(), "event \(event.index): no selection")
             XCTAssertNotEqual(before.tip, after.tip, "event \(event.index): excluding \(event.subject) must move the tip")
             XCTAssertFalse(after.path.contains(excludedHash), "event \(event.index): the descent stepped into an excluded block")
+        }
+        // And the FINAL state is exclusion-sensitive: weight alone would
+        // select a different tip, through an excluded block — so the three
+        // final-state comparisons (arrival, alternate, restore) each see an
+        // exclusion change selection, not only the trace.
+        let selected = try XCTUnwrap(oracle.view().canonicalProjection())
+        let weightAlone = try XCTUnwrap(oracle.view(ignoringExclusions: true).canonicalProjection())
+        XCTAssertNotEqual(selected.tip, weightAlone.tip, "the excluded set must change the final selection")
+        XCTAssertTrue(
+            weightAlone.path.contains { oracle.excluded.contains($0) },
+            "weight alone must select through an excluded block"
+        )
+
+        // The planning look-ahead: a block planned before a verdict landed may
+        // extend the excluded block, but only within the reach of the arrival
+        // swaps — no descendant of an excluded block arrives more than three
+        // arrivals after the verdict.
+        var arrivalsBefore: [Int: Int] = [:]
+        var arrivalsSoFar = 0
+        for event in graph.events {
+            arrivalsBefore[event.index] = arrivalsSoFar
+            if event.kind == .block { arrivalsSoFar += 1 }
+        }
+        func descends(_ block: ForkChoiceGoldenGraph.Block, from ancestor: String) -> Bool {
+            var current: ForkChoiceGoldenGraph.Block? = block
+            while let step = current {
+                if step.name == ancestor { return true }
+                current = step.parentName.flatMap { byName[$0] }
+            }
+            return false
+        }
+        for event in graph.events where event.kind == .exclusion {
+            let verdictAt = try XCTUnwrap(arrivalsBefore[event.index])
+            for block in graph.blocks where block.name != event.subject && descends(block, from: event.subject) {
+                XCTAssertLessThanOrEqual(
+                    try position(block.name), verdictAt + 3,
+                    "\(block.name) extends excluded \(event.subject) beyond the planning look-ahead"
+                )
+            }
         }
 
         // §9.1: one location per grind. The script never offers a second one,
