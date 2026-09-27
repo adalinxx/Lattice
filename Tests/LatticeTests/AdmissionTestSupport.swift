@@ -21,7 +21,7 @@ extension ChainLevel {
     /// names only what its scenario changes.
     func admit(
         _ header: BlockHeader,
-        mode: AdmissionMode = .eager,
+        mode: ImportMode = .full,
         fetcher: any Fetcher & VolumeStorer,
         materialized: (any VolumeStorer)? = nil,
         childPackage: ChildValidationPackage? = nil,
@@ -44,7 +44,7 @@ extension ChainLevel {
     /// validation-content store is named explicitly.
     func admit(
         _ header: BlockHeader,
-        mode: AdmissionMode = .eager,
+        mode: ImportMode = .full,
         fetcher: any Fetcher,
         storer: any VolumeStorer,
         materialized: (any VolumeStorer)? = nil,
@@ -68,7 +68,7 @@ extension ChainLevel {
     /// for a block held inline.
     func admit(
         _ block: Block,
-        mode: AdmissionMode = .eager,
+        mode: ImportMode = .full,
         fetcher: any Fetcher & VolumeStorer,
         materialized: (any VolumeStorer)? = nil,
         childPackage: ChildValidationPackage? = nil,
@@ -90,7 +90,7 @@ extension ChainLevel {
     /// for a block held inline.
     func admit(
         _ block: Block,
-        mode: AdmissionMode = .eager,
+        mode: ImportMode = .full,
         fetcher: any Fetcher,
         storer: any VolumeStorer,
         materialized: (any VolumeStorer)? = nil,

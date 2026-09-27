@@ -248,7 +248,7 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
         guard case .accepted = eager else {
             return XCTFail("eager admission must accept, got \(eager)")
         }
-        let weighed = try await level.admit(second, mode: .weighed, fetcher: fetcher)
+        let weighed = try await level.admit(second, mode: .header, fetcher: fetcher)
         guard case .accepted = weighed else {
             return XCTFail("weighed admission must accept, got \(weighed)")
         }
@@ -284,7 +284,7 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
         let noAncestors = DenyingFetcher(backing: full, denied: [genesisHash])
         let result = try await level.admit(
             sideTwo,
-            mode: .weighed,
+            mode: .header,
             fetcher: noAncestors,
             storer: full
         )

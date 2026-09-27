@@ -19,26 +19,26 @@ public enum BlockImportError: Error, Sendable, Equatable {
 
 /// Which admission tier `prepare` produces.
 ///
-/// - `.eager` (default, unchanged behaviour): execute the state transition and
+/// - `.full` (default, unchanged behaviour): execute the state transition and
 ///   emit a block fact carrying the materialized post-state and its `stateDiff`
 ///   — a block is weighed and validated in one gate.
-/// - `.weighed` (deferred execution, weight-first-acquisition): weigh the block
+/// - `.header` (deferred execution, weight-first-acquisition): weigh the block
 ///   from its root + verified PoW / securing-work, WITHOUT executing the state
 ///   transition. The declared post-state is recorded as an unverified claim;
 ///   validity is a separate, later judgment on the validated tier. Because the
 ///   consensus graph (`ConsensusBlockInput`) never reads `stateDiff`, a weighed
 ///   block contributes to fork choice identically to an eager one.
-/// - `.validate` (deferred execution, validated tier): execute a block that was
+/// - `.execution` (deferred execution, validated tier): execute a block that was
 ///   already weighed. On success emit the block fact carrying the materialized
 ///   post-state — the durable "validated" marker that upgrades the weighed
 ///   claim. On a COMPLETED deterministic invalidity (`postState` mismatch or a
 ///   committed validity rule) emit an `.exclusion` fact removing the subtree
 ///   from fork choice. An availability failure is not a verdict: it is a
 ///   retryable rejection that excludes nothing.
-public enum AdmissionMode: Sendable {
-    case eager
-    case weighed
-    case validate
+public enum ImportMode: Sendable {
+    case full
+    case header
+    case execution
 }
 
 
@@ -210,7 +210,7 @@ fileprivate struct PreparedAdmission: Sendable {
     /// path states, WASM policy modules, genesis empty-state). Only the block
     /// BOUNDARY is stored, so the ~74% of below-tip blocks that never become
     /// canonical never fetch their bodies. The body is fetched+stored later, only
-    /// if/when the block is validated (`.validate`/`.eager` keep storing it).
+    /// if/when the block is validated (`.execution`/`.full` keep storing it).
     /// `var` only so the synthesized memberwise init can default it; never mutated.
     var defersBodyStore: Bool = false
     /// This block's child commitments (§9.10), enumerated where a block fact
@@ -559,7 +559,7 @@ private enum ChainLocalAdmission {
         fetcher: any Fetcher,
         childPackage: ChildValidationPackage?,
         validationContext: ValidationContext,
-        mode: AdmissionMode = .eager
+        mode: ImportMode = .full
     ) async -> Preparation {
         let context = level.context
         let resolvedHeader: BlockHeader
@@ -644,7 +644,7 @@ private enum ChainLocalAdmission {
         // bypassing the weighed/known/duplicate short-circuits that assume a
         // first-observation of the header. Isolated so the eager and weighed
         // paths are untouched.
-        if case .validate = mode {
+        if case .execution = mode {
             return await prepareValidatedTier(
                 resolvedHeader: resolvedHeader,
                 block: block,
@@ -735,7 +735,7 @@ private enum ChainLocalAdmission {
         // not-yet-admissible timestamp defers, a missing parent is unavailable
         // evidence. A genesis is never weighed — only a self/pinned genesis is
         // admitted, eagerly, through bootstrap.
-        if case .weighed = mode {
+        if case .header = mode {
             guard block.parent != nil else {
                 // Carrier link intentionally not relayed here
                 // (pre-existing quirk, kept so admission decisions stay byte-identical;
@@ -1342,7 +1342,7 @@ public extension ChainLevel {
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
         validationContentStorer: any VolumeStorer,
-        mode: AdmissionMode = .eager
+        mode: ImportMode = .full
     ) async throws -> ChainAdmissionPreflightResult {
         switch await ChainLocalAdmission.prepare(
             level: self,
@@ -1509,7 +1509,7 @@ public extension ChainLevel {
         validationContext: ValidationContext = .current,
         validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
-        mode: AdmissionMode = .eager,
+        mode: ImportMode = .full,
         stage: @Sendable (BlockImportStagingContext) async throws -> Void
     ) async throws -> ChainLocalBlockResult {
         switch try await preflightBlockHeaderChainLocal(
@@ -1540,7 +1540,7 @@ public extension ChainLevel {
         validationContext: ValidationContext = .current,
         validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
-        mode: AdmissionMode = .eager,
+        mode: ImportMode = .full,
         stage: @Sendable (BlockImportStagingContext) async throws -> Void
     ) async throws -> ChainLocalBlockResult {
         try await admitBlockHeaderChainLocal(
