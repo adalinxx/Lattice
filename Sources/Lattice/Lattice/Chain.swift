@@ -1640,22 +1640,6 @@ public actor ChainState {
             applyForkChoiceContribution(contribution, to: blockHash)
         }
 
-        guard let previousBlockCID = input.parentBlockHash else {
-            return SubmissionResult(
-                addedBlock: true,
-                addedContribution: addedContribution,
-                extendsMainChain: false
-            )
-        }
-
-        if hashToBlock[previousBlockCID] == nil {
-            return SubmissionResult(
-                addedBlock: true,
-                addedContribution: addedContribution,
-                extendsMainChain: false
-            )
-        }
-
         return SubmissionResult(
             addedBlock: true,
             addedContribution: addedContribution,
