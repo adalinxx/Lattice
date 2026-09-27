@@ -28,7 +28,9 @@ jobs:
             ["LatticeBlockTree/Chain.swift",
              "LatticePoW/WorkSum.swift",
              "LatticeImport/ChainLocalAdmission.swift",
-             "LatticeProofs/ChildBlockProof.swift"] as $critical
+             "LatticeProofs/ChildBlockProof.swift",
+             "LatticePoW/ProofOfWork.swift",
+             "LatticeBlockTree/ChainFacts.swift"] as $critical
             | [.data[].files[]
                 | .filename as $filename
                 | select(any($critical[]; . as $path
