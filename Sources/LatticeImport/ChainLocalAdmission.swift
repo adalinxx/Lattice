@@ -1,0 +1,1710 @@
+import Foundation
+import cashew
+
+public enum ChainAdmissionFailure: Error, Sendable, Equatable {
+    case unavailableEvidence
+    case providerMalformedEvidence
+    case crossChainEvidenceRequired(CrossChainEvidenceRequirement)
+    case protocolInvalid
+    case localVerificationFailure
+    case notYetAdmissible
+    case notAcceptedAtCurrentChain
+    case revisionExhausted
+}
+
+/// Which admission tier `prepare` produces.
+///
+/// - `.eager` (default, unchanged behaviour): execute the state transition and
+///   emit a block fact carrying the materialized post-state and its `stateDiff`
+///   — a block is weighed and validated in one gate.
+/// - `.weighed` (deferred execution, weight-first-acquisition): weigh the block
+///   from its root + verified PoW / securing-work, WITHOUT executing the state
+///   transition. The declared post-state is recorded as an unverified claim;
+///   validity is a separate, later judgment on the validated tier. Because the
+///   consensus graph (`ConsensusBlockInput`) never reads `stateDiff`, a weighed
+///   block contributes to fork choice identically to an eager one.
+/// - `.validate` (deferred execution, validated tier): execute a block that was
+///   already weighed. On success emit the block fact carrying the materialized
+///   post-state — the durable "validated" marker that upgrades the weighed
+///   claim. On a COMPLETED deterministic invalidity (`postState` mismatch or a
+///   committed validity rule) emit an `.exclusion` fact removing the subtree
+///   from fork choice. An availability failure is not a verdict: it is a
+///   retryable rejection that excludes nothing.
+public enum AdmissionMode: Sendable {
+    case eager
+    case weighed
+    case validate
+}
+
+
+/// The verified, node-owned facts that must become durable with one admission
+/// batch. They are deliberately separate from ``ChainAdmissionBatch``: chain
+/// replay needs only consensus facts, while the node also needs these facts to
+/// relay hierarchy evidence after a restart.
+public struct ChainAdmissionStagingContext: Sendable {
+    public let batch: ChainAdmissionBatch
+    /// Present only when this chain has verified a complete ancestry for the
+    /// carrier and may issue a parent-process fact for it.
+    public let issuedCarrierLink: ParentCarrierLink?
+    /// Child-genesis actions carried by this admission. They become issuer
+    /// facts only when `issuedCarrierLink` is present; retaining them lets a
+    /// commit atomically observe a predecessor that connected after preflight.
+    public let parentGenesisLinks: [ParentGenesisLink]
+
+    init(
+        batch: ChainAdmissionBatch,
+        issuedCarrierLink: ParentCarrierLink?,
+        parentGenesisLinks: [ParentGenesisLink]
+    ) {
+        self.batch = batch
+        self.issuedCarrierLink = issuedCarrierLink
+        self.parentGenesisLinks = parentGenesisLinks
+    }
+}
+
+public struct ChainAcceptance: Sendable {
+    public let facts: ChainAdmissionBatch
+    public let materializedPostState: LatticeState?
+    public let commit: ChainCommit
+    public let sameChainPredecessor: SameChainPredecessorRequirement?
+    public let parentCarrierLink: ParentCarrierLink?
+
+    public var stateDiff: StateDiff? {
+        for case .block(let fact) in facts.facts { return fact.stateDiff }
+        return nil
+    }
+}
+
+public enum ChainLocalBlockResult: Sendable {
+    case accepted(ChainAcceptance)
+    case carrier(
+        ParentCarrierLink?,
+        sameChainPredecessor: SameChainPredecessorRequirement? = nil
+    )
+    case duplicate(
+        ParentCarrierLink?,
+        sameChainPredecessor: SameChainPredecessorRequirement? = nil,
+        promotedCommit: ChainCommit? = nil
+    )
+    case rejected(
+        ChainAdmissionFailure,
+        parentCarrierLink: ParentCarrierLink? = nil,
+        sameChainPredecessor: SameChainPredecessorRequirement? = nil
+    )
+
+    public var materializedPostState: LatticeState? {
+        switch self {
+        case .accepted(let acceptance): acceptance.materializedPostState
+        case .carrier, .duplicate, .rejected: nil
+        }
+    }
+
+    public var sameChainPredecessor: SameChainPredecessorRequirement? {
+        switch self {
+        case .accepted(let acceptance): acceptance.sameChainPredecessor
+        case .carrier(_, let requirement),
+             .rejected(_, _, let requirement): requirement
+        case .duplicate(_, let requirement, _): requirement
+        }
+    }
+
+    public var crossChainEvidenceRequirement: CrossChainEvidenceRequirement? {
+        guard case .rejected(
+            .crossChainEvidenceRequired(let requirement), _, _
+        ) = self else {
+            return nil
+        }
+        return requirement
+    }
+
+    public var commit: ChainCommit? {
+        switch self {
+        case .accepted(let acceptance): acceptance.commit
+        case .duplicate(_, _, let promotedCommit): promotedCommit
+        case .carrier, .rejected: nil
+        }
+    }
+
+    public var failure: ChainAdmissionFailure? {
+        if case .rejected(let failure, _, _) = self { return failure }
+        return nil
+    }
+
+    public var parentCarrierLink: ParentCarrierLink? {
+        switch self {
+        case .accepted(let acceptance): acceptance.parentCarrierLink
+        case .carrier(let link, _): link
+        case .duplicate(let link, _, _): link
+        case .rejected(_, let link, _): link
+        }
+    }
+
+}
+
+public struct ChildChainBootstrapAcceptance: Sendable {
+    public let level: ChainLevel
+    public let stateDiff: StateDiff
+    public let materializedPostState: LatticeState?
+    public let commit: ChainCommit
+    public let parentCarrierLink: ParentCarrierLink
+}
+
+public enum ChildChainBootstrapResult: Sendable {
+    case accepted(ChildChainBootstrapAcceptance)
+    case carrier(ParentCarrierLink)
+    case rejected(
+        ChainAdmissionFailure,
+        parentCarrierLink: ParentCarrierLink
+    )
+
+    public var parentCarrierLink: ParentCarrierLink {
+        switch self {
+        case .accepted(let acceptance): acceptance.parentCarrierLink
+        case .carrier(let link), .rejected(_, let link): link
+        }
+    }
+
+    public var failure: ChainAdmissionFailure? {
+        guard case .rejected(let failure, _) = self else { return nil }
+        return failure
+    }
+}
+
+fileprivate struct PreparedAdmission: Sendable {
+    enum Kind: Sendable {
+        /// `validated` records whether the transition was EXECUTED. It is stated
+        /// per tier rather than inferred from the materialized state, because a
+        /// nil state is not a reliable proxy and this flag gates parent-state
+        /// attestation.
+        case block(StateDiff, LatticeState?, validated: Bool)
+        case evidence
+        /// Validated tier: execution of a previously-weighed block completed and
+        /// FAILED deterministically. Stage a single `.exclusion` fact; the block
+        /// and its work are already possessed, so no new content is stored and
+        /// no work fact is re-emitted.
+        case exclusion
+    }
+
+    let resolvedHeader: BlockHeader
+    let block: Block
+    let fetcher: any Fetcher
+    let contribution: VerifiedWorkContribution
+    let carrierLink: ParentCarrierLink
+    let verifiedCarrierLink: ParentCarrierLink?
+    let sameChainPredecessor: SameChainPredecessorRequirement?
+    let kind: Kind
+    /// A weighed admission is not yet executed, so it MUST NOT issue any
+    /// cross-chain hierarchy fact (carrier link or parent-genesis link): a child
+    /// consuming such a fact would bind to unvalidated — possibly invalid or
+    /// soon-reorged — parent state. Issuance is deferred to the validated tier,
+    /// which re-derives and emits it once the block is executed. `var` only so
+    /// the synthesized memberwise init can default it; never mutated.
+    var defersHierarchyIssuance: Bool = false
+    /// A weighed admission possesses the block for fork choice but MUST NOT
+    /// resolve or store the block BODY (tier-3: transaction bodies, validation-
+    /// path states, WASM policy modules, genesis empty-state). Only the block
+    /// BOUNDARY is stored, so the ~74% of below-tip blocks that never become
+    /// canonical never fetch their bodies. The body is fetched+stored later, only
+    /// if/when the block is validated (`.validate`/`.eager` keep storing it).
+    /// `var` only so the synthesized memberwise init can default it; never mutated.
+    var defersBodyStore: Bool = false
+    /// This block's child commitments (§9.10), enumerated where a block fact
+    /// is emitted and carried onto it. Nil wherever no block fact is emitted
+    /// (evidence, exclusion) and for the bootstrap genesis, which commits
+    /// nothing by convention; never mutated.
+    var childCommitments: [String: String]? = nil
+
+    var facts: ChainAdmissionBatch {
+        // An exclusion is a standalone verdict: exactly one `.exclusion` fact,
+        // no block or work fact (both already durable from the weighed tier).
+        if case .exclusion = kind {
+            return ChainAdmissionBatch(facts: [
+                .exclusion(ChainExclusionFact(blockHash: resolvedHeader.rawCID)),
+            ])
+        }
+        var facts: [ChainAdmissionFact] = []
+        switch kind {
+        case .block(let stateDiff, _, _):
+            facts.append(.block(ChainBlockFact(
+                blockHash: resolvedHeader.rawCID,
+                parentBlockHash: block.parent?.rawCID,
+                blockHeight: block.height,
+                postStateCID: block.postState.rawCID,
+                prevStateCID: block.prevState.rawCID,
+                specCID: block.spec.rawCID,
+                target: block.target.toHexString(),
+                nextTarget: block.nextTarget.toHexString(),
+                timestamp: block.timestamp,
+                stateDiff: stateDiff,
+                childCommitments: childCommitments
+            )))
+        case .evidence, .exclusion:
+            break
+        }
+        facts.append(.work(ChainWorkFact(
+            blockHash: resolvedHeader.rawCID,
+            contribution: contribution
+        )))
+        // Last: execution is the newest judgment in the batch, and keeping the
+        // block/work prefix stable leaves existing batch-shape expectations
+        // positionally intact.
+        if case .block(_, _, true) = kind {
+            facts.append(.validation(ChainValidationFact(
+                blockHash: resolvedHeader.rawCID
+            )))
+        }
+        return ChainAdmissionBatch(facts: facts)
+    }
+
+    /// Store the immutable validation Volumes before the node takes its
+    /// durability lease. They remain unretained until the admission batch
+    /// becomes visible.
+    func cacheValidationContent(
+        to validationContentStorer: any VolumeStorer
+    ) async throws {
+        switch kind {
+        case .evidence, .exclusion:
+            return
+        case .block:
+            // A weighed admission stores only the block boundary (root node + tx
+            // /children tries) — never the body (tx bodies, validation-path
+            // states, WASM modules, genesis empty-state). Every other tier stores
+            // the full block unchanged.
+            if defersBodyStore {
+                try await resolvedHeader.storeBlockBoundary(
+                    fetcher: fetcher,
+                    storer: validationContentStorer
+                )
+            } else {
+                try await resolvedHeader.storeBlock(
+                    fetcher: fetcher,
+                    storer: validationContentStorer
+                )
+            }
+        }
+    }
+
+    /// Materialized state is a complete Volume and can be evicted until it is
+    /// retained with the staged batch. The node must therefore invoke this
+    /// immediately before its retention-and-stage boundary.
+    func storeMaterializedPostState(
+        to materializedVolumeStorer: any VolumeStorer
+    ) async throws {
+        guard case .block(let stateDiff, let materializedPostState, _) = kind,
+              let materializedPostState else {
+            return
+        }
+        try await LatticeStateHeader(node: materializedPostState)
+            .storeMaterialized(
+                createdBy: stateDiff,
+                storer: materializedVolumeStorer
+            )
+    }
+
+    /// The stage callback runs before `ChainState` applies `facts`, so this is
+    /// the only point where Lattice can pass the already-verified hierarchy
+    /// facts across the node durability boundary without reconstructing them.
+    func stagingContext() async throws -> ChainAdmissionStagingContext {
+        let batch = facts
+        // A weighed (not-yet-executed) block issues NO cross-chain facts; both
+        // are re-derived and emitted when it is validated. Suppressing here is
+        // the choke point that keeps a child from binding to unvalidated parent
+        // state.
+        if defersHierarchyIssuance {
+            return ChainAdmissionStagingContext(
+                batch: batch,
+                issuedCarrierLink: nil,
+                parentGenesisLinks: []
+            )
+        }
+        return ChainAdmissionStagingContext(
+            batch: batch,
+            issuedCarrierLink: verifiedCarrierLink,
+            parentGenesisLinks: try await parentGenesisLinks(
+                in: resolvedHeader,
+                parentPath: carrierLink.parentPath,
+                fetcher: fetcher
+            )
+        )
+    }
+}
+
+fileprivate enum Preparation {
+    case ready(PreparedAdmission)
+    case result(
+        ChainLocalBlockResult,
+        parentGenesisLinks: [ParentGenesisLink] = []
+    )
+    case duplicate(PreparedDuplicateAdmissionState)
+}
+
+public enum ChainAdmissionPreflightError: Error, Sendable, Equatable {
+    case invalidToken
+}
+
+/// A one-use, level-bound result of remote validation and validation-Volume
+/// storage.
+public actor PreparedChainAdmission {
+    /// Commit may add an issuable carrier link if the already-validated
+    /// predecessor connected before the durability boundary.
+    fileprivate nonisolated let stagingContext: ChainAdmissionStagingContext
+
+    private let levelIdentity: UUID
+    private var prepared: PreparedAdmission?
+
+    fileprivate init(
+        levelIdentity: UUID,
+        prepared: PreparedAdmission,
+        stagingContext: ChainAdmissionStagingContext
+    ) {
+        self.levelIdentity = levelIdentity
+        self.prepared = prepared
+        self.stagingContext = stagingContext
+    }
+
+    fileprivate func take(for levelIdentity: UUID) -> PreparedAdmission? {
+        guard self.levelIdentity == levelIdentity else { return nil }
+        defer { prepared = nil }
+        return prepared
+    }
+}
+
+fileprivate struct PreparedDuplicateAdmissionState: Sendable {
+    let carrierLink: ParentCarrierLink
+    let parentGenesisLinks: [ParentGenesisLink]
+}
+
+/// A one-use, level-bound duplicate whose immutable validation completed before
+/// the node acquired its mutation lease. Resolving it under that lease can add
+/// a carrier link when a predecessor connected in the meantime; it never
+/// stages consensus facts or reacquires remote content.
+public actor PreparedDuplicateAdmission {
+    private let levelIdentity: UUID
+    private var state: PreparedDuplicateAdmissionState?
+
+    fileprivate init(
+        levelIdentity: UUID,
+        state: PreparedDuplicateAdmissionState
+    ) {
+        self.levelIdentity = levelIdentity
+        self.state = state
+    }
+
+    fileprivate func take(
+        for levelIdentity: UUID
+    ) -> PreparedDuplicateAdmissionState? {
+        guard self.levelIdentity == levelIdentity else { return nil }
+        defer { state = nil }
+        return state
+    }
+}
+
+public enum ChainAdmissionPreflightResult: Sendable {
+    case terminal(
+        ChainLocalBlockResult,
+        parentGenesisLinks: [ParentGenesisLink] = []
+    )
+    case duplicate(PreparedDuplicateAdmission)
+    case ready(PreparedChainAdmission)
+}
+
+private func parentGenesisLinks(
+    in header: BlockHeader,
+    parentPath: [String],
+    fetcher: any Fetcher
+) async throws -> [ParentGenesisLink] {
+    let content = try await header.resolveBlockContent(fetcher: fetcher)
+    guard let transactions = content.node?.transactions.node else {
+        throw DataErrors.nodeNotAvailable
+    }
+    var links = Set<ParentGenesisLink>()
+    for transaction in try transactions.allKeysAndValues().values {
+        guard let body = transaction.node?.body.node else {
+            throw DataErrors.nodeNotAvailable
+        }
+        for action in body.genesisActions {
+            links.insert(ParentGenesisLink(
+                parentPath: parentPath,
+                directory: action.directory,
+                childGenesisCID: action.blockCID,
+                // A self-contained child genesis commits to the empty parent
+                // state, so its recorded authorization binds to emptyHeader —
+                // never the recording block's prevState.
+                parentStateCID: LatticeState.emptyHeader.rawCID
+            ))
+        }
+    }
+    return links.sorted {
+        ($0.directory, $0.childGenesisCID, $0.parentStateCID)
+            < ($1.directory, $1.childGenesisCID, $1.parentStateCID)
+    }
+}
+
+private enum ChainLocalAdmission {
+    static func verifyChildProof(
+        _ package: ChildValidationPackage,
+        child: Block,
+        context: ChainRuntimeContext
+    ) async -> Result<VerifiedChildEvidence, ChainAdmissionFailure> {
+        await package.proof.verifySecuringWork(
+            child: child,
+            chainPath: context.path
+        ).mapError(mapProofFailure)
+    }
+
+    static func validateParentFacts(
+        _ package: ChildValidationPackage,
+        child: Block,
+        childCID: String,
+        context: ChainRuntimeContext,
+        fetcher: any Fetcher
+    ) async -> ChainAdmissionFailure? {
+        let parentPath = Array(context.path.dropLast())
+        if child.parent == nil {
+            guard child.hasGenesisAdmissionShape() else {
+                return .protocolInvalid
+            }
+            guard package.parentStateContinuityLink == nil,
+                  let directory = context.path.last else {
+                return .providerMalformedEvidence
+            }
+            guard let genesis = package.parentGenesisLink else {
+                return .crossChainEvidenceRequired(.parentGenesis(
+                    parentPath: parentPath,
+                    directory: directory,
+                    childGenesisCID: childCID,
+                    parentStateCID: child.parentState.rawCID
+                ))
+            }
+            guard genesis == ParentGenesisLink(
+                parentPath: parentPath,
+                directory: directory,
+                childGenesisCID: childCID,
+                parentStateCID: child.parentState.rawCID
+            ) else {
+                return .providerMalformedEvidence
+            }
+            return nil
+        }
+
+        guard package.parentGenesisLink == nil, child.parent != nil else {
+            return .providerMalformedEvidence
+        }
+        // Block 1 proves its anchor exactly like every other height (§5.3 step
+        // 6, which carries no height-1 exemption). A genesis's `parentState` is
+        // `emptyHeader` and every genesis's `prevState` is `emptyHeader` too, so
+        // continuity from it terminates at the PARENT's own genesis — i.e. "this
+        // state is reachable from real parent history", which is the anchor
+        // block 1 needs.
+        //
+        // This previously delegated to `verifySecuringWork`'s terminal binding,
+        // which cannot carry it: that compares the child's declared
+        // `parentState` against a CARRIER's `prevState`, and a carrier is
+        // content-addressed bytes that need not be admitted, connected, valid or
+        // canonical (§9.5). Both sides were therefore attacker-chosen, and a
+        // forged `receiptState` could settle a withdrawal that was never paid.
+        // Anchored from the parent chain's GENESIS, not from the predecessor.
+        //
+        // Comparing against the predecessor makes this an induction, and the
+        // induction has no base on the weighed tier: a weighed admission never
+        // runs these checks at all, so a weighed predecessor proved nothing
+        // about its own `parentState`. A block could then match its unchecked
+        // predecessor, take the equality branch, and be admitted with zero
+        // evidence — laundering a forged parent state through the tier that
+        // deliberately defers verification. That is the same shape as the
+        // defect this rule exists to close, one height further along.
+        //
+        // So every block proves its own anchor directly. `emptyHeader` is
+        // reachable only at the parent's genesis, making this "reachable from
+        // real parent history" for each block on its own evidence, and the
+        // executed-from-genesis frontier answers it in O(1) — so the equality
+        // shortcut bought nothing that is worth an induction.
+        let fromStateCID = LatticeState.emptyHeader.rawCID
+        let toStateCID = child.parentState.rawCID
+        if fromStateCID == toStateCID {
+            // The block commits no parent state at all; there is nothing to
+            // anchor.
+            guard package.parentStateContinuityLink == nil else {
+                return .providerMalformedEvidence
+            }
+            return nil
+        }
+
+        let expected = ParentStateContinuityLink(
+            parentPath: parentPath,
+            fromStateCID: fromStateCID,
+            toStateCID: toStateCID
+        )
+        guard let link = package.parentStateContinuityLink else {
+            return .crossChainEvidenceRequired(.parentStateContinuity(
+                parentPath: parentPath,
+                fromStateCID: fromStateCID,
+                toStateCID: toStateCID
+            ))
+        }
+        guard link == expected else {
+            return .providerMalformedEvidence
+        }
+        return nil
+    }
+
+    static func prepare(
+        level: ChainLevel,
+        blockHeader: BlockHeader,
+        fetcher: any Fetcher,
+        childPackage: ChildValidationPackage?,
+        validationContext: ValidationContext,
+        mode: AdmissionMode = .eager
+    ) async -> Preparation {
+        let context = level.context
+        let resolvedHeader: BlockHeader
+        let block: Block
+        switch await resolveBlock(blockHeader, fetcher: fetcher) {
+        case .success(let resolved):
+            resolvedHeader = resolved.header
+            block = resolved.block
+        case .failure(let failure):
+            return .result(rejection(failure))
+        }
+        let blockHash = resolvedHeader.rawCID
+        let knownBlock = await level.chain.contains(blockHash: blockHash)
+
+        let grindID: String
+        let contribution: VerifiedWorkContribution?
+        if context.isRoot {
+            guard childPackage == nil else {
+                return .result(rejection(.protocolInvalid))
+            }
+            let rootHash = block.proofOfWorkHash()
+            grindID = blockHash
+            contribution = block.validateProofOfWork(nexusHash: rootHash)
+                ? VerifiedWorkContribution(
+                    id: blockHash,
+                    work: workForTarget(block.target)
+                )
+                : nil
+        } else {
+            guard let childPackage else {
+                return .result(rejection(.crossChainEvidenceRequired(.childProof(
+                    chainPath: context.path,
+                    childCID: blockHash
+                ))))
+            }
+            switch await verifyChildProof(
+                childPackage,
+                child: block,
+                context: context
+            ) {
+            case .success(let verified):
+                grindID = verified.grindID
+                contribution = verified.contribution
+            case .failure(let failure):
+                return .result(rejection(failure))
+            }
+        }
+        let carrierLink = ParentCarrierLink(
+            parentPath: context.path,
+            carrierCID: blockHash,
+            rootCID: grindID
+        )
+
+        let carrier = await deriveCarrierLink(
+            candidate: carrierLink,
+            blockHash: blockHash,
+            block: block,
+            level: level
+        )
+
+        guard let contribution else {
+            return .result(.carrier(
+                carrier.relayLink,
+                sameChainPredecessor: nil
+            ))
+        }
+
+        // §9.10: the weighed and eager sites below enumerate the block's child
+        // commitments only where a block fact is emitted — after its work is
+        // verified (reading an attacker-sized `children` index costs
+        // proof-of-work) and after the duplicate and evidence short-circuits (a
+        // re-delivered block costs nothing here). The validate tier orders its
+        // own enumeration after its verdict funnel, in `prepareValidatedTier`.
+        // Required content, like the rest of the boundary: an unavailable trie
+        // must not degrade to "commits nothing", which would route parent work
+        // to an older committer and let availability decide a
+        // consensus-visible number; every commitments failure below is a
+        // rejection, never an empty commitment set.
+        //
+        // Validated tier: the block was already weighed (its work is verified
+        // above and durable). Execute it now and record a validity verdict,
+        // bypassing the weighed/known/duplicate short-circuits that assume a
+        // first-observation of the header. Isolated so the eager and weighed
+        // paths are untouched.
+        if case .validate = mode {
+            return await prepareValidatedTier(
+                resolvedHeader: resolvedHeader,
+                block: block,
+                blockHash: blockHash,
+                fetcher: fetcher,
+                contribution: contribution,
+                carrier: carrier,
+                carrierLink: carrierLink,
+                childPackage: childPackage,
+                context: context,
+                level: level,
+                validationContext: validationContext
+            )
+        }
+
+        if let existing = await level.chain.workContribution(
+            id: contribution.id,
+            at: blockHash
+        ), existing.work >= contribution.work {
+            if knownBlock {
+                // A predecessor can connect after preflight but before the
+                // node takes its mutation lease. Keep this duplicate's
+                // immutable evidence so the lease can recheck only ancestry.
+                let genesisLinks: [ParentGenesisLink]
+                do {
+                    genesisLinks = try await parentGenesisLinks(
+                        in: resolvedHeader,
+                        parentPath: carrierLink.parentPath,
+                        fetcher: fetcher
+                    )
+                } catch {
+                    // Carrier link intentionally not relayed here
+                    // (pre-existing quirk, kept so admission decisions stay byte-identical;
+                    // refactor wave-2 follow-up F2: a known duplicate whose genesis-link enumeration fails drops the carrier link).
+                    return .result(rejection(
+                        classifyValidationFailure(error),
+                        sameChainPredecessor: carrier.sameChainPredecessor
+                    ))
+                }
+                return .duplicate(PreparedDuplicateAdmissionState(
+                    carrierLink: carrierLink,
+                    parentGenesisLinks: genesisLinks
+                ))
+            }
+            return .result(.duplicate(
+                carrier.relayLink,
+                sameChainPredecessor: carrier.sameChainPredecessor
+            ))
+        }
+
+        if knownBlock {
+            // A second, distinct grind on a block already held is new evidence,
+            // not a duplicate — so it does not take the branch above and would
+            // otherwise issue hierarchy facts with issuance still enabled. Gate
+            // it on whether this chain EXECUTED the block: extra work says
+            // nothing about whether the transition is valid, and a child must
+            // not bind to a commitment this chain has not verified.
+            let executed = await level.chain.hasExecutedAncestry(
+                blockHash: blockHash
+            )
+            return .ready(PreparedAdmission(
+                resolvedHeader: resolvedHeader,
+                block: block,
+                fetcher: fetcher,
+                contribution: contribution,
+                carrierLink: carrierLink,
+                verifiedCarrierLink: carrier.issuableLink,
+                sameChainPredecessor: carrier.sameChainPredecessor,
+                kind: .evidence,
+                defersHierarchyIssuance: !executed
+            ))
+        }
+
+        // Weighed tier (deferred execution): the block is possessed and its
+        // work is verified (root PoW or child securing proof, above), so it can
+        // enter fork choice now. Skip the state transition entirely; emit a
+        // block fact whose declared `postStateCID` is recorded as an unverified
+        // claim (`StateDiff.empty`, no materialized state). Validity is a later,
+        // separate judgment on the validated tier. The consensus graph never
+        // reads `stateDiff`, so this contributes to fork choice identically to
+        // the eager path.
+        //
+        // Weighed = possess + structurally verify. Work binds nothing to the
+        // parent, so the header-linkage rules the eager path runs inside
+        // `validateNexus` (version, parent, spec, prevState == parent.postState,
+        // height, timestamp, target schedule) run here too, with the same
+        // outcomes: a failed rule is a completed deterministic check, a
+        // not-yet-admissible timestamp defers, a missing parent is unavailable
+        // evidence. A genesis is never weighed — only a self/pinned genesis is
+        // admitted, eagerly, through bootstrap.
+        if case .weighed = mode {
+            guard block.parent != nil else {
+                // Carrier link intentionally not relayed here
+                // (pre-existing quirk, kept so admission decisions stay byte-identical;
+                // refactor wave-2 follow-up F1: a rival genesis in eager/weighed mode drops the carrier link the validate tier keeps).
+                return .result(rejection(.protocolInvalid))
+            }
+            if let failure = await validateHeaderLinkage(
+                block: block,
+                fetcher: fetcher,
+                chain: level.chain,
+                validationContext: validationContext
+            ) {
+                return .result(rejection(failure, carrier: carrier))
+            }
+            let commitments: [String: String]
+            switch await childCommitments(of: resolvedHeader, fetcher: fetcher) {
+            case .success(let enumerated): commitments = enumerated
+            case .failure(let failure):
+                return .result(rejection(failure, carrier: carrier))
+            }
+            return .ready(PreparedAdmission(
+                resolvedHeader: resolvedHeader,
+                block: block,
+                fetcher: fetcher,
+                contribution: contribution,
+                carrierLink: carrierLink,
+                verifiedCarrierLink: carrier.issuableLink,
+                sameChainPredecessor: carrier.sameChainPredecessor,
+                kind: .block(StateDiff.empty, nil, validated: false),
+                defersHierarchyIssuance: true,
+                defersBodyStore: true,
+                childCommitments: commitments
+            ))
+        }
+
+        if block.parent == nil {
+            guard !context.isRoot, block.height == 0 else {
+                // Carrier link intentionally not relayed here
+                // (pre-existing quirk, kept so admission decisions stay byte-identical;
+                // refactor wave-2 follow-up F1: a rival genesis in eager/weighed mode drops the carrier link the validate tier keeps).
+                return .result(rejection(.protocolInvalid))
+            }
+        }
+
+        switch await executeTransition(
+            block: block,
+            blockHash: blockHash,
+            fetcher: fetcher,
+            chain: level.chain,
+            childPackage: childPackage,
+            context: context,
+            validationContext: validationContext
+        ) {
+        case .failure(let failure):
+            return .result(rejection(failure, carrier: carrier))
+        case .success(let transition):
+            let commitments: [String: String]
+            switch await childCommitments(of: resolvedHeader, fetcher: fetcher) {
+            case .success(let enumerated): commitments = enumerated
+            case .failure(let failure):
+                return .result(rejection(failure, carrier: carrier))
+            }
+            return .ready(PreparedAdmission(
+                resolvedHeader: resolvedHeader,
+                block: block,
+                fetcher: fetcher,
+                contribution: contribution,
+                carrierLink: carrierLink,
+                verifiedCarrierLink: carrier.issuableLink,
+                sameChainPredecessor: carrier.sameChainPredecessor,
+                kind: .block(
+                    transition.stateDiff,
+                    transition.materializedPostState,
+                    validated: true
+                ),
+                childCommitments: commitments
+            ))
+        }
+    }
+
+    /// Execute a previously-weighed block and produce a validity verdict. A
+    /// completed deterministic invalidity becomes an `.exclusion`; every other
+    /// failure is a non-verdict retry (availability, ordering) that excludes
+    /// nothing. Success upgrades the weighed claim with the materialized state.
+    private static func prepareValidatedTier(
+        resolvedHeader: BlockHeader,
+        block: Block,
+        blockHash: String,
+        fetcher: any Fetcher,
+        contribution: VerifiedWorkContribution,
+        carrier: (
+            relayLink: ParentCarrierLink,
+            issuableLink: ParentCarrierLink?,
+            sameChainPredecessor: SameChainPredecessorRequirement?
+        ),
+        carrierLink: ParentCarrierLink,
+        childPackage: ChildValidationPackage?,
+        context: ChainRuntimeContext,
+        level: ChainLevel,
+        validationContext: ValidationContext
+    ) async -> Preparation {
+        // A root may be excluded only while this chain has ANOTHER executed
+        // root to stand on (§9.9). Otherwise the verdict is parked as a
+        // non-verdict: never written, so recovery cannot depend on the order
+        // it replays in, and the validated tier stops here — visibly — rather
+        // than leave a canonical path beneath a proven-invalid genesis.
+        let mayExclude: Bool
+        if block.parent == nil {
+            mayExclude = await level.chain.hasExecutedRoot(besides: blockHash)
+        } else {
+            mayExclude = true
+        }
+        func excluded() -> Preparation {
+            guard mayExclude else {
+                return .result(rejection(.notYetAdmissible, carrier: carrier))
+            }
+            return .ready(PreparedAdmission(
+                resolvedHeader: resolvedHeader,
+                block: block,
+                fetcher: fetcher,
+                contribution: contribution,
+                carrierLink: carrierLink,
+                verifiedCarrierLink: carrier.issuableLink,
+                sameChainPredecessor: carrier.sameChainPredecessor,
+                kind: .exclusion
+            ))
+        }
+        func rejected(_ failure: ChainAdmissionFailure) -> Preparation {
+            // A completed deterministic check is a verdict; anything else
+            // (unavailable, ordering) is retryable and never excludes.
+            isDeterministicInvalidity(failure)
+                ? excluded()
+                : .result(rejection(failure, carrier: carrier))
+        }
+
+        if block.parent == nil {
+            guard !context.isRoot, block.height == 0 else {
+                return excluded()
+            }
+        }
+
+        switch await executeTransition(
+            block: block,
+            blockHash: blockHash,
+            fetcher: fetcher,
+            chain: level.chain,
+            childPackage: childPackage,
+            context: context,
+            validationContext: validationContext
+        ) {
+        case .failure(let failure):
+            return rejected(failure)
+        case .success(let transition):
+            // Commitments (§9.10) only on the one outcome that emits a block
+            // fact, and after every verdict above — so a malformed trie is
+            // classified by the same funnel as any other deterministic
+            // invalidity, and an unavailable one never blocks an exclusion.
+            // A possessed block already carries its map; enumerate only when
+            // none was recorded (a pre-field fact).
+            let commitments: [String: String]
+            if let recorded = await level.chain.recordedChildCommitments(of: blockHash) {
+                commitments = recorded
+            } else {
+                switch await childCommitments(of: resolvedHeader, fetcher: fetcher) {
+                case .success(let enumerated): commitments = enumerated
+                case .failure(let failure): return rejected(failure)
+                }
+            }
+            return .ready(PreparedAdmission(
+                resolvedHeader: resolvedHeader,
+                block: block,
+                fetcher: fetcher,
+                contribution: contribution,
+                carrierLink: carrierLink,
+                verifiedCarrierLink: carrier.issuableLink,
+                sameChainPredecessor: carrier.sameChainPredecessor,
+                kind: .block(
+                    transition.stateDiff,
+                    transition.materializedPostState,
+                    validated: true
+                ),
+                childCommitments: commitments
+            ))
+        }
+    }
+
+    /// A proven-invalid block asks the node for nothing: its predecessor must
+    /// not be acquired on its behalf, or a fabricated chain would be parked and
+    /// backfilled one junk block at a time. Only a non-verdict (availability,
+    /// ordering) keeps the requirement so the node can retry after acquiring.
+    static func predecessorRequirement(
+        _ requirement: SameChainPredecessorRequirement?,
+        after failure: ChainAdmissionFailure
+    ) -> SameChainPredecessorRequirement? {
+        isDeterministicInvalidity(failure) ? nil : requirement
+    }
+
+    /// The one way a preparation is refused: every rejection carries the
+    /// carrier link its site chose and a predecessor requirement filtered by
+    /// the failure (`predecessorRequirement`), so no site can hand the node a
+    /// predecessor to acquire on behalf of a proven-invalid block.
+    static func rejection(
+        _ failure: ChainAdmissionFailure,
+        parentCarrierLink: ParentCarrierLink? = nil,
+        sameChainPredecessor: SameChainPredecessorRequirement? = nil
+    ) -> ChainLocalBlockResult {
+        .rejected(
+            failure,
+            parentCarrierLink: parentCarrierLink,
+            sameChainPredecessor: predecessorRequirement(
+                sameChainPredecessor, after: failure
+            )
+        )
+    }
+
+    static func rejection(
+        _ failure: ChainAdmissionFailure,
+        carrier: (
+            relayLink: ParentCarrierLink,
+            issuableLink: ParentCarrierLink?,
+            sameChainPredecessor: SameChainPredecessorRequirement?
+        )
+    ) -> ChainLocalBlockResult {
+        rejection(
+            failure,
+            parentCarrierLink: carrier.relayLink,
+            sameChainPredecessor: carrier.sameChainPredecessor
+        )
+    }
+
+    /// A failure is a validity verdict only when execution completed and the
+    /// block is provably invalid. Availability, ordering and capacity failures
+    /// are transient: they must be retried, never recorded as an exclusion.
+    static func isDeterministicInvalidity(_ failure: ChainAdmissionFailure) -> Bool {
+        switch failure {
+        case .protocolInvalid, .localVerificationFailure:
+            return true
+        case .unavailableEvidence, .providerMalformedEvidence,
+             .crossChainEvidenceRequired, .notYetAdmissible,
+             .notAcceptedAtCurrentChain, .revisionExhausted:
+            return false
+        }
+    }
+
+    /// Every child commitment this block makes, `directory → child CID`, read
+    /// from its PoW-bound `children` index (§9.10). Called only after the
+    /// block's work is verified and only on paths that emit a block fact, so
+    /// the walk is never spent on an unauthenticated header. A failure is
+    /// classified like any other boundary resolution: an unavailable node is
+    /// retriable, a malformed one is a verdict (§9.9).
+    static func childCommitments(
+        of blockHeader: BlockHeader,
+        fetcher: any Fetcher
+    ) async -> Result<[String: String], ChainAdmissionFailure> {
+        do {
+            let resolved = try await blockHeader.resolve(
+                paths: [[CHILDREN_PROPERTY]: .targeted],
+                fetcher: fetcher
+            )
+            guard let children = resolved.node?.children.node else {
+                return .failure(.unavailableEvidence)
+            }
+            return .success(children.entries.mapValues(\.rawCID))
+        } catch {
+            return .failure(classifyResolutionFailure(error))
+        }
+    }
+
+    static func resolveBlock(
+        _ blockHeader: BlockHeader,
+        fetcher: any Fetcher
+    ) async -> Result<(header: BlockHeader, block: Block), ChainAdmissionFailure> {
+        do {
+            let resolved = try await blockHeader.resolve(fetcher: fetcher)
+            guard let block = resolved.node else {
+                return .failure(.unavailableEvidence)
+            }
+            guard let canonicalCID = try? BlockHeader(node: block).rawCID,
+                  canonicalCID == resolved.rawCID else {
+                return .failure(.providerMalformedEvidence)
+            }
+            return .success((resolved, block))
+        } catch {
+            return .failure(classifyResolutionFailure(error))
+        }
+    }
+
+    struct ExecutedTransition: Sendable {
+        let stateDiff: StateDiff
+        let materializedPostState: LatticeState?
+    }
+
+    /// The one place a block's state transition is executed for admission:
+    /// genesis or ordinary dispatch on `parent`, a thrown failure classified
+    /// first, a false verdict as `.protocolInvalid`, and — only after the
+    /// transition succeeded — the child's parent facts checked against its
+    /// package. `chain` is the difficulty-anchor lookup for ordinary blocks
+    /// (nil at bootstrap, where only a genesis is ever executed).
+    static func executeTransition(
+        block: Block,
+        blockHash: String,
+        fetcher: any Fetcher,
+        chain: ChainState?,
+        childPackage: ChildValidationPackage?,
+        context: ChainRuntimeContext,
+        validationContext: ValidationContext
+    ) async -> Result<ExecutedTransition, ChainAdmissionFailure> {
+        let validation: (Bool, StateDiff, LatticeState?)
+        do {
+            if block.parent == nil {
+                validation = try await block.validateGenesisTransition(
+                    fetcher: fetcher,
+                    chainPath: context.path,
+                    reportTemporalFailure: true,
+                    validationContext: validationContext
+                )
+            } else {
+                validation = try await block.validateNexus(
+                    fetcher: fetcher,
+                    chain: chain,
+                    chainPath: context.path,
+                    reportTemporalFailure: true,
+                    validationContext: validationContext
+                )
+            }
+        } catch {
+            return .failure(classifyValidationFailure(error))
+        }
+        guard validation.0 else { return .failure(.protocolInvalid) }
+        if !context.isRoot, let childPackage,
+           let failure = await validateParentFacts(
+               childPackage,
+               child: block,
+               childCID: blockHash,
+               context: context,
+               fetcher: fetcher
+           ) {
+            return .failure(failure)
+        }
+        return .success(ExecutedTransition(
+            stateDiff: validation.1,
+            materializedPostState: validation.2
+        ))
+    }
+
+    /// A real grind may carry descendant work even when this block is invalid
+    /// or disconnected on its own chain. Connectivity is requested separately
+    /// only so this process can still try ordinary block admission.
+    static func deriveCarrierLink(
+        candidate: ParentCarrierLink,
+        blockHash: String,
+        block: Block,
+        level: ChainLevel
+    ) async -> (
+        relayLink: ParentCarrierLink,
+        issuableLink: ParentCarrierLink?,
+        sameChainPredecessor: SameChainPredecessorRequirement?
+    ) {
+        if await level.chain.hasConnectedAncestry(blockHash: blockHash) {
+            return (candidate, candidate, nil)
+        }
+        guard let predecessorCID = block.parent?.rawCID else {
+            return (
+                candidate,
+                level.context.isRoot ? nil : candidate,
+                nil
+            )
+        }
+        let predecessorIsConnected = await level.chain.hasConnectedAncestry(
+            blockHash: predecessorCID
+        )
+        guard !predecessorIsConnected else {
+            return (candidate, candidate, nil)
+        }
+        return (candidate, nil, SameChainPredecessorRequirement(
+            descendantCID: blockHash,
+            predecessorCID: predecessorCID
+        ))
+    }
+
+    /// Structural verification for the weighed tier: the header-linkage rules
+    /// `validateBlock` runs (through `validateNexus`) before execution, with
+    /// the same failure classification, and nothing else.
+    static func validateHeaderLinkage(
+        block: Block,
+        fetcher: any Fetcher,
+        chain: ChainState,
+        validationContext: ValidationContext
+    ) async -> ChainAdmissionFailure? {
+        do {
+            let linked = try await block.validateHeaderLinkage(
+                fetcher: fetcher,
+                chain: chain,
+                reportTemporalFailure: true,
+                validationContext: validationContext
+            )
+            return linked ? nil : .protocolInvalid
+        } catch {
+            return classifyValidationFailure(error)
+        }
+    }
+
+    static func finishBootstrap(
+        context: ChainRuntimeContext,
+        resolved: (header: BlockHeader, block: Block),
+        fetcher: any Fetcher,
+        contribution: VerifiedWorkContribution,
+        carrierLink: ParentCarrierLink,
+        transition: ExecutedTransition,
+        validationContentStorer: any VolumeStorer,
+        materializedVolumeStorer: any VolumeStorer,
+        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void
+    ) async throws -> (
+        level: ChainLevel,
+        stateDiff: StateDiff,
+        materializedPostState: LatticeState?,
+        commit: ChainCommit,
+        parentCarrierLink: ParentCarrierLink
+    ) {
+        let prepared = PreparedAdmission(
+            resolvedHeader: resolved.header,
+            block: resolved.block,
+            fetcher: fetcher,
+            contribution: contribution,
+            carrierLink: carrierLink,
+            verifiedCarrierLink: carrierLink,
+            sameChainPredecessor: nil,
+            kind: .block(
+                transition.stateDiff,
+                transition.materializedPostState,
+                validated: true
+            )
+        )
+        try await prepared.cacheValidationContent(to: validationContentStorer)
+        let stagingContext = try await prepared.stagingContext()
+        try await prepared.storeMaterializedPostState(
+            to: materializedVolumeStorer
+        )
+        try await stage(stagingContext)
+        let chain = try await ChainState.restore(replaying: [prepared.facts])
+        return (
+            ChainLevel(chain: chain, context: context),
+            transition.stateDiff,
+            transition.materializedPostState,
+            ChainCommit(
+                tipHash: resolved.header.rawCID,
+                mainChainBlocksAdded: [resolved.header.rawCID: 0]
+            ),
+            carrierLink
+        )
+    }
+
+    static func result(
+        for submission: SubmissionResult,
+        prepared: PreparedAdmission,
+        sameChainPredecessor: SameChainPredecessorRequirement?,
+        parentCarrierLink: ParentCarrierLink?
+    ) -> ChainLocalBlockResult {
+        guard let commit = submission.commit else {
+            // Unreachable with a non-nil `submission`, and safe by construction:
+            // `applyStaged` returns a non-nil `SubmissionResult` only via
+            // `submitBlock` (Chain.swift:1226-1231) or `addWorkContribution`
+            // (Chain.swift:1830) — both mutate the durable graph and therefore
+            // run `projectCanonicalChain()` themselves, always producing a
+            // non-nil commit. A no-mutation, stale-heavier outcome instead
+            // returns `nil` (Chain.swift:1877/1907), which `commitPreflight`
+            // handles by re-projecting at :1048. So no fork-choice re-run is
+            // owed here — projection already ran on the mutation path.
+            return .duplicate(
+                parentCarrierLink,
+                sameChainPredecessor: sameChainPredecessor
+            )
+        }
+        let materializedPostState: LatticeState?
+        if case .block(_, let state, _) = prepared.kind {
+            materializedPostState = state
+        } else {
+            materializedPostState = nil
+        }
+        return .accepted(ChainAcceptance(
+            facts: prepared.facts,
+            materializedPostState: materializedPostState,
+            commit: commit,
+            sameChainPredecessor: sameChainPredecessor,
+            parentCarrierLink: parentCarrierLink
+        ))
+    }
+}
+
+private func classifyResolutionFailure(_ error: Error) -> ChainAdmissionFailure {
+    if error is FetcherError { return .unavailableEvidence }
+    if let dataError = error as? DataErrors { return classifyDataError(dataError) }
+    if error is CashewDecodingError || error is ResolutionErrors {
+        return .protocolInvalid
+    }
+    // An unenumerated error is not a completed deterministic check, so it must
+    // NOT exclude: fail toward retry. A future error type on any fetch/IO path
+    // would otherwise become a silent consensus-split vector.
+    return .unavailableEvidence
+}
+
+private func mapProofFailure(
+    _ failure: ChildProofVerificationFailure
+) -> ChainAdmissionFailure {
+    switch failure {
+    case .crossChainEvidenceRequired(let requirement):
+        .crossChainEvidenceRequired(requirement)
+    case .malformedEvidence: .providerMalformedEvidence
+    case .protocolInvalid: .protocolInvalid
+    }
+}
+
+private func classifyValidationFailure(_ error: Error) -> ChainAdmissionFailure {
+    if error is BlockValidationError { return .notYetAdmissible }
+    if let dataError = error as? DataErrors { return classifyDataError(dataError) }
+    if error is FetcherError { return .unavailableEvidence }
+    if let validationError = error as? ValidationErrors {
+        switch validationError {
+        case .transactionNotResolved, .prevStateNotResolved, .postStateNotResolved:
+            return .unavailableEvidence
+        case .serializationError:
+            return .localVerificationFailure
+        }
+    }
+    if let transformError = error as? TransformErrors {
+        switch transformError {
+        case .missingData:
+            return .unavailableEvidence
+        case .transformFailed, .invalidKey:
+            return .protocolInvalid
+        }
+    }
+    if let policyError = error as? WasmPolicyError {
+        switch policyError {
+        case .missingModule, .resourceUnavailable:
+            // Missing module bytes, or a node-local resource guard (module size,
+            // declared memory, or table) tripping: this node cannot reach a
+            // verdict, but the policy is not proven invalid. Unavailable, never
+            // `protocolInvalid` — otherwise nodes with different limits fork on
+            // the same block.
+            return .unavailableEvidence
+        case .contextEncodingFailed:
+            return .localVerificationFailure
+        default:
+            // An unenumerated policy outcome is not a completed verdict: retry,
+            // never exclude, so a new case can never silently fork the network.
+            return .unavailableEvidence
+        }
+    }
+    if error is StateErrors || error is ProofErrors
+        || error is CashewDecodingError || error is ResolutionErrors {
+        return .protocolInvalid
+    }
+    // Unenumerated error: not a completed deterministic check → retry, exclude
+    // nothing. Enumerated deterministic producers above keep excluding.
+    return .unavailableEvidence
+}
+
+private func classifyDataError(_ error: DataErrors) -> ChainAdmissionFailure {
+    switch error {
+    case .nodeNotAvailable, .keyNotFound:
+        return .unavailableEvidence
+    case .cidMismatch:
+        return .providerMalformedEvidence
+    case .missingDeclaredChild:
+        return .protocolInvalid
+    case .serializationFailed, .cidCreationFailed, .encryptionFailed,
+         .decryptionFailed, .invalidIV:
+        return .localVerificationFailure
+    }
+}
+
+public extension ChainLevel {
+#if DEBUG
+    /// Test seam for the availability-vs-invalidity partition that gates the
+    /// validated tier's exclusion verdict.
+    static func isDeterministicInvalidityForTesting(
+        _ failure: ChainAdmissionFailure
+    ) -> Bool {
+        ChainLocalAdmission.isDeterministicInvalidity(failure)
+    }
+
+    /// Test seam for the fail-safe classifier catch-alls: an unrecognized error
+    /// must classify as retryable, never as an excluding verdict.
+    static func classifyValidationFailureForTesting(
+        _ error: Error
+    ) -> ChainAdmissionFailure {
+        classifyValidationFailure(error)
+    }
+
+    static func classifyResolutionFailureForTesting(
+        _ error: Error
+    ) -> ChainAdmissionFailure {
+        classifyResolutionFailure(error)
+    }
+#endif
+
+    /// Verify one candidate and store its immutable validation Volumes without
+    /// mutating the accepted graph. The returned token contains the exact
+    /// hierarchy facts the node must make durable with the batch.
+    func preflightBlockHeaderChainLocal(
+        _ blockHeader: BlockHeader,
+        fetcher: any Fetcher,
+        childPackage: ChildValidationPackage? = nil,
+        validationContext: ValidationContext = .current,
+        validationContentStorer: any VolumeStorer,
+        mode: AdmissionMode = .eager
+    ) async throws -> ChainAdmissionPreflightResult {
+        switch await ChainLocalAdmission.prepare(
+            level: self,
+            blockHeader: blockHeader,
+            fetcher: fetcher,
+            childPackage: childPackage,
+            validationContext: validationContext,
+            mode: mode
+        ) {
+        case .result(let result, let parentGenesisLinks):
+            return .terminal(
+                result,
+                parentGenesisLinks: parentGenesisLinks
+            )
+        case .duplicate(let duplicate):
+            return .duplicate(PreparedDuplicateAdmission(
+                levelIdentity: admissionIdentity,
+                state: duplicate
+            ))
+        case .ready(let prepared):
+            try await prepared.cacheValidationContent(
+                to: validationContentStorer
+            )
+            let stagingContext = try await prepared.stagingContext()
+            return .ready(PreparedChainAdmission(
+                levelIdentity: admissionIdentity,
+                prepared: prepared,
+                stagingContext: stagingContext
+            ))
+        }
+    }
+
+    /// Resolve an already-validated duplicate at the node's mutation boundary.
+    /// Accepted ancestry only grows, so this rechecks no remote content and
+    /// writes no consensus facts.
+    func resolveDuplicatePreflight(
+        _ preflight: PreparedDuplicateAdmission
+    ) async throws -> (
+        result: ChainLocalBlockResult,
+        parentGenesisLinks: [ParentGenesisLink]
+    ) {
+        guard let duplicate = await preflight.take(for: admissionIdentity) else {
+            throw ChainAdmissionPreflightError.invalidToken
+        }
+        // EXECUTED, not merely connected. A weighed block is connected from
+        // its header alone, and re-offering a header — ordinary gossip — takes
+        // this path. Issuing here would hand a child a genesis binding this
+        // chain never verified and may yet prove invalid, which is the rule at
+        // the top of this file, reached through a seam it does not cover.
+        let isExecuted = await chain.hasExecutedAncestry(
+            blockHash: duplicate.carrierLink.carrierCID
+        )
+        let requirement = await chain.sameChainPredecessorRequirement(
+            for: duplicate.carrierLink.carrierCID
+        )
+        let promotedCommit = await chain.reevaluateForkChoice()
+        return (
+            .duplicate(
+                duplicate.carrierLink,
+                sameChainPredecessor: requirement,
+                promotedCommit: promotedCommit
+            ),
+            isExecuted ? duplicate.parentGenesisLinks : []
+        )
+    }
+
+    /// Consume a preflight token at the node-owned durability boundary. This
+    /// method performs no remote resolution: callers can take their mutation
+    /// lease immediately before invoking it.
+    func commitPreflight(
+        _ preflight: PreparedChainAdmission,
+        materializedVolumeStorer: any VolumeStorer,
+        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void
+    ) async throws -> ChainLocalBlockResult {
+        guard let prepared = await preflight.take(for: admissionIdentity) else {
+            throw ChainAdmissionPreflightError.invalidToken
+        }
+        try await prepared.storeMaterializedPostState(
+            to: materializedVolumeStorer
+        )
+        guard await chain.reserveAdmissionRevision() else {
+            return ChainLocalAdmission.rejection(
+                .revisionExhausted,
+                parentCarrierLink: prepared.carrierLink,
+                sameChainPredecessor: prepared.sameChainPredecessor
+            )
+        }
+        // Every refusal the reducer can make of an exclusion is made HERE,
+        // under the lease and BEFORE the durable write, so a fact the reducer
+        // would refuse is never written: the block must be possessed, and a
+        // root exclusion may stand only on another EXECUTED root (§9.9).
+        // Preflight checked the latter outside the lease; the other root could
+        // have been excluded since.
+        if case .exclusion = prepared.kind {
+            let target = prepared.resolvedHeader.rawCID
+            let possessed = await chain.contains(blockHash: target)
+            let standsOnAnotherRoot: Bool
+            if prepared.block.parent == nil {
+                standsOnAnotherRoot = await chain.hasExecutedRoot(besides: target)
+            } else {
+                standsOnAnotherRoot = true
+            }
+            guard possessed, standsOnAnotherRoot else {
+                await chain.releaseAdmissionRevision()
+                return ChainLocalAdmission.rejection(
+                    .notYetAdmissible,
+                    parentCarrierLink: prepared.carrierLink,
+                    sameChainPredecessor: prepared.sameChainPredecessor
+                )
+            }
+        }
+        let stagingContext: ChainAdmissionStagingContext
+        if preflight.stagingContext.issuedCarrierLink != nil {
+            stagingContext = preflight.stagingContext
+        } else if !prepared.defersHierarchyIssuance,
+                  let parentCID = prepared.block.parent?.rawCID,
+                  await chain.hasConnectedAncestry(blockHash: parentCID) {
+            // Promotion issues a carrier link when the predecessor connected
+            // after preflight. It keys off `hasConnectedAncestry` (routed, i.e.
+            // weighed-inclusive), so it MUST be suppressed for a weighed block —
+            // otherwise a deferred, unexecuted block would issue a carrier link a
+            // child could bind to. Issuance is re-derived when it is validated.
+            stagingContext = ChainAdmissionStagingContext(
+                batch: preflight.stagingContext.batch,
+                issuedCarrierLink: prepared.carrierLink,
+                parentGenesisLinks: preflight.stagingContext.parentGenesisLinks
+            )
+        } else {
+            stagingContext = preflight.stagingContext
+        }
+        do {
+            try await stage(stagingContext)
+        } catch {
+            await chain.releaseAdmissionRevision()
+            throw error
+        }
+        let submission = try await chain.applyReservedStaged(prepared.facts)
+        let requirement = await chain.sameChainPredecessorRequirement(
+            for: prepared.resolvedHeader.rawCID
+        )
+        guard let submission else {
+            let promotedCommit = await chain.reevaluateForkChoice()
+            return .duplicate(
+                prepared.carrierLink,
+                sameChainPredecessor: requirement,
+                promotedCommit: promotedCommit
+            )
+        }
+        return ChainLocalAdmission.result(
+            for: submission,
+            prepared: prepared,
+            sameChainPredecessor: requirement,
+            parentCarrierLink: prepared.carrierLink
+        )
+    }
+
+    /// The node-owned atomic durability boundary. The context contains the
+    /// exact hierarchy facts Lattice verified for this admission, so callers do
+    /// not need to recreate them after the batch has become durable.
+    func admitBlockHeaderChainLocal(
+        _ blockHeader: BlockHeader,
+        fetcher: any Fetcher,
+        childPackage: ChildValidationPackage? = nil,
+        validationContext: ValidationContext = .current,
+        validationContentStorer: any VolumeStorer,
+        materializedVolumeStorer: any VolumeStorer,
+        mode: AdmissionMode = .eager,
+        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void
+    ) async throws -> ChainLocalBlockResult {
+        switch try await preflightBlockHeaderChainLocal(
+            blockHeader,
+            fetcher: fetcher,
+            childPackage: childPackage,
+            validationContext: validationContext,
+            validationContentStorer: validationContentStorer,
+            mode: mode
+        ) {
+        case .terminal(let result, _):
+            return result
+        case .duplicate(let preflight):
+            return try await resolveDuplicatePreflight(preflight).result
+        case .ready(let preflight):
+            return try await commitPreflight(
+                preflight,
+                materializedVolumeStorer: materializedVolumeStorer,
+                stage: stage
+            )
+        }
+    }
+
+    func admitBlockHeaderChainLocal(
+        _ blockHeader: BlockHeader,
+        source: any ContentSource,
+        childPackage: ChildValidationPackage? = nil,
+        validationContext: ValidationContext = .current,
+        validationContentStorer: any VolumeStorer,
+        materializedVolumeStorer: any VolumeStorer,
+        mode: AdmissionMode = .eager,
+        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void
+    ) async throws -> ChainLocalBlockResult {
+        try await admitBlockHeaderChainLocal(
+            blockHeader,
+            fetcher: CoalescingFetcher(source),
+            childPackage: childPackage,
+            validationContext: validationContext,
+            validationContentStorer: validationContentStorer,
+            materializedVolumeStorer: materializedVolumeStorer,
+            mode: mode,
+            stage: stage
+        )
+    }
+
+    /// Root bootstrap variant that stages verified hierarchy facts atomically
+    /// with the first admission batch.
+    static func bootstrap(
+        context: ChainRuntimeContext,
+        genesisHeader: BlockHeader,
+        fetcher: any Fetcher,
+        validationContext: ValidationContext = .current,
+        validationContentStorer: any VolumeStorer,
+        materializedVolumeStorer: any VolumeStorer,
+        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void
+    ) async throws -> (
+        level: ChainLevel,
+        stateDiff: StateDiff,
+        materializedPostState: LatticeState?,
+        commit: ChainCommit,
+        parentCarrierLink: ParentCarrierLink
+    ) {
+        guard context.isRoot else { throw ChainAdmissionFailure.protocolInvalid }
+        let resolved: (header: BlockHeader, block: Block)
+        switch await ChainLocalAdmission.resolveBlock(genesisHeader, fetcher: fetcher) {
+        case .failure(let failure): throw failure
+        case .success(let value): resolved = value
+        }
+        guard resolved.block.parent == nil, resolved.block.height == 0 else {
+            throw ChainAdmissionFailure.protocolInvalid
+        }
+        // Genesis must satisfy its own declared target like any block: a target-0
+        // (or otherwise target-miss) genesis is rejected here, matching child
+        // bootstrap, which only makes a child genesis live once a parent grind
+        // confirms it. The canonical max-target genesis passes trivially.
+        let rootHash = resolved.block.proofOfWorkHash()
+        guard resolved.block.validateProofOfWork(nexusHash: rootHash) else {
+            throw ChainAdmissionFailure.notAcceptedAtCurrentChain
+        }
+        let transition: ChainLocalAdmission.ExecutedTransition
+        switch await ChainLocalAdmission.executeTransition(
+            block: resolved.block,
+            blockHash: resolved.header.rawCID,
+            fetcher: fetcher,
+            chain: nil,
+            childPackage: nil,
+            context: context,
+            validationContext: validationContext
+        ) {
+        case .failure(let failure): throw failure
+        case .success(let value): transition = value
+        }
+        return try await ChainLocalAdmission.finishBootstrap(
+            context: context,
+            resolved: resolved,
+            fetcher: fetcher,
+            contribution: VerifiedWorkContribution(
+                id: resolved.header.rawCID,
+                work: workForTarget(resolved.block.target)
+            ),
+            carrierLink: ParentCarrierLink(
+                parentPath: context.path,
+                carrierCID: resolved.header.rawCID,
+                rootCID: resolved.header.rawCID
+            ),
+            transition: transition,
+            validationContentStorer: validationContentStorer,
+            materializedVolumeStorer: materializedVolumeStorer,
+            stage: stage
+        )
+    }
+
+    /// Child bootstrap variant that stages verified hierarchy facts atomically
+    /// with the first admission batch.
+    static func bootstrap(
+        context: ChainRuntimeContext,
+        genesisHeader: BlockHeader,
+        fetcher: any Fetcher,
+        parentGenesisLink: ParentGenesisLink,
+        validationContext: ValidationContext = .current,
+        validationContentStorer: any VolumeStorer,
+        materializedVolumeStorer: any VolumeStorer,
+        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void
+    ) async throws -> ChildChainBootstrapResult {
+        guard !context.isRoot else { throw ChainAdmissionFailure.protocolInvalid }
+        let resolved: (header: BlockHeader, block: Block)
+        switch await ChainLocalAdmission.resolveBlock(genesisHeader, fetcher: fetcher) {
+        case .failure(let failure): throw failure
+        case .success(let value): resolved = value
+        }
+        guard resolved.block.parent == nil, resolved.block.height == 0 else {
+            throw ChainAdmissionFailure.protocolInvalid
+        }
+        let childCID = resolved.header.rawCID
+        // A child genesis is self-contained and SELF-mined, exactly like a root
+        // genesis — it is never co-mined via a carrier proof. Its grind root and
+        // carrier are itself.
+        let carrierLink = ParentCarrierLink(
+            parentPath: context.path,
+            carrierCID: childCID,
+            rootCID: childCID
+        )
+        // Record gate: the parent must have RECORDED this genesis for this
+        // directory (a plain GenesisAction → genesisState). The caller supplies
+        // the ParentGenesisLink derived from its own validated parent state; here
+        // we confirm it authorizes exactly this self-contained genesis (empty
+        // parentState). This is the sole authorization — there is no carrier proof.
+        guard resolved.block.hasGenesisAdmissionShape(),
+              let directory = context.path.last,
+              parentGenesisLink == ParentGenesisLink(
+                  parentPath: Array(context.path.dropLast()),
+                  directory: directory,
+                  childGenesisCID: childCID,
+                  parentStateCID: LatticeState.emptyHeader.rawCID
+              ) else {
+            return .rejected(
+                .providerMalformedEvidence, parentCarrierLink: carrierLink
+            )
+        }
+        // Self-PoW: the genesis must satisfy its own declared target, like a root
+        // genesis. A target-miss yields no work and is deferred (retriable).
+        let rootHash = resolved.block.proofOfWorkHash()
+        guard resolved.block.validateProofOfWork(nexusHash: rootHash) else {
+            return .carrier(carrierLink)
+        }
+        let contribution = VerifiedWorkContribution(
+            id: childCID,
+            work: workForTarget(resolved.block.target)
+        )
+        let transition: ChainLocalAdmission.ExecutedTransition
+        switch await ChainLocalAdmission.executeTransition(
+            block: resolved.block,
+            blockHash: childCID,
+            fetcher: fetcher,
+            chain: nil,
+            childPackage: nil,
+            context: context,
+            validationContext: validationContext
+        ) {
+        case .failure(let failure):
+            return .rejected(failure, parentCarrierLink: carrierLink)
+        case .success(let value): transition = value
+        }
+        let accepted = try await ChainLocalAdmission.finishBootstrap(
+            context: context,
+            resolved: resolved,
+            fetcher: fetcher,
+            contribution: contribution,
+            carrierLink: carrierLink,
+            transition: transition,
+            validationContentStorer: validationContentStorer,
+            materializedVolumeStorer: materializedVolumeStorer,
+            stage: stage
+        )
+        return .accepted(ChildChainBootstrapAcceptance(
+            level: accepted.level,
+            stateDiff: accepted.stateDiff,
+            materializedPostState: accepted.materializedPostState,
+            commit: accepted.commit,
+            parentCarrierLink: accepted.parentCarrierLink
+        ))
+    }
+}
