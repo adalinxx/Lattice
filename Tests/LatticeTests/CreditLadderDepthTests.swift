@@ -25,7 +25,7 @@ final class CreditLadderDepthTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1_024,
             halvingInterval: 10_000,
-            retargetWindow: 5
+            halfLife: 5
         )
     }
 

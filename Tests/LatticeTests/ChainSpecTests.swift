@@ -14,7 +14,7 @@ final class ChainSpecTests: XCTestCase {
             targetBlockTime: 3_600_000,
             initialReward: 1_048_576,
             halvingInterval: 876_600,
-            retargetWindow: 120
+            halfLife: 120
         )
         let owner = CryptoUtils.createAddress(
             from: "ed01fe416588df6e7fa5213c0d3e430f504bb5203172120c86b874826b55f53bdb7d"
@@ -47,80 +47,8 @@ final class ChainSpecTests: XCTestCase {
         )
         XCTAssertEqual(
             try BlockHeader(node: block).rawCID,
-            "bafyreiayw4z5qz4lt2sljf2enzn7uol3qa6bebadav7qwnqz7agxkiuwhq"
+            "bafyreifvxwhqbwvnrtr2plvtmlvpceqxnexyayjs7klgy6dbkj7yppdsz4"
         )
-    }
-
-    // MARK: - Chain-committed maxTargetChange
-
-    private func retargetSpec(maxTargetChange: UInt8? = nil) -> ChainSpec {
-        ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            maxBlockSize: 1_000_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
-            retargetWindow: 4,
-            maxTargetChange: maxTargetChange
-        )
-    }
-
-    /// A chain commits its own retarget clamp; committing none means UNCLAMPED
-    /// proportional retargeting — there is no protocol default. The choice is
-    /// observable in content identity and drives the clamp factor.
-    func testChainCommittedMaxTargetChangeOptInAndDefault() throws {
-        let defaultSpec = retargetSpec()
-        let looseSpec = retargetSpec(maxTargetChange: 3)
-        XCTAssertNil(defaultSpec.maxTargetChange)
-        XCTAssertEqual(looseSpec.maxTargetChange, 3)
-
-        // Opt-in changes the content-addressed identity; the default spec keeps
-        // the pre-migration bytes (the key is omitted when uncommitted).
-        let defaultCID = try VolumeImpl<ChainSpec>(node: defaultSpec).rawCID
-        let looseCID = try VolumeImpl<ChainSpec>(node: looseSpec).rawCID
-        XCTAssertNotEqual(defaultCID, looseCID)
-
-        // A hard-easing window saturates at the chain's committed factor; a
-        // chain that commits none gets the full proportional correction
-        // (weighted mean 260s vs the 1s target ⇒ ×260 easier).
-        let previous = UInt256(10_000)
-        let easing: [Int64] = [1_000_000, 800_000, 500_000, 100_000, 0]
-        XCTAssertEqual(
-            defaultSpec.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: easing),
-            UInt256(2_600_000)
-        )
-        XCTAssertEqual(
-            looseSpec.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: easing),
-            previous * UInt256(3)
-        )
-    }
-
-    /// A committed value round-trips through the wire; an absent one decodes to
-    /// nil (so an existing chain is unaffected).
-    func testChainCommittedMaxTargetChangeDecodesFromWire() throws {
-        let withValue = Data("""
-        {"maxNumberOfTransactionsPerBlock":1000,"maxStateGrowth":500000,"maxBlockSize":1000000,"premine":0,"targetBlockTime":600000,"initialReward":1048576,"halvingInterval":210000,"retargetWindow":120,"maxTargetChange":4}
-        """.utf8)
-        XCTAssertEqual(try JSONDecoder().decode(ChainSpec.self, from: withValue).maxTargetChange, 4)
-
-        let withoutValue = Data("""
-        {"maxNumberOfTransactionsPerBlock":1000,"maxStateGrowth":500000,"maxBlockSize":1000000,"premine":0,"targetBlockTime":600000,"initialReward":1048576,"halvingInterval":210000,"retargetWindow":120}
-        """.utf8)
-        XCTAssertNil(try JSONDecoder().decode(ChainSpec.self, from: withoutValue).maxTargetChange)
-    }
-
-    /// A nonsensical committed `0` must not trap a validator on a content-addressed
-    /// spec: the clamp becomes a no-op (the chain's own consequence), never a crash.
-    func testChainCommittedZeroMaxTargetChangeDoesNotTrap() {
-        let zeroSpec = retargetSpec(maxTargetChange: 0)
-        XCTAssertFalse(zeroSpec.isValid)
-        let previous = UInt256(10_000)
-        let easing: [Int64] = [1_000_000, 800_000, 500_000, 100_000, 0]
-        // Runs to completion (no divide-by-zero trap) and behaves unclamped.
-        let result = zeroSpec.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: easing)
-        XCTAssertEqual(result, UInt256(2_600_000))
     }
 
     // MARK: - Basic Properties Tests
@@ -133,6 +61,7 @@ final class ChainSpecTests: XCTestCase {
             targetBlockTime: 600_000,
             initialReward: 1_048_576,
             halvingInterval: 210_000,
+            halfLife: 120,
             wasmPolicies: [
                 WasmPolicyRef(moduleCID: "policy1", scope: .transaction),
                 WasmPolicyRef(moduleCID: "policy2", scope: .action),
@@ -145,8 +74,30 @@ final class ChainSpecTests: XCTestCase {
         XCTAssertEqual(chainSpec.targetBlockTime, 600_000)
         XCTAssertEqual(chainSpec.initialReward, 1_048_576)
         XCTAssertEqual(chainSpec.halvingInterval, 210_000)
-        XCTAssertNil(chainSpec.maxTargetChange)
         XCTAssertEqual(chainSpec.wasmPolicies.count, 2)
+    }
+
+    /// The half-life is the schedule's one committed parameter besides the
+    /// block time: a spec without it is not a spec, and zero is no schedule.
+    func testHalfLifeIsRequiredAndPositive() throws {
+        let withoutHalfLife = Data("""
+        {"maxNumberOfTransactionsPerBlock":1000,"maxStateGrowth":500000,"maxBlockSize":1000000,"premine":0,"targetBlockTime":600000,"initialReward":1048576,"halvingInterval":210000}
+        """.utf8)
+        XCTAssertThrowsError(try JSONDecoder().decode(ChainSpec.self, from: withoutHalfLife))
+        let withHalfLife = Data("""
+        {"maxNumberOfTransactionsPerBlock":1000,"maxStateGrowth":500000,"maxBlockSize":1000000,"premine":0,"targetBlockTime":600000,"initialReward":1048576,"halvingInterval":210000,"halfLife":120}
+        """.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(ChainSpec.self, from: withHalfLife).halfLife, 120)
+        let zero = ChainSpec(
+            maxNumberOfTransactionsPerBlock: 100,
+            maxStateGrowth: 100_000,
+            premine: 0,
+            targetBlockTime: 1_000,
+            initialReward: 1024,
+            halvingInterval: 10_000,
+            halfLife: 0
+        )
+        XCTAssertFalse(zero.isValid)
     }
 
     func testLegacyChainSpecDecodesWithoutWasmPolicies() throws {
@@ -160,7 +111,7 @@ final class ChainSpecTests: XCTestCase {
           "targetBlockTime": 600000,
           "initialReward": 1048576,
           "halvingInterval": 210000,
-          "retargetWindow": 120
+          "halfLife": 120
         }
         """
         let spec = try JSONDecoder().decode(ChainSpec.self, from: Data(json.utf8))
@@ -178,7 +129,7 @@ final class ChainSpecTests: XCTestCase {
           "targetBlockTime": 600000,
           "initialReward": 1048576,
           "halvingInterval": 210000,
-          "retargetWindow": 120,
+          "halfLife": 120,
           "transactionFilters": ["function transactionFilter(tx) { return true; }"]
         }
         """
@@ -198,22 +149,22 @@ final class ChainSpecTests: XCTestCase {
     }
 
     func testValidation() {
-        let validSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 100, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000)
+        let validSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 100, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000, halfLife: 10)
         XCTAssertTrue(validSpec.isValid)
 
-        let invalidTransactionCount = ChainSpec(maxNumberOfTransactionsPerBlock: 0, maxStateGrowth: 1000, premine: 100, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000)
+        let invalidTransactionCount = ChainSpec(maxNumberOfTransactionsPerBlock: 0, maxStateGrowth: 1000, premine: 100, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000, halfLife: 10)
         XCTAssertFalse(invalidTransactionCount.isValid)
 
-        let invalidStateGrowth = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 0, premine: 100, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000)
+        let invalidStateGrowth = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 0, premine: 100, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000, halfLife: 10)
         XCTAssertFalse(invalidStateGrowth.isValid)
 
-        let invalidBlockTime = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 100, targetBlockTime: 0, initialReward: 1024, halvingInterval: 10_000)
+        let invalidBlockTime = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 100, targetBlockTime: 0, initialReward: 1024, halvingInterval: 10_000, halfLife: 10)
         XCTAssertFalse(invalidBlockTime.isValid)
 
-        let zeroReward = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 100, targetBlockTime: 10_000, initialReward: 0, halvingInterval: 10_000)
+        let zeroReward = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 100, targetBlockTime: 10_000, initialReward: 0, halvingInterval: 10_000, halfLife: 10)
         XCTAssertFalse(zeroReward.isValid)
 
-        let zeroInterval = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 100, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 0)
+        let zeroInterval = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 100, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 0, halfLife: 10)
         XCTAssertFalse(zeroInterval.isValid)
 
         // Premine is uncapped: a premine equal to or larger than halvingInterval
@@ -221,13 +172,13 @@ final class ChainSpecTests: XCTestCase {
         // tokenomics choice — see PremineUncappedTests for emission/conservation
         // coverage. This previously failed under the removed `premine < halvingInterval`
         // cap.
-        let premineAtIntervalBoundary = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 10_000, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000)
+        let premineAtIntervalBoundary = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 10_000, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000, halfLife: 10)
         XCTAssertTrue(premineAtIntervalBoundary.isValid)
 
-        let premineSpanningMultipleHalvings = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 25_000, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000)
+        let premineSpanningMultipleHalvings = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 25_000, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000, halfLife: 10)
         XCTAssertTrue(premineSpanningMultipleHalvings.isValid)
 
-        let smallPremine = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 9_999, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000)
+        let smallPremine = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 9_999, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000, halfLife: 10)
         XCTAssertTrue(smallPremine.isValid)
     }
 
@@ -246,6 +197,7 @@ final class ChainSpecTests: XCTestCase {
                 targetBlockTime: 1_000,
                 initialReward: 1,
                 halvingInterval: 1_000,
+                halfLife: 10,
                 wasmPolicies: policies
             )
         }
@@ -262,7 +214,7 @@ final class ChainSpecTests: XCTestCase {
     // MARK: - Reward Calculation Tests
 
     func testRewardAtBlock() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 1000)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 1000, halfLife: 10)
 
         XCTAssertEqual(chainSpec.rewardAtBlock(0), 1024)
         XCTAssertEqual(chainSpec.rewardAtBlock(999), 1024)
@@ -272,7 +224,7 @@ final class ChainSpecTests: XCTestCase {
     }
 
     func testRewardCaching() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 1000)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 1000, halfLife: 10)
 
         let reward1 = chainSpec.rewardAtBlock(500)
         let reward2 = chainSpec.rewardAtBlock(500)
@@ -283,7 +235,7 @@ final class ChainSpecTests: XCTestCase {
     }
 
     func testTotalRewards() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 1000)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 1000, halfLife: 10)
 
         XCTAssertEqual(chainSpec.totalRewards(upToBlock: 0), 0)
         XCTAssertEqual(chainSpec.totalRewards(upToBlock: 10), 1024 * 10)
@@ -294,14 +246,14 @@ final class ChainSpecTests: XCTestCase {
     }
 
     func testTotalRewardsOverflowSafety() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: UInt64.max / 2, halvingInterval: 10)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: UInt64.max / 2, halvingInterval: 10, halfLife: 10)
 
         let result = chainSpec.totalRewards(upToBlock: 10)
         XCTAssertEqual(result, UInt64.max)
     }
 
     func testPremineAmount() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 100, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 1000)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 100, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 1000, halfLife: 10)
         let expectedPremine = chainSpec.totalRewards(upToBlock: 100)
 
         XCTAssertEqual(chainSpec.premineAmount(), expectedPremine)
@@ -309,7 +261,7 @@ final class ChainSpecTests: XCTestCase {
     }
 
     func testPremineBlockMiningTimeline() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 5, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 1000)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 5, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 1000, halfLife: 10)
 
         XCTAssertEqual(chainSpec.rewardAtBlock(0), 1024)
         XCTAssertEqual(chainSpec.premineAmount(), 1024 * 5)
@@ -320,7 +272,7 @@ final class ChainSpecTests: XCTestCase {
     }
 
     func testPremineOffsetInHalving() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 100, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 1000)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 100, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 1000, halfLife: 10)
 
         XCTAssertEqual(chainSpec.rewardAtBlock(0), 1024)
         XCTAssertEqual(chainSpec.premineAmount(), 1024 * 100)
@@ -333,7 +285,7 @@ final class ChainSpecTests: XCTestCase {
     // MARK: - Batch Operations Tests
 
     func testRewardRange() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 1000)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 1000, halfLife: 10)
 
         let rewards = chainSpec.rewardRange(startBlock: 0, count: 10)
         XCTAssertEqual(rewards.count, 10)
@@ -344,7 +296,7 @@ final class ChainSpecTests: XCTestCase {
     }
 
     func testRewardRangeAcrossHalving() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 16, halvingInterval: 100)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 16, halvingInterval: 100, halfLife: 10)
 
         let rewards = chainSpec.rewardRange(startBlock: 98, count: 4)
         XCTAssertEqual(rewards.count, 4)
@@ -357,31 +309,23 @@ final class ChainSpecTests: XCTestCase {
     // MARK: - Difficulty Adjustment Tests
 
     func testDifficultyCalculation() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 60_000, initialReward: 1024, halvingInterval: 10_000)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 60_000, initialReward: 1024, halvingInterval: 10_000, halfLife: 10)
 
-        let baseDifficulty = UInt256(1000)
-        let currentTime: Int64 = 1000000
+        let anchorTarget = UInt256(1000)
+        let anchorTime: Int64 = 1_000_000
+        func scheduled(after elapsed: Int64) -> UInt256 {
+            chainSpec.calculateAsertTarget(
+                anchorTarget: anchorTarget,
+                anchorTimestamp: anchorTime,
+                anchorHeight: 1,
+                blockTimestamp: anchorTime + elapsed,
+                blockHeight: 2
+            )
+        }
 
-        let normalDifficulty = chainSpec.calculateMinimumTarget(
-            previousTarget: baseDifficulty,
-            blockTimestamp: currentTime,
-            previousTimestamp: currentTime - 60000
-        )
-        XCTAssertEqual(normalDifficulty, baseDifficulty)
-
-        let harderDifficulty = chainSpec.calculateMinimumTarget(
-            previousTarget: baseDifficulty,
-            blockTimestamp: currentTime,
-            previousTimestamp: currentTime - 30000
-        )
-        XCTAssertTrue(harderDifficulty < baseDifficulty)
-
-        let easierDifficulty = chainSpec.calculateMinimumTarget(
-            previousTarget: baseDifficulty,
-            blockTimestamp: currentTime,
-            previousTimestamp: currentTime - 120000
-        )
-        XCTAssertTrue(easierDifficulty > baseDifficulty)
+        XCTAssertEqual(scheduled(after: 60_000), anchorTarget, "on schedule holds the anchor's target")
+        XCTAssertTrue(scheduled(after: 30_000) < anchorTarget, "ahead of schedule hardens")
+        XCTAssertTrue(scheduled(after: 120_000) > anchorTarget, "behind schedule eases")
     }
 
     // MARK: - Blockchain Convention Tests
@@ -417,14 +361,14 @@ final class ChainSpecTests: XCTestCase {
     // MARK: - Edge Cases
 
     func testLargeBlockNumbers() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000, halfLife: 10)
 
         let largeBlockReward = chainSpec.rewardAtBlock(UInt64.max / 2)
         XCTAssertGreaterThanOrEqual(largeBlockReward, 0)
     }
 
     func testTotalHalvings() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000, halfLife: 10)
         XCTAssertEqual(chainSpec.totalHalvings, 11) // ceil(log2(1024)) + 1 = 11
         XCTAssertGreaterThan(chainSpec.totalHalvings, 0)
     }
@@ -432,7 +376,7 @@ final class ChainSpecTests: XCTestCase {
     // MARK: - Performance Tests
 
     func testRewardCalculationPerformance() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1_048_576, halvingInterval: 210_000)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1_048_576, halvingInterval: 210_000, halfLife: 10)
 
         measure {
             for i in 0..<10000 {
@@ -442,7 +386,7 @@ final class ChainSpecTests: XCTestCase {
     }
 
     func testTotalRewardsPerformance() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1_048_576, halvingInterval: 210_000)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1_048_576, halvingInterval: 210_000, halfLife: 10)
 
         measure {
             _ = chainSpec.totalRewards(upToBlock: 1_000_000)
@@ -450,7 +394,7 @@ final class ChainSpecTests: XCTestCase {
     }
 
     func testBatchRewardPerformance() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1_048_576, halvingInterval: 210_000)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1_048_576, halvingInterval: 210_000, halfLife: 10)
 
         measure {
             _ = chainSpec.rewardRange(startBlock: 0, count: 10000)
@@ -458,7 +402,7 @@ final class ChainSpecTests: XCTestCase {
     }
 
     func testPremineOffsetPerformanceWithLargeValues() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 5000, targetBlockTime: 60_000, initialReward: 1024, halvingInterval: 100_000)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 5000, targetBlockTime: 60_000, initialReward: 1024, halvingInterval: 100_000, halfLife: 10)
 
         measure {
             for i: UInt64 in 0..<1000 {
@@ -470,7 +414,7 @@ final class ChainSpecTests: XCTestCase {
     // MARK: - Mathematical Correctness Tests
 
     func testGeometricSeriesCorrectness() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 16, halvingInterval: 100)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 16, halvingInterval: 100, halfLife: 10)
 
         // Two full halving periods: 100 blocks at 16 + 100 blocks at 8
         let expectedTotal: UInt64 = 16 * 100 + 8 * 100
@@ -479,7 +423,7 @@ final class ChainSpecTests: XCTestCase {
     }
 
     func testRewardConsistency() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 1000, premine: 0, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000, halfLife: 10)
 
         let individualSum = (0..<100).reduce(UInt64(0)) { sum, blockHeight in
             sum + chainSpec.rewardAtBlock(UInt64(blockHeight))
@@ -491,7 +435,7 @@ final class ChainSpecTests: XCTestCase {
     // MARK: - Validation Tests
 
     func testTransactionCountValidation() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 500, premine: 0, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 500, premine: 0, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000, halfLife: 10)
 
         XCTAssertTrue(chainSpec.validateTransactionCount(500))
         XCTAssertTrue(chainSpec.validateTransactionCount(1000))
@@ -499,7 +443,7 @@ final class ChainSpecTests: XCTestCase {
     }
 
     func testStateGrowthValidation() {
-        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 500, premine: 0, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000)
+        let chainSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 1000, maxStateGrowth: 500, premine: 0, targetBlockTime: 10_000, initialReward: 1024, halvingInterval: 10_000, halfLife: 10)
 
         XCTAssertTrue(chainSpec.validateStateGrowth(250))
         XCTAssertTrue(chainSpec.validateStateGrowth(500))
@@ -574,7 +518,8 @@ final class ChainSpecTests: XCTestCase {
             premine: 500,
             targetBlockTime: 60_000,
             initialReward: 1024,
-            halvingInterval: 10_000
+            halvingInterval: 10_000,
+            halfLife: 10
         )
 
         let firstHalvingBlock: UInt64 = 10_000 - 500  // = 9500
@@ -585,8 +530,8 @@ final class ChainSpecTests: XCTestCase {
     }
 
     func testIndependentRewardAndInterval() {
-        let spec1 = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: 50, halvingInterval: 210_000)
-        let spec2 = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: 5_000_000, halvingInterval: 100)
+        let spec1 = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: 50, halvingInterval: 210_000, halfLife: 10)
+        let spec2 = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: 5_000_000, halvingInterval: 100, halfLife: 10)
 
         XCTAssertTrue(spec1.isValid)
         XCTAssertTrue(spec2.isValid)

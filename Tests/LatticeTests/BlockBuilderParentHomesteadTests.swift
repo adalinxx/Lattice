@@ -123,7 +123,7 @@ final class BlockBuilderParentHomesteadTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 0,
             halvingInterval: 10_000,
-            retargetWindow: 5
+            halfLife: 5
         )
     }
 }

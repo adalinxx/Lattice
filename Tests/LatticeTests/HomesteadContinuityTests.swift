@@ -11,7 +11,7 @@ private let target = UInt256(1000)
 private func makeSpec(_ dir: String = "Nexus", premine: UInt64 = 0) -> ChainSpec {
     ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
               maxBlockSize: 1_000_000, premine: premine, targetBlockTime: 1_000,
-              initialReward: 1024, halvingInterval: 10_000, retargetWindow: 5)
+              initialReward: 1024, halvingInterval: 10_000, halfLife: 5)
 }
 
 private func addr(_ publicKey: String) -> String {
@@ -56,7 +56,7 @@ final class HomesteadContinuityTests: XCTestCase {
             parentState: LatticeState.emptyHeader.removingNode(),
             prevState: LatticeState.emptyHeader.removingNode(),
             postState: LatticeState.emptyHeader,
-            children: try BlockBuilder.buildChildrenDictionary([:]),
+            children: try BlockBuilder.buildChildIndex([:]),
             height: 7, // WRONG: genesis must be height 0
             timestamp: now,
             nonce: 0
@@ -105,7 +105,7 @@ final class HomesteadContinuityTests: XCTestCase {
             parentState: LatticeState.emptyHeader.removingNode(),
             prevState: nexusBlock1.postState.removingNode(), // WRONG: genesis must start from the empty state
             postState: nexusBlock1.postState,
-            children: try BlockBuilder.buildChildrenDictionary([:]),
+            children: try BlockBuilder.buildChildIndex([:]),
             height: 0,
             timestamp: now,
             nonce: 0
@@ -158,7 +158,7 @@ final class HomesteadContinuityTests: XCTestCase {
             parentState: LatticeState.emptyHeader.removingNode(),
             prevState: genesis.postState.removingNode(), // WRONG: should equal block1.postState
             postState: genesis.postState,
-            children: try BlockBuilder.buildChildrenDictionary([:]),
+            children: try BlockBuilder.buildChildIndex([:]),
             height: 2,
             timestamp: now - 30_000,
             nonce: 0

@@ -53,7 +53,7 @@ B = (
     parentState:      CID(LatticeState),
     prevState:        CID(LatticeState),
     postState:        CID(LatticeState),
-    children:         CID(MerkleDictionary<CID(Block)>),
+    children:         CID(ChildIndex),            // directory -> CID(Block), one node
     height:           uint64,
     timestamp:        int64,
     nonce:            uint64
@@ -111,10 +111,15 @@ ChainSpec = (
     targetBlockTime:                uint64,     // milliseconds
     initialReward:                  uint64,
     halvingInterval:                uint64,
-    retargetWindow:                 uint64,
+    halfLife:                       uint64,     // blocks; the schedule's half-life
     wasmPolicies:                   [WasmPolicyRef]
 )
 ```
+
+The child index is one node; the canonical decoder reads at most 65,536
+entries of it, a bound of the representation like the integer floor on a
+target, enforced where the bytes are made so no block is built that a node
+could not read.
 
 `maxBlockSize` bounds the canonical unique content bytes owned by one logical
 block. The measured closure is the block root Volume boundary (including its
@@ -123,13 +128,12 @@ transaction Volume and transaction body. Each CID's canonical bytes count once.
 The contents of the chain spec, wasm modules, parent blocks, all state Volumes,
 child blocks, and admission evidence are independent Volumes and do not count.
 
-**No retarget clamp.** `ChainSpec.maxTargetChange` is a retained field that
-the absolute schedule of section 5.5 never reads; there is no per-retarget step
-to clamp and no protocol default. The only arithmetic bound is the integer floor
-of the representation: a schedule that rounds to zero yields target 1 (the
-smallest representable difficulty), never the unmineable zero target. There is
-no protocol-imposed difficulty floor and no protocol-wide difficulty
-constant. The positive `ChainSpec` values are chain-selected validity. Storage, transport,
+**No retarget clamp.** The absolute schedule of section 5.5 has no
+per-retarget step to clamp and no protocol default. The only arithmetic bound
+is the integer floor of the representation: a schedule that rounds to zero
+yields target 1 (the smallest representable difficulty), never the unmineable
+zero target. There is no protocol-imposed difficulty floor and no
+protocol-wide difficulty constant. The positive `ChainSpec` values are chain-selected validity. Storage, transport,
 bootstrap-spec, and parent-witness ceilings are node-local acquisition policy,
 not common consensus constants. A node may decline to operate a chain whose
 committed parameters exceed its resources without proving any block invalid.
@@ -316,7 +320,7 @@ A non-genesis nexus block `B` with previous block `P` is valid if and only if:
    never permanently rejected. The attempt captures `validationContext.now` once.
 6. `B.target <= P.nextTarget` (as hard or harder than scheduled, never easier),
    and `B.nextTarget` equals section 5.5's absolute schedule computed from the
-   branch's height-1 anchor and `B` (`maxTargetChange` is not read)
+   branch's height-1 anchor and `B`
 7. All transactions pass `validateTransactionForNexus()`:
    - Signatures are valid over the `lattice-tx-v1` envelope
    - Signers match signature public keys
@@ -357,7 +361,7 @@ The child process still verifies the proof, transition, and fact fields. These
 facts grant no authority over child validity or fork choice.
 
 The vertical relationship is directional: a parent carrier commits the child in
-its `children` trie, while the child commits only the carrier's `prevState` as
+its `children` index, while the child commits only the carrier's `prevState` as
 `parentState`. The child does not identify the carrier block. Consequently,
 cross-chain acquisition asks the authenticated parent process for a proof or
 parent-issued fact keyed by child CID and chain path; it never attempts to invert
@@ -488,7 +492,7 @@ heights   = B.height - anchor.height
 scheduled = spec.targetBlockTime · heights          // where the schedule says we are
 elapsed   = max(0, B.timestamp - anchor.timestamp)  // where we actually are
 drift     = elapsed - scheduled
-halfLife  = spec.retargetWindow · spec.targetBlockTime
+halfLife  = spec.halfLife · spec.targetBlockTime
 
 nextTarget = anchor.target · 2^(drift / halfLife)
 ```
@@ -501,8 +505,8 @@ node computes the identical target from identical inputs. No floating point
 appears on the path. The result saturates at both ends: it never exceeds the
 maximum target and never reaches zero (a zero target would reject every hash).
 
-**There is no window, and that is the point.** A windowed average carries the
-last `retargetWindow` intervals as state, so a stretch of unusual block times
+**There is no window, and that is the point.** A windowed average carries its
+last intervals as state, so a stretch of unusual block times
 keeps steering difficulty long after it has passed, and a window perturbed at one
 end oscillates as it drains. This reads only the anchor and the present block, so
 it has nothing to drain: a disturbance stops mattering the moment it stops
@@ -511,17 +515,9 @@ window reaching back to genesis reads the gap before block 1 as one colossal
 solve time, and on a chain stamping genesis at epoch 0 that gap is decades.
 Anchored at block 1, genesis is never read.
 
-`spec.retargetWindow` is reused as the half-life rather than adding a committed
-half-life field: a `ChainSpec` is content addressed and a chain's genesis commits
-its CID, so adding a field would cost every existing chain its identity. Note
-that this **reinterprets** the field — an N-interval window and an N-block-time
-half-life are not the same quantity, and every already-deployed chain's committed
-`retargetWindow` acquires the new meaning.
-
-`spec.maxTargetChange` is **no longer read.** It clamped the windowed retarget's
-proportional step; an absolute schedule has no step to clamp. The field remains
-in `ChainSpec` because removing it would change every chain's spec CID, but a
-chain that commits one gets no clamp from it.
+`spec.halfLife` is the chain's committed responsiveness, in blocks: one
+half-life of block time of drift is one doubling. It is the only difficulty
+parameter besides `targetBlockTime`; there is no window and no clamp.
 
 **The anchor is per-branch and inherited, never chain-wide.** A block admitted at
 height 1 anchors itself; every other block inherits its parent's anchor. Two
@@ -553,7 +549,7 @@ schedule a timestamp buys much less than it did under a window:
 **The anchor's target is the chain's starting difficulty, and it is whatever
 block 1 committed.** Because `nextTarget` moves at most one doubling per
 half-life, an anchor far from what the chain can sustain is approached slowly: at
-`retargetWindow = 120` the schedule hardens by one doubling per 120 blocks mined
+`halfLife = 120` the schedule hardens by one doubling per 120 blocks mined
 ahead of schedule. A chain whose block 1 commits the maximum target therefore
 spends on the order of `120 · log2(max / sustainable)` blocks at negligible
 difficulty before the schedule catches up — for Nexus, roughly 4,900 blocks to
@@ -953,7 +949,7 @@ facts are durable and restored.
 A current-level target miss returns a carrier result without executing its
 transition, inserting it, or implicitly retaining it for this chain. A node may
 explicitly retain a carrier or an exact child-link path as availability policy;
-Lattice does not enumerate an attacker-sized child trie. Unresolved same-chain
+Lattice does not enumerate an attacker-sized child index. Unresolved same-chain
 predecessors (absent or accepted-but-unconnected) are derived from the accepted
 graph, including after recovery, and must enter this same admission boundary. A
 target miss never triggers predecessor backfill because connectivity cannot make
@@ -1158,8 +1154,8 @@ it is held only for the directories a node SERVES — the child chains it hosts,
 an operator choice — so the run bookkeeping per block is O(#served), never
 O(height) and never a function of how many directories a stranger's block
 commits into. (The block's commitment map itself is stored in full — on disk,
-where the boundary already retains the trie, and in memory, per block, for
-the life of the graph. The trie is inside `maxBlockSize` (§3.5), which counts
+where the boundary already retains the index, and in memory, per block, for
+the life of the graph. The index is inside `maxBlockSize` (§3.5), which counts
 the block boundary including the child index, so a validated block's entry
 count is bounded by the chain's committed size rule. The weighed tier cannot
 evaluate that rule — it has no body — so until the validate tier applies §3.5
@@ -1171,7 +1167,7 @@ is in at most one run per directory — none where no ancestor commits into it �
 and a parent fork below `P` places each branch's blocks
 in the run of that branch's own nearest committer — no branch missed, none
 counted twice. A block's commitments are read from its PoW-bound `children`
-trie at admission and carried on its durable block fact, so live admission and
+index at admission and carried on its durable block fact, so live admission and
 replay see the same commitments. A fact written before this field existed
 records NO commitments, which is not "commits nothing": replay tolerates it,
 and a later fact for the same block supplies them. The parent serves the run
@@ -1263,7 +1259,7 @@ maxBlockSize > 0
 targetBlockTime > 0
 initialReward > 0
 halvingInterval > 0
-retargetWindow > 0
+halfLife > 0
 ```
 
 `premine` is unconstrained (any `uint64`): it is a block-count offset into the emission schedule and the reward math handles any size, supply-bounded, without overflow. Premine is governed by transparency (it is fixed in the content-addressed genesis spec and provable via `premineAmount`), not by a protocol ceiling.
@@ -1362,5 +1358,4 @@ state); withdrawals return it to the block-wide credit budget.
 
 | Constant | Value | Description |
 |---|---|---|
-| `maxTargetChange` | `nil` | Retained `ChainSpec` field, not read: the absolute schedule (5.5) has no step to clamp. Kept so no chain's spec CID changes; Nexus commits none. |
 | `totalExponent` | 64 | Bit width of the reward/halving system |

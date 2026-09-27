@@ -27,7 +27,7 @@ final class AdmissionStagingContextTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1_024,
             halvingInterval: 10_000,
-            retargetWindow: 5
+            halfLife: 5
         )
         let genesis = try await buildAndStoreGenesis(
             spec: spec,

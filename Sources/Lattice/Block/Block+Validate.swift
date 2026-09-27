@@ -234,8 +234,8 @@ public extension Block {
         validationContext: ValidationContext
     ) async throws -> Bool {
         // No ancestor-timestamp walk: the schedule is a function of one anchor
-        // and this block, so validating a target no longer requires reading the
-        // last `retargetWindow` blocks. That walk was the dominant cost of
+        // and this block, so validating a target no longer requires reading a
+        // window of ancestors. That walk was the dominant cost of
         // building a mining template — 120 sequential block resolutions per
         // request, redone every round for a list that changes by one entry per
         // block.

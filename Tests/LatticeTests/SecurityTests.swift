@@ -30,7 +30,7 @@ private func spec() -> ChainSpec {
         premine: 0,
         targetBlockTime: 1_000,
         initialReward: 1024, halvingInterval: 10_000,
-        retargetWindow: 5
+        halfLife: 5
     )
 }
 
@@ -544,7 +544,7 @@ final class BalanceConservationTests: XCTestCase {
             parentState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             prevState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             postState: try! LatticeStateHeader(node: LatticeState.emptyState()),
-            children: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Block>>()),
+            children: try! HeaderImpl(node: ChildIndex()),
             height: 0, timestamp: 1_000_000, nonce: 0
         )
         let accountActions = [AccountAction(owner: "miner", delta: Int64(999_999_999))]
@@ -563,7 +563,7 @@ final class BalanceConservationTests: XCTestCase {
             parentState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             prevState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             postState: try! LatticeStateHeader(node: LatticeState.emptyState()),
-            children: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Block>>()),
+            children: try! HeaderImpl(node: ChildIndex()),
             height: 1, timestamp: 2_000_000, nonce: 0
         )
         let s = spec()
@@ -598,7 +598,7 @@ final class BalanceConservationTests: XCTestCase {
             parentState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             prevState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             postState: try! LatticeStateHeader(node: LatticeState.emptyState()),
-            children: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Block>>()),
+            children: try! HeaderImpl(node: ChildIndex()),
             height: 0, timestamp: 1_000_000, nonce: 0
         )
         let s = spec()
@@ -628,7 +628,7 @@ final class ModelAFeeKeystoneTests: XCTestCase {
         ChainSpec(
             maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
             maxBlockSize: 1_000_000, premine: premine, targetBlockTime: 1_000,
-            initialReward: 1024, halvingInterval: 10_000, retargetWindow: 5
+            initialReward: 1024, halvingInterval: 10_000, halfLife: 5
         )
     }
 
@@ -726,7 +726,7 @@ final class BlockValidationAdversarialTests: XCTestCase {
             parentState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             prevState: g.postState.removingNode(),
             postState: g.postState,
-            children: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Block>>()),
+            children: try! HeaderImpl(node: ChildIndex()),
             height: 5, timestamp: 2_000_000, nonce: 0
         )
         XCTAssertFalse(wrongIndex.validateHeight(parent: g), "Non-sequential index must fail")
@@ -742,7 +742,7 @@ final class BlockValidationAdversarialTests: XCTestCase {
             parentState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             prevState: g.postState.removingNode(),
             postState: g.postState,
-            children: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Block>>()),
+            children: try! HeaderImpl(node: ChildIndex()),
             height: 1, timestamp: 4_000_000, nonce: 0
         )
         XCTAssertFalse(pastBlock.validateTimestamp(parent: g), "Timestamp before parent must fail")
@@ -755,7 +755,8 @@ final class BlockValidationAdversarialTests: XCTestCase {
             maxStateGrowth: 999,
             premine: 0,
             targetBlockTime: 999,
-            initialReward: 32, halvingInterval: 10_000
+            initialReward: 32, halvingInterval: 10_000,
+            halfLife: 10
         )
         let wrongSpec = Block(
             parent: try! VolumeImpl(node: g).removingNode(),
@@ -765,7 +766,7 @@ final class BlockValidationAdversarialTests: XCTestCase {
             parentState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             prevState: g.postState.removingNode(),
             postState: g.postState,
-            children: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Block>>()),
+            children: try! HeaderImpl(node: ChildIndex()),
             height: 1, timestamp: 2_000_000, nonce: 0
         )
         XCTAssertFalse(wrongSpec.validateSpec(parent: g), "Changed spec must fail")
@@ -782,7 +783,7 @@ final class BlockValidationAdversarialTests: XCTestCase {
             parentState: wrongState.removingNode(),
             prevState: wrongState.removingNode(),
             postState: wrongState,
-            children: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Block>>()),
+            children: try! HeaderImpl(node: ChildIndex()),
             height: 1, timestamp: 2_000_000, nonce: 0
         )
         let stateValid = b.validateState(parent: g)
@@ -797,7 +798,8 @@ final class BlockValidationAdversarialTests: XCTestCase {
             maxBlockSize: 10,
             premine: 0,
             targetBlockTime: 1_000,
-            initialReward: 1024, halvingInterval: 10_000
+            initialReward: 1024, halvingInterval: 10_000,
+            halfLife: 10
         )
         let g = try await buildAndStoreGenesis(
             spec: tinySpec, timestamp: 1_000_000, target: UInt256(1000), fetcher: fetcher
@@ -822,6 +824,7 @@ final class FilterBypassTests: XCTestCase {
             premine: 0,
             targetBlockTime: 1_000,
             initialReward: 1024, halvingInterval: 10_000,
+            halfLife: 10,
             wasmPolicies: [policy]
         )
         let cheapTx = TransactionBody(
@@ -843,6 +846,7 @@ final class FilterBypassTests: XCTestCase {
             premine: 0,
             targetBlockTime: 1_000,
             initialReward: 1024, halvingInterval: 10_000,
+            halfLife: 10,
             wasmPolicies: [policy]
         )
         let badAction = Action(key: "system/hack", oldValue: nil, newValue: "data")
@@ -857,11 +861,13 @@ final class FilterBypassTests: XCTestCase {
         let parentSpec = ChainSpec(
             maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
             premine: 0, targetBlockTime: 1_000, initialReward: 1024, halvingInterval: 10_000,
+            halfLife: 10,
             wasmPolicies: [rejectingParentPolicy]
         )
         let childSpec = ChainSpec(
             maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
-            premine: 0, targetBlockTime: 1_000, initialReward: 1024, halvingInterval: 10_000
+            premine: 0, targetBlockTime: 1_000, initialReward: 1024, halvingInterval: 10_000,
+            halfLife: 10
         )
         let cheapTx = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
@@ -999,7 +1005,8 @@ final class EconomicInvariantTests: XCTestCase {
     func testPremineOffsetShiftsHalving() {
         let premineSpec = ChainSpec(
             maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
-            premine: 100, targetBlockTime: 1_000, initialReward: 1024, halvingInterval: 10_000
+            premine: 100, targetBlockTime: 1_000, initialReward: 1024, halvingInterval: 10_000,
+            halfLife: 10
         )
         let halfInterval = premineSpec.halvingInterval
         let firstHalvingBlock = halfInterval - 100
@@ -1016,44 +1023,6 @@ final class EconomicInvariantTests: XCTestCase {
         XCTAssertEqual(individual, total)
     }
 
-    func testDifficultyAdjustmentWindowSmoothing() {
-        let s = spec()
-        let baseDifficulty = UInt256(10000)
-        let normalTimestamps: [Int64] = [5000, 4000, 3000, 2000, 1000]
-        let normalResult = s.calculateWindowedTarget(
-            previousTarget: baseDifficulty, ancestorTimestamps: normalTimestamps
-        )
-        XCTAssertEqual(normalResult, baseDifficulty, "On-target timing should not change target")
-
-        let fastTimestamps: [Int64] = [1400, 1300, 1200, 1100, 1000]
-        let harderResult = s.calculateWindowedTarget(
-            previousTarget: baseDifficulty, ancestorTimestamps: fastTimestamps
-        )
-        XCTAssertTrue(harderResult < baseDifficulty, "Fast blocks should decrease target (harder)")
-
-        let slowTimestamps: [Int64] = [21000, 16000, 11000, 6000, 1000]
-        let easierResult = s.calculateWindowedTarget(
-            previousTarget: baseDifficulty, ancestorTimestamps: slowTimestamps
-        )
-        XCTAssertTrue(easierResult > baseDifficulty, "Slow blocks should increase target (easier)")
-    }
-
-    func testWindowedDifficultySmooths() {
-        let s = spec()
-        let baseDifficulty = UInt256(10000)
-        let fastTimestamps: [Int64] = [3000, 2500, 2000, 1500, 1000]
-        let windowedResult = s.calculateWindowedTarget(
-            previousTarget: baseDifficulty, ancestorTimestamps: fastTimestamps
-        )
-        XCTAssertTrue(windowedResult < baseDifficulty, "Fast average should increase target")
-
-        let normalTimestamps: [Int64] = [5000, 4000, 3000, 2000, 1000]
-        let normalResult = s.calculateWindowedTarget(
-            previousTarget: baseDifficulty, ancestorTimestamps: normalTimestamps
-        )
-        XCTAssertTrue(windowedResult < normalResult,
-            "Faster average should produce harder target than on-target")
-    }
 }
 
 // MARK: - Cross-Chain Key Integrity
@@ -1429,12 +1398,12 @@ final class StateRootValidationTests: XCTestCase {
                                   maxStateGrowth: 100_000, maxBlockSize: 1_000_000,
                                   premine: 0, targetBlockTime: 1_000,
                                   initialReward: 1024, halvingInterval: 10_000,
-                                  retargetWindow: 5)
+                                  halfLife: 5)
         let childSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 100,
                                   maxStateGrowth: 100_000, maxBlockSize: 1_000_000,
                                   premine: 0, targetBlockTime: 1_000,
                                   initialReward: 512, halvingInterval: 10_000,
-                                  retargetWindow: 5)
+                                  halfLife: 5)
 
         let childGenesis = try await buildAndStoreGenesis(
             spec: childSpec, timestamp: t - 20_000, target: easyDifficulty, nonce: 0, fetcher: f

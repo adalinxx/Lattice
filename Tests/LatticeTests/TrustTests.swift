@@ -10,7 +10,7 @@ private func f() -> StorableFetcher { StorableFetcher() }
 private func s(_ dir: String = "Nexus", premine: UInt64 = 1000) -> ChainSpec {
     ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
               maxBlockSize: 1_000_000, premine: premine, targetBlockTime: 1_000,
-              initialReward: 1024, halvingInterval: 10_000, retargetWindow: 5)
+              initialReward: 1024, halvingInterval: 10_000, halfLife: 5)
 }
 
 private func tx(_ body: TransactionBody, _ kp: (privateKey: String, publicKey: String)) -> Transaction {
@@ -1093,7 +1093,7 @@ final class StateGrowthAttackTests: XCTestCase {
         let tinySpec = ChainSpec(maxNumberOfTransactionsPerBlock: 100,
                                  maxStateGrowth: 10, maxBlockSize: 1_000_000,
                                  premine: 0, targetBlockTime: 1_000,
-                                 initialReward: 1024, halvingInterval: 10_000, retargetWindow: 5)
+                                 initialReward: 1024, halvingInterval: 10_000, halfLife: 5)
 
         let genesis = try await buildAndStoreGenesis(
             spec: tinySpec, timestamp: base, target: UInt256(1000), fetcher: fetcher
@@ -1173,33 +1173,45 @@ final class ConcurrentBlockTests: XCTestCase {
 @MainActor
 final class DifficultyManipulationTests: XCTestCase {
 
-    func testDifficultyChangeBounded() {
-        let spec = s()
-        let target = UInt256(1000)
-
-        // Very fast block lowers the target proportionally (no floor).
-        let fast = spec.calculatePairTarget(previousTarget: target, actualTime: 1)
-        XCTAssertEqual(fast, UInt256(1))
-
-        // Slow blocks raise the target proportionally under the LWMA retarget model.
-        let slow = spec.calculatePairTarget(previousTarget: target, actualTime: 100_000)
-        XCTAssertEqual(slow, target * UInt256(100))
+    private func scheduled(_ spec: ChainSpec, anchor: UInt256, elapsed: Int64) -> UInt256 {
+        spec.calculateAsertTarget(
+            anchorTarget: anchor, anchorTimestamp: 1_000, anchorHeight: 1,
+            blockTimestamp: 1_000 + elapsed, blockHeight: 2
+        )
     }
 
-    func testZeroTimeKeepsPreviousTarget() {
-        // Zero elapsed time is rejected at block validation, so the retarget
-        // helper keeps the previous target unchanged for the degenerate case.
+    func testDifficultyMovesWithDriftAndNeverToZero() {
         let spec = s()
-        let target = UInt256(1000)
-        let result = spec.calculatePairTarget(previousTarget: target, actualTime: 0)
-        XCTAssertEqual(result, target)
+        let anchor = UInt256(1000)
+
+        // A block far ahead of schedule hardens the target, but a single
+        // block's drift is bounded by the half-life: never to zero.
+        let fast = scheduled(spec, anchor: anchor, elapsed: 1)
+        XCTAssertLessThan(fast, anchor)
+        XCTAssertGreaterThan(fast, .zero)
+
+        // A block far behind schedule eases it.
+        let slow = scheduled(spec, anchor: anchor, elapsed: Int64(spec.targetBlockTime) * 100)
+        XCTAssertGreaterThan(slow, anchor)
     }
 
-    func testNegativeTimeKeepsPreviousTarget() {
+    func testZeroElapsedTimeHardens() {
+        // A timestamp at the anchor is a whole block ahead of schedule: it
+        // costs the miner difficulty rather than holding the target.
         let spec = s()
-        let target = UInt256(1000)
-        let result = spec.calculatePairTarget(previousTarget: target, actualTime: -100)
-        XCTAssertEqual(result, target)
+        let anchor = UInt256(1000)
+        XCTAssertLessThan(scheduled(spec, anchor: anchor, elapsed: 0), anchor)
+    }
+
+    func testNegativeElapsedTimeHardensLikeZero() {
+        // A clock moved before the anchor clamps to zero elapsed: no easier
+        // than zero, so moving the clock back buys nothing.
+        let spec = s()
+        let anchor = UInt256(1000)
+        XCTAssertEqual(
+            scheduled(spec, anchor: anchor, elapsed: -100),
+            scheduled(spec, anchor: anchor, elapsed: 0)
+        )
     }
 }
 

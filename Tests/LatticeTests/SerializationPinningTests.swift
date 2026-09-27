@@ -15,7 +15,7 @@ final class SerializationPinningTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024,
             halvingInterval: 210_000,
-            retargetWindow: 120
+            halfLife: 120
         )
     }
 
@@ -75,7 +75,7 @@ final class SerializationPinningTests: XCTestCase {
     func testGenesisCIDMatchesGolden() async throws {
         let (_, cid) = try await deterministicGenesis()
 
-        let golden = "bafyreigjzibnnzltyzvk2igxio2xn57shptjxtkdyg2xomol3wcqvo2k6a"
+        let golden = "bafyreihj5onznvn3onyzzxs7qaq74qik6tkkitc44xymnjpjpccse2fwi4"
         XCTAssertEqual(cid, golden,
             "genesis CID changed — this is a consensus-breaking change. If intentional, update the golden value.")
     }
@@ -87,7 +87,7 @@ final class SerializationPinningTests: XCTestCase {
         let hash = block.proofOfWorkHash()
         let hashHex = hash.toHexString()
 
-        let golden = "8c4164ffa9f1fee8055bb157ea2cdeb1bf256014d453b9a7b1847c244f72acfd"
+        let golden = "9c3f8a4d816a5a1bb7eeabd8b5939118f03eec6a086166f03cf01052b0009965"
         XCTAssertEqual(hashHex, golden,
             "PoW hash changed — the preimage construction changed. If intentional, update the golden value.")
     }
@@ -105,8 +105,8 @@ final class SerializationPinningTests: XCTestCase {
     // MARK: - children CID stability
 
     func testChildBlocksCIDStability() async throws {
-        let emptyChildren1 = try BlockBuilder.buildChildrenDictionary([:])
-        let emptyChildren2 = try BlockBuilder.buildChildrenDictionary([:])
+        let emptyChildren1 = try BlockBuilder.buildChildIndex([:])
+        let emptyChildren2 = try BlockBuilder.buildChildIndex([:])
         XCTAssertEqual(emptyChildren1.rawCID, emptyChildren2.rawCID,
             "empty children dict must have a stable CID")
     }
@@ -119,7 +119,8 @@ final class SerializationPinningTests: XCTestCase {
             premine: 0,
             targetBlockTime: 1_000,
             initialReward: 512,
-            halvingInterval: 100_000
+            halvingInterval: 100_000,
+            halfLife: 10
         )
         let child = try await buildAndStoreGenesis(
             spec: childSpec,
@@ -129,12 +130,12 @@ final class SerializationPinningTests: XCTestCase {
             fetcher: fetcher
         )
 
-        let dict1 = try BlockBuilder.buildChildrenDictionary(["Child": child])
-        let dict2 = try BlockBuilder.buildChildrenDictionary(["Child": child])
+        let dict1 = try BlockBuilder.buildChildIndex(["Child": child])
+        let dict2 = try BlockBuilder.buildChildIndex(["Child": child])
         XCTAssertEqual(dict1.rawCID, dict2.rawCID,
             "children dict with same content must have identical CID")
         XCTAssertEqual(
-            try dict1.node?.allKeysAndValues()["Child"]?.rawCID,
+            dict1.node?.entries["Child"]?.rawCID,
             try VolumeImpl<Block>(node: child).rawCID
         )
     }
@@ -178,7 +179,8 @@ final class SerializationPinningTests: XCTestCase {
             premine: 0,
             targetBlockTime: 1_000,
             initialReward: 512,
-            halvingInterval: 100_000
+            halvingInterval: 100_000,
+            halfLife: 10
         )
 
         let genesis = try await buildAndStoreGenesis(

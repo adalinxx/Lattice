@@ -262,6 +262,7 @@ private func resourceBoundSpec(
         targetBlockTime: 1_000,
         initialReward: 1,
         halvingInterval: 1_000,
+        halfLife: 10,
         wasmPolicies: wasmPolicies
     )
 }

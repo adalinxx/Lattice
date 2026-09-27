@@ -10,9 +10,9 @@ func emptyTransactions() -> HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Transacti
     try! HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Transaction>>>(node: MerkleDictionaryImpl<VolumeImpl<Transaction>>())
 }
 
-func emptyChildBlocks() -> HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Block>>> {
+func emptyChildBlocks() -> HeaderImpl<ChildIndex> {
     // known-valid local node; CID computation cannot fail (no Float/Double fields)
-    try! HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Block>>>(node: MerkleDictionaryImpl<VolumeImpl<Block>>())
+    try! HeaderImpl<ChildIndex>(node: ChildIndex())
 }
 
 func emptyLatticeState() -> LatticeStateHeader {
@@ -27,7 +27,8 @@ func testChainSpec() -> ChainSpec {
         premine: 0,
         targetBlockTime: 1_000,
         initialReward: 1024,
-        halvingInterval: 10_000
+        halvingInterval: 10_000,
+        halfLife: 10
     )
 }
 
@@ -62,7 +63,7 @@ func makeBlock(
     timestamp: Int64,
     target: UInt256 = UInt256(1000),
     nonce: UInt64 = 0,
-    children: HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Block>>>? = nil
+    children: HeaderImpl<ChildIndex>? = nil
 ) -> Block {
     // known-valid local node; CID computation cannot fail (no Float/Double fields)
     let prevHeader = try! VolumeImpl<Block>(node: previous)

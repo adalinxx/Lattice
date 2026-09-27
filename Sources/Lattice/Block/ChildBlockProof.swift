@@ -237,7 +237,7 @@ public struct ChildBlockProof: Sendable {
                     paths: [[directory]: .targeted],
                     fetcher: source
                   ).node,
-                  let next: BlockHeader = try? children.get(key: directory),
+                  let next: BlockHeader = children[directory],
                   CIDIdentity.isCanonical(next.rawCID) else { return nil }
             carrier = next
         }
@@ -247,7 +247,7 @@ public struct ChildBlockProof: Sendable {
                 paths: [[directory]: .targeted],
                 fetcher: source
               ).node,
-              let child: BlockHeader = try? children.get(key: directory),
+              let child: BlockHeader = children[directory],
               CIDIdentity.isCanonical(child.rawCID),
               let proof = try? await Self.generate(
                 rootHeader: carrier,
@@ -309,7 +309,7 @@ public struct ChildBlockProof: Sendable {
                 paths: [[directory]: .targeted],
                 fetcher: fetcher
             ).node,
-                  let childHeader: BlockHeader = try? children.get(key: directory) else {
+                  let childHeader: BlockHeader = children[directory] else {
                 return nil
             }
 
@@ -395,7 +395,7 @@ public struct ChildBlockProof: Sendable {
             guard let children = try? await currentBlock.children.resolve(
                     paths: [[directory]: .targeted], fetcher: fetcher
                   ).node,
-                  let childHeader: VolumeImpl<Block> = try? children.get(key: directory)
+                  let childHeader: VolumeImpl<Block> = children[directory]
             else { return .failure(.malformedEvidence) }
 
             if index == directoryPath.count - 1 {
