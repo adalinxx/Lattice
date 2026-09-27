@@ -40,8 +40,8 @@ final class FactReplayRecoveryTests: XCTestCase {
         let reverse = try await ChainState.restore(replaying: Array(batches.reversed()))
         let heavyCID = try BlockHeader(node: heavy).rawCID
 
-        let forwardTip = await forward.getMainChainTip()
-        let reverseTip = await reverse.getMainChainTip()
+        let forwardTip = await forward.canonicalTip
+        let reverseTip = await reverse.canonicalTip
         let forwardWork = await forward.getTipCumulativeWork()
         let reverseWork = await reverse.getTipCumulativeWork()
         XCTAssertEqual(forwardTip, heavyCID)
@@ -67,13 +67,13 @@ final class FactReplayRecoveryTests: XCTestCase {
             try testAdmissionBatch(for: $0)
         }
         let encoded = try JSONEncoder().encode(batches)
-        let decoded = try JSONDecoder().decode([ChainAdmissionBatch].self, from: encoded)
+        let decoded = try JSONDecoder().decode([BlockImportBatch].self, from: encoded)
 
         let restored = try await ChainState.restore(
             replaying: decoded + Array(decoded.reversed())
         )
 
-        let restoredTip = await restored.getMainChainTip()
+        let restoredTip = await restored.canonicalTip
         let revision = await restored.currentRevision()
         XCTAssertEqual(restoredTip, try BlockHeader(node: block).rawCID)
         XCTAssertEqual(revision, 1)
@@ -103,7 +103,7 @@ final class FactReplayRecoveryTests: XCTestCase {
         guard case .block(let fact) = blockBatch.facts[0] else {
             return XCTFail("expected block fact")
         }
-        let conflicting = ChainAdmissionBatch(facts: [
+        let conflicting = BlockImportBatch(facts: [
             .block(ChainBlockFact(
                 blockHash: fact.blockHash,
                 parentBlockHash: fact.parentBlockHash,

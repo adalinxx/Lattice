@@ -595,7 +595,7 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
             await assertTruncationEquivalent(chain, "canonical at \(index)")
         }
 
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(
             tip,
             main[depth - 1].hash,
@@ -776,12 +776,12 @@ private func plannedBlocks(
     return blocks
 }
 
-private func admission(for block: PlannedDifferentialBlock) -> ChainAdmissionBatch {
+private func admission(for block: PlannedDifferentialBlock) -> BlockImportBatch {
     let contribution = VerifiedWorkContribution(
         id: testCID("segment-base-differential-work-\(block.index)"),
         work: UInt256(UInt64(block.index % 3 + 1))
     )
-    return ChainAdmissionBatch(facts: [
+    return BlockImportBatch(facts: [
         .block(ChainBlockFact(
             blockHash: block.hash,
             parentBlockHash: block.parentHash,
@@ -802,8 +802,8 @@ private func workAdmission(
     blockHash: String,
     id: String,
     work: UInt64
-) -> ChainAdmissionBatch {
-    ChainAdmissionBatch(facts: [
+) -> BlockImportBatch {
+    BlockImportBatch(facts: [
         .work(ChainWorkFact(
             blockHash: blockHash,
             contribution: VerifiedWorkContribution(id: id, work: UInt256(work))
@@ -829,8 +829,8 @@ private func assertCommitDelta(
     file: StaticString = #filePath,
     line: UInt = #line
 ) {
-    let added = Set((result?.commit?.mainChainBlocksAdded ?? [:]).keys)
-    let removed = result?.commit?.mainChainBlocksRemoved ?? []
+    let added = Set((result?.commit?.canonicalBlocksAdded ?? [:]).keys)
+    let removed = result?.commit?.canonicalBlocksRemoved ?? []
     XCTAssertEqual(
         added,
         newPath.subtracting(previousPath),
@@ -863,8 +863,8 @@ private func assertMatchesReference(
         return
     }
     let expectedPath = Set(expected.path)
-    let liveTip = await chain.getMainChainTip()
-    let livePath = await chain.mainChainHashes
+    let liveTip = await chain.canonicalTip
+    let livePath = await chain.canonicalHashes
     XCTAssertEqual(liveTip, expected.tip, "seed \(seed), \(event): tip", file: file, line: line)
     XCTAssertEqual(livePath, expectedPath, "seed \(seed), \(event): path", file: file, line: line)
     await assertMainChainIndexMatchesPath(
@@ -895,15 +895,15 @@ private func assertTruncationEquivalent(
     line: UInt = #line
 ) async {
     guard let full = await chain.debugFullCanonicalProjection() else { return }
-    let liveTip = await chain.getMainChainTip()
-    let livePath = await chain.mainChainHashes
+    let liveTip = await chain.canonicalTip
+    let livePath = await chain.canonicalHashes
     XCTAssertEqual(
-        liveTip, full.chainTip,
+        liveTip, full.canonicalTip,
         "\(message): truncated tip vs whole-chain tip over the same index",
         file: file, line: line
     )
     XCTAssertEqual(
-        livePath, full.mainChainHashes,
+        livePath, full.canonicalHashes,
         "\(message): truncated path vs whole-chain path over the same index",
         file: file, line: line
     )
@@ -911,8 +911,8 @@ private func assertTruncationEquivalent(
 
 private func exclusionBatch(
     for block: PlannedDifferentialBlock
-) -> ChainAdmissionBatch {
-    ChainAdmissionBatch(facts: [
+) -> BlockImportBatch {
+    BlockImportBatch(facts: [
         .exclusion(ChainExclusionFact(blockHash: block.hash)),
     ])
 }
@@ -927,8 +927,8 @@ private func assertMatchesReferenceWithExclusions(
     await assertRoutedClosedUnderChildren(chain, "seed \(seed), \(event)", file: file, line: line)
     let blocks = await chain.hashToBlock
     let closure = await chain.excludedRootsForTesting
-    let liveTip = await chain.getMainChainTip()
-    let livePath = await chain.mainChainHashes
+    let liveTip = await chain.canonicalTip
+    let livePath = await chain.canonicalHashes
     guard let expected = ForkChoiceOracle(blocks: blocks, excluded: closure)
         .view().canonicalProjection()
     else {
@@ -983,7 +983,7 @@ enum SegmentBaseDifferentialFixtures {
         let hash: String
         let parentHash: String?
         let height: UInt64
-        let batch: ChainAdmissionBatch
+        let batch: BlockImportBatch
     }
 
     static func planned(seed: UInt64) -> [Planned] {
@@ -993,11 +993,11 @@ enum SegmentBaseDifferentialFixtures {
         }
     }
 
-    static func work(blockHash: String, id: String, work: UInt64) -> ChainAdmissionBatch {
+    static func work(blockHash: String, id: String, work: UInt64) -> BlockImportBatch {
         workAdmission(blockHash: blockHash, id: id, work: work)
     }
 
-    static func exclusion(of blockHash: String) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [.exclusion(ChainExclusionFact(blockHash: blockHash))])
+    static func exclusion(of blockHash: String) -> BlockImportBatch {
+        BlockImportBatch(facts: [.exclusion(ChainExclusionFact(blockHash: blockHash))])
     }
 }

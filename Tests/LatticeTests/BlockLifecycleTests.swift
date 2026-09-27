@@ -40,13 +40,13 @@ private func now() -> Int64 {
 }
 
 private actor AdmissionBatchCollector {
-    private var batches: [ChainAdmissionBatch] = []
+    private var batches: [BlockImportBatch] = []
 
-    func append(_ batch: ChainAdmissionBatch) {
+    func append(_ batch: BlockImportBatch) {
         batches.append(batch)
     }
 
-    func snapshot() -> [ChainAdmissionBatch] {
+    func snapshot() -> [BlockImportBatch] {
         batches
     }
 }
@@ -172,11 +172,11 @@ final class BlockMintingTests: XCTestCase {
         let block1 = try await storeBuiltBlock(built1, in: fetcher)
         let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
         let collector = AdmissionBatchCollector()
-        let stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void = { context in
+        let stage: @Sendable (BlockImportStagingContext) async throws -> Void = { context in
             await collector.append(context.batch)
         }
 
-        let first = try await level.admitBlockHeaderChainLocal(
+        let first = try await level.importBlock(
             try BlockHeader(node: block1),
             fetcher: fetcher,
             validationContentStorer: fetcher,
@@ -213,7 +213,7 @@ final class BlockMintingTests: XCTestCase {
         XCTAssertEqual(blockFact.stateDiff, built1.stateDiff)
         XCTAssertEqual(workFact.blockHash, block1Hash)
 
-        let duplicate = try await level.admitBlockHeaderChainLocal(
+        let duplicate = try await level.importBlock(
             try BlockHeader(node: block1),
             fetcher: fetcher,
             validationContentStorer: fetcher,
@@ -283,7 +283,7 @@ final class BlockMintingTests: XCTestCase {
             )
             XCTFail("a future block must report temporary inadmissibility")
         } catch let error as BlockValidationError {
-            XCTAssertEqual(error, .notYetAdmissible)
+            XCTAssertEqual(error, .notYetValid)
         }
     }
 
@@ -451,13 +451,13 @@ final class BlockMintingTests: XCTestCase {
             let result = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: block), block: block
             )
-            XCTAssertTrue(result.extendsMainChain, "Block \(i) should extend main chain")
+            XCTAssertTrue(result.extendsCanonical, "Block \(i) should extend main chain")
             prev = block
         }
 
         let height = await chain.getHighestBlockHeight()
         XCTAssertEqual(height, 5)
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, try! VolumeImpl<Block>(node: prev).rawCID)
     }
 
@@ -939,7 +939,7 @@ final class BlockLifecycleTests: XCTestCase {
             mainPrev = block
         }
 
-        let mainTip = await chain.getMainChainTip()
+        let mainTip = await chain.canonicalTip
         XCTAssertEqual(mainTip, try! VolumeImpl<Block>(node: mainPrev).rawCID)
 
         var forkPrev = genesis
@@ -954,7 +954,7 @@ final class BlockLifecycleTests: XCTestCase {
             forkPrev = block
         }
 
-        let newTip = await chain.getMainChainTip()
+        let newTip = await chain.canonicalTip
         let forkTipHash = try! VolumeImpl<Block>(node: forkPrev).rawCID
         XCTAssertEqual(newTip, forkTipHash, "Longer fork should become main chain")
     }
@@ -1006,7 +1006,7 @@ final class BlockLifecycleTests: XCTestCase {
         let result = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: mined!), block: mined!
         )
-        XCTAssertTrue(result.extendsMainChain)
+        XCTAssertTrue(result.extendsCanonical)
 
         let height = await chain.getHighestBlockHeight()
         XCTAssertEqual(height, 1)

@@ -16,8 +16,8 @@ final class ParentStateContinuityTests: XCTestCase {
         from: String,
         to: String,
         nonce: Int64
-    ) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [
+    ) -> BlockImportBatch {
+        BlockImportBatch(facts: [
             .block(ChainBlockFact(
                 blockHash: block,
                 parentBlockHash: parent,

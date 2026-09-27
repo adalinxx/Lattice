@@ -108,18 +108,18 @@ public struct BlockMeta: Sendable {
 public struct SubmissionResult: Sendable {
     public let addedBlock: Bool
     public let addedContribution: Bool
-    public let extendsMainChain: Bool
+    public let extendsCanonical: Bool
     public let commit: ChainCommit?
 
     init(
         addedBlock: Bool,
         addedContribution: Bool = false,
-        extendsMainChain: Bool,
+        extendsCanonical: Bool,
         commit: ChainCommit? = nil
     ) {
         self.addedBlock = addedBlock
         self.addedContribution = addedContribution
-        self.extendsMainChain = extendsMainChain
+        self.extendsCanonical = extendsCanonical
         self.commit = commit
     }
 
@@ -127,7 +127,7 @@ public struct SubmissionResult: Sendable {
         SubmissionResult(
             addedBlock: false,
             addedContribution: false,
-            extendsMainChain: false
+            extendsCanonical: false
         )
     }
 }
@@ -135,31 +135,31 @@ public struct SubmissionResult: Sendable {
 public struct ChainCommit: Sendable, Equatable {
     public let revision: UInt64
     public let tipHash: String
-    public let mainChainBlocksAdded: [String: UInt64]
-    public let mainChainBlocksRemoved: Set<String>
+    public let canonicalBlocksAdded: [String: UInt64]
+    public let canonicalBlocksRemoved: Set<String>
 
     public init(
         revision: UInt64 = 0,
         tipHash: String,
-        mainChainBlocksAdded: [String: UInt64] = [:],
-        mainChainBlocksRemoved: Set<String> = []
+        canonicalBlocksAdded: [String: UInt64] = [:],
+        canonicalBlocksRemoved: Set<String> = []
     ) {
         self.revision = revision
         self.tipHash = tipHash
-        self.mainChainBlocksAdded = mainChainBlocksAdded
-        self.mainChainBlocksRemoved = mainChainBlocksRemoved
+        self.canonicalBlocksAdded = canonicalBlocksAdded
+        self.canonicalBlocksRemoved = canonicalBlocksRemoved
     }
 
     public var canonicalChanged: Bool {
-        !mainChainBlocksAdded.isEmpty || !mainChainBlocksRemoved.isEmpty
+        !canonicalBlocksAdded.isEmpty || !canonicalBlocksRemoved.isEmpty
     }
 
     func atRevision(_ revision: UInt64) -> ChainCommit {
         ChainCommit(
             revision: revision,
             tipHash: tipHash,
-            mainChainBlocksAdded: mainChainBlocksAdded,
-            mainChainBlocksRemoved: mainChainBlocksRemoved
+            canonicalBlocksAdded: canonicalBlocksAdded,
+            canonicalBlocksRemoved: canonicalBlocksRemoved
         )
     }
 }
@@ -252,14 +252,14 @@ private struct ConsensusBlockInput: Sendable {
 
 /// A node-durable admission batch after Lattice has authenticated it. Recovery
 /// may replay this value, but must never use it as wire evidence.
-private struct TrustedAdmissionBatch {
+private struct TrustedImportBatch {
     let block: ConsensusBlockInput?
     let workBlockHash: String
     let contribution: VerifiedWorkContribution
     /// Set when the work fact is a parent's attributed run, not a grind.
     let attributedRun: AttributedRunIdentity?
 
-    init?(_ batch: ChainAdmissionBatch) {
+    init?(_ batch: BlockImportBatch) {
         guard !batch.facts.isEmpty,
               Set(batch.facts.map(\.id)).count == batch.facts.count else {
             return nil
@@ -361,18 +361,18 @@ public actor ChainState {
     /// Capacity held across the node's asynchronous stage boundary. These
     /// reservations are fungible and disappear on restart; staged facts replay
     /// against the same pre-stage revision floor.
-    var reservedAdmissionRevisions: UInt64
+    var reservedImportRevisions: UInt64
 
     // Restore validates this invariant; optional access keeps query paths fail-closed.
-    var highestBlockHeight: UInt64 { graph.height(of: chainTip) ?? 0 }
+    var highestBlockHeight: UInt64 { graph.height(of: canonicalTip) ?? 0 }
 
     /// Every held block's public read view, keyed by hash. Test-facing and
     /// O(N) — assembled on read; production reads `graph`.
     var hashToBlock: [String: BlockMeta] { graph.metas }
 
     package init(
-        chainTip: String,
-        mainChainHashes: Set<String>,
+        canonicalTip: String,
+        canonicalHashes: Set<String>,
         indexToBlockHash: [UInt64: Set<String>],
         hashToBlock: [String: BlockMeta],
         tipSnapshot: TipBlockSnapshot? = nil,
@@ -413,7 +413,7 @@ public actor ChainState {
         }
         self.indexToBlockHash = allByHeight
         self.mutationGeneration = mutationGeneration
-        self.reservedAdmissionRevisions = 0
+        self.reservedImportRevisions = 0
         for meta in hashToBlock.values {
             let contributions = meta.workContributions.values
             guard !contributions.isEmpty else {
@@ -435,8 +435,8 @@ public actor ChainState {
         // `markValidated` one at a time, but a graph restored wholesale needs
         // it computed once, downward from every genesis it holds.
         self.frontier = try ExecutionFrontier(
-            chainTip: chainTip,
-            mainChainHashes: mainChainHashes,
+            canonicalTip: canonicalTip,
+            canonicalHashes: canonicalHashes,
             tipSnapshot: tipSnapshot,
             snapshots: tipSnapshotsByHash,
             validated: validatedBlocks,
@@ -478,8 +478,8 @@ public actor ChainState {
             cumulativeWork: WorkSum(contribution.work)
         )
         return try! ChainState(
-            chainTip: blockHash,
-            mainChainHashes: Set([blockHash]),
+            canonicalTip: blockHash,
+            canonicalHashes: Set([blockHash]),
             indexToBlockHash: [0: Set([blockHash])],
             hashToBlock: [blockHash: meta],
             tipSnapshot: Self.snapshot(for: block),
@@ -509,8 +509,8 @@ public actor ChainState {
             childCommitments: input.childCommitments
         )
         return try ChainState(
-            chainTip: input.blockHash,
-            mainChainHashes: [input.blockHash],
+            canonicalTip: input.blockHash,
+            canonicalHashes: [input.blockHash],
             indexToBlockHash: [0: [input.blockHash]],
             hashToBlock: [input.blockHash: meta],
             tipSnapshot: input.snapshot,
@@ -523,10 +523,10 @@ public actor ChainState {
     /// before the in-memory actor was created. The durable revision is a final
     /// lower bound, applied after replay so restarts do not create revisions.
     public static func restore(
-        replaying batches: [ChainAdmissionBatch],
+        replaying batches: [BlockImportBatch],
         revisionFloor: UInt64 = 0
     ) async throws -> ChainState {
-        let genesis = batches.compactMap(TrustedAdmissionBatch.init).filter {
+        let genesis = batches.compactMap(TrustedImportBatch.init).filter {
             $0.block?.parentBlockHash == nil && $0.block?.blockHeight == 0
         }.sorted {
             ($0.block?.blockHash ?? "") < ($1.block?.blockHash ?? "")
@@ -570,22 +570,22 @@ public actor ChainState {
     }
 
     private static func replay(
-        _ batches: ArraySlice<ChainAdmissionBatch>,
+        _ batches: ArraySlice<BlockImportBatch>,
         onto chain: ChainState
     ) async throws {
         // Sort keys are derived from immutable batch content, so authenticate
         // each batch ONCE and sort ONCE: the old per-comparison
-        // `TrustedAdmissionBatch` construction re-decoded both operands' block
+        // `TrustedImportBatch` construction re-decoded both operands' block
         // facts on every comparison, making a cold-start restore
         // O(N log N x decode) per round — hours of CPU on a long chain. A
         // sorted array's deferred subsequence keeps its relative order, so
         // later rounds never need re-sorting either.
         var pending = batches.map { batch in
-            (batch: batch, key: TrustedAdmissionBatch(batch))
+            (batch: batch, key: TrustedImportBatch(batch))
         }
         pending.sort { replayPrecedes($0, $1) }
         while !pending.isEmpty {
-            var deferred: [(batch: ChainAdmissionBatch, key: TrustedAdmissionBatch?)] = []
+            var deferred: [(batch: BlockImportBatch, key: TrustedImportBatch?)] = []
             var completed = false
             for entry in pending {
                 do {
@@ -608,8 +608,8 @@ public actor ChainState {
     /// consistently — a key that compared "equal" to everything would let the
     /// sort leave it wherever enumeration put it.
     private static func replayPrecedes(
-        _ left: (batch: ChainAdmissionBatch, key: TrustedAdmissionBatch?),
-        _ right: (batch: ChainAdmissionBatch, key: TrustedAdmissionBatch?)
+        _ left: (batch: BlockImportBatch, key: TrustedImportBatch?),
+        _ right: (batch: BlockImportBatch, key: TrustedImportBatch?)
     ) -> Bool {
         switch (left.key, right.key) {
         case let (leftKey?, rightKey?):
@@ -630,8 +630,8 @@ public actor ChainState {
     }
 
     private static func replayPrecedes(
-        _ left: TrustedAdmissionBatch,
-        _ right: TrustedAdmissionBatch
+        _ left: TrustedImportBatch,
+        _ right: TrustedImportBatch
     ) -> Bool {
         switch (left.block, right.block) {
         case let (leftBlock?, rightBlock?)
@@ -807,7 +807,7 @@ public actor ChainState {
     ) -> SubmissionResult {
         let blockHash = input.blockHash
         let isRoot = input.parentBlockHash == nil
-        let oldTip = chainTip
+        let oldTip = canonicalTip
 
         if contribution.work == .zero || (isRoot && input.blockHeight != 0) {
             return .discarded()
@@ -844,13 +844,13 @@ public actor ChainState {
             // the cheapest instance of this one, a descent of a single step.
             canonicalChange = projectCanonicalChain(monotoneIncreaseAt: blockHash)
         }
-        let extendsMainChain = input.parentBlockHash == oldTip
-            && mainChainHashes.contains(blockHash)
+        let extendsCanonical = input.parentBlockHash == oldTip
+            && canonicalHashes.contains(blockHash)
         return SubmissionResult(
             addedBlock: true,
             addedContribution: result.addedContribution,
-            extendsMainChain: extendsMainChain,
-            commit: (canonicalChange ?? ChainCommit(tipHash: chainTip))
+            extendsCanonical: extendsCanonical,
+            commit: (canonicalChange ?? ChainCommit(tipHash: canonicalTip))
                 .atRevision(mutationGeneration)
         )
     }
@@ -948,7 +948,7 @@ public actor ChainState {
         return SubmissionResult(
             addedBlock: true,
             addedContribution: addedContribution,
-            extendsMainChain: false
+            extendsCanonical: false
         )
     }
 
@@ -1017,8 +1017,8 @@ public actor ChainState {
         return SubmissionResult(
             addedBlock: false,
             addedContribution: true,
-            extendsMainChain: false,
-            commit: (canonicalChange ?? ChainCommit(tipHash: chainTip))
+            extendsCanonical: false,
+            commit: (canonicalChange ?? ChainCommit(tipHash: canonicalTip))
                 .atRevision(mutationGeneration)
         )
     }
@@ -1026,7 +1026,7 @@ public actor ChainState {
     /// Apply one already-durable, locally authenticated admission batch. Live
     /// admission and recovery share this reducer so staging is the only
     /// linearization point.
-    func applyStaged(_ batch: ChainAdmissionBatch) throws -> SubmissionResult? {
+    func applyStaged(_ batch: BlockImportBatch) throws -> SubmissionResult? {
         if let excluded = Self.exclusionTarget(of: batch) {
             return try applyExclusion(blockHash: excluded)
         }
@@ -1040,7 +1040,7 @@ public actor ChainState {
             markValidated(blockHash: validated)
             return nil
         }
-        guard let trusted = TrustedAdmissionBatch(batch) else {
+        guard let trusted = TrustedImportBatch(batch) else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
         // Applied only once the batch has landed: `defer` would also run on the
@@ -1114,7 +1114,7 @@ public actor ChainState {
 
     /// A validation batch is exactly one `.validation` fact: the deferred
     /// upgrade of an already-possessed block, carrying no new block or work.
-    private static func validationTarget(of batch: ChainAdmissionBatch) -> String? {
+    private static func validationTarget(of batch: BlockImportBatch) -> String? {
         guard batch.facts.count == 1,
               case .validation(let fact) = batch.facts[0] else { return nil }
         return CIDIdentity.canonicalString(fact.blockHash)
@@ -1122,7 +1122,7 @@ public actor ChainState {
 
     /// An exclusion batch is exactly one `.exclusion` fact. Any other shape is
     /// handled by the block/work reducer.
-    private static func exclusionTarget(of batch: ChainAdmissionBatch) -> String? {
+    private static func exclusionTarget(of batch: BlockImportBatch) -> String? {
         guard batch.facts.count == 1,
               case .exclusion(let fact) = batch.facts[0] else { return nil }
         return CIDIdentity.canonicalString(fact.blockHash)
@@ -1163,7 +1163,7 @@ public actor ChainState {
         // rebuilt. Selection moves only if the excluded block was on the
         // canonical path; otherwise the descent never reached it and every
         // decision stands.
-        let wasCanonical = mainChainHashes.contains(blockHash)
+        let wasCanonical = canonicalHashes.contains(blockHash)
         mutationGeneration += 1
         let canonicalChange = (deferProjectionForReplay || !wasCanonical)
             ? nil
@@ -1174,44 +1174,44 @@ public actor ChainState {
         return SubmissionResult(
             addedBlock: false,
             addedContribution: false,
-            extendsMainChain: false,
-            commit: (canonicalChange ?? ChainCommit(tipHash: chainTip))
+            extendsCanonical: false,
+            commit: (canonicalChange ?? ChainCommit(tipHash: canonicalTip))
                 .atRevision(mutationGeneration)
         )
     }
 
     /// Rebuild one already-durable admission fact during recovery. Callers must
     /// authenticate and persist the fact before invoking this public seam.
-    public func replay(_ batch: ChainAdmissionBatch) throws -> ChainCommit? {
+    public func replay(_ batch: BlockImportBatch) throws -> ChainCommit? {
         try applyStaged(batch)?.commit
     }
 
     /// Reserve one distinct U64 commit revision before the node stages a batch.
     /// Other actor mutations must leave this capacity available until the batch
     /// either fails staging or consumes the reservation synchronously.
-    package func reserveAdmissionRevision() -> Bool {
+    package func reserveImportRevision() -> Bool {
         guard hasUnreservedMutationCapacity else { return false }
-        reservedAdmissionRevisions += 1
+        reservedImportRevisions += 1
         return true
     }
 
-    package func releaseAdmissionRevision() {
-        precondition(reservedAdmissionRevisions > 0)
-        reservedAdmissionRevisions -= 1
+    package func releaseImportRevision() {
+        precondition(reservedImportRevisions > 0)
+        reservedImportRevisions -= 1
     }
 
     package func applyReservedStaged(
-        _ batch: ChainAdmissionBatch
+        _ batch: BlockImportBatch
     ) throws -> SubmissionResult? {
-        guard reservedAdmissionRevisions > 0 else {
+        guard reservedImportRevisions > 0 else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
-        reservedAdmissionRevisions -= 1
+        reservedImportRevisions -= 1
         return try applyStaged(batch)
     }
 
     var hasUnreservedMutationCapacity: Bool {
-        reservedAdmissionRevisions < UInt64.max - mutationGeneration
+        reservedImportRevisions < UInt64.max - mutationGeneration
     }
 
     private func matchesGraph(_ meta: BlockRecord, input: ConsensusBlockInput) -> Bool {
@@ -1229,7 +1229,7 @@ public actor ChainState {
     private func hydrateMetadata(from input: ConsensusBlockInput) {
         indexStateTransition(input.snapshot, blockHash: input.blockHash)
         // The index above just recorded `input.snapshot` for this block.
-        if chainTip == input.blockHash {
+        if canonicalTip == input.blockHash {
             frontier.refreshTipSnapshot()
         }
         if let commitments = input.childCommitments {

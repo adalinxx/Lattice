@@ -128,7 +128,7 @@ struct ForkChoiceOracle {
 
     /// Record one batch's facts. Order-independent by construction: blocks are
     /// keyed by hash, observations keep their maximum, exclusions are a set.
-    mutating func apply(_ batch: ChainAdmissionBatch) {
+    mutating func apply(_ batch: BlockImportBatch) {
         for fact in batch.facts {
             switch fact {
             case .block(let block):

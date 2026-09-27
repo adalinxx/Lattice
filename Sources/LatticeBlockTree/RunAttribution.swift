@@ -69,11 +69,19 @@ public struct ParentRunReport: Sendable, Equatable {
 /// own price and add it again), whereas a separate contribution ratchets on
 /// its own value.
 public struct AttributedRunIdentity: Hashable, Scalar {
-    public let committerBlockHash: String
+    public let carrierBlockHash: String
     public let directory: String
 
-    public init(committerBlockHash: String, directory: String) {
-        self.committerBlockHash = committerBlockHash
+    /// The encoded key stays `committerBlockHash`: this value's DAG-CBOR CID
+    /// is the contribution ID credited on parent and child, so renaming the
+    /// key would change every attributed-run ID.
+    private enum CodingKeys: String, CodingKey {
+        case carrierBlockHash = "committerBlockHash"
+        case directory
+    }
+
+    public init(carrierBlockHash: String, directory: String) {
+        self.carrierBlockHash = carrierBlockHash
         self.directory = directory
     }
 
@@ -88,11 +96,11 @@ public struct AttributedRunIdentity: Hashable, Scalar {
 /// a silent refusal is exactly what would hide it.
 public enum ParentReportStrengthening: Sendable, Equatable {
     /// Stage this work-only batch durably, then apply it.
-    case strengthened(ChainAdmissionBatch)
+    case strengthened(BlockImportBatch)
     /// The report does not name this child block, or none of the committer's
     /// grinds is credited here — so the reported block is not a committer of
     /// this child block as far as this chain knows.
-    case notCommitterOfChild
+    case notCarrierOfChild
     /// The report is for another directory: a parent committing into several
     /// directories serves one run per directory, and only this chain's own
     /// may be applied here.
@@ -141,7 +149,7 @@ struct RunAttribution: Sendable {
     /// O(#served) per block, never O(#directories ever committed); inherited
     /// from the parent like `difficultyAnchor`, and absent until the block is
     /// connected.
-    private(set) var nearestCommitter: [String: [String: String]] = [:]
+    private(set) var nearestCarrier: [String: [String: String]] = [:]
 #if DEBUG
     /// Run-bucket updates. Each connected block costs one per directory it
     /// has a nearest committer for, so this is O(#directories) per block —
@@ -201,8 +209,8 @@ struct RunAttribution: Sendable {
     ) {
         guard let meta = graph[hash], let work = graph.work(of: hash) else { return }
         let inherited = meta.parentBlockHash
-            .flatMap { nearestCommitter[$0] } ?? [:]
-        var nearest = nearestCommitter[hash] ?? [:]
+            .flatMap { nearestCarrier[$0] } ?? [:]
+        var nearest = nearestCarrier[hash] ?? [:]
         var credited: [String: String] = [:]
         for directory in directories {
             let committer = meta.childCommitments?[directory] != nil ? hash : inherited[directory]
@@ -210,14 +218,14 @@ struct RunAttribution: Sendable {
             nearest[directory] = committer
             credited[directory] = committer
         }
-        nearestCommitter[hash] = nearest
+        nearestCarrier[hash] = nearest
         credit(work.work, nearest: credited)
     }
 
     /// A connected block's own work rose by `delta`: its runs rise by exactly
     /// that much.
     mutating func credit(_ delta: WorkSum, at hash: String) {
-        credit(delta, nearest: nearestCommitter[hash] ?? [:])
+        credit(delta, nearest: nearestCarrier[hash] ?? [:])
     }
 
     private mutating func credit(_ work: WorkSum, nearest: [String: String]) {
@@ -235,8 +243,8 @@ struct RunAttribution: Sendable {
     mutating func forget(directory: String) {
         served.remove(directory)
         runWork[directory] = nil
-        for block in nearestCommitter.keys {
-            nearestCommitter[block]?[directory] = nil
+        for block in nearestCarrier.keys {
+            nearestCarrier[block]?[directory] = nil
         }
     }
 }
@@ -262,6 +270,16 @@ extension ChainState {
 
     func connectForRunAttribution(rootedAt rootHash: String) {
         runs.connect(rootedAt: rootHash, in: graph)
+    }
+
+    /// The nearest block at or above `blockHash`, by parent pointer, that
+    /// commits into `directory` — the block itself where it commits — as run
+    /// attribution settled it. Answers only for a directory this node serves
+    /// (`serveRuns(for:)`) and a connected block; nil otherwise, never "none".
+    /// The hash is looked up as given, not canonicalized.
+    public func nearestCarrier(of blockHash: String, directory: String) -> String? {
+        guard runs.served.contains(directory) else { return nil }
+        return runs.nearestCarrier[blockHash]?[directory]
     }
 
     /// The run report a parent serves for one of its committing blocks. Nil
@@ -343,9 +361,9 @@ extension ChainState {
               let committer = CIDIdentity.canonicalString(report.blockHash),
               report.grinds.contains(where: { workContribution(id: $0, at: hash) != nil }),
               let attributedID = AttributedRunIdentity(
-                  committerBlockHash: committer, directory: directory
+                  carrierBlockHash: committer, directory: directory
               ).contributionID else {
-            return .notCommitterOfChild
+            return .notCarrierOfChild
         }
         guard forkChoice.acceptsLocation(of: attributedID, at: hash) else { return .locationConflict }
         guard let derived = report.runWork.subtracting(report.ownWork) else {
@@ -358,12 +376,12 @@ extension ChainState {
         guard derivedWork > existing else {
             return .notStronger(existing: WorkSum(existing), derived: derived)
         }
-        return .strengthened(ChainAdmissionBatch(facts: [
+        return .strengthened(BlockImportBatch(facts: [
             .work(ChainWorkFact(
                 blockHash: hash,
                 contribution: VerifiedWorkContribution(id: attributedID, work: derivedWork),
                 attributedRun: AttributedRunIdentity(
-                    committerBlockHash: committer, directory: directory
+                    carrierBlockHash: committer, directory: directory
                 )
             )),
         ]))

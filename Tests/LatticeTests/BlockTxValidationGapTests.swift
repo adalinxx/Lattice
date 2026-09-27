@@ -13,7 +13,7 @@ import Foundation
 // MARK: - Bucket-A block-tx validation gaps test phase)
 //
 // BTV-A1: unavailable evidence vs permanent rejection at admission.
-//   admitBlockHeaderChainLocal must report `.unavailableEvidence` when block
+//   importBlock must report `.unavailableEvidence` when block
 //   content cannot be resolved because of a *transient* fetch failure (the data
 //   is re-requestable and a later attempt succeeds), while a genuinely-invalid
 //   but fully-resolvable block must be permanently rejected on reprocessing.
@@ -90,7 +90,7 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
 
         let level = ChainLevel(testChain: ChainState.fromGenesis(block: g))
 
-        let unavailable = try await level.admitBlockHeaderChainLocal(
+        let unavailable = try await level.importBlock(
             gapHeader(block),
             fetcher: fetcher,
             validationContentStorer: backing,
@@ -106,7 +106,7 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
         // Simulate the re-request succeeding: clear the failure and reprocess
         // the SAME header through the SAME fetcher instance.
         await fetcher.setDenied([])
-        let accepted = try await level.admitBlockHeaderChainLocal(
+        let accepted = try await level.importBlock(
             gapHeader(block),
             fetcher: fetcher,
             validationContentStorer: backing,
@@ -146,7 +146,7 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
 
         let level = ChainLevel(testChain: ChainState.fromGenesis(block: g))
 
-        let rejected = try await level.admitBlockHeaderChainLocal(
+        let rejected = try await level.importBlock(
             gapHeader(minedTampered),
             fetcher: f,
             validationContentStorer: f,
@@ -157,7 +157,7 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
             return XCTFail("a fully-resolvable invalid block must be rejected")
         }
 
-        let rejectedAgain = try await level.admitBlockHeaderChainLocal(
+        let rejectedAgain = try await level.importBlock(
             gapHeader(minedTampered),
             fetcher: f,
             validationContentStorer: f,

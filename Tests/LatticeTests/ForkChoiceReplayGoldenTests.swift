@@ -22,7 +22,7 @@ struct ForkChoiceGoldenEvent {
     let kind: Kind
     /// The block the batch is about, by fixture name (`b<n>`).
     let subject: String
-    let batch: ChainAdmissionBatch
+    let batch: BlockImportBatch
 }
 
 /// A seeded single-chain graph of ~300 blocks: two competing genesis roots,
@@ -204,10 +204,10 @@ struct ForkChoiceGoldenGraph {
         }
 
         // 3. The scripted facts, interleaved with the arrivals.
-        func blockBatch(_ block: Block) -> ChainAdmissionBatch {
+        func blockBatch(_ block: Block) -> BlockImportBatch {
             let work = UInt64(1 + random.nextInt(5))
             strength[block.index] = work
-            return ChainAdmissionBatch(facts: [
+            return BlockImportBatch(facts: [
                 .block(ChainBlockFact(
                     blockHash: block.hash,
                     parentBlockHash: block.parentHash,
@@ -229,7 +229,7 @@ struct ForkChoiceGoldenGraph {
                 )),
             ])
         }
-        func add(_ kind: ForkChoiceGoldenEvent.Kind, _ block: Block, _ batch: ChainAdmissionBatch) {
+        func add(_ kind: ForkChoiceGoldenEvent.Kind, _ block: Block, _ batch: BlockImportBatch) {
             events.append(ForkChoiceGoldenEvent(
                 index: events.count, kind: kind, subject: block.name, batch: batch
             ))
@@ -237,7 +237,7 @@ struct ForkChoiceGoldenGraph {
         }
         func exclude(_ block: Block) {
             excluded.insert(block.index)
-            add(.exclusion, block, ChainAdmissionBatch(facts: [
+            add(.exclusion, block, BlockImportBatch(facts: [
                 .exclusion(ChainExclusionFact(blockHash: block.hash)),
             ]))
         }
@@ -260,7 +260,7 @@ struct ForkChoiceGoldenGraph {
                 // Both roots are executed explicitly so the executed frontier
                 // does not depend on which root seeded the restore.
                 validated.insert(index)
-                add(.validation, block, ChainAdmissionBatch.validation(blockHash: block.hash))
+                add(.validation, block, BlockImportBatch.validation(blockHash: block.hash))
             }
             // A DECISIVE exclusion, planned past each mark: a block ON the
             // canonical selection, so the tip must move and the golden pins a
@@ -288,7 +288,7 @@ struct ForkChoiceGoldenGraph {
                 let roll = random.nextInt(100)
                 if roll < 30 {
                     extraCounter += 1
-                    add(.secondGrind, target, ChainAdmissionBatch(facts: [
+                    add(.secondGrind, target, BlockImportBatch(facts: [
                         .work(ChainWorkFact(
                             blockHash: target.hash,
                             contribution: VerifiedWorkContribution(
@@ -302,13 +302,13 @@ struct ForkChoiceGoldenGraph {
                     // credited like a grind, but no grind of the block (§9.10).
                     extraCounter += 1
                     let identity = AttributedRunIdentity(
-                        committerBlockHash: cid(seed, "committer", extraCounter),
+                        carrierBlockHash: cid(seed, "committer", extraCounter),
                         directory: directory
                     )
                     guard let identityID = identity.contributionID else {
                         preconditionFailure("attributed-run identity for \(target.name) has no CID")
                     }
-                    add(.attributedRun, target, ChainAdmissionBatch(facts: [
+                    add(.attributedRun, target, BlockImportBatch(facts: [
                         .work(ChainWorkFact(
                             blockHash: target.hash,
                             contribution: VerifiedWorkContribution(
@@ -321,7 +321,7 @@ struct ForkChoiceGoldenGraph {
                 } else if roll < 65 {
                     let stronger = strength[target.index, default: 1] + UInt64(1 + random.nextInt(3))
                     strength[target.index] = stronger
-                    add(.strengthen, target, ChainAdmissionBatch(facts: [
+                    add(.strengthen, target, BlockImportBatch(facts: [
                         .work(ChainWorkFact(
                             blockHash: target.hash,
                             contribution: VerifiedWorkContribution(
@@ -349,7 +349,7 @@ struct ForkChoiceGoldenGraph {
                         ? blocks[frontier[random.nextInt(frontier.count)]]
                         : target
                     validated.insert(chosen.index)
-                    add(.validation, chosen, ChainAdmissionBatch.validation(blockHash: chosen.hash))
+                    add(.validation, chosen, BlockImportBatch.validation(blockHash: chosen.hash))
                 }
             }
         }
@@ -419,7 +419,7 @@ struct ForkChoiceGolden: Codable, Equatable {
             let subtree = try XCTUnwrap(subtreeValue)
             let cumulativeValue = await chain.getCumulativeWork(forHash: block.hash)
             let cumulative = try XCTUnwrap(cumulativeValue)
-            let canonical = await chain.isOnMainChain(hash: block.hash)
+            let canonical = await chain.isCanonical(hash: block.hash)
             let executed = await chain.hasExecutedAncestry(blockHash: block.hash)
             let anchor = await chain.difficultyAnchor(forBlockHash: block.hash)
             records.append(BlockRecord(
@@ -439,7 +439,7 @@ struct ForkChoiceGolden: Codable, Equatable {
         let tipHeight = await chain.getHighestBlockHeight()
         var canonical: [String] = []
         for height in 0...tipHeight {
-            let hash = await chain.getMainChainBlockHash(atIndex: height)
+            let hash = await chain.canonicalBlockHash(atHeight: height)
             canonical.append(try XCTUnwrap(
                 hash.map(name), "canonical index has a hole at \(height)"
             ))
@@ -463,7 +463,7 @@ struct ForkChoiceGolden: Codable, Equatable {
             ))
         }
 
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         let excluded = await chain.excludedRootsForTesting
         return ForkChoiceGolden(
             seed: graph.seed,
@@ -625,7 +625,7 @@ final class ForkChoiceReplayGoldenTests: XCTestCase {
                 XCTFail("position \(position), event \(event.index) (\(event.kind.rawValue) \(event.subject)) threw \(error)")
                 throw error
             }
-            let removed = commit?.mainChainBlocksRemoved ?? []
+            let removed = commit?.canonicalBlocksRemoved ?? []
             if event.kind == .exclusion, !removed.isEmpty {
                 decisiveExclusions += 1
                 reorgCommitsAfterDecisiveExclusion.append(0)
@@ -634,7 +634,7 @@ final class ForkChoiceReplayGoldenTests: XCTestCase {
             }
             if !removed.isEmpty { reorgCommits += 1 }
             if position % 25 == 0 || event.kind == .exclusion {
-                let tip = await chain.getMainChainTip()
+                let tip = await chain.canonicalTip
                 let tipHeight = await chain.getHighestBlockHeight()
                 checkpoints.append(ForkChoiceTraceGolden.Checkpoint(
                     event: event.index,
