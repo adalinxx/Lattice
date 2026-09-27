@@ -10,6 +10,12 @@ let package = Package(
         .library(
             name: "Lattice",
             targets: ["Lattice"]),
+        .library(name: "LatticePrimitives", targets: ["LatticePrimitives"]),
+        .library(name: "LatticePoW", targets: ["LatticePoW"]),
+        .library(name: "LatticeValidation", targets: ["LatticeValidation"]),
+        .library(name: "LatticeProofs", targets: ["LatticeProofs"]),
+        .library(name: "LatticeBlockTree", targets: ["LatticeBlockTree"]),
+        .library(name: "LatticeImport", targets: ["LatticeImport"]),
         .executable(
             name: "LatticeDemo",
             targets: ["LatticeDemo"]),
@@ -32,7 +38,7 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "Lattice",
+            name: "LatticePrimitives",
             dependencies: [
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Multikey", package: "Multikey"),
@@ -41,8 +47,65 @@ let package = Package(
                 .product(name: "Multicodec", package: "swift-multicodec"),
                 .product(name: "UInt256", package: "UInt256"),
                 .product(name: "CollectionConcurrencyKit", package: "CollectionConcurrencyKit"),
+            ]),
+        .target(
+            name: "LatticePoW",
+            dependencies: [
+                "LatticePrimitives",
+                .product(name: "cashew", package: "cashew"),
+                .product(name: "UInt256", package: "UInt256"),
+            ]),
+        .target(
+            name: "LatticeValidation",
+            dependencies: [
+                "LatticePrimitives",
+                "LatticePoW",
+                .product(name: "cashew", package: "cashew"),
+                .product(name: "UInt256", package: "UInt256"),
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "Multikey", package: "Multikey"),
+                .product(name: "CollectionConcurrencyKit", package: "CollectionConcurrencyKit"),
                 .product(name: "WasmKit", package: "WasmKit"),
                 .product(name: "WasmParser", package: "WasmKit"),
+            ]),
+        .target(
+            name: "LatticeProofs",
+            dependencies: [
+                "LatticePrimitives",
+                "LatticePoW",
+                .product(name: "cashew", package: "cashew"),
+                .product(name: "UInt256", package: "UInt256"),
+            ]),
+        .target(
+            name: "LatticeBlockTree",
+            dependencies: [
+                "LatticePrimitives",
+                "LatticePoW",
+                .product(name: "cashew", package: "cashew"),
+                .product(name: "CID", package: "swift-cid"),
+                .product(name: "UInt256", package: "UInt256"),
+            ]),
+        .target(
+            name: "LatticeImport",
+            dependencies: [
+                "LatticePrimitives",
+                "LatticePoW",
+                "LatticeValidation",
+                "LatticeProofs",
+                "LatticeBlockTree",
+                .product(name: "cashew", package: "cashew"),
+                .product(name: "UInt256", package: "UInt256"),
+            ]),
+        // Umbrella: re-exports the six modules so `import Lattice` keeps working.
+        .target(
+            name: "Lattice",
+            dependencies: [
+                "LatticePrimitives",
+                "LatticePoW",
+                "LatticeValidation",
+                "LatticeProofs",
+                "LatticeBlockTree",
+                "LatticeImport",
             ]),
         .executableTarget(
             name: "LatticeDemo",
@@ -74,6 +137,12 @@ let package = Package(
             name: "LatticeTests",
             dependencies: [
                 "Lattice",
+                "LatticePrimitives",
+                "LatticePoW",
+                "LatticeValidation",
+                "LatticeProofs",
+                "LatticeBlockTree",
+                "LatticeImport",
                 "LatticeSimulation",
                 "DeterminismGoldens",
                 .product(name: "WasmParser", package: "WasmKit"),
