@@ -644,14 +644,7 @@ private enum ChainLocalAdmission {
         await package.proof.verifySecuringWork(
             child: child,
             chainPath: context.path
-        ).mapError { failure -> ChainAdmissionFailure in
-            switch failure {
-            case .crossChainEvidenceRequired(let requirement):
-                .crossChainEvidenceRequired(requirement)
-            case .malformedEvidence: .providerMalformedEvidence
-            case .protocolInvalid: .protocolInvalid
-            }
-        }
+        ).mapError(mapProofFailure)
     }
 
     static func validateParentFacts(
