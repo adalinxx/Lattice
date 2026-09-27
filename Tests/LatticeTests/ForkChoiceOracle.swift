@@ -260,9 +260,9 @@ struct ForkChoiceOracleView {
     /// With one location per grind (§9.1, enforced by `observe` and by the
     /// `hashToBlock` initializer) the union over a subtree has no duplicate to
     /// collapse, so it is the plain sum of each member's own measure. Checked
-    /// block by block against `trueCumWork` in `ForkChoiceOracleTests`; the
-    /// differential suites project through this so each of their per-event
-    /// checks stays linear in the graph.
+    /// block by block against `trueCumWork` in `ForkChoiceOracleTests`, and
+    /// available to a caller that needs a linear projection; the differential
+    /// suites keep the walked projection.
     func subtreeTotals() -> [String: OracleWork] {
         var totals: [String: OracleWork] = [:]
         // A child is exactly one height above its parent, so deepest-first
