@@ -36,8 +36,8 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         )
     }
 
-    private func admission(_ n: Node) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [
+    private func admission(_ n: Node) -> BlockImportBatch {
+        BlockImportBatch(facts: [
             .block(ChainBlockFact(
                 blockHash: n.hash,
                 parentBlockHash: n.parent,
@@ -526,7 +526,7 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
                 work: 1
             )
             _ = try await chain.applyStaged(admission(doomed))
-            _ = try? await chain.applyStaged(ChainAdmissionBatch(facts: [
+            _ = try? await chain.applyStaged(BlockImportBatch(facts: [
                 .exclusion(ChainExclusionFact(blockHash: doomed.hash)),
             ]))
 
@@ -569,7 +569,7 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         _ = try await chain.applyStaged(admission(b))
 
         let shared = testCID("projection-delta:shared-grind")
-        let first = try await chain.applyStaged(ChainAdmissionBatch(facts: [
+        let first = try await chain.applyStaged(BlockImportBatch(facts: [
             .work(ChainWorkFact(
                 blockHash: a.hash,
                 contribution: VerifiedWorkContribution(id: shared, work: UInt256(9))
@@ -580,7 +580,7 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         // The same identity, stronger, at a different block: if this were
         // admitted the same work would be counted in two subtrees at once.
         do {
-            _ = try await chain.applyStaged(ChainAdmissionBatch(facts: [
+            _ = try await chain.applyStaged(BlockImportBatch(facts: [
                 .work(ChainWorkFact(
                     blockHash: b.hash,
                     contribution: VerifiedWorkContribution(

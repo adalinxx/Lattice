@@ -31,9 +31,9 @@ final class QuotientDeletionCostTests: XCTestCase {
         parent: String?,
         height: UInt64,
         work: UInt64
-    ) -> (hash: String, batch: ChainAdmissionBatch) {
+    ) -> (hash: String, batch: BlockImportBatch) {
         let hash = testCID("quotient-cost:\(name)")
-        let batch = ChainAdmissionBatch(facts: [
+        let batch = BlockImportBatch(facts: [
             .block(ChainBlockFact(
                 blockHash: hash,
                 parentBlockHash: parent,
@@ -90,7 +90,7 @@ final class QuotientDeletionCostTests: XCTestCase {
             // used to be a single segment.
             let blocksAtFull = await chain.canonicalProjectionBlockVisitCount
             let stepsAtFull = await chain.canonicalProjectionSegmentVisitCount
-            _ = try? await chain.applyStaged(ChainAdmissionBatch(facts: [
+            _ = try? await chain.applyStaged(BlockImportBatch(facts: [
                 .exclusion(ChainExclusionFact(blockHash: previousHash)),
             ]))
             fullBlocks[length] = await chain.canonicalProjectionBlockVisitCount
@@ -133,7 +133,7 @@ final class QuotientDeletionCostTests: XCTestCase {
                 .canonicalProjectionSegmentVisitCount - stepsBefore
 
             let stepsAtFull = await chain.canonicalProjectionSegmentVisitCount
-            _ = try? await chain.applyStaged(ChainAdmissionBatch(facts: [
+            _ = try? await chain.applyStaged(BlockImportBatch(facts: [
                 .exclusion(ChainExclusionFact(blockHash: previousHash)),
             ]))
             mergedFullSteps[length] = await chain

@@ -137,7 +137,7 @@ acquire
   -> project one chain
 ```
 
-The node's single stage callback receives `ChainAdmissionStagingContext`, so the
+The node's single stage callback receives `BlockImportStagingContext`, so the
 consensus batch and its verified hierarchy links cross one atomic durability
 boundary. Returning means the whole context is durable; throwing means none of
 its facts became visible. An existing runtime reserves one

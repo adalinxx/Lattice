@@ -259,7 +259,7 @@ private struct TrustedAdmissionBatch {
     /// Set when the work fact is a parent's attributed run, not a grind.
     let attributedRun: AttributedRunIdentity?
 
-    init?(_ batch: ChainAdmissionBatch) {
+    init?(_ batch: BlockImportBatch) {
         guard !batch.facts.isEmpty,
               Set(batch.facts.map(\.id)).count == batch.facts.count else {
             return nil
@@ -523,7 +523,7 @@ public actor ChainState {
     /// before the in-memory actor was created. The durable revision is a final
     /// lower bound, applied after replay so restarts do not create revisions.
     public static func restore(
-        replaying batches: [ChainAdmissionBatch],
+        replaying batches: [BlockImportBatch],
         revisionFloor: UInt64 = 0
     ) async throws -> ChainState {
         let genesis = batches.compactMap(TrustedAdmissionBatch.init).filter {
@@ -570,7 +570,7 @@ public actor ChainState {
     }
 
     private static func replay(
-        _ batches: ArraySlice<ChainAdmissionBatch>,
+        _ batches: ArraySlice<BlockImportBatch>,
         onto chain: ChainState
     ) async throws {
         // Sort keys are derived from immutable batch content, so authenticate
@@ -585,7 +585,7 @@ public actor ChainState {
         }
         pending.sort { replayPrecedes($0, $1) }
         while !pending.isEmpty {
-            var deferred: [(batch: ChainAdmissionBatch, key: TrustedAdmissionBatch?)] = []
+            var deferred: [(batch: BlockImportBatch, key: TrustedAdmissionBatch?)] = []
             var completed = false
             for entry in pending {
                 do {
@@ -608,8 +608,8 @@ public actor ChainState {
     /// consistently — a key that compared "equal" to everything would let the
     /// sort leave it wherever enumeration put it.
     private static func replayPrecedes(
-        _ left: (batch: ChainAdmissionBatch, key: TrustedAdmissionBatch?),
-        _ right: (batch: ChainAdmissionBatch, key: TrustedAdmissionBatch?)
+        _ left: (batch: BlockImportBatch, key: TrustedAdmissionBatch?),
+        _ right: (batch: BlockImportBatch, key: TrustedAdmissionBatch?)
     ) -> Bool {
         switch (left.key, right.key) {
         case let (leftKey?, rightKey?):
@@ -1026,7 +1026,7 @@ public actor ChainState {
     /// Apply one already-durable, locally authenticated admission batch. Live
     /// admission and recovery share this reducer so staging is the only
     /// linearization point.
-    func applyStaged(_ batch: ChainAdmissionBatch) throws -> SubmissionResult? {
+    func applyStaged(_ batch: BlockImportBatch) throws -> SubmissionResult? {
         if let excluded = Self.exclusionTarget(of: batch) {
             return try applyExclusion(blockHash: excluded)
         }
@@ -1114,7 +1114,7 @@ public actor ChainState {
 
     /// A validation batch is exactly one `.validation` fact: the deferred
     /// upgrade of an already-possessed block, carrying no new block or work.
-    private static func validationTarget(of batch: ChainAdmissionBatch) -> String? {
+    private static func validationTarget(of batch: BlockImportBatch) -> String? {
         guard batch.facts.count == 1,
               case .validation(let fact) = batch.facts[0] else { return nil }
         return CIDIdentity.canonicalString(fact.blockHash)
@@ -1122,7 +1122,7 @@ public actor ChainState {
 
     /// An exclusion batch is exactly one `.exclusion` fact. Any other shape is
     /// handled by the block/work reducer.
-    private static func exclusionTarget(of batch: ChainAdmissionBatch) -> String? {
+    private static func exclusionTarget(of batch: BlockImportBatch) -> String? {
         guard batch.facts.count == 1,
               case .exclusion(let fact) = batch.facts[0] else { return nil }
         return CIDIdentity.canonicalString(fact.blockHash)
@@ -1182,7 +1182,7 @@ public actor ChainState {
 
     /// Rebuild one already-durable admission fact during recovery. Callers must
     /// authenticate and persist the fact before invoking this public seam.
-    public func replay(_ batch: ChainAdmissionBatch) throws -> ChainCommit? {
+    public func replay(_ batch: BlockImportBatch) throws -> ChainCommit? {
         try applyStaged(batch)?.commit
     }
 
@@ -1201,7 +1201,7 @@ public actor ChainState {
     }
 
     package func applyReservedStaged(
-        _ batch: ChainAdmissionBatch
+        _ batch: BlockImportBatch
     ) throws -> SubmissionResult? {
         guard reservedAdmissionRevisions > 0 else {
             throw ChainStateRestoreError.corruptConsensusGraph

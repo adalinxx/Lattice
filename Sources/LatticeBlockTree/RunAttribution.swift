@@ -88,7 +88,7 @@ public struct AttributedRunIdentity: Hashable, Scalar {
 /// a silent refusal is exactly what would hide it.
 public enum ParentReportStrengthening: Sendable, Equatable {
     /// Stage this work-only batch durably, then apply it.
-    case strengthened(ChainAdmissionBatch)
+    case strengthened(BlockImportBatch)
     /// The report does not name this child block, or none of the committer's
     /// grinds is credited here — so the reported block is not a committer of
     /// this child block as far as this chain knows.
@@ -358,7 +358,7 @@ extension ChainState {
         guard derivedWork > existing else {
             return .notStronger(existing: WorkSum(existing), derived: derived)
         }
-        return .strengthened(ChainAdmissionBatch(facts: [
+        return .strengthened(BlockImportBatch(facts: [
             .work(ChainWorkFact(
                 blockHash: hash,
                 contribution: VerifiedWorkContribution(id: attributedID, work: derivedWork),

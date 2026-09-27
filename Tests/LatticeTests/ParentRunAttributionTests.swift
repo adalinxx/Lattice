@@ -61,7 +61,7 @@ final class ParentRunAttributionTests: XCTestCase {
     private func batch(
         _ hash: String, parent: String?, height: UInt64, work: UInt64,
         commits: [String: String] = [:], recorded: Bool = true
-    ) -> ChainAdmissionBatch {
+    ) -> BlockImportBatch {
         let fact = ChainBlockFact(
             blockHash: h(hash), parentBlockHash: parent.map(h), blockHeight: height,
             postStateCID: testCID("post:\(hash)"),
@@ -72,7 +72,7 @@ final class ParentRunAttributionTests: XCTestCase {
             stateDiff: .empty,
             childCommitments: recorded ? commits : nil
         )
-        return ChainAdmissionBatch(facts: [
+        return BlockImportBatch(facts: [
             .block(fact),
             .work(ChainWorkFact(
                 blockHash: h(hash),
@@ -415,7 +415,7 @@ final class ParentRunAttributionTests: XCTestCase {
     func testExclusionNeitherRevokesNorBlocksRunCredit() async throws {
         let chain = try await linearByReplay()
         let before = await run(chain, at: "p1")
-        _ = try await chain.replay(ChainAdmissionBatch(facts: [
+        _ = try await chain.replay(BlockImportBatch(facts: [
             .exclusion(ChainExclusionFact(blockHash: h("p2"))),
         ]))
         // Fixture guard: the exclusion really took p2 out of THIS chain's
@@ -449,7 +449,7 @@ final class ParentRunAttributionTests: XCTestCase {
             batch("p2", parent: "p1", height: 2, work: 3, commits: [d: testCID("c2")]),
             batch("x", parent: "p1", height: 2, work: 11),
             batch("q", parent: "p2", height: 3, work: 7),
-            ChainAdmissionBatch(facts: [.work(ChainWorkFact(
+            BlockImportBatch(facts: [.work(ChainWorkFact(
                 blockHash: h("x"),
                 contribution: VerifiedWorkContribution(id: grind("x"), work: UInt256(20))
             ))]),
@@ -620,7 +620,7 @@ final class ParentRunAttributionTests: XCTestCase {
 
     func testStaleStrengtheningIsANoOpNotACorruption() async throws {
         let child = childChain(existing: UInt256(5))
-        func mint(_ run: UInt64) async -> ChainAdmissionBatch? {
+        func mint(_ run: UInt64) async -> BlockImportBatch? {
             if case .strengthened(let b) = await strengthen(child, report(sum(run), own: sum(5))
             ) { return b }
             return nil
@@ -745,13 +745,13 @@ final class ParentRunAttributionTests: XCTestCase {
         let a = try await linearByReplay()
         let identity = AttributedRunIdentity(committerBlockHash: h("n"), directory: "A")
         let id = identity.contributionID!
-        _ = try await a.replay(ChainAdmissionBatch(facts: [.work(ChainWorkFact(
+        _ = try await a.replay(BlockImportBatch(facts: [.work(ChainWorkFact(
             blockHash: h("p1"), contribution: VerifiedWorkContribution(id: id, work: UInt256(100))
         ))]))
         let unmarked = await a.parentRunReport(at: h("p1"), directory: d)
         XCTAssertEqual(unmarked?.ownWork, sum(5, 100), "unmarked: counted as a grind")
         XCTAssertEqual(unmarked?.grinds, [grind("p1"), id])
-        _ = try await a.replay(ChainAdmissionBatch(facts: [.work(ChainWorkFact(
+        _ = try await a.replay(BlockImportBatch(facts: [.work(ChainWorkFact(
             blockHash: h("p1"), contribution: VerifiedWorkContribution(id: id, work: UInt256(200)),
             attributedRun: identity
         ))]))
@@ -784,7 +784,7 @@ final class ParentRunAttributionTests: XCTestCase {
         XCTAssertEqual(roundTripped, attributedFact)
 
         let a = try await linearByReplay()
-        let mislabeled = ChainAdmissionBatch(facts: [.work(ChainWorkFact(
+        let mislabeled = BlockImportBatch(facts: [.work(ChainWorkFact(
             blockHash: h("p1"),
             contribution: VerifiedWorkContribution(id: grind("p1"), work: UInt256(50)),
             attributedRun: identity
@@ -794,7 +794,7 @@ final class ParentRunAttributionTests: XCTestCase {
             XCTFail("a marker naming another contribution is corrupt")
         } catch ChainStateRestoreError.corruptConsensusGraph {}
         let p4 = batch("p4", parent: "p3", height: 4, work: 2)
-        let blockWithMarker = ChainAdmissionBatch(facts: p4.facts.map { fact in
+        let blockWithMarker = BlockImportBatch(facts: p4.facts.map { fact in
             guard case .work(let work) = fact else { return fact }
             return .work(ChainWorkFact(
                 blockHash: work.blockHash,

@@ -776,12 +776,12 @@ private func plannedBlocks(
     return blocks
 }
 
-private func admission(for block: PlannedDifferentialBlock) -> ChainAdmissionBatch {
+private func admission(for block: PlannedDifferentialBlock) -> BlockImportBatch {
     let contribution = VerifiedWorkContribution(
         id: testCID("segment-base-differential-work-\(block.index)"),
         work: UInt256(UInt64(block.index % 3 + 1))
     )
-    return ChainAdmissionBatch(facts: [
+    return BlockImportBatch(facts: [
         .block(ChainBlockFact(
             blockHash: block.hash,
             parentBlockHash: block.parentHash,
@@ -802,8 +802,8 @@ private func workAdmission(
     blockHash: String,
     id: String,
     work: UInt64
-) -> ChainAdmissionBatch {
-    ChainAdmissionBatch(facts: [
+) -> BlockImportBatch {
+    BlockImportBatch(facts: [
         .work(ChainWorkFact(
             blockHash: blockHash,
             contribution: VerifiedWorkContribution(id: id, work: UInt256(work))
@@ -911,8 +911,8 @@ private func assertTruncationEquivalent(
 
 private func exclusionBatch(
     for block: PlannedDifferentialBlock
-) -> ChainAdmissionBatch {
-    ChainAdmissionBatch(facts: [
+) -> BlockImportBatch {
+    BlockImportBatch(facts: [
         .exclusion(ChainExclusionFact(blockHash: block.hash)),
     ])
 }
@@ -983,7 +983,7 @@ enum SegmentBaseDifferentialFixtures {
         let hash: String
         let parentHash: String?
         let height: UInt64
-        let batch: ChainAdmissionBatch
+        let batch: BlockImportBatch
     }
 
     static func planned(seed: UInt64) -> [Planned] {
@@ -993,11 +993,11 @@ enum SegmentBaseDifferentialFixtures {
         }
     }
 
-    static func work(blockHash: String, id: String, work: UInt64) -> ChainAdmissionBatch {
+    static func work(blockHash: String, id: String, work: UInt64) -> BlockImportBatch {
         workAdmission(blockHash: blockHash, id: id, work: work)
     }
 
-    static func exclusion(of blockHash: String) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [.exclusion(ChainExclusionFact(blockHash: blockHash))])
+    static func exclusion(of blockHash: String) -> BlockImportBatch {
+        BlockImportBatch(facts: [.exclusion(ChainExclusionFact(blockHash: blockHash))])
     }
 }

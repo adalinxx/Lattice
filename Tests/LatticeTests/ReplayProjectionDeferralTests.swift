@@ -35,8 +35,8 @@ final class ReplayProjectionDeferralTests: XCTestCase {
         )
     }
 
-    private static func admission(_ n: Node) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [
+    private static func admission(_ n: Node) -> BlockImportBatch {
+        BlockImportBatch(facts: [
             .block(ChainBlockFact(
                 blockHash: n.hash,
                 parentBlockHash: n.parent,
@@ -59,8 +59,8 @@ final class ReplayProjectionDeferralTests: XCTestCase {
         ])
     }
 
-    private static func extraWork(_ n: Node, grind: String, work: UInt64) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [
+    private static func extraWork(_ n: Node, grind: String, work: UInt64) -> BlockImportBatch {
+        BlockImportBatch(facts: [
             .work(ChainWorkFact(
                 blockHash: n.hash,
                 contribution: VerifiedWorkContribution(
@@ -75,7 +75,7 @@ final class ReplayProjectionDeferralTests: XCTestCase {
     /// (duplicate-height side block) at every third height plus extra carrier
     /// work batches — the shape that defeats the append fast path. Static so
     /// the independent oracle (`ForkChoiceOracleTests`) checks the same graph.
-    static func bushyBatches() -> (batches: [ChainAdmissionBatch], root: Node) {
+    static func bushyBatches() -> (batches: [BlockImportBatch], root: Node) {
         let root = node("root", parent: nil, height: 0)
         var batches = [admission(root)]
         var previous = root
@@ -154,7 +154,7 @@ final class ReplayProjectionDeferralTests: XCTestCase {
         // outweigh the height-30 canonical tip via the height-30 side fork's
         // ancestor at height 27 (side-27 exists; give it decisive work).
         let sideTip = testCID("replay-defer:side-27")
-        _ = try await chain.applyStaged(ChainAdmissionBatch(facts: [
+        _ = try await chain.applyStaged(BlockImportBatch(facts: [
             .work(ChainWorkFact(
                 blockHash: sideTip,
                 contribution: VerifiedWorkContribution(

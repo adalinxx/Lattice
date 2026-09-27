@@ -95,7 +95,7 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
         // (empty) trie would enumerate.
         let recordedMap = ["Alpha": testCID("recorded-alpha")]
         let seed = try testAdmissionBatch(for: candidate)
-        let facts: [ChainAdmissionFact] = seed.facts.map { fact in
+        let facts: [ChainFact] = seed.facts.map { fact in
             guard case .block(let b) = fact else { return fact }
             return .block(ChainBlockFact(
                 blockHash: b.blockHash, parentBlockHash: b.parentBlockHash, blockHeight: b.blockHeight,
@@ -104,7 +104,7 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
                 stateDiff: b.stateDiff, childCommitments: recordedMap
             ))
         }
-        _ = try await level.chain.replay(ChainAdmissionBatch(facts: facts))
+        _ = try await level.chain.replay(BlockImportBatch(facts: facts))
         let recordedBefore = await level.chain.recordedChildCommitments(of: candidateHash)
         XCTAssertEqual(recordedBefore, recordedMap)
         let executedBefore = await level.chain.hasExecutedAncestry(blockHash: candidateHash)

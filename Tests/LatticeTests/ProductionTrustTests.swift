@@ -91,7 +91,7 @@ final class CrashRecoveryTests: XCTestCase {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(batches)
-        let decoded = try JSONDecoder().decode([ChainAdmissionBatch].self, from: data)
+        let decoded = try JSONDecoder().decode([BlockImportBatch].self, from: data)
 
         let chain2 = try await ChainState.restore(replaying: decoded)
 

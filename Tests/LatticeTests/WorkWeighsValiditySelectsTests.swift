@@ -31,8 +31,8 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
 
     private func h(_ name: String) -> String { testCID("wv:\(name)") }
 
-    private func admission(_ b: Planned, height: UInt64) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [
+    private func admission(_ b: Planned, height: UInt64) -> BlockImportBatch {
+        BlockImportBatch(facts: [
             .block(ChainBlockFact(
                 blockHash: h(b.name), parentBlockHash: b.parent.map(h), blockHeight: height,
                 // States chain parent → child, so continuity paths exist to be
@@ -49,8 +49,8 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
         ])
     }
 
-    private func exclusion(_ name: String) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [.exclusion(ChainExclusionFact(blockHash: h(name)))])
+    private func exclusion(_ name: String) -> BlockImportBatch {
+        BlockImportBatch(facts: [.exclusion(ChainExclusionFact(blockHash: h(name)))])
     }
 
     private func heights(_ blocks: [Planned]) -> [String: UInt64] {
@@ -313,7 +313,7 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
             _ = try await live.replay(exclusion("g"))
             XCTFail("an unexecuted second root is not a chain to stand on")
         } catch ChainStateRestoreError.corruptConsensusGraph {}
-        _ = try await live.replay(ChainAdmissionBatch.validation(blockHash: h("z")))
+        _ = try await live.replay(BlockImportBatch.validation(blockHash: h("z")))
         _ = try await live.replay(exclusion("g"))
         let moved = await live.getMainChainTip()
         XCTAssertEqual(moved, h("z"), "selection moves to the remaining executed root")
@@ -328,7 +328,7 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
         // other root's validation has replayed, in every enumeration order.
         let facts = [
             admission(blocks[0], height: 0), admission(blocks[1], height: 1),
-            admission(z, height: 0), ChainAdmissionBatch.validation(blockHash: h("z")),
+            admission(z, height: 0), BlockImportBatch.validation(blockHash: h("z")),
             exclusion("g"), admission(Planned(name: "a2", parent: "a", work: 50), height: 2),
         ]
         for trial in 0..<12 {
@@ -340,7 +340,7 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
         }
         // With no validation of the other root on record, recovery fails
         // closed deterministically — in every order — rather than by luck.
-        let unexecuted = facts.filter { $0 != ChainAdmissionBatch.validation(blockHash: h("z")) }
+        let unexecuted = facts.filter { $0 != BlockImportBatch.validation(blockHash: h("z")) }
         for trial in 0..<6 {
             do {
                 _ = try await ChainState.restore(replaying: unexecuted.shuffled(using: &rng))
@@ -361,7 +361,7 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
         var rng = SeededRNG(seed: 4)
         let (live, _) = try await build(blocks, excluded: [], order: Array(blocks.indices), rng: &rng)
         for name in ["g", "a", "a2", "b"] {
-            _ = try await live.replay(ChainAdmissionBatch.validation(blockHash: h(name)))
+            _ = try await live.replay(BlockImportBatch.validation(blockHash: h(name)))
         }
         let before = await live.hasExecutedAncestry(blockHash: h("a2"))
         XCTAssertTrue(before)

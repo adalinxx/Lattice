@@ -26,7 +26,7 @@ extension ChainLevel {
         materialized: (any VolumeStorer)? = nil,
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
-        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void = testAdmissionStage
+        stage: @Sendable (BlockImportStagingContext) async throws -> Void = testAdmissionStage
     ) async throws -> ChainLocalBlockResult {
         try await admit(
             header,
@@ -50,7 +50,7 @@ extension ChainLevel {
         materialized: (any VolumeStorer)? = nil,
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
-        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void = testAdmissionStage
+        stage: @Sendable (BlockImportStagingContext) async throws -> Void = testAdmissionStage
     ) async throws -> ChainLocalBlockResult {
         try await admitBlockHeaderChainLocal(
             header,
@@ -73,7 +73,7 @@ extension ChainLevel {
         materialized: (any VolumeStorer)? = nil,
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
-        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void = testAdmissionStage
+        stage: @Sendable (BlockImportStagingContext) async throws -> Void = testAdmissionStage
     ) async throws -> ChainLocalBlockResult {
         try await admit(
             try BlockHeader(node: block),
@@ -96,7 +96,7 @@ extension ChainLevel {
         materialized: (any VolumeStorer)? = nil,
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
-        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void = testAdmissionStage
+        stage: @Sendable (BlockImportStagingContext) async throws -> Void = testAdmissionStage
     ) async throws -> ChainLocalBlockResult {
         try await admit(
             try BlockHeader(node: block),
@@ -154,14 +154,14 @@ actor RecordingAdmissionStorer: Storer, VolumeStorer {
 }
 
 actor AdmissionStageRecorder {
-    private var batches: [ChainAdmissionBatch] = []
-    private var contexts: [ChainAdmissionStagingContext] = []
+    private var batches: [BlockImportBatch] = []
+    private var contexts: [BlockImportStagingContext] = []
 
-    func stage(_ batch: ChainAdmissionBatch) {
+    func stage(_ batch: BlockImportBatch) {
         batches.append(batch)
     }
 
-    func stage(_ context: ChainAdmissionStagingContext) {
+    func stage(_ context: BlockImportStagingContext) {
         contexts.append(context)
         batches.append(context.batch)
     }
@@ -179,8 +179,8 @@ actor AdmissionStageRecorder {
         }
     }
 
-    func recordedBatches() -> [ChainAdmissionBatch] { batches }
-    func recordedContexts() -> [ChainAdmissionStagingContext] { contexts }
+    func recordedBatches() -> [BlockImportBatch] { batches }
+    func recordedContexts() -> [BlockImportStagingContext] { contexts }
 }
 
 /// The admission fixtures: an always-hit target, chain-local genesis/child
@@ -229,7 +229,7 @@ enum AdmissionFixture {
     static func makeLevel(
         genesis: Block,
         revision: UInt64
-    ) async throws -> (level: ChainLevel, seedBatch: ChainAdmissionBatch) {
+    ) async throws -> (level: ChainLevel, seedBatch: BlockImportBatch) {
         let seedBatch = try testAdmissionBatch(for: genesis)
         return (
             ChainLevel(testChain: try await ChainState.restore(

@@ -43,11 +43,11 @@ public enum AdmissionMode: Sendable {
 
 
 /// The verified, node-owned facts that must become durable with one admission
-/// batch. They are deliberately separate from ``ChainAdmissionBatch``: chain
+/// batch. They are deliberately separate from ``BlockImportBatch``: chain
 /// replay needs only consensus facts, while the node also needs these facts to
 /// relay hierarchy evidence after a restart.
-public struct ChainAdmissionStagingContext: Sendable {
-    public let batch: ChainAdmissionBatch
+public struct BlockImportStagingContext: Sendable {
+    public let batch: BlockImportBatch
     /// Present only when this chain has verified a complete ancestry for the
     /// carrier and may issue a parent-process fact for it.
     public let issuedCarrierLink: ParentCarrierLink?
@@ -57,7 +57,7 @@ public struct ChainAdmissionStagingContext: Sendable {
     public let parentGenesisLinks: [ParentGenesisLink]
 
     init(
-        batch: ChainAdmissionBatch,
+        batch: BlockImportBatch,
         issuedCarrierLink: ParentCarrierLink?,
         parentGenesisLinks: [ParentGenesisLink]
     ) {
@@ -68,7 +68,7 @@ public struct ChainAdmissionStagingContext: Sendable {
 }
 
 public struct ChainAcceptance: Sendable {
-    public let facts: ChainAdmissionBatch
+    public let facts: BlockImportBatch
     public let materializedPostState: LatticeState?
     public let commit: ChainCommit
     public let sameChainPredecessor: SameChainPredecessorRequirement?
@@ -219,15 +219,15 @@ fileprivate struct PreparedAdmission: Sendable {
     /// nothing by convention; never mutated.
     var childCommitments: [String: String]? = nil
 
-    var facts: ChainAdmissionBatch {
+    var facts: BlockImportBatch {
         // An exclusion is a standalone verdict: exactly one `.exclusion` fact,
         // no block or work fact (both already durable from the weighed tier).
         if case .exclusion = kind {
-            return ChainAdmissionBatch.staged([
+            return BlockImportBatch.staged([
                 .exclusion(ChainExclusionFact(blockHash: resolvedHeader.rawCID)),
             ])
         }
-        var facts: [ChainAdmissionFact] = []
+        var facts: [ChainFact] = []
         switch kind {
         case .block(let stateDiff, _, _):
             facts.append(.block(ChainBlockFact(
@@ -258,7 +258,7 @@ fileprivate struct PreparedAdmission: Sendable {
                 blockHash: resolvedHeader.rawCID
             )))
         }
-        return ChainAdmissionBatch.staged(facts)
+        return BlockImportBatch.staged(facts)
     }
 
     /// Store the immutable validation Volumes before the node takes its
@@ -309,20 +309,20 @@ fileprivate struct PreparedAdmission: Sendable {
     /// The stage callback runs before `ChainState` applies `facts`, so this is
     /// the only point where Lattice can pass the already-verified hierarchy
     /// facts across the node durability boundary without reconstructing them.
-    func stagingContext() async throws -> ChainAdmissionStagingContext {
+    func stagingContext() async throws -> BlockImportStagingContext {
         let batch = facts
         // A weighed (not-yet-executed) block issues NO cross-chain facts; both
         // are re-derived and emitted when it is validated. Suppressing here is
         // the choke point that keeps a child from binding to unvalidated parent
         // state.
         if defersHierarchyIssuance {
-            return ChainAdmissionStagingContext(
+            return BlockImportStagingContext(
                 batch: batch,
                 issuedCarrierLink: nil,
                 parentGenesisLinks: []
             )
         }
-        return ChainAdmissionStagingContext(
+        return BlockImportStagingContext(
             batch: batch,
             issuedCarrierLink: verifiedCarrierLink,
             parentGenesisLinks: try await parentGenesisLinks(
@@ -352,7 +352,7 @@ public enum ChainAdmissionPreflightError: Error, Sendable, Equatable {
 public actor PreparedChainAdmission {
     /// Commit may add an issuable carrier link if the already-validated
     /// predecessor connected before the durability boundary.
-    fileprivate nonisolated let stagingContext: ChainAdmissionStagingContext
+    fileprivate nonisolated let stagingContext: BlockImportStagingContext
 
     private let levelIdentity: UUID
     private var prepared: PreparedAdmission?
@@ -360,7 +360,7 @@ public actor PreparedChainAdmission {
     fileprivate init(
         levelIdentity: UUID,
         prepared: PreparedAdmission,
-        stagingContext: ChainAdmissionStagingContext
+        stagingContext: BlockImportStagingContext
     ) {
         self.levelIdentity = levelIdentity
         self.prepared = prepared
@@ -1147,7 +1147,7 @@ private enum ChainLocalAdmission {
         transition: ExecutedTransition,
         validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
-        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void
+        stage: @Sendable (BlockImportStagingContext) async throws -> Void
     ) async throws -> (
         level: ChainLevel,
         stateDiff: StateDiff,
@@ -1415,7 +1415,7 @@ public extension ChainLevel {
     func commitPreflight(
         _ preflight: PreparedChainAdmission,
         materializedVolumeStorer: any VolumeStorer,
-        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void
+        stage: @Sendable (BlockImportStagingContext) async throws -> Void
     ) async throws -> ChainLocalBlockResult {
         guard let prepared = await preflight.take(for: admissionIdentity) else {
             throw ChainAdmissionPreflightError.invalidToken
@@ -1454,7 +1454,7 @@ public extension ChainLevel {
                 )
             }
         }
-        let stagingContext: ChainAdmissionStagingContext
+        let stagingContext: BlockImportStagingContext
         if preflight.stagingContext.issuedCarrierLink != nil {
             stagingContext = preflight.stagingContext
         } else if !prepared.defersHierarchyIssuance,
@@ -1465,7 +1465,7 @@ public extension ChainLevel {
             // weighed-inclusive), so it MUST be suppressed for a weighed block —
             // otherwise a deferred, unexecuted block would issue a carrier link a
             // child could bind to. Issuance is re-derived when it is validated.
-            stagingContext = ChainAdmissionStagingContext(
+            stagingContext = BlockImportStagingContext(
                 batch: preflight.stagingContext.batch,
                 issuedCarrierLink: prepared.carrierLink,
                 parentGenesisLinks: preflight.stagingContext.parentGenesisLinks
@@ -1510,7 +1510,7 @@ public extension ChainLevel {
         validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
         mode: AdmissionMode = .eager,
-        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void
+        stage: @Sendable (BlockImportStagingContext) async throws -> Void
     ) async throws -> ChainLocalBlockResult {
         switch try await preflightBlockHeaderChainLocal(
             blockHeader,
@@ -1541,7 +1541,7 @@ public extension ChainLevel {
         validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
         mode: AdmissionMode = .eager,
-        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void
+        stage: @Sendable (BlockImportStagingContext) async throws -> Void
     ) async throws -> ChainLocalBlockResult {
         try await admitBlockHeaderChainLocal(
             blockHeader,
@@ -1564,7 +1564,7 @@ public extension ChainLevel {
         validationContext: ValidationContext = .current,
         validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
-        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void
+        stage: @Sendable (BlockImportStagingContext) async throws -> Void
     ) async throws -> (
         level: ChainLevel,
         stateDiff: StateDiff,
@@ -1632,7 +1632,7 @@ public extension ChainLevel {
         validationContext: ValidationContext = .current,
         validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
-        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void
+        stage: @Sendable (BlockImportStagingContext) async throws -> Void
     ) async throws -> ChildChainBootstrapResult {
         guard !context.isRoot else { throw BlockImportError.protocolInvalid }
         let resolved: (header: BlockHeader, block: Block)

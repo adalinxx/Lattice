@@ -21,8 +21,8 @@ import UInt256
 /// These tests pin the boundary: an unverified declared state MUST NOT be
 /// attestable.
 private actor StagedIssuanceRecorder {
-    private var contexts: [ChainAdmissionStagingContext] = []
-    func record(_ context: ChainAdmissionStagingContext) { contexts.append(context) }
+    private var contexts: [BlockImportStagingContext] = []
+    func record(_ context: BlockImportStagingContext) { contexts.append(context) }
     func issuedCarrierLinks() -> Int {
         contexts.filter { $0.issuedCarrierLink != nil }.count
     }
@@ -259,10 +259,10 @@ final class ParentStateAttestationTierTests: XCTestCase {
     private func legacyBatch(
         _ block: String, parent: String?, height: UInt64,
         from: String, to: String, nonce: Int64
-    ) -> ChainAdmissionBatch {
+    ) -> BlockImportBatch {
         // The historical shape: a block fact and its work, and NO validation
         // fact — the record an upgraded store replays.
-        ChainAdmissionBatch(facts: [
+        BlockImportBatch(facts: [
             .block(ChainBlockFact(
                 blockHash: block, parentBlockHash: parent, blockHeight: height,
                 postStateCID: to, prevStateCID: from,
@@ -341,8 +341,8 @@ final class ParentStateAttestationTierTests: XCTestCase {
         func facts(
             _ block: String, parent: String?, height: UInt64,
             from: String, to: String, n: Int64, executed: Bool
-        ) -> ChainAdmissionBatch {
-            var list: [ChainAdmissionFact] = [
+        ) -> BlockImportBatch {
+            var list: [ChainFact] = [
                 .block(ChainBlockFact(
                     blockHash: block, parentBlockHash: parent,
                     blockHeight: height, postStateCID: to, prevStateCID: from,
@@ -361,7 +361,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
             if executed {
                 list.append(.validation(ChainValidationFact(blockHash: block)))
             }
-            return ChainAdmissionBatch(facts: list)
+            return BlockImportBatch(facts: list)
         }
 
         // Block 2 is executed on arrival; block 1 is possessed but NOT executed
@@ -380,7 +380,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
 
         // Executing the missing ancestor must carry the frontier past it and
         // pick up the descendant that was executed earlier.
-        _ = try await chain.applyStaged(ChainAdmissionBatch(facts: [
+        _ = try await chain.applyStaged(BlockImportBatch(facts: [
             .validation(ChainValidationFact(blockHash: one)),
         ]))
 
@@ -398,8 +398,8 @@ final class ParentStateAttestationTierTests: XCTestCase {
     private func executedBatch(
         _ block: String, parent: String?, height: UInt64,
         from: String, to: String, n: Int64
-    ) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [
+    ) -> BlockImportBatch {
+        BlockImportBatch(facts: [
             .block(ChainBlockFact(
                 blockHash: block, parentBlockHash: parent, blockHeight: height,
                 postStateCID: to, prevStateCID: from,
@@ -441,7 +441,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
             executedBatch(one, parent: g, height: 1, from: sg, to: s1, n: 2),
             executedBatch(two, parent: one, height: 2, from: s1, to: s2, n: 3),
         ]
-        let exclusion = ChainAdmissionBatch(facts: [
+        let exclusion = BlockImportBatch(facts: [
             .exclusion(ChainExclusionFact(blockHash: one)),
         ])
 
@@ -482,7 +482,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         let other = testCID("naming-other")
         let sg = testCID("naming-state-g")
 
-        let crossNamed = ChainAdmissionBatch(facts: [
+        let crossNamed = BlockImportBatch(facts: [
             .block(ChainBlockFact(
                 blockHash: g, parentBlockHash: nil, blockHeight: 0,
                 postStateCID: sg, prevStateCID: empty,
@@ -545,8 +545,8 @@ final class ParentStateAttestationTierTests: XCTestCase {
     private func weightedBatch(
         _ block: String, parent: String?, height: UInt64,
         from: String, to: String, n: Int64, work: UInt256
-    ) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [
+    ) -> BlockImportBatch {
+        BlockImportBatch(facts: [
             .block(ChainBlockFact(
                 blockHash: block, parentBlockHash: parent, blockHeight: height,
                 postStateCID: to, prevStateCID: from,
@@ -735,7 +735,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
             context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
         )
         let recorder = StagedIssuanceRecorder()
-        let record: @Sendable (ChainAdmissionStagingContext) async throws -> Void = {
+        let record: @Sendable (BlockImportStagingContext) async throws -> Void = {
             await recorder.record($0)
         }
         let header = try BlockHeader(node: childBlock)
@@ -875,14 +875,14 @@ final class ParentStateAttestationTierTests: XCTestCase {
         let empty = LatticeState.emptyHeader.rawCID
 
         func chain(ofHeight height: Int) async throws -> (ChainState, String) {
-            var batches: [ChainAdmissionBatch] = []
+            var batches: [BlockImportBatch] = []
             var prev = empty
             var parent: String?
             var last = ""
             for i in 0...height {
                 let block = testCID("depth-\(height)-\(i)")
                 let post = testCID("depth-state-\(height)-\(i)")
-                batches.append(ChainAdmissionBatch(facts: [
+                batches.append(BlockImportBatch(facts: [
                     .block(ChainBlockFact(
                         blockHash: block, parentBlockHash: parent,
                         blockHeight: UInt64(i), postStateCID: post,
@@ -929,7 +929,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
     /// the frontier short-circuit must not become a blanket yes.
     func testDeepChainStillRefusesAnUnexecutedState() async throws {
         let empty = LatticeState.emptyHeader.rawCID
-        var batches: [ChainAdmissionBatch] = []
+        var batches: [BlockImportBatch] = []
         var prev = empty
         var parent: String?
         var declaredOnly = ""
@@ -938,7 +938,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
             let post = testCID("mix-state-\(i)")
             // Every tenth block is weighed only: possessed, never executed.
             let executed = i % 10 != 0 || i == 0
-            var facts: [ChainAdmissionFact] = [
+            var facts: [ChainFact] = [
                 .block(ChainBlockFact(
                     blockHash: block, parentBlockHash: parent,
                     blockHeight: UInt64(i), postStateCID: post,
@@ -959,7 +959,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
             } else if declaredOnly.isEmpty {
                 declaredOnly = post
             }
-            batches.append(ChainAdmissionBatch(facts: facts))
+            batches.append(BlockImportBatch(facts: facts))
             parent = block; prev = post
         }
         let parentChain = try await ChainState.restore(replaying: batches)
