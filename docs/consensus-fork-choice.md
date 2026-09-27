@@ -40,8 +40,8 @@ Work verification:
 2. verifies the sparse path and requires its terminal CID to equal `CID(C)`;
 3. verifies every vertical `child.parentState == carrier.prevState` binding
    — a structural check on the committed path, NOT an anchor: a carrier need
-   not be admitted, connected, valid or canonical, so both sides may be chosen
-   by one party. A block's `parentState` is anchored by admission instead
+   not be imported, connected, valid or canonical, so both sides may be chosen
+   by one party. A block's `parentState` is anchored by import instead
    (spec §5.3 step 6, at every height including block 1);
 4. checks the same hash against the terminal target; and
 5. derives the target-derived quantity of the ROOT-MOST block on the committed

@@ -126,7 +126,7 @@ block. The measured closure is the block root Volume boundary (including its
 transaction and child indexes and their reference CIDs) plus every referenced
 transaction Volume and transaction body. Each CID's canonical bytes count once.
 The contents of the chain spec, wasm modules, parent blocks, all state Volumes,
-child blocks, and admission evidence are independent Volumes and do not count.
+child blocks, and import evidence are independent Volumes and do not count.
 
 **No retarget clamp.** The absolute schedule of section 5.5 has no
 per-retarget step to clamp and no protocol default. The only arithmetic bound
@@ -252,8 +252,8 @@ A genesis block `B` is valid if and only if ALL of the following hold:
 
 1. `B.previousBlock == nil`
 2. `B.height == 0`
-3. `B.timestamp <= validationContext.now`, where the admission attempt captures
-   `validationContext.now` once (node-local, retriable admission — a future
+3. `B.timestamp <= validationContext.now`, where the import attempt captures
+   `validationContext.now` once (node-local, retriable import — a future
    timestamp is deferred until real time reaches it, not permanently rejected)
 4. `B.prevState == CID(emptyState())`
 5. `B.nextTarget == B.target`, and the target `B` commits is actually met — the
@@ -316,7 +316,7 @@ A non-genesis nexus block `B` with previous block `P` is valid if and only if:
    over the parent is the sole agreed-state timestamp rule (it makes timestamps
    strictly increasing along the chain, subsuming a MedianTimePast lower bound,
    which is therefore not imposed). The `<= now` bound is node-local, retriable
-   admission — a future block is deferred until real time reaches its timestamp,
+   import — a future block is deferred until real time reaches its timestamp,
    never permanently rejected. The attempt captures `validationContext.now` once.
 6. `B.target <= P.nextTarget` (as hard or harder than scheduled, never easier),
    and `B.nextTarget` equals section 5.5's absolute schedule computed from the
@@ -346,7 +346,7 @@ sibling.
 
 ### 5.3 Child Chain Block Validation
 
-A child candidate `B` is admitted with a `ChildValidationPackage` containing:
+A child candidate `B` is imported with a `ChildValidationPackage` containing:
 
 - a `ChildBlockProof` for the exact sparse directory path from the mined root to
   `B`;
@@ -389,14 +389,14 @@ this order:
    commits `emptyHeader` as its `parentState`, and every genesis's `prevState`
    is `emptyHeader`, so continuity from it terminates at the parent's own
    genesis. Step 3's terminal binding does not substitute for this — a carrier
-   need not be admitted, connected, valid or canonical, so it establishes no
+   need not be imported, connected, valid or canonical, so it establishes no
    anchor.
 
    Each block proves its own anchor from `emptyHeader`, NOT from its
    predecessor's `parentState`. Anchoring against the predecessor is an
-   induction with no base: the weighed tier admits a block without running
+   induction with no base: the weighed tier imports a block without running
    these checks, so a weighed predecessor proved nothing, and a successor
-   matching its unchecked claim would be admitted with no evidence at all.
+   matching its unchecked claim would be imported with no evidence at all.
    A consequence of anchoring each block independently is that `parentState`
    is no longer required to advance monotonically across a chain. That is
    deliberate: `parentState` is read only to prove a receipt (§8.1 Phase 3),
@@ -406,7 +406,7 @@ this order:
    withdrawal proofs against `B.parentState`.
 
 Intermediate carriers need not satisfy their own target, transition, timing,
-target-succession, admission, connectivity, or canonicity rules. Their exact
+target-succession, import, connectivity, or canonicity rules. Their exact
 bytes and directory commitments are sufficient for work verification. Parent
 or sibling canonicity is not part of these checks. Once this package derives a
 valid work fact, a later reorganization or unavailability in another process
@@ -519,7 +519,7 @@ Anchored at block 1, genesis is never read.
 half-life of block time of drift is one doubling. It is the only difficulty
 parameter besides `targetBlockTime`; there is no window and no clamp.
 
-**The anchor is per-branch and inherited, never chain-wide.** A block admitted at
+**The anchor is per-branch and inherited, never chain-wide.** A block imported at
 height 1 anchors itself; every other block inherits its parent's anchor. Two
 branches forking at height 1 therefore carry two anchors and two schedules, each
 internally consistent. A single chain-wide anchor would instead change under
@@ -527,7 +527,7 @@ every block already built on it, retroactively altering targets that were alread
 validated. Chain state carries the anchor in O(1); a node without the parent in
 memory resolves it by walking the ancestry to height 1.
 
-**Bound on timestamp manipulation.** Admission enforces only
+**Bound on timestamp manipulation.** Import enforces only
 `parent.timestamp < B.timestamp` (agreed state) and `B.timestamp <= now`
 (node-local and retriable, §5.2 rule 5). There is no MedianTimePast rule, no
 lower bound against wall clock, and no future-drift constant. Under an absolute
@@ -829,7 +829,7 @@ declared `amountWithdrawn`. A larger declaration fails the state proof.
 **No forged parent state**: A withdrawal accepts only a receipt proven in the
 block's `parentState`, and that state MUST be one the parent chain actually
 produced. Two rules establish this, and NEITHER is the proof's terminal
-binding — a carrier is content-addressed bytes that need not be admitted,
+binding — a carrier is content-addressed bytes that need not be imported,
 connected, valid, or canonical (§5.3, §9.5), so comparing a child's declared
 `parentState` against a carrier's declared `prevState` compares two values the
 same party may have chosen:
@@ -924,9 +924,9 @@ proof-derived work facts remain authoritative.
 `U256`, but their sums must not wrap or saturate because either behavior can
 erase the strict ordering between two branches.
 
-### 9.3 Admission
+### 9.3 Import
 
-Every external candidate enters one admission procedure:
+Every external candidate enters one import procedure:
 
 1. capture of one explicit `ValidationContext` for the attempt;
 2. root CID and proof-of-work hash verification before child resolution;
@@ -939,7 +939,7 @@ Every external candidate enters one admission procedure:
 8. atomic durability of one immutable accepted-fact batch; and
 9. application of that exact batch through the reducer used by recovery.
 
-Durability MUST precede visible graph mutation. Live admission MUST NOT
+Durability MUST precede visible graph mutation. Live import MUST NOT
 re-resolve or rebuild the batch after durability, and recovery MUST apply the
 same immutable facts through the same reducer. Identical replay is idempotent;
 conflicting immutable metadata is rejected. Storage or durability failure leaves
@@ -951,11 +951,11 @@ transition, inserting it, or implicitly retaining it for this chain. A node may
 explicitly retain a carrier or an exact child-link path as availability policy;
 Lattice does not enumerate an attacker-sized child index. Unresolved same-chain
 predecessors (absent or accepted-but-unconnected) are derived from the accepted
-graph, including after recovery, and must enter this same admission boundary. A
+graph, including after recovery, and must enter this same import boundary. A
 target miss never triggers predecessor backfill because connectivity cannot make
 that grind satisfy the current chain's target. A target-hit accepted, duplicate,
 or rejected candidate may expose the exact typed predecessor requirement so the
-node can complete ordinary chain admission and issuer promotion. This does not
+node can complete ordinary chain import and issuer promotion. This does not
 claim a predecessor body is unavailable. Missing cross-chain input instead
 identifies the child proof, immediate-parent state-continuity fact, or
 immediate-parent genesis fact that the node must obtain from an authenticated
@@ -965,7 +965,7 @@ parent's connected accepted graph must contain a transitive same-chain state
 path from `P.parentState` to `B.parentState`. Parent canonicity is irrelevant.
 `parentState` is a state CID, not a parent-block lookup key. Consensus derives
 no relationship by inversion. A target-hit candidate can likewise be rejected
-by its local admission rules while still proving real work for a descendant;
+by its local import rules while still proving real work for a descendant;
 carrier validity and securing-work validity are orthogonal.
 
 ### 9.4 Fork Choice and Reorganization
@@ -993,7 +993,7 @@ Work and parent-state authority are separate.
 
 A `ChildBlockProof` proves work directly from content-addressed bytes. The root
 grind must beat the terminal child's target and resolve uniquely to that child
-through the sparse directory path. Intermediate carriers need not be admitted,
+through the sparse directory path. Intermediate carriers need not be imported,
 connected, valid, or canonical on their own chains. Along one proof, the
 contribution is the target-derived quantity of the ROOT-MOST carrier whose
 target that root hash beat — the highest chain the grind legitimately
@@ -1049,7 +1049,7 @@ changes neither previously verified work nor continuity.
 ### 9.6 Ingress Equivalence
 
 Gossip, sync, mining, parent extraction, and sibling relay differ only in
-acquisition. Every external candidate enters the admission procedure in section
+acquisition. Every external candidate enters the import procedure in section
 9.3. Recovery instead replays already-authenticated durable facts through the
 same graph mutation and fork-choice logic; it does not treat a local fact log as
 new wire evidence. No ingress path may replace the chain directly or inject a
@@ -1063,7 +1063,7 @@ of consensus inputs.
 
 State execution may derive local lifecycle metadata, but that metadata is not a
 block commitment or a second cross-volume relationship index. The node decides
-whether to retain it and owns CID counts, pinning, materialized-state retention,
+whether to retain it and owns CID counts, pinning, materialized-state pruning,
 projections, archival, and garbage collection.
 
 ### 9.8 Persistence
@@ -1081,16 +1081,16 @@ diagnostic projections, if retained by tests or tooling, cannot replace replay.
 
 Restoration rejects malformed facts, reconstructs exact measures, and
 reprojects canonicality. A persisted tip is a derived cache, not protocol
-truth. Filesystem layout, payload retention, and format migration belong to the
+truth. Filesystem layout, payload pruning, and format migration belong to the
 node.
 
 ### 9.9 Deferred Execution: Weighed and Validated Tiers
 
-Admission (9.3) verifies work independently of executing state. Because the
+Import (9.3) verifies work independently of executing state. Because the
 consensus graph carries only header fields and claimed state CIDs — never the
 body or materialized state — a block MAY enter fork choice on its verified work
 alone, before its state transition is executed. A candidate is therefore
-admitted at one of two tiers:
+imported at one of two tiers:
 
 - **Weighed.** Its work is verified (root proof-of-work or a `ChildBlockProof`)
   and it possesses the header. Its declared `postStateCID` is recorded as an
@@ -1141,14 +1141,14 @@ be acted upon without the ability to exclude a subtree it later proves invalid.
 ### 9.10 Parent-Attributed Run Work
 
 A child block's `parentState` is committed by a block on its parent chain
-(§5.3). Every parent-chain block that DESCENDS from that committer commits to
+(§5.3). Every parent-chain block that DESCENDS from that carrier commits to
 the child block indirectly, and its work secures the child. Effective
 `trueCumWork` therefore counts it — once.
 
 The parent partitions its connected graph into RUNS, one per commitment into
 each child directory `d`: a parent block `Q` belongs to the run of the nearest
 block at or above it — by parent pointer, never by canonical chain — that
-commits into `d`. `nearestCommitter(Q, d)` is inherited from `Q`'s parent at
+commits into `d`. `nearestCarrier(Q, d)` is inherited from `Q`'s parent at
 connection, like `DifficultyAnchor`, so it is reorg-safe and replay-identical;
 it is held only for the directories a node SERVES — the child chains it hosts,
 an operator choice — so the run bookkeeping per block is O(#served), never
@@ -1162,12 +1162,12 @@ evaluate that rule — it has no body — so until the validate tier applies §3
 a not-yet-validated block's map is bounded only by what the boundary store
 will fetch, and it is retained through a later exclusion.)
 `runWork(P, d)` is the sum of credited work — grinds and attributed runs
-alike — over the connected blocks whose nearest committer into `d` is `P`. Runs partition the graph: each parent grind
+alike — over the connected blocks whose nearest carrier into `d` is `P`. Runs partition the graph: each parent grind
 is in at most one run per directory — none where no ancestor commits into it —
 and a parent fork below `P` places each branch's blocks
-in the run of that branch's own nearest committer — no branch missed, none
+in the run of that branch's own nearest carrier — no branch missed, none
 counted twice. A block's commitments are read from its PoW-bound `children`
-index at admission and carried on its durable block fact, so live admission and
+index at import and carried on its durable block fact, so live import and
 replay see the same commitments. A fact written before this field existed
 records NO commitments, which is not "commits nothing": replay tolerates it,
 and a later fact for the same block supplies them. The parent serves the run
@@ -1177,14 +1177,14 @@ attributed run — and `ownWork(P)` is their credited work. A run `P`'s OWN
 parent attributed at `P` is part of `runWork(P, d)` and no part of
 `ownWork(P)`: it is work the child does not hold, so it reaches the child
 through `P` exactly as the run's other blocks do, and the recursion
-Nexus → A → B holds at the committer itself, not only at the blocks above it.
+Nexus → A → B holds at the carrier itself, not only at the blocks above it.
 A work fact records whether its contribution is an attributed run, so a
 restored parent serves the same `ownWork` the live one did.
 
 The child first binds the report: it must be for the child's own directory,
 must name `C` as the block it claims `P` commits, and one of `P`'s grinds must already be
 credited at `C` — otherwise it is refused, visibly. It then credits the run
-under an identity keyed by the committer and the directory, separate from any
+under an identity keyed by the carrier and the directory, separate from any
 grind:
 
 ```text
@@ -1193,13 +1193,13 @@ attributed(C, P, d) = runWork(P, d) − ownWork(P)
 
 `P`'s own grinds are already credited at `C` at this chain's price (§9.5) and
 stay so; subtracting `ownWork` keeps them counted exactly once — once, not
-once per grind, because the identity is the committer's, not a grind's — and
+once per grind, because the identity is the carrier's, not a grind's — and
 leaves the child's terminal-target raise untouched. The attributed contribution is
 its own location-bound value: a repeated report is not a strict increase and
 is refused, so the crediting is idempotent. It is applied only if it is a
 strict increase over the attributed value already held, as a work-only batch
 (§9.8). `trueCumWork` of a child block is then its subtree total as always —
-each child block's own grinds plus each committer's attributed run — so a
+each child block's own grinds plus each carrier's attributed run — so a
 parent fork whose branches commit into different blocks of one child subtree
 contributes every branch exactly once, wherever the fork sits.
 The child never accepts a decrease; never accepts a value one contribution
@@ -1311,10 +1311,10 @@ state); withdrawals return it to the block-wide credit budget.
 
 ### 12.3 Consensus Invariants
 
-1. The chain tip is always on the main chain
+1. The chain tip is always on the canonical chain
 2. The chain tip block always exists in the block map
-3. Exactly one accepted genesis root anchors the selected main-chain path
-4. Main chain blocks form a connected path from genesis to tip
+3. Exactly one accepted genesis root anchors the selected canonical path
+4. Canonical-chain blocks form a connected path from genesis to tip
 5. A canonical delta's added and removed block sets are disjoint
 6. One validator process owns one absolute path and cannot mutate another chain
 
@@ -1332,7 +1332,7 @@ state); withdrawals return it to the block-wide credit budget.
 
 1. Every level evaluates the same root hash against its own target
 2. Directory-path work verification is independent of carrier validity,
-   admission, connectivity, and canonicity
+   import, connectivity, and canonicity
 3. A grind has exactly one terminal location per chain and is deduplicated by
    root CID across observations at that location;
    its credited quantity is the root-most verified accepted-target bound
@@ -1352,7 +1352,7 @@ state); withdrawals return it to the block-wide credit budget.
 9. Lattice never prunes accepted graph or verified local-work facts
 10. There is no finality threshold; a strictly heavier effective subtree may reorg at any depth
 11. Every successful consensus mutation has a monotonically increasing revision
-12. One explicit validation-time context governs one admission attempt
+12. One explicit validation-time context governs one import attempt
 
 ## 13. Constants
 
