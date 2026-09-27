@@ -116,6 +116,11 @@ ChainSpec = (
 )
 ```
 
+The child index is one node; the canonical decoder reads at most 65,536
+entries of it, a bound of the representation like the integer floor on a
+target, enforced where the bytes are made so no block is built that a node
+could not read.
+
 `maxBlockSize` bounds the canonical unique content bytes owned by one logical
 block. The measured closure is the block root Volume boundary (including its
 transaction and child indexes and their reference CIDs) plus every referenced

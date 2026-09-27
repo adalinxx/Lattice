@@ -10,7 +10,7 @@ import cashew
 @MainActor
 final class AsertDifficultyTests: XCTestCase {
 
-    private func spec(targetBlockTime: UInt64 = 3_600_000, window: UInt64 = 120) -> ChainSpec {
+    private func spec(targetBlockTime: UInt64 = 3_600_000, halfLife: UInt64 = 120) -> ChainSpec {
         ChainSpec(
             maxNumberOfTransactionsPerBlock: 100,
             maxStateGrowth: 100_000,
@@ -19,7 +19,7 @@ final class AsertDifficultyTests: XCTestCase {
             targetBlockTime: targetBlockTime,
             initialReward: 1024,
             halvingInterval: 10_000,
-            halfLife: window
+            halfLife: halfLife
         )
     }
 
@@ -51,7 +51,7 @@ final class AsertDifficultyTests: XCTestCase {
     /// doubling in each direction. The half-life is `halfLife` blocks of
     /// block time.
     func testOneHalfLifeIsOneDoublingInEitherDirection() {
-        let s = spec(window: 120)
+        let s = spec(halfLife: 120)
         let anchorTarget = UInt256(1) << 215
         let anchorTime: Int64 = 1_000_000
         let height: UInt64 = 121
@@ -159,8 +159,8 @@ final class AsertDifficultyTests: XCTestCase {
     /// A zero-length half-life would divide by zero. A spec is content
     /// addressed and attacker supplied, so the degenerate value has to be inert
     /// rather than fatal.
-    func testZeroRetargetWindowIsInertRatherThanFatal() {
-        let s = spec(window: 0)
+    func testZeroHalfLifeIsInertRatherThanFatal() {
+        let s = spec(halfLife: 0)
         let anchorTarget = UInt256(1) << 200
         XCTAssertEqual(s.halfLifeMilliseconds(), 0)
         XCTAssertEqual(
@@ -329,7 +329,7 @@ final class AsertDifficultyTests: XCTestCase {
     /// commits the maximum, so block 1 anchors there -- which makes this the
     /// common case, not an edge case.
     func testNearMaximumAnchorHardensByTheScheduleNotAWholeDoubling() {
-        let s = spec(targetBlockTime: 3_600_000, window: 120)
+        let s = spec(targetBlockTime: 3_600_000, halfLife: 120)
         let anchorTime: Int64 = 1_000_000
         // One block, one millisecond after the anchor: 3_599_999 ms ahead of a
         // 3_600_000 ms schedule, which is 1/120 of a half-life -- far less than
@@ -363,7 +363,7 @@ final class AsertDifficultyTests: XCTestCase {
     func testHardeningFromTheMaximumIsSmoothAcrossFractionsOfAHalfLife() {
         let blockTime: UInt64 = 1_000
         let window: UInt64 = 120
-        let s = spec(targetBlockTime: blockTime, window: window)
+        let s = spec(targetBlockTime: blockTime, halfLife: window)
         let anchorTime: Int64 = 1_000_000
         var previous = UInt256.max
         // height - 1 = 15k blocks of schedule is k/8 of a 120-block half-life.
@@ -476,7 +476,7 @@ final class AsertDifficultyTests: XCTestCase {
         // into ~1.4e14 iterations. A nonzero anchor escapes this after ~256
         // steps by crossing the representable ceiling; zero never does, because
         // doubling zero is zero.
-        let s = spec(targetBlockTime: 1, window: 1)
+        let s = spec(targetBlockTime: 1, halfLife: 1)
         let started = Date()
         // Height 2 on purpose: a huge height makes `scheduled` saturate to the
         // same Int64.max as `elapsed`, which cancels to ZERO drift and would
@@ -496,7 +496,7 @@ final class AsertDifficultyTests: XCTestCase {
     /// thousands of half-lives; the shift must saturate rather than iterate
     /// once per doubling.
     func testExtremeDriftSaturatesInBoundedTime() {
-        let fast = spec(targetBlockTime: 1, window: 1)
+        let fast = spec(targetBlockTime: 1, halfLife: 1)
         let started = Date()
         for anchorTarget in [UInt256(1), UInt256(1) << 128, UInt256.max] {
             let eased = fast.calculateAsertTarget(
@@ -571,7 +571,7 @@ final class AsertDifficultyTests: XCTestCase {
     /// truth. One sample cannot establish this, so the response is swept
     /// across several half-lives in both directions.
     func testTargetIsMonotonicInTimestampAcrossTheCurve() {
-        let s = spec(targetBlockTime: 1_000, window: 120)
+        let s = spec(targetBlockTime: 1_000, halfLife: 120)
         let anchorTarget = UInt256(1) << 200
         let anchorTime: Int64 = 1_000_000
         let halfLife: Int64 = 120 * 1_000

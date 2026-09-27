@@ -9,9 +9,16 @@ import Foundation
 /// per child on top.
 ///
 /// Encoded as the sorted array of entries, so the same commitments always
-/// produce the same bytes; decoding refuses an unsorted, repeated, or empty
-/// directory, so one CID names one index.
+/// produce the same bytes; decoding refuses an unsorted, repeated, or
+/// malformed directory, so one CID names one index. The encoder refuses the
+/// same, and more entries than the canonical decoder reads, so a block that
+/// no node could decode is never built.
 public struct ChildIndex: Node, Hashable {
+    /// The canonical decoder reads at most this many elements of one
+    /// collection: not a rule of the protocol but of its representation,
+    /// so it is enforced where the bytes are made.
+    public static let maximumEntries = 65_536
+
     public let entries: [String: VolumeImpl<Block>]
 
     public init(entries: [String: VolumeImpl<Block>] = [:]) {
@@ -62,6 +69,13 @@ public struct ChildIndex: Node, Hashable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        guard entries.count <= Self.maximumEntries,
+              entries.keys.allSatisfy(isValidDirectoryAtom) else {
+            throw EncodingError.invalidValue(entries.keys.sorted(), .init(
+                codingPath: [CodingKeys.entries],
+                debugDescription: "child index entries must be directory atoms, at most \(Self.maximumEntries)"
+            ))
+        }
         let sorted = entries.keys.sorted().map { Entry(key: $0, value: entries[$0]!) }
         try container.encode(sorted, forKey: .entries)
     }
@@ -72,11 +86,12 @@ public struct ChildIndex: Node, Hashable {
         var entries: [String: VolumeImpl<Block>] = [:]
         var previous: String?
         for entry in decoded {
-            guard !entry.key.isEmpty, previous.map({ $0 < entry.key }) ?? true else {
+            guard isValidDirectoryAtom(entry.key),
+                  previous.map({ $0 < entry.key }) ?? true else {
                 throw DecodingError.dataCorruptedError(
                     forKey: .entries,
                     in: container,
-                    debugDescription: "child index entries must be sorted, distinct and named"
+                    debugDescription: "child index entries must be sorted, distinct directory atoms"
                 )
             }
             entries[entry.key] = entry.value
