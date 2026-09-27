@@ -725,6 +725,8 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
                     chain, seed: seed, event: "final exclusion"
                 )
             }
+            let fallbacks = await chain.descentFallbackCount
+            XCTAssertEqual(fallbacks, 0, "seed \(seed): the reference fallback was entered")
         }
     }
 }
@@ -848,6 +850,7 @@ private func assertMatchesReference(
     file: StaticString = #filePath,
     line: UInt = #line
 ) async {
+    await assertRoutedClosedUnderChildren(chain, "seed \(seed), \(event)", file: file, line: line)
     let blocks = await chain.hashToBlock
     guard let expected = ForkChoiceOracle(blocks: blocks, excluded: [])
         .view().canonicalProjection()
@@ -917,6 +920,7 @@ private func assertMatchesReferenceWithExclusions(
     file: StaticString = #filePath,
     line: UInt = #line
 ) async {
+    await assertRoutedClosedUnderChildren(chain, "seed \(seed), \(event)", file: file, line: line)
     let blocks = await chain.hashToBlock
     let closure = await chain.excludedRootsForTesting
     let liveTip = await chain.getMainChainTip()
