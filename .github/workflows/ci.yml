@@ -20,19 +20,19 @@ jobs:
           coverage=$(swift test --show-codecov-path)
           percent=$(jq -r '
             [.data[].files[]
-              | select(.filename | test("(^|/)Sources/Lattice/"))
+              | select(.filename | test("(^|/)Sources/Lattice(Primitives|PoW|Validation|Proofs|BlockTree|Import)?/"))
               | .summary.lines]
             | (map(.covered) | add) * 100 / (map(.count) | add)
           ' "$coverage")
           critical_stats=$(jq -c '
-            ["Lattice/Chain.swift",
-             "Lattice/WorkSum.swift",
-             "Lattice/ChainLocalAdmission.swift",
-             "Block/ChildBlockProof.swift"] as $critical
+            ["LatticeBlockTree/Chain.swift",
+             "LatticePoW/WorkSum.swift",
+             "LatticeImport/ChainLocalAdmission.swift",
+             "LatticeProofs/ChildBlockProof.swift"] as $critical
             | [.data[].files[]
                 | .filename as $filename
                 | select(any($critical[]; . as $path
-                    | $filename | endswith("Sources/Lattice/" + $path)))
+                    | $filename | endswith("Sources/" + $path)))
                 | .summary.lines]
             | if length == ($critical | length)
               then {
