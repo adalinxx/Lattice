@@ -94,9 +94,12 @@ struct ForkChoice: Sendable {
 
     /// Recovery's linear builder: locations from the blocks' own work facts,
     /// then the weights as one Euler tour of the routed graph.
-    static func build(from blocks: [String: BlockMeta]) -> ForkChoice {
+    static func build(from blocks: BlockGraph) -> ForkChoice {
         var forkChoice = ForkChoice()
-        forkChoice.locations = locations(in: blocks)
+        forkChoice.locations = locations(
+            of: blocks.records.lazy.map(\.blockHash),
+            in: blocks
+        )
         forkChoice.weights = buildWeights(
             in: blocks,
             workByGrind: &forkChoice.locations
@@ -104,8 +107,11 @@ struct ForkChoice: Sendable {
         return forkChoice
     }
 
+    /// Each grind's location and strongest observation among the blocks
+    /// `hashes` of `blocks`.
     static func locations(
-        in blocks: [String: BlockMeta]
+        of hashes: some Sequence<String>,
+        in blocks: BlockGraph
     ) -> [String: WorkContributionRecord] {
         var result: [String: WorkContributionRecord] = [:]
         func observe(_ contribution: VerifiedWorkContribution, at hash: String) {
@@ -119,8 +125,9 @@ struct ForkChoice: Sendable {
             result[contribution.id] = record
         }
 
-        for (hash, meta) in blocks {
-            for contribution in meta.workContributions.values {
+        for hash in hashes {
+            guard let work = blocks.work(of: hash) else { continue }
+            for contribution in work.contributions.values {
                 observe(contribution, at: hash)
             }
         }
@@ -190,7 +197,7 @@ struct ForkChoice: Sendable {
     /// into one.
     func descend(
         from startHash: String,
-        in blocksByHash: [String: BlockMeta]
+        in graph: BlockGraph
     ) -> Descent {
         var currentHash = startHash
         var blocks = Set<String>()
@@ -199,7 +206,7 @@ struct ForkChoice: Sendable {
                 blocks.insert(currentHash).inserted,
                 "cycle in child edges at \(currentHash)"
             )
-            let all = blocksByHash[currentHash]?.childHashes ?? []
+            let all = graph.children(of: currentHash)
             let children = excludedRoots.isEmpty
                 ? all
                 : all.filter { !excludedRoots.contains($0) }
@@ -328,7 +335,7 @@ struct ForkChoice: Sendable {
     /// under either order, and the sum over a range does not depend on the order
     /// within it, which is the only thing fork choice reads.
     private static func buildWeights(
-        in blocks: [String: BlockMeta],
+        in blocks: BlockGraph,
         workByGrind: inout [String: WorkContributionRecord]
     ) -> EulerWorkIndex {
         // Routed-ness was a lookup into the quotient; it is now exactly what it
@@ -337,14 +344,14 @@ struct ForkChoice: Sendable {
         // here rather than kept in a second structure that has to be maintained
         // in step with this one.
         var routedBlocks = Set<String>()
-        var reachable = blocks.values
+        var reachable = blocks.records
             .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
             .map(\.blockHash)
         while let hash = reachable.popLast() {
             guard routedBlocks.insert(hash).inserted,
-                  let block = blocks[hash] else { continue }
-            reachable.append(contentsOf: block.childHashes.filter {
-                blocks[$0] != nil
+                  blocks.contains(hash) else { continue }
+            reachable.append(contentsOf: blocks.children(of: hash).filter {
+                blocks.contains($0)
             })
         }
 
@@ -364,13 +371,13 @@ struct ForkChoice: Sendable {
         // Iterative because a chain is as deep as it is long, and recursion
         // here would be bounded by the stack.
         func routedChildren(_ hash: String) -> [String] {
-            (blocks[hash]?.childHashes ?? [])
+            blocks.children(of: hash)
                 .filter { routedBlocks.contains($0) }
                 .sorted()
         }
         var events: [EulerWorkIndex.Event] = []
         events.reserveCapacity(routedBlocks.count * 2)
-        let roots = blocks.values
+        let roots = blocks.records
             .filter {
                 $0.parentBlockHash == nil
                     && $0.blockHeight == 0
@@ -429,30 +436,30 @@ extension ChainState {
     /// Exact total proof-of-work from genesis to the current chain tip.
     public func getTipCumulativeWork() -> WorkSum {
         materializeLocalWorkCachesIfNeeded()
-        return highestBlock?.cumulativeWork ?? .zero
+        return graph.cumulativeWork(of: chainTip) ?? .zero
     }
 
     /// Exact genesis-relative cumulative work at a specific block, or nil if the
     /// block is unknown.
     public func getCumulativeWork(forHash hash: String) -> WorkSum? {
-        guard hashToBlock[hash] != nil else { return nil }
+        guard graph.contains(hash) else { return nil }
         materializeLocalWorkCachesIfNeeded()
-        return hashToBlock[hash]?.cumulativeWork
+        return graph.cumulativeWork(of: hash)
     }
 
     /// The same-chain subtree measure of `hash`, deduplicated by grind identity.
     public func subtreeWeight(forHash hash: String) -> WorkSum? {
-        guard hashToBlock[hash] != nil else { return nil }
+        guard graph.contains(hash) else { return nil }
         // Pure work, excluded subtrees included: validity never subtracts weight.
         materializeLocalWorkCachesIfNeeded()
-        return hashToBlock[hash]?.subtreeWeight
+        return graph.subtreeWeight(of: hash)
     }
 
     /// Public simulator/test view of the real local fork-choice descent.
     public func forkChoiceSnapshot(startingAt hash: String) -> ForkChoiceSnapshot? {
-        guard let meta = hashToBlock[hash],
+        guard graph.contains(hash),
               forkChoice.isRouted(hash) else { return nil }
-        let choice = chainWithMostWork(startingBlock: meta)
+        let choice = chainWithMostWork(startingAt: hash)
         return ForkChoiceSnapshot(
             startingHash: hash,
             subtreeWork: choice.subtreeWork,
@@ -462,14 +469,19 @@ extension ChainState {
     }
 
     /// Rebuild exact local prefix and subtree measures after a graph or work-fact
-    /// mutation without retaining an identity map at every block.
+    /// mutation without retaining an identity map at every block. Returns the
+    /// graph's diagnostic table with every recomputed total written into it.
     nonisolated static func recomputeWorkCaches(
-        in blocks: inout [String: BlockMeta]
-    ) {
+        in graph: BlockGraph
+    ) -> [String: BlockDiagnostics] {
+        var result = graph.diagnosticsByHash
+        func contributions(_ hash: String) -> [String: VerifiedWorkContribution] {
+            graph.work(of: hash)?.contributions ?? [:]
+        }
         // Quantity is a property of the physical grind, not of the segment
         // containing its one location.
         var strongestWork: [String: UInt256] = [:]
-        for contribution in blocks.values.flatMap(\.workContributions.values)
+        for contribution in graph.records.flatMap({ contributions($0.blockHash).values })
         where contribution.work > (strongestWork[contribution.id] ?? .zero) {
             strongestWork[contribution.id] = contribution.work
         }
@@ -479,12 +491,12 @@ extension ChainState {
                 work: strongestWork[contribution.id] ?? contribution.work
             )
         }
-        let ascending = blocks.values.sorted {
+        let ascending = graph.records.sorted {
             if $0.blockHeight != $1.blockHeight { return $0.blockHeight < $1.blockHeight }
             return $0.blockHash < $1.blockHash
         }
         let roots = ascending.filter { meta in
-            meta.parentBlockHash.flatMap { blocks[$0] } == nil
+            meta.parentBlockHash.flatMap { graph[$0] } == nil
         }
         for root in roots {
             var activeCounts: [String: [UInt256: Int]] = [:]
@@ -518,20 +530,20 @@ extension ChainState {
             }
             var pending: [(hash: String, exiting: Bool)] = [(root.blockHash, false)]
             while let frame = pending.popLast() {
-                guard let meta = blocks[frame.hash] else { continue }
+                guard let meta = graph[frame.hash] else { continue }
                 if frame.exiting {
-                    for contribution in meta.workContributions.values {
+                    for contribution in contributions(meta.blockHash).values {
                         adjustActiveWork(normalized(contribution), by: -1)
                     }
                     continue
                 }
 
-                for contribution in meta.workContributions.values {
+                for contribution in contributions(meta.blockHash).values {
                     adjustActiveWork(normalized(contribution), by: 1)
                 }
-                blocks[meta.blockHash]?.setCumulativeWork(activeWork)
+                result[meta.blockHash]?.cumulativeWork = activeWork
                 pending.append((meta.blockHash, true))
-                for childHash in meta.childHashes.reversed() {
+                for childHash in graph.children(of: meta.blockHash).reversed() {
                     pending.append((childHash, false))
                 }
             }
@@ -553,14 +565,15 @@ extension ChainState {
         }
 
         for meta in ascending.reversed() {
-            let largestChild = meta.childHashes.max {
+            let childHashes = graph.children(of: meta.blockHash)
+            let largestChild = childHashes.max {
                 (subtreeAccumulators[$0]?.entries.count ?? 0)
                     < (subtreeAccumulators[$1]?.entries.count ?? 0)
             }
             var accumulator = largestChild.flatMap {
                 subtreeAccumulators.removeValue(forKey: $0)
             } ?? Accumulator(entries: [:], total: .zero)
-            for childHash in meta.childHashes where childHash != largestChild {
+            for childHash in childHashes where childHash != largestChild {
                 guard let child = subtreeAccumulators.removeValue(forKey: childHash) else {
                     continue
                 }
@@ -568,16 +581,17 @@ extension ChainState {
                     insert(id: id, work: work, into: &accumulator)
                 }
             }
-            for (id, contribution) in meta.workContributions {
+            for (id, contribution) in contributions(meta.blockHash) {
                 insert(
                     id: id,
                     work: strongestWork[id] ?? contribution.work,
                     into: &accumulator
                 )
             }
-            blocks[meta.blockHash]?.setSubtreeWeight(accumulator.total)
+            result[meta.blockHash]?.subtreeWeight = accumulator.total
             subtreeAccumulators[meta.blockHash] = accumulator
         }
+        return result
     }
 
     @discardableResult
@@ -589,14 +603,14 @@ extension ChainState {
     /// leaf inside its parent's range either way, and the range structure needs
     /// nothing above the insertion point told about it.
     func routeBlock(for blockHash: String) -> Bool {
-        guard let block = hashToBlock[blockHash] else { return false }
+        guard let block = graph[blockHash] else { return false }
         guard let parentHash = block.parentBlockHash else {
             guard block.blockHeight == 0 else { return false }
             return forkChoice.routeRoot(blockHash)
         }
         // A disconnected component stays unrouted until an admitted ancestor
         // grafts the whole component in.
-        guard hashToBlock[parentHash] != nil,
+        guard graph.contains(parentHash),
               forkChoice.isRouted(parentHash) else { return true }
         return forkChoice.routeLeaf(blockHash, under: parentHash)
     }
@@ -615,18 +629,15 @@ extension ChainState {
             // below only follows children that are in componentHashes.
             guard !forkChoice.isRouted(hash),
                   componentHashes.insert(hash).inserted,
-                  let block = hashToBlock[hash] else { continue }
-            pending.append(contentsOf: block.childHashes)
+                  graph.contains(hash) else { continue }
+            pending.append(contentsOf: graph.children(of: hash))
         }
         guard !componentHashes.isEmpty else { return false }
 
-        var componentBlocks: [String: BlockMeta] = [:]
-        componentBlocks.reserveCapacity(componentHashes.count)
         for hash in componentHashes {
-            guard let block = hashToBlock[hash] else { return false }
-            componentBlocks[hash] = block
+            guard graph.contains(hash) else { return false }
         }
-        var componentWorkByGrind = ForkChoice.locations(in: componentBlocks)
+        var componentWorkByGrind = ForkChoice.locations(of: componentHashes, in: graph)
         // Direct work per block, which is all the Euler tour carries. No subtree
         // total is computed for the component and none is added to any ancestor:
         // splicing its elements inside the parent's range makes every enclosing
@@ -645,11 +656,11 @@ extension ChainState {
                 + record.contribution.work
         }
 
-        if let parentHash = hashToBlock[rootHash]?.parentBlockHash {
+        if let parentHash = graph.parent(of: rootHash) {
             guard forkChoice.isRouted(parentHash) else {
                 return false
             }
-        } else if hashToBlock[rootHash]?.blockHeight != 0 {
+        } else if graph.height(of: rootHash) != 0 {
             return false
         }
 
@@ -661,7 +672,7 @@ extension ChainState {
         var events: [EulerWorkIndex.Event] = []
         events.reserveCapacity(componentHashes.count * 2)
         func componentChildren(_ hash: String) -> [String] {
-            (componentBlocks[hash]?.childHashes ?? [])
+            graph.children(of: hash)
                 .filter { componentHashes.contains($0) }
                 .sorted()
         }
@@ -683,7 +694,7 @@ extension ChainState {
         return forkChoice.graft(
             events: events,
             rootedAt: rootHash,
-            under: hashToBlock[rootHash]?.parentBlockHash,
+            under: graph.parent(of: rootHash),
             locations: componentWorkByGrind
         )
     }
@@ -693,9 +704,9 @@ extension ChainState {
         to blockHash: String,
         attributed: Bool
     ) {
-        guard hashToBlock[blockHash]?.setWorkContribution(
-            contribution, attributed: attributed
-        ) == true else {
+        guard graph.setWorkContribution(
+            contribution, attributed: attributed, at: blockHash
+        ) else {
             return
         }
         localWorkCachesDirty = true
@@ -705,7 +716,7 @@ extension ChainState {
     /// the identity-aware segment cache instead.
     func materializeLocalWorkCachesIfNeeded() {
         guard localWorkCachesDirty else { return }
-        Self.recomputeWorkCaches(in: &hashToBlock)
+        graph.recomputeWorkCaches()
         localWorkCachesDirty = false
     }
 
@@ -713,7 +724,7 @@ extension ChainState {
         id: String,
         at blockHash: String
     ) -> VerifiedWorkContribution? {
-        hashToBlock[blockHash]?.workContributions[id]
+        graph.contribution(id: id, at: blockHash)
     }
 
     /// GHOST descent chooses the child with greatest deduplicated verified
@@ -721,7 +732,12 @@ extension ChainState {
     func chainWithMostWork(
         startingBlock: BlockMeta
     ) -> (subtreeWork: WorkSum, tipHash: String, blocks: Set<String>) {
-        let startHash = startingBlock.blockHash
+        chainWithMostWork(startingAt: startingBlock.blockHash)
+    }
+
+    func chainWithMostWork(
+        startingAt startHash: String
+    ) -> (subtreeWork: WorkSum, tipHash: String, blocks: Set<String>) {
         // Every caller starts at a routed block (`forkChoiceSnapshot` refuses
         // any other), and a routed block always has a weight.
         guard let weight = forkChoice.weight(of: startHash) else {
@@ -735,7 +751,7 @@ extension ChainState {
         // Weights are pure work; the descent only steers past excluded roots,
         // which are never stepped into. No-op when nothing is excluded — the
         // steady-state path is unchanged.
-        let descent = forkChoice.descend(from: startHash, in: hashToBlock)
+        let descent = forkChoice.descend(from: startHash, in: graph)
         return (weight, descent.tipHash, descent.blocks)
     }
 }
