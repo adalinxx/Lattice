@@ -5,12 +5,6 @@ import cashew
 import WasmParser
 import WAT
 
-struct NoopFetcher: Fetcher {
-    func fetch(rawCid: String) async throws -> Data {
-        throw NSError(domain: "NoopFetcher", code: 1)
-    }
-}
-
 /// Storing rather than no-op: these suites build multi-block chains, and the
 /// difficulty schedule is anchored at the height-1 ancestor, so a block past
 /// height 2 must be able to reach back through its own ancestry. A block's
@@ -18,15 +12,7 @@ struct NoopFetcher: Fetcher {
 let testFetcher = StorableFetcher()
 
 func testSpec() -> ChainSpec {
-    ChainSpec(
-        maxNumberOfTransactionsPerBlock: 100,
-        maxStateGrowth: 100_000,
-        premine: 0,
-        targetBlockTime: 1_000,
-        initialReward: 1024,
-        halvingInterval: 10_000,
-        halfLife: 10
-    )
+    ChainSpec.test(halfLife: 10)
 }
 
 func genesisBlock(
@@ -95,13 +81,8 @@ final class BlockBuilderTests: XCTestCase {
             target: UInt256.max,
             fetcher: fetcher
         )
-        let invalidSpec = ChainSpec(
+        let invalidSpec = ChainSpec.test(
             maxNumberOfTransactionsPerBlock: 0,
-            maxStateGrowth: 100_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1_024,
-            halvingInterval: 10_000,
             halfLife: 10
         )
         let invalidHeader = try VolumeImpl<ChainSpec>(node: invalidSpec)
@@ -587,13 +568,7 @@ final class WasmPolicyTests: XCTestCase {
             receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
             chainPath: ["Nexus"]
         )
-        let spec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
+        let spec = ChainSpec.test(
             halfLife: 10,
             wasmPolicies: [policy]
         )
@@ -610,13 +585,7 @@ final class WasmPolicyTests: XCTestCase {
             receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
             chainPath: ["Nexus"]
         )
-        let spec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
+        let spec = ChainSpec.test(
             halfLife: 10,
             wasmPolicies: [policy]
         )
@@ -639,13 +608,7 @@ final class WasmPolicyTests: XCTestCase {
             receiptActions: [], withdrawalActions: [], signers: ["high-signer"], fee: 100, nonce: 1,
             chainPath: ["Nexus"]
         )
-        let spec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
+        let spec = ChainSpec.test(
             halfLife: 10,
             wasmPolicies: [policy]
         )
@@ -664,13 +627,7 @@ final class WasmPolicyTests: XCTestCase {
             receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
             chainPath: ["Nexus"]
         )
-        let spec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
+        let spec = ChainSpec.test(
             halfLife: 10,
             wasmPolicies: [policy]
         )
@@ -698,13 +655,7 @@ final class WasmPolicyTests: XCTestCase {
             receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
             chainPath: ["Nexus"]
         )
-        let spec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
+        let spec = ChainSpec.test(
             halfLife: 10,
             wasmPolicies: [acceptingPolicy, rejectingPolicy]
         )
@@ -714,13 +665,7 @@ final class WasmPolicyTests: XCTestCase {
 
     func testPolicyContextCanonicalEncodingGolden() throws {
         let policy = WasmPolicyRef(moduleCID: "bafy-policy", scope: .transaction)
-        let spec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
+        let spec = ChainSpec.test(
             halfLife: 10,
             wasmPolicies: [policy]
         )
@@ -769,13 +714,7 @@ final class WasmPolicyTests: XCTestCase {
             receiptActions: [], withdrawalActions: [], signers: [], fee: 0, nonce: 1,
             chainPath: ["Nexus"]
         )
-        let spec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
+        let spec = ChainSpec.test(
             halfLife: 10,
             wasmPolicies: [policy]
         )
@@ -788,13 +727,7 @@ final class WasmPolicyTests: XCTestCase {
         let policy = try await storeWasmPolicy(requiringSubstring: "app", scope: .action, fetcher: fetcher)
         let goodAction = Action(key: "app/v1/data", oldValue: nil, newValue: "value")
         let badAction = Action(key: "forbidden/data", oldValue: nil, newValue: "value")
-        let spec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
+        let spec = ChainSpec.test(
             halfLife: 10,
             wasmPolicies: [policy]
         )
@@ -820,13 +753,7 @@ final class WasmPolicyTests: XCTestCase {
             receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
             chainPath: ["Nexus"]
         )
-        let spec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
+        let spec = ChainSpec.test(
             halfLife: 10,
             wasmPolicies: [policy]
         )
@@ -876,13 +803,7 @@ final class WasmPolicyTests: XCTestCase {
             receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
             chainPath: ["Nexus"]
         )
-        let spec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
+        let spec = ChainSpec.test(
             halfLife: 10,
             wasmPolicies: [policy]
         )
@@ -893,13 +814,7 @@ final class WasmPolicyTests: XCTestCase {
     func testMissingPolicyModuleIsUnavailable() async throws {
         let fetcher = StorableFetcher()
         let policy = WasmPolicyRef(moduleCID: "missing", scope: .transaction)
-        let spec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
+        let spec = ChainSpec.test(
             halfLife: 10,
             wasmPolicies: [policy]
         )
@@ -1167,13 +1082,7 @@ final class WasmPolicyTests: XCTestCase {
     // MARK: - compiled-module cache
 
     private func cacheTestSpec(policy: WasmPolicyRef) -> ChainSpec {
-        ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
+        ChainSpec.test(
             halfLife: 10,
             wasmPolicies: [policy]
         )

@@ -23,16 +23,7 @@ import Foundation
 // MARK: - Shared infrastructure
 
 private func gapSpec() -> ChainSpec {
-    ChainSpec(
-        maxNumberOfTransactionsPerBlock: 100,
-        maxStateGrowth: 100_000,
-        maxBlockSize: 1_000_000,
-        premine: 0,
-        targetBlockTime: 1_000,
-        initialReward: 1024,
-        halvingInterval: 10_000,
-        halfLife: 5
-    )
+    ChainSpec.test()
 }
 
 private func gapHeader(_ block: Block) -> BlockHeader {
@@ -59,36 +50,6 @@ private func gapNow() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
 private func storeBlock(_ block: Block, fetcher: StorableFetcher) async throws {
     try await VolumeImpl<Block>(node: block).storeBlock(storer: fetcher)
-}
-
-/// Fetcher that wraps a fully-populated `StorableFetcher` but can be told to
-/// fail (throw) on specific CIDs, simulating a transient resolution failure
-/// where the data is genuinely available but momentarily un-fetchable (peer
-/// withholding / inflight re-request). Toggling `failing` to empty simulates
-/// the data arriving after a re-request.
-private final class TransientFailingFetcher: Fetcher, @unchecked Sendable {
-    private let backing: StorableFetcher
-    private let lock = NSLock()
-    private var failing: Set<String>
-
-    init(backing: StorableFetcher, failing: Set<String> = []) {
-        self.backing = backing
-        self.failing = failing
-    }
-
-    func setFailing(_ cids: Set<String>) {
-        lock.lock(); defer { lock.unlock() }
-        failing = cids
-    }
-
-    func fetch(rawCid: String) async throws -> Data {
-        let shouldFail: Bool = {
-            lock.lock(); defer { lock.unlock() }
-            return failing.contains(rawCid)
-        }()
-        if shouldFail { throw cashew.FetcherError.notFound(rawCid) }
-        return try await backing.fetch(rawCid: rawCid)
-    }
 }
 
 // MARK: - BTV-A1
@@ -119,7 +80,7 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
         // carries its node inline, but its ancestor data is fetched by CID and is
         // transiently unavailable. A re-request would recover it.
         let parentCID = gapHeader(g).rawCID
-        let fetcher = TransientFailingFetcher(backing: backing, failing: [parentCID])
+        let fetcher = DenyingFetcher(backing: backing, denied: [parentCID])
 
         let level = ChainLevel(testChain: ChainState.fromGenesis(block: g))
 
@@ -138,7 +99,7 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
 
         // Simulate the re-request succeeding: clear the failure and reprocess
         // the SAME header through the SAME fetcher instance.
-        fetcher.setFailing([])
+        await fetcher.setDenied([])
         let accepted = try await level.admitBlockHeaderChainLocal(
             gapHeader(block),
             fetcher: fetcher,
@@ -216,16 +177,7 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
 
     private func childSpecWithDeposit(_ depositAmount: UInt64) -> ChainSpec {
         // Premine funds the genesis deposit; nexus chain is the parent ["Nexus"].
-        ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            maxBlockSize: 1_000_000,
-            premine: depositAmount,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
-            halfLife: 5
-        )
+        ChainSpec.test(premine: depositAmount)
     }
 
     /// Builds a leaf chain whose genesis already holds a deposit, plus a nexus

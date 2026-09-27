@@ -27,15 +27,7 @@ final class ChildBlockProofCoreTests: XCTestCase {
         terminalHop: ChildBlockProof
     ) {
         let storage = StorableFetcher()
-        let spec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1_024,
-            halvingInterval: 10_000,
-            halfLife: 10
-        )
+        let spec = ChainSpec.test(halfLife: 10)
         let leaf = try await buildAndStoreGenesis(
             spec: spec,
             timestamp: 1_000,

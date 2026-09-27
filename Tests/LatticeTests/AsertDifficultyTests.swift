@@ -11,14 +11,8 @@ import cashew
 final class AsertDifficultyTests: XCTestCase {
 
     private func spec(targetBlockTime: UInt64 = 3_600_000, halfLife: UInt64 = 120) -> ChainSpec {
-        ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            maxBlockSize: 1_000_000,
-            premine: 0,
+        ChainSpec.test(
             targetBlockTime: targetBlockTime,
-            initialReward: 1024,
-            halvingInterval: 10_000,
             halfLife: halfLife
         )
     }
@@ -443,11 +437,11 @@ final class AsertDifficultyTests: XCTestCase {
         }
 
         let tip = blocks[blocks.count - 1]
-        fetcher.resetCount()
+        await fetcher.resetCount()
         let anchor = try await BlockBuilder.resolveDifficultyAnchor(
             from: tip, fetcher: fetcher, chain: chain
         )
-        let fetches = fetcher.count()
+        let fetches = await fetcher.count()
 
         XCTAssertEqual(anchor?.blockHeight, 1, "the anchor is still height 1")
         XCTAssertEqual(
@@ -605,31 +599,5 @@ final class AsertDifficultyTests: XCTestCase {
         let smaller = actual > expected ? expected : actual
         let slack = expected / UInt256(1_000) * UInt256(partsPerThousand)
         XCTAssertLessThanOrEqual(larger - smaller, slack, message, file: file, line: line)
-    }
-}
-
-/// Wraps the ordinary test store and counts how many objects the walk pulls.
-/// The walk's DEPTH is the property under test, and only a count can see it.
-final class CountingFetcher: Fetcher, Storer, VolumeStorer, @unchecked Sendable {
-    private let inner = StorableFetcher()
-    // NSLock rather than the os-specific lock the neighbouring helper uses:
-    // this needs no platform guard, and the counter is not on a hot path.
-    private let lock = NSLock()
-    private var fetches = 0
-
-    func resetCount() { lock.withLock { fetches = 0 } }
-    func count() -> Int { lock.withLock { fetches } }
-
-    func store(rawCid: String, data: Data) { inner.store(rawCid: rawCid, data: data) }
-    func store(entries: [String: Data]) async { await inner.store(entries: entries) }
-    func store(volume: SerializedVolume) async { await inner.store(volume: volume) }
-    func volumeRoots() -> Set<String> { inner.volumeRoots() }
-    func contains(rawCid: String) -> Bool { inner.contains(rawCid: rawCid) }
-
-    func fetch(rawCid: String) async throws -> Data {
-        // `withLock` is the async-safe scoped form; bare lock()/unlock() is
-        // unavailable from an async context.
-        lock.withLock { fetches += 1 }
-        return try await inner.fetch(rawCid: rawCid)
     }
 }

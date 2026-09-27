@@ -7,9 +7,7 @@ import Foundation
 private func f() -> StorableFetcher { StorableFetcher() }
 
 private func s(_ dir: String = "Nexus", premine: UInt64 = 1000) -> ChainSpec {
-    ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
-              maxBlockSize: 1_000_000, premine: premine, targetBlockTime: 1_000,
-              initialReward: 1024, halvingInterval: 10_000, halfLife: 5)
+    ChainSpec.test(premine: premine)
 }
 
 private func tx(_ body: TransactionBody, _ kp: (privateKey: String, publicKey: String)) -> Transaction {
@@ -518,10 +516,7 @@ final class DustAttackTests: XCTestCase {
         let fetcher = f()
         let base = now() - 10_000
         // 200 bytes state growth limit
-        let tinySpec = ChainSpec(maxNumberOfTransactionsPerBlock: 100,
-                                 maxStateGrowth: 200, maxBlockSize: 1_000_000,
-                                 premine: 1000, targetBlockTime: 1_000,
-                                 initialReward: 1024, halvingInterval: 10_000, halfLife: 5)
+        let tinySpec = ChainSpec.test(maxStateGrowth: 200, premine: 1000)
         let funder = CryptoUtils.generateKeyPair()
         let funderAddr = id(funder.publicKey)
         let premine = tinySpec.premineAmount()

@@ -10,6 +10,33 @@ import UInt256
 // availability envelope.
 extension ChainSpec {
 
+    /// The fixture spec most suites build on: every field defaults to the
+    /// common test value, so a call site names only the fields its scenario
+    /// changes.
+    static func test(
+        maxNumberOfTransactionsPerBlock: UInt64 = 100,
+        maxStateGrowth: Int = 100_000,
+        maxBlockSize: Int = 1_000_000,
+        premine: UInt64 = 0,
+        targetBlockTime: UInt64 = 1_000,
+        initialReward: UInt64 = 1024,
+        halvingInterval: UInt64 = 10_000,
+        halfLife: UInt64 = 5,
+        wasmPolicies: [WasmPolicyRef] = []
+    ) -> ChainSpec {
+        ChainSpec(
+            maxNumberOfTransactionsPerBlock: maxNumberOfTransactionsPerBlock,
+            maxStateGrowth: maxStateGrowth,
+            maxBlockSize: maxBlockSize,
+            premine: premine,
+            targetBlockTime: targetBlockTime,
+            initialReward: initialReward,
+            halvingInterval: halvingInterval,
+            halfLife: halfLife,
+            wasmPolicies: wasmPolicies
+        )
+    }
+
     static let bitcoin: ChainSpec = ChainSpec(
         maxNumberOfTransactionsPerBlock: 3000,
         maxStateGrowth: 1_000_000,

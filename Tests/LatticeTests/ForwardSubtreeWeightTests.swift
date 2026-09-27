@@ -13,9 +13,7 @@ import Foundation
 
 private func f() -> StorableFetcher { StorableFetcher() }
 private func s(_ dir: String = "Nexus") -> ChainSpec {
-    ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
-              maxBlockSize: 1_000_000, premine: 0, targetBlockTime: 1_000,
-              initialReward: 1024, halvingInterval: 10_000, halfLife: 5)
+    ChainSpec.test()
 }
 private func now() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 private func cid(_ b: Block) -> String { try! VolumeImpl<Block>(node: b).rawCID }
