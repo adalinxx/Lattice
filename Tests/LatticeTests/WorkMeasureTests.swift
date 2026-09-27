@@ -77,8 +77,8 @@ final class WorkMeasureTests: XCTestCase {
         }
     }
 
-    func testBlockMetadataReplacesOnlyTheStrengthenedQuantity() {
-        var metadata = BlockMeta(
+    func testBlockMetadataReplacesOnlyTheStrengthenedQuantity() throws {
+        var graph = BlockGraph(["block": BlockMeta(
             blockHash: "block",
             parentBlockHash: nil,
             blockHeight: 0,
@@ -87,9 +87,12 @@ final class WorkMeasureTests: XCTestCase {
                 contribution("shared", 7),
                 contribution("independent", 11),
             ]
-        )
+        )])
 
-        XCTAssertTrue(metadata.setWorkContribution(contribution("shared", 13)))
+        XCTAssertTrue(graph.setWorkContribution(
+            contribution("shared", 13), attributed: false, at: "block"
+        ))
+        let metadata = try XCTUnwrap(graph.meta(of: "block"))
         XCTAssertEqual(metadata.workContributions["shared"]?.work, UInt256(13))
         XCTAssertEqual(metadata.work, WorkSum(UInt256(24)))
     }
