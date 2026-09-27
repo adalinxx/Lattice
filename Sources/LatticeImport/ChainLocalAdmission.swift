@@ -1359,7 +1359,7 @@ public extension ChainLevel {
             )
         case .duplicate(let duplicate):
             return .duplicate(PreparedDuplicateImport(
-                levelIdentity: admissionIdentity,
+                levelIdentity: importIdentity,
                 state: duplicate
             ))
         case .ready(let prepared):
@@ -1368,7 +1368,7 @@ public extension ChainLevel {
             )
             let stagingContext = try await prepared.stagingContext()
             return .ready(PreparedBlockImport(
-                levelIdentity: admissionIdentity,
+                levelIdentity: importIdentity,
                 prepared: prepared,
                 stagingContext: stagingContext
             ))
@@ -1384,7 +1384,7 @@ public extension ChainLevel {
         result: BlockImportResult,
         parentGenesisLinks: [ParentGenesisLink]
     ) {
-        guard let duplicate = await preflight.take(for: admissionIdentity) else {
+        guard let duplicate = await preflight.take(for: importIdentity) else {
             throw BlockImportPreflightError.invalidToken
         }
         // EXECUTED, not merely connected. A weighed block is connected from
@@ -1417,13 +1417,13 @@ public extension ChainLevel {
         materializedVolumeStorer: any VolumeStorer,
         stage: @Sendable (BlockImportStagingContext) async throws -> Void
     ) async throws -> BlockImportResult {
-        guard let prepared = await preflight.take(for: admissionIdentity) else {
+        guard let prepared = await preflight.take(for: importIdentity) else {
             throw BlockImportPreflightError.invalidToken
         }
         try await prepared.storeMaterializedPostState(
             to: materializedVolumeStorer
         )
-        guard await chain.reserveAdmissionRevision() else {
+        guard await chain.reserveImportRevision() else {
             return BlockImport.rejection(
                 .revisionExhausted,
                 parentCarrierLink: prepared.carrierLink,
@@ -1446,7 +1446,7 @@ public extension ChainLevel {
                 standsOnAnotherRoot = true
             }
             guard possessed, standsOnAnotherRoot else {
-                await chain.releaseAdmissionRevision()
+                await chain.releaseImportRevision()
                 return BlockImport.rejection(
                     .notYetValid,
                     parentCarrierLink: prepared.carrierLink,
@@ -1476,7 +1476,7 @@ public extension ChainLevel {
         do {
             try await stage(stagingContext)
         } catch {
-            await chain.releaseAdmissionRevision()
+            await chain.releaseImportRevision()
             throw error
         }
         let submission = try await chain.applyReservedStaged(prepared.facts)

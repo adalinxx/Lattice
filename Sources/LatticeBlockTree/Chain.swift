@@ -252,7 +252,7 @@ private struct ConsensusBlockInput: Sendable {
 
 /// A node-durable admission batch after Lattice has authenticated it. Recovery
 /// may replay this value, but must never use it as wire evidence.
-private struct TrustedAdmissionBatch {
+private struct TrustedImportBatch {
     let block: ConsensusBlockInput?
     let workBlockHash: String
     let contribution: VerifiedWorkContribution
@@ -361,7 +361,7 @@ public actor ChainState {
     /// Capacity held across the node's asynchronous stage boundary. These
     /// reservations are fungible and disappear on restart; staged facts replay
     /// against the same pre-stage revision floor.
-    var reservedAdmissionRevisions: UInt64
+    var reservedImportRevisions: UInt64
 
     // Restore validates this invariant; optional access keeps query paths fail-closed.
     var highestBlockHeight: UInt64 { graph.height(of: chainTip) ?? 0 }
@@ -413,7 +413,7 @@ public actor ChainState {
         }
         self.indexToBlockHash = allByHeight
         self.mutationGeneration = mutationGeneration
-        self.reservedAdmissionRevisions = 0
+        self.reservedImportRevisions = 0
         for meta in hashToBlock.values {
             let contributions = meta.workContributions.values
             guard !contributions.isEmpty else {
@@ -526,7 +526,7 @@ public actor ChainState {
         replaying batches: [BlockImportBatch],
         revisionFloor: UInt64 = 0
     ) async throws -> ChainState {
-        let genesis = batches.compactMap(TrustedAdmissionBatch.init).filter {
+        let genesis = batches.compactMap(TrustedImportBatch.init).filter {
             $0.block?.parentBlockHash == nil && $0.block?.blockHeight == 0
         }.sorted {
             ($0.block?.blockHash ?? "") < ($1.block?.blockHash ?? "")
@@ -575,17 +575,17 @@ public actor ChainState {
     ) async throws {
         // Sort keys are derived from immutable batch content, so authenticate
         // each batch ONCE and sort ONCE: the old per-comparison
-        // `TrustedAdmissionBatch` construction re-decoded both operands' block
+        // `TrustedImportBatch` construction re-decoded both operands' block
         // facts on every comparison, making a cold-start restore
         // O(N log N x decode) per round — hours of CPU on a long chain. A
         // sorted array's deferred subsequence keeps its relative order, so
         // later rounds never need re-sorting either.
         var pending = batches.map { batch in
-            (batch: batch, key: TrustedAdmissionBatch(batch))
+            (batch: batch, key: TrustedImportBatch(batch))
         }
         pending.sort { replayPrecedes($0, $1) }
         while !pending.isEmpty {
-            var deferred: [(batch: BlockImportBatch, key: TrustedAdmissionBatch?)] = []
+            var deferred: [(batch: BlockImportBatch, key: TrustedImportBatch?)] = []
             var completed = false
             for entry in pending {
                 do {
@@ -608,8 +608,8 @@ public actor ChainState {
     /// consistently — a key that compared "equal" to everything would let the
     /// sort leave it wherever enumeration put it.
     private static func replayPrecedes(
-        _ left: (batch: BlockImportBatch, key: TrustedAdmissionBatch?),
-        _ right: (batch: BlockImportBatch, key: TrustedAdmissionBatch?)
+        _ left: (batch: BlockImportBatch, key: TrustedImportBatch?),
+        _ right: (batch: BlockImportBatch, key: TrustedImportBatch?)
     ) -> Bool {
         switch (left.key, right.key) {
         case let (leftKey?, rightKey?):
@@ -630,8 +630,8 @@ public actor ChainState {
     }
 
     private static func replayPrecedes(
-        _ left: TrustedAdmissionBatch,
-        _ right: TrustedAdmissionBatch
+        _ left: TrustedImportBatch,
+        _ right: TrustedImportBatch
     ) -> Bool {
         switch (left.block, right.block) {
         case let (leftBlock?, rightBlock?)
@@ -1040,7 +1040,7 @@ public actor ChainState {
             markValidated(blockHash: validated)
             return nil
         }
-        guard let trusted = TrustedAdmissionBatch(batch) else {
+        guard let trusted = TrustedImportBatch(batch) else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
         // Applied only once the batch has landed: `defer` would also run on the
@@ -1189,29 +1189,29 @@ public actor ChainState {
     /// Reserve one distinct U64 commit revision before the node stages a batch.
     /// Other actor mutations must leave this capacity available until the batch
     /// either fails staging or consumes the reservation synchronously.
-    package func reserveAdmissionRevision() -> Bool {
+    package func reserveImportRevision() -> Bool {
         guard hasUnreservedMutationCapacity else { return false }
-        reservedAdmissionRevisions += 1
+        reservedImportRevisions += 1
         return true
     }
 
-    package func releaseAdmissionRevision() {
-        precondition(reservedAdmissionRevisions > 0)
-        reservedAdmissionRevisions -= 1
+    package func releaseImportRevision() {
+        precondition(reservedImportRevisions > 0)
+        reservedImportRevisions -= 1
     }
 
     package func applyReservedStaged(
         _ batch: BlockImportBatch
     ) throws -> SubmissionResult? {
-        guard reservedAdmissionRevisions > 0 else {
+        guard reservedImportRevisions > 0 else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
-        reservedAdmissionRevisions -= 1
+        reservedImportRevisions -= 1
         return try applyStaged(batch)
     }
 
     var hasUnreservedMutationCapacity: Bool {
-        reservedAdmissionRevisions < UInt64.max - mutationGeneration
+        reservedImportRevisions < UInt64.max - mutationGeneration
     }
 
     private func matchesGraph(_ meta: BlockRecord, input: ConsensusBlockInput) -> Bool {

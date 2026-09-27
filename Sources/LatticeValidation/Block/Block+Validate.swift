@@ -33,7 +33,7 @@ public struct ValidationContext: Sendable, Equatable {
         ValidationContext(nowMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000))
     }
 
-    func admits(timestamp: Int64) -> Bool {
+    func permits(timestamp: Int64) -> Bool {
         // A node will not accept a block from its own future. This references
         // only the node's own clock — there is no protocol-imposed drift
         // constant — and it is retriable (see `notYetValid`): a block from a
@@ -70,7 +70,7 @@ public extension Block {
         validationContext: ValidationContext
     ) async throws -> (Bool, StateDiff, LatticeState?) {
         if !hasGenesisShape() { return (false, .empty, nil) }
-        if !validationContext.admits(timestamp: timestamp) {
+        if !validationContext.permits(timestamp: timestamp) {
             if reportTemporalFailure { throw BlockValidationError.notYetValid }
             return (false, .empty, nil)
         }
@@ -127,7 +127,7 @@ public extension Block {
         // block.
         let (_, heightOverflow) = parent.height.addingReportingOverflow(1)
         guard !heightOverflow else { return false }
-        if !validationContext.admits(timestamp: timestamp) {
+        if !validationContext.permits(timestamp: timestamp) {
             if reportTemporalFailure { throw BlockValidationError.notYetValid }
             return false
         }
@@ -506,7 +506,7 @@ public extension Block {
         validationContext: ValidationContext = .current
     ) -> Bool {
         if parent.timestamp >= timestamp { return false }
-        if !validationContext.admits(timestamp: timestamp) { return false }
+        if !validationContext.permits(timestamp: timestamp) { return false }
         return true
     }
 
