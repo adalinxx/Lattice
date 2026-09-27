@@ -409,11 +409,7 @@ final class BlockContentResolverTests: XCTestCase {
             moduleCID: module.rawCID,
             scope: .transaction
         )
-        let largeSpec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            premine: 0,
-            targetBlockTime: 1_000,
+        let largeSpec = ChainSpec.test(
             initialReward: 1,
             halvingInterval: 1_000,
             halfLife: 10,
@@ -526,11 +522,7 @@ private func testSpec(
     directory: String,
     wasmPolicies: [WasmPolicyRef] = []
 ) -> ChainSpec {
-    ChainSpec(
-        maxNumberOfTransactionsPerBlock: 100,
-        maxStateGrowth: 100_000,
-        premine: 0,
-        targetBlockTime: 1_000,
+    ChainSpec.test(
         initialReward: 1,
         halvingInterval: 1_000,
         halfLife: 10,
@@ -539,12 +531,8 @@ private func testSpec(
 }
 
 private func sizeSpec(maxBlockSize: Int) -> ChainSpec {
-    ChainSpec(
-        maxNumberOfTransactionsPerBlock: 100,
-        maxStateGrowth: 100_000,
+    ChainSpec.test(
         maxBlockSize: maxBlockSize,
-        premine: 0,
-        targetBlockTime: 1_000,
         initialReward: 1,
         halvingInterval: 1_000,
         halfLife: 10

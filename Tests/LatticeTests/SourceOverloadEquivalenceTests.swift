@@ -14,16 +14,7 @@ import Foundation
 final class SourceOverloadEquivalenceTests: XCTestCase {
 
     private func spec() -> ChainSpec {
-        ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            maxBlockSize: 1_000_000,
-            premine: 1000,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
-            halfLife: 5
-        )
+        ChainSpec.test(premine: 1000)
     }
 
     private func addr(_ publicKey: String) -> String {
@@ -123,12 +114,7 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         let minerAddr = addr(miner.publicKey)
         let s = spec()
         let genesis = try await buildAndStoreGenesis(
-            spec: ChainSpec(
-                maxNumberOfTransactionsPerBlock: 100,
-                maxStateGrowth: 100_000, maxBlockSize: 1_000_000, premine: 0,
-                targetBlockTime: 1_000, initialReward: 1024, halvingInterval: 10_000,
-                halfLife: 5
-            ),
+            spec: ChainSpec.test(),
             timestamp: t - 20_000, target: UInt256(1000), fetcher: fetcher
         )
         let reward = s.rewardAtBlock(0)

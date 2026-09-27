@@ -22,14 +22,8 @@ import cashew
 final class ChildChainDifficultyIndependenceTests: XCTestCase {
 
     private func spec(target: UInt64, window: UInt64 = 120) -> ChainSpec {
-        ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            maxBlockSize: 1_000_000,
-            premine: 0,
+        ChainSpec.test(
             targetBlockTime: target,
-            initialReward: 1024,
-            halvingInterval: 10_000,
             halfLife: window
         )
     }

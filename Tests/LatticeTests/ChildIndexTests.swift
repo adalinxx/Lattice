@@ -9,15 +9,7 @@ import cashew
 final class ChildIndexTests: XCTestCase {
 
     private func spec() -> ChainSpec {
-        ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
-            halfLife: 10
-        )
+        ChainSpec.test(halfLife: 10)
     }
 
     func testEncodingIsSortedAndRoundTrips() throws {

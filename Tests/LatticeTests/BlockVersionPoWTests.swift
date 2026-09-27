@@ -6,16 +6,7 @@ import UInt256
 @MainActor
 final class BlockVersionPoWTests: XCTestCase {
     private func spec(_ directory: String = "Nexus") -> ChainSpec {
-        ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            maxBlockSize: 1_000_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
-            halfLife: 5
-        )
+        ChainSpec.test()
     }
 
     private func now() -> Int64 {
@@ -89,16 +80,7 @@ final class BlockVersionPoWTests: XCTestCase {
         let block = try await genesis()
         // ChainSpec no longer carries a directory; differ on a real content field
         // (premine) so the spec CID changes and the Hashable check stays meaningful.
-        let differentContentSpec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            maxBlockSize: 1_000_000,
-            premine: 999,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
-            halfLife: 5
-        )
+        let differentContentSpec = ChainSpec.test(premine: 999)
         let otherSpec = try! VolumeImpl<ChainSpec>(node: differentContentSpec)
         let sameScalarsDifferentContent = copy(block, spec: otherSpec)
 

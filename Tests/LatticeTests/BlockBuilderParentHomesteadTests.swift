@@ -115,15 +115,6 @@ final class BlockBuilderParentHomesteadTests: XCTestCase {
     }
 
     private func spec(_ directory: String) -> ChainSpec {
-        ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            maxBlockSize: 1_000_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 0,
-            halvingInterval: 10_000,
-            halfLife: 5
-        )
+        ChainSpec.test(initialReward: 0)
     }
 }

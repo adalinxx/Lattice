@@ -23,15 +23,7 @@ private struct TestFetcher: Fetcher {
 private let fetcher = StorableFetcher()
 
 private func spec() -> ChainSpec {
-    ChainSpec(
-        maxNumberOfTransactionsPerBlock: 100,
-        maxStateGrowth: 100_000,
-        maxBlockSize: 1_000_000,
-        premine: 0,
-        targetBlockTime: 1_000,
-        initialReward: 1024, halvingInterval: 10_000,
-        halfLife: 5
-    )
+    ChainSpec.test()
 }
 
 private func genesis(timestamp: Int64 = 1_000_000, nonce: UInt64 = 0) async throws -> Block {
@@ -625,11 +617,7 @@ final class BalanceConservationTests: XCTestCase {
 final class ModelAFeeKeystoneTests: XCTestCase {
 
     private func nexusSpec(premine: UInt64) -> ChainSpec {
-        ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
-            maxBlockSize: 1_000_000, premine: premine, targetBlockTime: 1_000,
-            initialReward: 1024, halvingInterval: 10_000, halfLife: 5
-        )
+        ChainSpec.test(premine: premine)
     }
 
     private func signNexus(_ body: TransactionBody, _ kp: (privateKey: String, publicKey: String)) -> Transaction {
@@ -750,12 +738,11 @@ final class BlockValidationAdversarialTests: XCTestCase {
 
     func testBlockWithWrongSpecRejected() async throws {
         let g = try await genesis()
-        let differentSpec = ChainSpec(
+        let differentSpec = ChainSpec.test(
             maxNumberOfTransactionsPerBlock: 999,
             maxStateGrowth: 999,
-            premine: 0,
             targetBlockTime: 999,
-            initialReward: 32, halvingInterval: 10_000,
+            initialReward: 32,
             halfLife: 10
         )
         let wrongSpec = Block(
@@ -792,13 +779,8 @@ final class BlockValidationAdversarialTests: XCTestCase {
     }
 
     func testBlockSizeLimitEnforced() async throws {
-        let tinySpec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
+        let tinySpec = ChainSpec.test(
             maxBlockSize: 10,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1024, halvingInterval: 10_000,
             halfLife: 10
         )
         let g = try await buildAndStoreGenesis(
@@ -818,12 +800,7 @@ final class FilterBypassTests: XCTestCase {
     func testTransactionPolicyEnforced() async throws {
         let fetcher = StorableFetcher()
         let policy = try await storeWasmPolicy(accepts: false, scope: .transaction, fetcher: fetcher)
-        let feeSpec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1024, halvingInterval: 10_000,
+        let feeSpec = ChainSpec.test(
             halfLife: 10,
             wasmPolicies: [policy]
         )
@@ -840,12 +817,7 @@ final class FilterBypassTests: XCTestCase {
     func testActionPolicyEnforced() async throws {
         let fetcher = StorableFetcher()
         let policy = try await storeWasmPolicy(accepts: false, scope: .action, fetcher: fetcher)
-        let nsSpec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1024, halvingInterval: 10_000,
+        let nsSpec = ChainSpec.test(
             halfLife: 10,
             wasmPolicies: [policy]
         )
@@ -858,17 +830,11 @@ final class FilterBypassTests: XCTestCase {
     func testChildPoliciesDoNotImplicitlyInheritParentPolicies() async throws {
         let fetcher = StorableFetcher()
         let rejectingParentPolicy = try await storeWasmPolicy(accepts: false, scope: .transaction, fetcher: fetcher)
-        let parentSpec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
-            premine: 0, targetBlockTime: 1_000, initialReward: 1024, halvingInterval: 10_000,
+        let parentSpec = ChainSpec.test(
             halfLife: 10,
             wasmPolicies: [rejectingParentPolicy]
         )
-        let childSpec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
-            premine: 0, targetBlockTime: 1_000, initialReward: 1024, halvingInterval: 10_000,
-            halfLife: 10
-        )
+        let childSpec = ChainSpec.test(halfLife: 10)
         let cheapTx = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
@@ -1003,9 +969,8 @@ final class EconomicInvariantTests: XCTestCase {
     }
 
     func testPremineOffsetShiftsHalving() {
-        let premineSpec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
-            premine: 100, targetBlockTime: 1_000, initialReward: 1024, halvingInterval: 10_000,
+        let premineSpec = ChainSpec.test(
+            premine: 100,
             halfLife: 10
         )
         let halfInterval = premineSpec.halvingInterval
@@ -1379,16 +1344,8 @@ final class StateRootValidationTests: XCTestCase {
         let f = StorableFetcher()
         let t = Int64(Date().timeIntervalSince1970 * 1000)
         let easyDifficulty = UInt256.max
-        let nexusSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 100,
-                                  maxStateGrowth: 100_000, maxBlockSize: 1_000_000,
-                                  premine: 0, targetBlockTime: 1_000,
-                                  initialReward: 1024, halvingInterval: 10_000,
-                                  halfLife: 5)
-        let childSpec = ChainSpec(maxNumberOfTransactionsPerBlock: 100,
-                                  maxStateGrowth: 100_000, maxBlockSize: 1_000_000,
-                                  premine: 0, targetBlockTime: 1_000,
-                                  initialReward: 512, halvingInterval: 10_000,
-                                  halfLife: 5)
+        let nexusSpec = ChainSpec.test()
+        let childSpec = ChainSpec.test(initialReward: 512)
 
         let childGenesis = try await buildAndStoreGenesis(
             spec: childSpec, timestamp: t - 20_000, target: easyDifficulty, nonce: 0, fetcher: f

@@ -9,29 +9,11 @@ import Foundation
 private func makeFetcher() -> StorableFetcher { StorableFetcher() }
 
 private func childSpec(_ dir: String = "Child") -> ChainSpec {
-    ChainSpec(
-        maxNumberOfTransactionsPerBlock: 100,
-        maxStateGrowth: 100_000,
-        maxBlockSize: 1_000_000,
-        premine: 0,
-        targetBlockTime: 1_000,
-        initialReward: 1024,
-        halvingInterval: 10_000,
-        halfLife: 5
-    )
+    ChainSpec.test()
 }
 
 private func nexusSpec(_ dir: String = "Nexus") -> ChainSpec {
-    ChainSpec(
-        maxNumberOfTransactionsPerBlock: 100,
-        maxStateGrowth: 100_000,
-        maxBlockSize: 1_000_000,
-        premine: 0,
-        targetBlockTime: 1_000,
-        initialReward: 1024,
-        halvingInterval: 10_000,
-        halfLife: 5
-    )
+    ChainSpec.test()
 }
 
 private func signTx(

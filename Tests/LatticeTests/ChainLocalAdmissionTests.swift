@@ -6,17 +6,7 @@ import cashew
 import WAT
 
 private func chainLocalSpec(wasmPolicies: [WasmPolicyRef] = []) -> ChainSpec {
-    ChainSpec(
-        maxNumberOfTransactionsPerBlock: 100,
-        maxStateGrowth: 100_000,
-        maxBlockSize: 1_000_000,
-        premine: 0,
-        targetBlockTime: 1_000,
-        initialReward: 1_024,
-        halvingInterval: 10_000,
-        halfLife: 5,
-        wasmPolicies: wasmPolicies
-    )
+    ChainSpec.test(wasmPolicies: wasmPolicies)
 }
 
 private enum ChainLocalTestError: Error, Sendable {
@@ -958,16 +948,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             fetcher: fetcher
         )
         XCTAssertNotEqual(valid.prevState.rawCID, valid.postState.rawCID)
-        let foreignSpec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            maxBlockSize: 1_000_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1_024,
-            halvingInterval: 10_000,
-            halfLife: 6
-        )
+        let foreignSpec = ChainSpec.test(halfLife: 6)
 
         let variants: [(String, Block)] = [
             ("height tip+2", try await storeVariant(
@@ -1273,16 +1254,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         // reservation by it (`Int(UInt64.max)` traps); the schedule saturates.
         let fetcher = StorableFetcher()
         let genesis = try await buildAndStoreGenesis(
-            spec: ChainSpec(
-                maxNumberOfTransactionsPerBlock: 100,
-                maxStateGrowth: 100_000,
-                maxBlockSize: 1_000_000,
-                premine: 0,
-                targetBlockTime: 1_000,
-                initialReward: 1_024,
-                halvingInterval: 10_000,
-                halfLife: UInt64.max
-            ),
+            spec: ChainSpec.test(halfLife: UInt64.max),
             timestamp: 1_000,
             target: easy,
             fetcher: fetcher

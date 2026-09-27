@@ -18,14 +18,8 @@ func selfDifficultyAnchor(_ block: Block) -> DifficultyAnchor {
 @MainActor
 final class DifficultyRetargetTests: XCTestCase {
     private func spec(halfLife: UInt64 = 120, target: UInt64 = 3_600_000) -> ChainSpec {
-        ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            maxBlockSize: 1_000_000,
-            premine: 0,
+        ChainSpec.test(
             targetBlockTime: target,
-            initialReward: 1024,
-            halvingInterval: 10_000,
             halfLife: halfLife
         )
     }
