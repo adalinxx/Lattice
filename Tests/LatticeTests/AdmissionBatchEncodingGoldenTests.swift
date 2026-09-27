@@ -89,7 +89,7 @@ final class AdmissionBatchEncodingGoldenTests: XCTestCase {
     /// One batch of every durable shape the reducer accepts.
     private func fixedBatches() throws -> [(name: String, batch: BlockImportBatch)] {
         let block = cid("block")
-        let identity = AttributedRunIdentity(committerBlockHash: cid("committer"), directory: "Child")
+        let identity = AttributedRunIdentity(carrierBlockHash: cid("committer"), directory: "Child")
         let identityID = try XCTUnwrap(identity.contributionID, "attributed-run identity has no CID")
         return [
             ("blockWithWorkAndValidation", BlockImportBatch(facts: [
