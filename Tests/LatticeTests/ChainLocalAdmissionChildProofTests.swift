@@ -7,7 +7,7 @@ import WAT
 
 final class ChainLocalAdmissionChildProofTests: XCTestCase {
     func testChildAdmissionRequiresVerifiedProofAndThenAcceptsIt() async throws {
-        let fixture = try await makeChildProofFixture()
+        let fixture = try await AdmissionFixture.makeChildProofFixture()
         let header = try BlockHeader(node: fixture.candidate)
 
         let missingProof = try await fixture.childLevel.admit(header, fetcher: fixture.fetcher)
@@ -35,7 +35,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
     }
 
     func testChildProofRequiresItsRootInTheProof() async throws {
-        let fixture = try await makeChildProofFixture()
+        let fixture = try await AdmissionFixture.makeChildProofFixture()
         let originalProof = fixture.package.proof
         let proofWithoutRoot = ChildBlockProof(
             rootCID: originalProof.rootCID,
@@ -54,12 +54,12 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
     }
 
     func testChildProofAcceptsAnyRootThatCommitsToTheChild() async throws {
-        let fixture = try await makeChildProofFixture()
+        let fixture = try await AdmissionFixture.makeChildProofFixture()
         let alternateCarrier = try await buildAndStoreGenesis(
             spec: chainLocalSpec(),
             children: ["Child": fixture.candidate],
             timestamp: 4_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 9,
             fetcher: fixture.fetcher
         )
@@ -80,7 +80,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
     }
 
     func testChildProofRejectsConflictingPathEntries() async throws {
-        let fixture = try await makeChildProofFixture()
+        let fixture = try await AdmissionFixture.makeChildProofFixture()
         let proof = fixture.package.proof
         let first = try XCTUnwrap(proof.entries.first)
         let conflictingProof = ChildBlockProof(
@@ -100,7 +100,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
     }
 
     func testChildProofRejectsDuplicatePathEntries() async throws {
-        let fixture = try await makeChildProofFixture()
+        let fixture = try await AdmissionFixture.makeChildProofFixture()
         let proof = fixture.package.proof
         let first = try XCTUnwrap(proof.entries.first)
         let duplicateProof = ChildBlockProof(
@@ -120,7 +120,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
     }
 
     func testChildProofRejectsUnrelatedPathEntries() async throws {
-        let fixture = try await makeChildProofFixture()
+        let fixture = try await AdmissionFixture.makeChildProofFixture()
         let proof = fixture.package.proof
         let paddedProof = ChildBlockProof(
             rootCID: proof.rootCID,
@@ -139,9 +139,9 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
 
     func testChildWorkProofDoesNotRequireParentCarrierFact() async throws {
         let fetcher = StorableFetcher()
-        let parentGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let childGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
-        let candidate = try await makeChild(
+        let parentGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let childGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let candidate = try await AdmissionFixture.makeChild(
             of: childGenesis,
             fetcher: fetcher,
             timestamp: 2_000,
@@ -152,7 +152,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             previous: parentGenesis,
             children: ["Child": candidate],
             timestamp: 3_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 3,
             fetcher: fetcher
         )
@@ -207,8 +207,8 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
 
     func testValidatedGenesisActionUpdatesParentState() async throws {
         let fetcher = StorableFetcher()
-        let parentGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let childGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let parentGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let childGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
         let childCID = try BlockHeader(node: childGenesis).rawCID
         let keyPair = CryptoUtils.generateKeyPair()
         let owner = testAddress(publicKey: keyPair.publicKey)
@@ -231,11 +231,11 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             previous: parentGenesis,
             transactions: [signedTestTransaction(body, by: keyPair)],
             timestamp: 2_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 2,
             fetcher: fetcher
         )
-        let parentLevel = makeLevel(genesis: parentGenesis)
+        let parentLevel = AdmissionFixture.makeLevel(genesis: parentGenesis)
         let admission = try await parentLevel.admit(anchor, fetcher: fetcher)
         if case .rejected(let failure, _, _) = admission {
             return XCTFail("parent anchor should validate: \(failure)")
@@ -255,16 +255,16 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
     func testSecondChildRootPinsItsMaterializedVolumes() async throws {
         let fetcher = StorableFetcher()
         let durable = RecordingAdmissionStorer()
-        let firstRoot = try await makeGenesis(
+        let firstRoot = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
             timestamp: 1_000,
             nonce: 1
         )
-        let transaction = unsignedStateChangingGenesisTransaction(
+        let transaction = AdmissionFixture.unsignedStateChangingGenesisTransaction(
             key: "materialized",
             chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
         )
-        let secondRoot = try await makeGenesis(
+        let secondRoot = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
             timestamp: 2_000,
             nonce: 2,
@@ -274,7 +274,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             spec: chainLocalSpec(),
             children: ["Child": secondRoot],
             timestamp: 3_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 3,
             fetcher: fetcher
         )
@@ -331,17 +331,17 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
 
     func testSameCarrierChildDeploymentBootstrapsFromParentIssuedFacts() async throws {
         let fetcher = StorableFetcher()
-        let parentGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let parentLevel = makeLevel(genesis: parentGenesis)
+        let parentGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let parentLevel = AdmissionFixture.makeLevel(genesis: parentGenesis)
         let childGenesis = try await BlockBuilder.buildChildGenesis(
             spec: chainLocalSpec(),
             parentState: LatticeState.emptyHeader,
-            transactions: [unsignedStateChangingGenesisTransaction(
+            transactions: [AdmissionFixture.unsignedStateChangingGenesisTransaction(
                 key: "child-genesis",
                 chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
             )],
             timestamp: 1_500,
-            target: easy,
+            target: AdmissionFixture.easy,
             fetcher: fetcher
         )
         try await storeBuiltBlock(childGenesis, in: fetcher)
@@ -371,7 +371,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             previous: parentGenesis,
             transactions: [signedTestTransaction(anchorBody, by: keyPair)],
             timestamp: 2_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 2,
             fetcher: fetcher
         )
@@ -412,9 +412,9 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
 
     func testMultiHopProofRequiresTheExactFullPath() async throws {
         let fetcher = StorableFetcher()
-        let parentTemplate = try await makeGenesis(fetcher: fetcher, timestamp: 500)
-        let leafGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
-        let candidate = try await makeChild(
+        let parentTemplate = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 500)
+        let leafGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let candidate = try await AdmissionFixture.makeChild(
             of: leafGenesis,
             fetcher: fetcher,
             timestamp: 2_000,
@@ -425,7 +425,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             spec: chainLocalSpec(),
             children: ["Leaf": candidate],
             timestamp: 3_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 3,
             fetcher: fetcher
         )
@@ -433,7 +433,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             spec: chainLocalSpec(),
             children: ["Middle": middleCarrier],
             timestamp: 4_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 4,
             fetcher: fetcher
         )
@@ -510,7 +510,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
     }
 
     func testProofBindsEvidenceToTheSuppliedChild() async throws {
-        let fixture = try await makeChildProofFixture()
+        let fixture = try await AdmissionFixture.makeChildProofFixture()
         let candidate = fixture.candidate
         let proof = fixture.package.proof
         let valid = await proof.verifySecuringWork(
@@ -574,9 +574,9 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
 
     func testChildProofRejectsBrokenVerticalStateContinuity() async throws {
         let fetcher = StorableFetcher()
-        let parentTemplate = try await makeGenesis(fetcher: fetcher, timestamp: 500)
-        let childGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
-        let candidate = try await makeChild(
+        let parentTemplate = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 500)
+        let childGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let candidate = try await AdmissionFixture.makeChild(
             of: childGenesis,
             fetcher: fetcher,
             timestamp: 2_000,
@@ -587,7 +587,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             rawCID: "bafywrongparentstate000000000000000000000000000000000000000"
         )
         let tampered = candidate.set(properties: [PARENT_STATE_PROPERTY: wrongParentState])
-        guard let mined = BlockBuilder.mine(block: tampered, target: easy, maxAttempts: 10) else {
+        guard let mined = BlockBuilder.mine(block: tampered, target: AdmissionFixture.easy, maxAttempts: 10) else {
             return XCTFail("easy target should mine")
         }
         try await storeBuiltBlock(mined, in: fetcher)
@@ -595,7 +595,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             spec: chainLocalSpec(),
             children: ["Child": mined],
             timestamp: 3_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 3,
             fetcher: fetcher
         )

@@ -16,10 +16,10 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         let genesisTimestamp: Int64 = 1_000
 
         let eagerFetcher = StorableFetcher()
-        let eagerGenesis = try await makeGenesis(
+        let eagerGenesis = try await AdmissionFixture.makeGenesis(
             fetcher: eagerFetcher, timestamp: genesisTimestamp
         )
-        let candidate = try await makeChild(
+        let candidate = try await AdmissionFixture.makeChild(
             of: eagerGenesis, fetcher: eagerFetcher, timestamp: 2_000, nonce: 1
         )
         let genesisHash = try BlockHeader(node: eagerGenesis).rawCID
@@ -29,18 +29,18 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         // two fork-choice graphs are directly comparable. The same candidate
         // header is admitted into both.
         let weighedFetcher = StorableFetcher()
-        let weighedGenesis = try await makeGenesis(
+        let weighedGenesis = try await AdmissionFixture.makeGenesis(
             fetcher: weighedFetcher, timestamp: genesisTimestamp
         )
-        _ = try await makeChild(
+        _ = try await AdmissionFixture.makeChild(
             of: weighedGenesis, fetcher: weighedFetcher, timestamp: 2_000, nonce: 1
         )
         XCTAssertEqual(try BlockHeader(node: weighedGenesis).rawCID, genesisHash)
 
-        let eagerLevel = makeLevel(genesis: eagerGenesis)
+        let eagerLevel = AdmissionFixture.makeLevel(genesis: eagerGenesis)
         let eager = try await eagerLevel.admit(candidate, fetcher: eagerFetcher)
 
-        let weighedLevel = makeLevel(genesis: weighedGenesis)
+        let weighedLevel = AdmissionFixture.makeLevel(genesis: weighedGenesis)
         let weighed = try await weighedLevel.admit(
             candidate,
             mode: .weighed,
@@ -98,15 +98,15 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         // present for fork choice) but MUST NOT resolve or store tier-3 (tx
         // bodies, validation-path states, WASM modules, genesis empty-state).
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
         let candidate = try await buildAndStoreBlock(
             previous: genesis,
-            transactions: [signedStateChangingGenesisTransaction(
+            transactions: [AdmissionFixture.signedStateChangingGenesisTransaction(
                 key: "boundary-tx",
                 chainPath: [DEFAULT_ROOT_DIRECTORY]
             )],
             timestamp: 2_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 1,
             fetcher: fetcher
         )
@@ -117,7 +117,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
 
         // A fresh store receives ONLY what the weighed admission chooses to store.
         let boundaryStore = StorableFetcher()
-        let weighed = try await makeLevel(genesis: genesis).admit(
+        let weighed = try await AdmissionFixture.makeLevel(genesis: genesis).admit(
             candidate,
             mode: .weighed,
             fetcher: fetcher,
@@ -150,15 +150,15 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         // spec lets a weighed admission COMPLETE, but makes the same block's
         // eager admission FAIL — the weighed path genuinely never touched tier-3.
         let full = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: full, timestamp: 1_000)
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: full, timestamp: 1_000)
         let candidate = try await buildAndStoreBlock(
             previous: genesis,
-            transactions: [signedStateChangingGenesisTransaction(
+            transactions: [AdmissionFixture.signedStateChangingGenesisTransaction(
                 key: "bodyless-tx",
                 chainPath: [DEFAULT_ROOT_DIRECTORY]
             )],
             timestamp: 2_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 1,
             fetcher: full
         )
@@ -176,7 +176,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         )
 
         // Weighed admission succeeds against the body-less fetcher.
-        let weighed = try await makeLevel(genesis: genesis).admit(
+        let weighed = try await AdmissionFixture.makeLevel(genesis: genesis).admit(
             header,
             mode: .weighed,
             fetcher: bodyless,
@@ -188,7 +188,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
 
         // The SAME block admitted eager against the SAME body-less fetcher fails:
         // eager resolves and executes tier-3, which the fetcher cannot serve.
-        let eager = try await makeLevel(genesis: genesis).admit(
+        let eager = try await AdmissionFixture.makeLevel(genesis: genesis).admit(
             header,
             fetcher: bodyless,
             storer: NoopStorer()
@@ -233,15 +233,15 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         // deterministic check the weighed tier must reject exactly like the
         // eager path — never admitted, never indexed, never in fork choice.
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
         let valid = try await buildAndStoreBlock(
             previous: genesis,
-            transactions: [signedStateChangingGenesisTransaction(
+            transactions: [AdmissionFixture.signedStateChangingGenesisTransaction(
                 key: "linkage-tx",
                 chainPath: [DEFAULT_ROOT_DIRECTORY]
             )],
             timestamp: 2_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 1,
             fetcher: fetcher
         )
@@ -270,7 +270,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
             let header = try BlockHeader(node: variant)
             XCTAssertTrue(variant.validateProofOfWork(nexusHash: variant.proofOfWorkHash()), name)
             for mode in [AdmissionMode.weighed, .eager] {
-                let level = makeLevel(genesis: genesis)
+                let level = AdmissionFixture.makeLevel(genesis: genesis)
                 let result = try await level.admit(header, mode: mode, fetcher: fetcher)
                 XCTAssertEqual(result.failure, .protocolInvalid, "\(name) \(mode)")
                 let inserted = await level.chain.contains(blockHash: header.rawCID)
@@ -280,7 +280,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
 
         // The control: the correctly linked block is still weighed in without
         // being executed.
-        let accepted = try await makeLevel(genesis: genesis).admit(
+        let accepted = try await AdmissionFixture.makeLevel(genesis: genesis).admit(
             valid,
             mode: .weighed,
             fetcher: fetcher
@@ -298,13 +298,13 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         let genesis = try await buildAndStoreGenesis(
             spec: chainLocalSpec(),
             timestamp: 1_000,
-            target: easy / UInt256(2),
+            target: AdmissionFixture.easy / UInt256(2),
             fetcher: fetcher
         )
         let tooEasy = try await buildAndStoreBlock(
             previous: genesis,
             timestamp: 2_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 1,
             fetcher: fetcher
         )
@@ -312,7 +312,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         let header = try BlockHeader(node: tooEasy)
 
         for mode in [AdmissionMode.weighed, .eager] {
-            let level = makeLevel(genesis: genesis)
+            let level = AdmissionFixture.makeLevel(genesis: genesis)
             let result = try await level.admit(header, mode: mode, fetcher: fetcher)
             XCTAssertEqual(result.failure, .protocolInvalid, "\(mode)")
             let inserted = await level.chain.contains(blockHash: header.rawCID)
@@ -325,8 +325,8 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         // the near future defers exactly as it does eagerly, never excludes.
         let fetcher = StorableFetcher()
         let now = Int64(Date().timeIntervalSince1970 * 1_000)
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: now - 100_000)
-        let future = try await makeChild(
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: now - 100_000)
+        let future = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: fetcher,
             timestamp: now + 60_000,
@@ -334,7 +334,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         )
         let header = try BlockHeader(node: future)
 
-        let level = makeLevel(genesis: genesis)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
         let result = try await level.admit(header, mode: .weighed, fetcher: fetcher)
 
         XCTAssertEqual(result.failure, .notYetAdmissible)
@@ -346,11 +346,11 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         // A genesis is only ever admitted eagerly via bootstrap (self/pinned);
         // a network-weighed parentless header has nothing to link to.
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let rival = try await makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let rival = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
         let header = try BlockHeader(node: rival)
 
-        let level = makeLevel(genesis: genesis)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
         let result = try await level.admit(header, mode: .weighed, fetcher: fetcher)
 
         XCTAssertEqual(result.failure, .protocolInvalid)
@@ -363,18 +363,18 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         // own predecessor: the weighed tier must run the same same-chain header
         // linkage for children as for roots.
         let fetcher = StorableFetcher()
-        let parentGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let childGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let parentGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let childGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
         let childPath = [DEFAULT_ROOT_DIRECTORY, "Child"]
         let valid = try await buildAndStoreBlock(
             previous: childGenesis,
-            transactions: [signedStateChangingGenesisTransaction(
+            transactions: [AdmissionFixture.signedStateChangingGenesisTransaction(
                 key: "child-linkage-tx",
                 chainPath: childPath
             )],
             parentChainBlock: parentGenesis,
             timestamp: 2_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 1,
             fetcher: fetcher
         )
@@ -387,7 +387,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
                 spec: chainLocalSpec(),
                 children: ["Child": child],
                 timestamp: 3_000,
-                target: easy,
+                target: AdmissionFixture.easy,
                 nonce: nonce,
                 fetcher: fetcher
             )
@@ -449,16 +449,16 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         // recursing down a fabricated chain one park slot per junk block.
         // The carrier relay stays: the grind may still carry descendant work.
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let unheld = try await makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
-        let valid = try await makeChild(of: unheld, fetcher: fetcher, timestamp: 3_000, nonce: 2)
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let unheld = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
+        let valid = try await AdmissionFixture.makeChild(of: unheld, fetcher: fetcher, timestamp: 3_000, nonce: 2)
         let invalid = try await storeVariant(
             of: valid, fetcher: fetcher, height: valid.height + 1
         )
         let header = try BlockHeader(node: invalid)
 
         for mode in [AdmissionMode.weighed, .eager] {
-            let result = try await makeLevel(genesis: genesis).admit(
+            let result = try await AdmissionFixture.makeLevel(genesis: genesis).admit(
                 header,
                 mode: mode,
                 fetcher: fetcher
@@ -474,9 +474,9 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         // boundary-only possession may lack. Its absence is availability, not
         // a verdict: retry, and name the exact predecessor to acquire.
         let full = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: full, timestamp: 1_000)
-        let parent = try await makeChild(of: genesis, fetcher: full, timestamp: 2_000, nonce: 1)
-        let candidate = try await makeChild(of: parent, fetcher: full, timestamp: 3_000, nonce: 2)
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: full, timestamp: 1_000)
+        let parent = try await AdmissionFixture.makeChild(of: genesis, fetcher: full, timestamp: 2_000, nonce: 1)
+        let candidate = try await AdmissionFixture.makeChild(of: parent, fetcher: full, timestamp: 3_000, nonce: 2)
         let header = try BlockHeader(node: candidate)
 
         // Candidate boundary + chain spec only; the parent root is absent.
@@ -487,7 +487,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
             data: try await full.fetch(rawCid: genesis.spec.rawCID)
         )
 
-        let level = makeLevel(genesis: genesis)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
         let result = try await level.admit(header, mode: .weighed, fetcher: parentless)
 
         XCTAssertEqual(result.failure, .unavailableEvidence)
@@ -507,20 +507,20 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         // (see testPreflightCommitPromotesCarrierLinkAfterPredecessorConnects),
         // so this pins the suppression that gates issuance to the validated tier.
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let predecessor = try await makeChild(
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let predecessor = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: fetcher,
             timestamp: 2_000,
             nonce: 1
         )
-        let descendant = try await makeChild(
+        let descendant = try await AdmissionFixture.makeChild(
             of: predecessor,
             fetcher: fetcher,
             timestamp: 3_000,
             nonce: 2
         )
-        let level = makeLevel(genesis: genesis)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
         let predecessorHeader = try BlockHeader(node: predecessor)
         let descendantHeader = try BlockHeader(node: descendant)
 

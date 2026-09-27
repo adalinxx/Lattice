@@ -22,7 +22,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
         rootCID: String
     ) {
         let fetcher = StorableFetcher()
-        let parentTemplate = try await makeGenesis(fetcher: fetcher, timestamp: 500)
+        let parentTemplate = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 500)
         let leafGenesis = try await buildAndStoreGenesis(
             spec: chainLocalSpec(),
             timestamp: 1_000,
@@ -109,15 +109,15 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
 
     func testTargetHitInvalidTransitionStillIssuesCarrierLink() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(
+        let genesis = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
             timestamp: 1_000,
-            transactions: [unsignedStateChangingGenesisTransaction(
+            transactions: [AdmissionFixture.unsignedStateChangingGenesisTransaction(
                 key: "carrier-parent",
                 chainPath: [DEFAULT_ROOT_DIRECTORY]
             )]
         )
-        let valid = try await makeChild(
+        let valid = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: fetcher,
             timestamp: 2_000,
@@ -143,7 +143,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
         let header = try BlockHeader(node: invalid)
         let recorder = AdmissionStageRecorder()
 
-        let result = try await makeLevel(genesis: genesis)
+        let result = try await AdmissionFixture.makeLevel(genesis: genesis)
             .admit(header, fetcher: fetcher, stage: { batch in await recorder.stage(batch) })
 
         guard case .rejected(let failure, let link, _) = result else {
@@ -157,12 +157,12 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
         let stageCount = await recorder.count(for: header.rawCID)
         XCTAssertEqual(stageCount, 0)
 
-        let otherGenesis = try await makeGenesis(
+        let otherGenesis = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
             timestamp: 500,
             nonce: 99
         )
-        let disconnected = try await makeLevel(genesis: otherGenesis)
+        let disconnected = try await AdmissionFixture.makeLevel(genesis: otherGenesis)
             .admit(header, fetcher: fetcher)
         XCTAssertEqual(disconnected.failure, .protocolInvalid)
         XCTAssertEqual(disconnected.parentCarrierLink?.carrierCID, header.rawCID)
@@ -174,13 +174,13 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
 
     func testTargetMissIntermediateStillRelaysDescendantWork() async throws {
         let fetcher = StorableFetcher()
-        let nexusGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let middleGenesis = try await makeGenesis(
+        let nexusGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let middleGenesis = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
             timestamp: 1_000,
             nonce: 1
         )
-        let forgedTarget = easy / UInt256(16)
+        let forgedTarget = AdmissionFixture.easy / UInt256(16)
         let forgedMiddle = try await buildAndStoreBlock(
             previous: middleGenesis,
             parentChainBlock: nexusGenesis,
@@ -194,7 +194,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             previous: nexusGenesis,
             children: ["Middle": forgedMiddle],
             timestamp: 3_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 3,
             fetcher: fetcher
         )
@@ -225,7 +225,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
 
     func testActiveChildRelaysAuthenticatedAlternateGenesisTargetMiss() async throws {
         let fetcher = StorableFetcher()
-        let nexusGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let nexusGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
         let alternate = try await BlockBuilder.buildChildGenesis(
             spec: chainLocalSpec(),
             parentState: nexusGenesis.postState,
@@ -260,13 +260,13 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             transactions: [signedTestTransaction(anchorBody, by: keyPair)],
             children: ["Child": alternate],
             timestamp: 2_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 2,
             fetcher: fetcher
         )
         XCTAssertGreaterThan(root.proofOfWorkHash(), alternate.target)
 
-        let nexusLevel = makeLevel(genesis: nexusGenesis)
+        let nexusLevel = AdmissionFixture.makeLevel(genesis: nexusGenesis)
         let rootHeader = try BlockHeader(node: root)
         _ = try await nexusLevel.admit(rootHeader, fetcher: fetcher)
         let genesisLink = ParentGenesisLink(
@@ -280,7 +280,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             childDirectory: "Child",
             fetcher: fetcher
         )
-        let activeGenesis = try await makeGenesis(
+        let activeGenesis = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
             timestamp: 1_000,
             nonce: 9,
@@ -311,9 +311,9 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
 
     func testChildAcceptsWhenAncestorCarrierMissesItsOwnTarget() async throws {
         let fetcher = StorableFetcher()
-        let parentTemplate = try await makeGenesis(fetcher: fetcher, timestamp: 500)
-        let childGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
-        let candidate = try await makeChild(
+        let parentTemplate = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 500)
+        let childGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let candidate = try await AdmissionFixture.makeChild(
             of: childGenesis,
             fetcher: fetcher,
             timestamp: 2_000,
@@ -356,7 +356,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
     func testCurrentChainTargetMissReturnsCarrierWithoutMutation() async throws {
         let fetcher = StorableFetcher()
         let hardTarget = UInt256(1)
-        let parentTemplate = try await makeGenesis(fetcher: fetcher, timestamp: 500)
+        let parentTemplate = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 500)
         let childGenesis = try await buildAndStoreGenesis(
             spec: chainLocalSpec(),
             timestamp: 1_000,
@@ -369,7 +369,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             parentChainBlock: parentTemplate,
             timestamp: 2_000,
             target: hardTarget,
-            nextTarget: easy,
+            nextTarget: AdmissionFixture.easy,
             nonce: 2,
             fetcher: fetcher
         )
@@ -377,7 +377,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             spec: chainLocalSpec(),
             children: ["Child": candidate],
             timestamp: 3_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 3,
             fetcher: fetcher
         )
@@ -429,13 +429,13 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
 
     func testDisconnectedTargetMissRelaysWithoutAcquiringPredecessor() async throws {
         let fetcher = StorableFetcher()
-        let parentTemplate = try await makeGenesis(fetcher: fetcher, timestamp: 500)
-        let childGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let parentTemplate = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 500)
+        let childGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
         let missingPredecessor = try await buildAndStoreBlock(
             previous: childGenesis,
             parentChainBlock: parentTemplate,
             timestamp: 1_001,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 1,
             fetcher: fetcher
         )
@@ -458,7 +458,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             spec: chainLocalSpec(),
             children: ["Child": candidate],
             timestamp: 4_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 3,
             fetcher: fetcher
         )
@@ -495,13 +495,13 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
 
     func testUnbootstrappedIntermediateGenesisRelaysTargetMissToGrandchild() async throws {
         let fetcher = StorableFetcher()
-        let parentTemplate = try await makeGenesis(fetcher: fetcher, timestamp: 500)
-        let leafGenesis = try await makeGenesis(
+        let parentTemplate = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 500)
+        let leafGenesis = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
             timestamp: 1_000,
             nonce: 1
         )
-        let leaf = try await makeChild(
+        let leaf = try await AdmissionFixture.makeChild(
             of: leafGenesis,
             fetcher: fetcher,
             timestamp: 2_000,
@@ -520,7 +520,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             spec: chainLocalSpec(),
             children: ["Middle": middle],
             timestamp: 4_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 4,
             fetcher: fetcher
         )
@@ -579,17 +579,17 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
 
     func testTargetHitInvalidIntermediateStillRelaysGrandchild() async throws {
         let fetcher = StorableFetcher()
-        let leafGenesis = try await makeGenesis(
+        let leafGenesis = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
             timestamp: 1_000,
             nonce: 1
         )
-        let middleTemplate = try await makeGenesis(
+        let middleTemplate = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
             timestamp: 1_500,
             nonce: 2
         )
-        let leaf = try await makeChild(
+        let leaf = try await AdmissionFixture.makeChild(
             of: leafGenesis,
             fetcher: fetcher,
             timestamp: 2_000,
@@ -598,13 +598,13 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
         )
         let validMiddle = try await buildAndStoreGenesis(
             spec: chainLocalSpec(),
-            transactions: [unsignedStateChangingGenesisTransaction(
+            transactions: [AdmissionFixture.unsignedStateChangingGenesisTransaction(
                 key: "invalid-middle",
                 chainPath: [DEFAULT_ROOT_DIRECTORY, "Middle"]
             )],
             children: ["Leaf": leaf],
             timestamp: 3_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 4,
             fetcher: fetcher
         )
@@ -632,7 +632,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             spec: chainLocalSpec(),
             children: ["Middle": invalidMiddle],
             timestamp: 4_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 5,
             fetcher: fetcher
         )
@@ -694,10 +694,10 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
 
     func testMissingParentContinuityFactStillRelaysGrandchildWork() async throws {
         let fetcher = StorableFetcher()
-        let parentGenesis = try await makeGenesis(
+        let parentGenesis = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
             timestamp: 500,
-            transactions: [unsignedStateChangingGenesisTransaction(
+            transactions: [AdmissionFixture.unsignedStateChangingGenesisTransaction(
                 key: "parent-state",
                 chainPath: [DEFAULT_ROOT_DIRECTORY]
             )]
@@ -706,30 +706,30 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             parentGenesis.prevState.rawCID,
             parentGenesis.postState.rawCID
         )
-        let middleGenesis = try await makeGenesis(
+        let middleGenesis = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
             timestamp: 1_000,
             nonce: 2
         )
-        let middlePredecessor = try await makeChild(
+        let middlePredecessor = try await AdmissionFixture.makeChild(
             of: middleGenesis,
             fetcher: fetcher,
             timestamp: 1_100,
             nonce: 3,
             parentChainBlock: parentGenesis
         )
-        let leafGenesis = try await makeGenesis(
+        let leafGenesis = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
             timestamp: 1_000,
             nonce: 4
         )
-        let middleTemplate = try await makeChild(
+        let middleTemplate = try await AdmissionFixture.makeChild(
             of: middlePredecessor,
             fetcher: fetcher,
             timestamp: 1_200,
             nonce: 5
         )
-        let leaf = try await makeChild(
+        let leaf = try await AdmissionFixture.makeChild(
             of: leafGenesis,
             fetcher: fetcher,
             timestamp: 1_300,
@@ -769,7 +769,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             spec: chainLocalSpec(),
             children: ["Middle": middlePredecessor],
             timestamp: 2_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 7,
             fetcher: fetcher
         )
@@ -801,7 +801,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             previous: parentGenesis,
             children: ["Middle": invalidMiddle],
             timestamp: 2_100,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 8,
             fetcher: fetcher
         )
@@ -904,7 +904,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
         try await storeBuiltBlock(malformedCarrier, in: fetcher)
         XCTAssertGreaterThan(malformedCarrier.proofOfWorkHash(), hardTarget)
 
-        let result = try await makeLevel(genesis: genesis).admit(
+        let result = try await AdmissionFixture.makeLevel(genesis: genesis).admit(
             malformedCarrier,
             fetcher: fetcher
         )
@@ -920,7 +920,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
 
     func testInvalidTerminalGenesisIsRejectedBeforeParentEvidenceRequest() async throws {
         let fetcher = StorableFetcher()
-        let validChild = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let validChild = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
         let invalidChild = Block(
             version: validChild.version,
             parent: nil,
@@ -941,7 +941,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             spec: chainLocalSpec(),
             children: ["Child": invalidChild],
             timestamp: 2_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             fetcher: fetcher
         )
         let proof = try await ChildBlockProof.generate(

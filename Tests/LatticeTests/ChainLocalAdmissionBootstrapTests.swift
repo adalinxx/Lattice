@@ -8,9 +8,9 @@ import WAT
 final class ChainLocalAdmissionBootstrapTests: XCTestCase {
     func testRootLevelRejectsASecondParentlessRoot() async throws {
         let fetcher = StorableFetcher()
-        let first = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let second = try await makeGenesis(fetcher: fetcher, timestamp: 2_000, nonce: 1)
-        let level = makeLevel(genesis: first)
+        let first = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let second = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 2_000, nonce: 1)
+        let level = AdmissionFixture.makeLevel(genesis: first)
         let secondHeader = try BlockHeader(node: second)
 
         let result = try await level.admit(secondHeader, fetcher: fetcher)
@@ -39,11 +39,11 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
 
     func testPublicBootstrapRequiresVerifiedGenesisAndStorage() async throws {
         let fetcher = StorableFetcher()
-        let transaction = unsignedStateChangingGenesisTransaction(
+        let transaction = AdmissionFixture.unsignedStateChangingGenesisTransaction(
             key: "bootstrap",
             chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
         )
-        let childGenesis = try await makeGenesis(
+        let childGenesis = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
             timestamp: 1_000,
             nonce: 1,
@@ -115,7 +115,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         let childTip = await child.chain.getMainChainTip()
         XCTAssertEqual(childTip, header.rawCID)
 
-        let nonGenesis = try await makeChild(
+        let nonGenesis = try await AdmissionFixture.makeChild(
             of: childGenesis,
             fetcher: fetcher,
             timestamp: 2_000,
@@ -139,11 +139,11 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
 
     func testPublicRootBootstrapStagesTransactionGenesisBeforeVisibility() async throws {
         let fetcher = StorableFetcher()
-        let transaction = unsignedStateChangingGenesisTransaction(
+        let transaction = AdmissionFixture.unsignedStateChangingGenesisTransaction(
             key: "root-bootstrap",
             chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
-        let genesis = try await makeGenesis(
+        let genesis = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
             timestamp: 1_000,
             transactions: [transaction]
@@ -220,7 +220,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         let genesis = try await buildAndStoreGenesis(
             spec: chainLocalSpec(wasmPolicies: [policy]),
             timestamp: 1_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             fetcher: fetcher
         )
         let header = try BlockHeader(node: genesis)
@@ -252,10 +252,10 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
 
     func testGenesisBootstrapRequiresUnsignedTransactions() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(
+        let genesis = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
             timestamp: 1_000,
-            transactions: [unsignedStateChangingGenesisTransaction(
+            transactions: [AdmissionFixture.unsignedStateChangingGenesisTransaction(
                 key: "unsigned-root",
                 chainPath: [DEFAULT_ROOT_DIRECTORY]
             )]
@@ -290,10 +290,10 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
 
     func testGenesisBootstrapDoesNotRelaxLaterTransactions() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(
+        let genesis = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
             timestamp: 1_000,
-            transactions: [unsignedStateChangingGenesisTransaction(
+            transactions: [AdmissionFixture.unsignedStateChangingGenesisTransaction(
                 key: "unsigned-root",
                 chainPath: [DEFAULT_ROOT_DIRECTORY]
             )]
@@ -327,7 +327,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             previous: genesis,
             transactions: [unsignedTransaction],
             timestamp: 2_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 1,
             fetcher: fetcher
         )
@@ -338,10 +338,10 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
 
     func testGenesisBootstrapIgnoresSignatures() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(
+        let genesis = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
             timestamp: 1_000,
-            transactions: [signedStateChangingGenesisTransaction(
+            transactions: [AdmissionFixture.signedStateChangingGenesisTransaction(
                 key: "signed-root",
                 chainPath: [DEFAULT_ROOT_DIRECTORY]
             )]
@@ -389,7 +389,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
 
         for transaction in [declaredButUnsigned, signedButUndeclared, invalidSignature] {
             let fetcher = StorableFetcher()
-            let genesis = try await makeGenesis(
+            let genesis = try await AdmissionFixture.makeGenesis(
                 fetcher: fetcher,
                 timestamp: 1_000,
                 transactions: [transaction]
@@ -411,12 +411,12 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         let childGenesis = try await BlockBuilder.buildChildGenesis(
             spec: chainLocalSpec(),
             parentState: LatticeState.emptyHeader,
-            transactions: [unsignedStateChangingGenesisTransaction(
+            transactions: [AdmissionFixture.unsignedStateChangingGenesisTransaction(
                 key: "unsigned-child",
                 chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
             )],
             timestamp: 1_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             fetcher: fetcher
         )
         try await storeBuiltBlock(childGenesis, in: fetcher)
@@ -443,7 +443,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
 
     func testGenesisDifficultySeedIsValidatedBeforeStorageOrStaging() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
         let forged = Block(
             version: genesis.version,
             parent: genesis.parent,
@@ -563,7 +563,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
 
     func testHeightOverflowFailsClosedInBuilder() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
         let overflowParent = Block(
             version: genesis.version,
             parent: genesis.parent,

@@ -9,21 +9,44 @@ import WAT
 
 extension ChainLevel {
     /// Chain-local admission with the fixture defaults: eager mode, the
-    /// fetcher doubling as the validation-content and materialized store, no
-    /// child package, the current validation context, and a no-op stage. A
-    /// call names only what its scenario changes.
+    /// fetcher doubling as the validation-content store (and, unless
+    /// `materialized` says otherwise, the materialized store), no child
+    /// package, the current validation context, and a no-op stage. A call
+    /// names only what its scenario changes.
     func admit(
         _ header: BlockHeader,
         mode: AdmissionMode = .eager,
-        fetcher: any Fetcher,
-        storer: (any VolumeStorer)? = nil,
+        fetcher: any Fetcher & VolumeStorer,
         materialized: (any VolumeStorer)? = nil,
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
         stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void = testAdmissionStage
     ) async throws -> ChainLocalBlockResult {
-        let storer = storer ?? (fetcher as! any VolumeStorer)
-        return try await admitBlockHeaderChainLocal(
+        try await admit(
+            header,
+            mode: mode,
+            fetcher: fetcher,
+            storer: fetcher,
+            materialized: materialized,
+            childPackage: childPackage,
+            validationContext: validationContext,
+            stage: stage
+        )
+    }
+
+    /// The fixture defaults for a fetcher that does not store: the
+    /// validation-content store is named explicitly.
+    func admit(
+        _ header: BlockHeader,
+        mode: AdmissionMode = .eager,
+        fetcher: any Fetcher,
+        storer: any VolumeStorer,
+        materialized: (any VolumeStorer)? = nil,
+        childPackage: ChildValidationPackage? = nil,
+        validationContext: ValidationContext = .current,
+        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void = testAdmissionStage
+    ) async throws -> ChainLocalBlockResult {
+        try await admitBlockHeaderChainLocal(
             header,
             fetcher: fetcher,
             childPackage: childPackage,
@@ -35,13 +58,35 @@ extension ChainLevel {
         )
     }
 
+    /// ``admit(_:mode:fetcher:materialized:childPackage:validationContext:stage:)``
+    /// for a block held inline.
+    func admit(
+        _ block: Block,
+        mode: AdmissionMode = .eager,
+        fetcher: any Fetcher & VolumeStorer,
+        materialized: (any VolumeStorer)? = nil,
+        childPackage: ChildValidationPackage? = nil,
+        validationContext: ValidationContext = .current,
+        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void = testAdmissionStage
+    ) async throws -> ChainLocalBlockResult {
+        try await admit(
+            try BlockHeader(node: block),
+            mode: mode,
+            fetcher: fetcher,
+            materialized: materialized,
+            childPackage: childPackage,
+            validationContext: validationContext,
+            stage: stage
+        )
+    }
+
     /// ``admit(_:mode:fetcher:storer:materialized:childPackage:validationContext:stage:)``
     /// for a block held inline.
     func admit(
         _ block: Block,
         mode: AdmissionMode = .eager,
         fetcher: any Fetcher,
-        storer: (any VolumeStorer)? = nil,
+        storer: any VolumeStorer,
         materialized: (any VolumeStorer)? = nil,
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
@@ -83,9 +128,9 @@ struct FailingAdmissionStorer: Storer, VolumeStorer {
 }
 
 actor RecordingAdmissionStorer: Storer, VolumeStorer {
-    let backing = StorableFetcher()
-    var roots = Set<String>()
-    var calls = 0
+    private let backing = StorableFetcher()
+    private var roots = Set<String>()
+    private var calls = 0
 
     func store(entries: [String: Data]) async throws {
         calls += 1
@@ -103,8 +148,8 @@ actor RecordingAdmissionStorer: Storer, VolumeStorer {
 }
 
 actor AdmissionStageRecorder {
-    var batches: [ChainAdmissionBatch] = []
-    var contexts: [ChainAdmissionStagingContext] = []
+    private var batches: [ChainAdmissionBatch] = []
+    private var contexts: [ChainAdmissionStagingContext] = []
 
     func stage(_ batch: ChainAdmissionBatch) {
         batches.append(batch)
@@ -132,140 +177,145 @@ actor AdmissionStageRecorder {
     func recordedContexts() -> [ChainAdmissionStagingContext] { contexts }
 }
 
-let easy = UInt256.max
+/// The admission fixtures: an always-hit target, chain-local genesis/child
+/// builders and the level under test, plus the genesis-transaction and child
+/// proof shapes more than one suite exercises.
+enum AdmissionFixture {
+    static let easy = UInt256.max
 
-func makeGenesis(
-    fetcher: StorableFetcher,
-    timestamp: Int64,
-    nonce: UInt64 = 0,
-    transactions: [Transaction] = []
-) async throws -> Block {
-    return try await buildAndStoreGenesis(
-        spec: chainLocalSpec(),
-        transactions: transactions,
-        timestamp: timestamp,
-        target: easy,
-        nonce: nonce,
-        fetcher: fetcher
-    )
-}
+    static func makeGenesis(
+        fetcher: StorableFetcher,
+        timestamp: Int64,
+        nonce: UInt64 = 0,
+        transactions: [Transaction] = []
+    ) async throws -> Block {
+        return try await buildAndStoreGenesis(
+            spec: chainLocalSpec(),
+            transactions: transactions,
+            timestamp: timestamp,
+            target: easy,
+            nonce: nonce,
+            fetcher: fetcher
+        )
+    }
 
-func makeChild(
-    of previous: Block,
-    fetcher: StorableFetcher,
-    timestamp: Int64,
-    nonce: UInt64,
-    parentChainBlock: Block? = nil
-) async throws -> Block {
-    try await buildAndStoreBlock(
-        previous: previous,
-        parentChainBlock: parentChainBlock,
-        timestamp: timestamp,
-        target: easy,
-        nonce: nonce,
-        fetcher: fetcher
-    )
-}
+    static func makeChild(
+        of previous: Block,
+        fetcher: StorableFetcher,
+        timestamp: Int64,
+        nonce: UInt64,
+        parentChainBlock: Block? = nil
+    ) async throws -> Block {
+        try await buildAndStoreBlock(
+            previous: previous,
+            parentChainBlock: parentChainBlock,
+            timestamp: timestamp,
+            target: easy,
+            nonce: nonce,
+            fetcher: fetcher
+        )
+    }
 
-func makeLevel(genesis: Block) -> ChainLevel {
-    ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
-}
+    static func makeLevel(genesis: Block) -> ChainLevel {
+        ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
+    }
 
-func makeLevel(
-    genesis: Block,
-    revision: UInt64
-) async throws -> (level: ChainLevel, seedBatch: ChainAdmissionBatch) {
-    let seedBatch = try testAdmissionBatch(for: genesis)
-    return (
-        ChainLevel(testChain: try await ChainState.restore(
-            replaying: [seedBatch],
-            revisionFloor: revision
-        )),
-        seedBatch
-    )
-}
+    static func makeLevel(
+        genesis: Block,
+        revision: UInt64
+    ) async throws -> (level: ChainLevel, seedBatch: ChainAdmissionBatch) {
+        let seedBatch = try testAdmissionBatch(for: genesis)
+        return (
+            ChainLevel(testChain: try await ChainState.restore(
+                replaying: [seedBatch],
+                revisionFloor: revision
+            )),
+            seedBatch
+        )
+    }
 
-func signedStateChangingGenesisTransaction(
-    key: String,
-    chainPath: [String]
-) -> Transaction {
-    let keyPair = CryptoUtils.generateKeyPair()
-    let signer = testAddress(publicKey: keyPair.publicKey)
-    let body = TransactionBody(
-        accountActions: [],
-        actions: [Action(key: key, oldValue: nil, newValue: "value")],
-        depositActions: [],
-        genesisActions: [],
-        receiptActions: [],
-        withdrawalActions: [],
-        signers: [signer],
-        fee: 0,
-        nonce: 0,
-        chainPath: chainPath
-    )
-    return signedTestTransaction(body, by: keyPair)
-}
+    static func signedStateChangingGenesisTransaction(
+        key: String,
+        chainPath: [String]
+    ) -> Transaction {
+        let keyPair = CryptoUtils.generateKeyPair()
+        let signer = testAddress(publicKey: keyPair.publicKey)
+        let body = TransactionBody(
+            accountActions: [],
+            actions: [Action(key: key, oldValue: nil, newValue: "value")],
+            depositActions: [],
+            genesisActions: [],
+            receiptActions: [],
+            withdrawalActions: [],
+            signers: [signer],
+            fee: 0,
+            nonce: 0,
+            chainPath: chainPath
+        )
+        return signedTestTransaction(body, by: keyPair)
+    }
 
-func unsignedStateChangingGenesisTransaction(
-    key: String,
-    chainPath: [String]
-) -> Transaction {
-    let body = TransactionBody(
-        accountActions: [],
-        actions: [Action(key: key, oldValue: nil, newValue: "value")],
-        depositActions: [],
-        genesisActions: [],
-        receiptActions: [],
-        withdrawalActions: [],
-        signers: [],
-        fee: 0,
-        nonce: 0,
-        chainPath: chainPath
-    )
-    return Transaction(
-        signatures: [:],
-        body: try! HeaderImpl<TransactionBody>(node: body)
-    )
-}
+    static func unsignedStateChangingGenesisTransaction(
+        key: String,
+        chainPath: [String]
+    ) -> Transaction {
+        let body = TransactionBody(
+            accountActions: [],
+            actions: [Action(key: key, oldValue: nil, newValue: "value")],
+            depositActions: [],
+            genesisActions: [],
+            receiptActions: [],
+            withdrawalActions: [],
+            signers: [],
+            fee: 0,
+            nonce: 0,
+            chainPath: chainPath
+        )
+        return Transaction(
+            signatures: [:],
+            body: try! HeaderImpl<TransactionBody>(node: body)
+        )
+    }
 
-func makeChildProofFixture() async throws -> (
-    fetcher: StorableFetcher,
-    childLevel: ChainLevel,
-    candidate: Block,
-    package: ChildValidationPackage
-) {
-    let fetcher = StorableFetcher()
-    let parentGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-    let childGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
-    let candidate = try await makeChild(
-        of: childGenesis,
-        fetcher: fetcher,
-        timestamp: 2_000,
-        nonce: 1,
-        parentChainBlock: parentGenesis
-    )
-    let carrierWithChild = try await buildAndStoreGenesis(
-        spec: chainLocalSpec(),
-        children: ["Child": candidate],
-        timestamp: 3_000,
-        target: easy,
-        nonce: 2,
-        fetcher: fetcher
-    )
-    let childLevel = ChainLevel(
-        chain: ChainState.fromGenesis(block: childGenesis),
-        context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
-    )
+    static func makeChildProofFixture() async throws -> (
+        fetcher: StorableFetcher,
+        childLevel: ChainLevel,
+        candidate: Block,
+        package: ChildValidationPackage
+    ) {
+        let fetcher = StorableFetcher()
+        let parentGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let childGenesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let candidate = try await makeChild(
+            of: childGenesis,
+            fetcher: fetcher,
+            timestamp: 2_000,
+            nonce: 1,
+            parentChainBlock: parentGenesis
+        )
+        let carrierWithChild = try await buildAndStoreGenesis(
+            spec: chainLocalSpec(),
+            children: ["Child": candidate],
+            timestamp: 3_000,
+            target: easy,
+            nonce: 2,
+            fetcher: fetcher
+        )
+        let childLevel = ChainLevel(
+            chain: ChainState.fromGenesis(block: childGenesis),
+            context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
+        )
 
-    let proof = try await ChildBlockProof.generate(
-        rootHeader: try BlockHeader(node: carrierWithChild),
-        childDirectory: "Child",
-        fetcher: fetcher
-    )
-    return (
-        fetcher,
-        childLevel,
-        candidate,
-        try await childValidationPackage(proof: proof, fetcher: fetcher)
-    )
+        let proof = try await ChildBlockProof.generate(
+            rootHeader: try BlockHeader(node: carrierWithChild),
+            childDirectory: "Child",
+            fetcher: fetcher
+        )
+        return (
+            fetcher,
+            childLevel,
+            candidate,
+            try await childValidationPackage(proof: proof, fetcher: fetcher)
+        )
+    }
 }
