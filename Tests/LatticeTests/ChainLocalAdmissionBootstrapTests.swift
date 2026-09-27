@@ -138,7 +138,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
                 stage: testAdmissionStage
             )
             XCTFail("a non-genesis block cannot create a child runtime")
-        } catch let failure as ChainAdmissionFailure {
+        } catch let failure as BlockImportError {
             XCTAssertEqual(failure, .protocolInvalid)
         }
     }
@@ -239,7 +239,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
                 validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
                 stage: testAdmissionStage)
             XCTFail("oversized policy must fail admission on the limited node")
-        } catch let failure as ChainAdmissionFailure {
+        } catch let failure as BlockImportError {
             XCTAssertEqual(failure, .unavailableEvidence)
         }
 
@@ -491,7 +491,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
                 stage: { batch in await recorder.stage(batch) }
             )
             XCTFail("genesis must seed its first successor with its own target")
-        } catch let failure as ChainAdmissionFailure {
+        } catch let failure as BlockImportError {
             XCTAssertEqual(failure, .protocolInvalid)
         }
         let storeCalls = await durable.storeCallCount()
@@ -523,7 +523,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
                 stage: { batch in await recorder.stage(batch) }
             )
             XCTFail("a target miss cannot bootstrap the root")
-        } catch let failure as ChainAdmissionFailure {
+        } catch let failure as BlockImportError {
             XCTAssertEqual(failure, .notAcceptedAtCurrentChain)
         }
         let targetMissStoreCalls = await durable.storeCallCount()

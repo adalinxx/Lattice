@@ -10,7 +10,7 @@ import LatticePoW
 /// context advances. It is deliberately separate from a permanent protocol
 /// violation and from unavailable evidence.
 public enum BlockValidationError: Error, Sendable, Equatable {
-    case notYetAdmissible
+    case notYetValid
 }
 
 public struct ValidationContext: Sendable, Equatable {
@@ -36,7 +36,7 @@ public struct ValidationContext: Sendable, Equatable {
     func admits(timestamp: Int64) -> Bool {
         // A node will not accept a block from its own future. This references
         // only the node's own clock — there is no protocol-imposed drift
-        // constant — and it is retriable (see `notYetAdmissible`): a block from a
+        // constant — and it is retriable (see `notYetValid`): a block from a
         // slightly-fast miner is deferred until real time reaches its timestamp,
         // never permanently rejected, so honest blocks are never lost and the
         // valid-block set never forks on clock skew. An operator who wants slack
@@ -71,7 +71,7 @@ public extension Block {
     ) async throws -> (Bool, StateDiff, LatticeState?) {
         if !hasGenesisAdmissionShape() { return (false, .empty, nil) }
         if !validationContext.admits(timestamp: timestamp) {
-            if reportTemporalFailure { throw BlockValidationError.notYetAdmissible }
+            if reportTemporalFailure { throw BlockValidationError.notYetValid }
             return (false, .empty, nil)
         }
         guard let transactionBodies = try await resolveTransactionBodies(fetcher: fetcher, validator: { tx in
@@ -128,7 +128,7 @@ public extension Block {
         let (_, heightOverflow) = parent.height.addingReportingOverflow(1)
         guard !heightOverflow else { return false }
         if !validationContext.admits(timestamp: timestamp) {
-            if reportTemporalFailure { throw BlockValidationError.notYetAdmissible }
+            if reportTemporalFailure { throw BlockValidationError.notYetValid }
             return false
         }
         if !validateTimestamp(
@@ -495,7 +495,7 @@ public extension Block {
     ///       fails (1), so an MTP median check can never reject anything (1)
     ///       accepts — it was redundant and is gone).
     ///   (2) timestamp ≤ now — a node will not build on a block from its own
-    ///       future. This is node-local, retriable admission (`notYetAdmissible`),
+    ///       future. This is node-local, retriable admission (`notYetValid`),
     ///       not agreed state: it references the node's clock, defers rather than
     ///       rejects, and closes the far-future lock-out that (1) alone would
     ///       allow. No protocol-imposed drift constant.

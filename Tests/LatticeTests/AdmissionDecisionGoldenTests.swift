@@ -302,13 +302,13 @@ private struct AdmissionFixtures {
     }
 
     /// The stable classification the golden records for a failure.
-    func classify(_ failure: ChainAdmissionFailure) -> (kind: String, path: [String]?, cids: [String]?) {
+    func classify(_ failure: BlockImportError) -> (kind: String, path: [String]?, cids: [String]?) {
         switch failure {
         case .unavailableEvidence: return ("unavailableEvidence", nil, nil)
         case .providerMalformedEvidence: return ("providerMalformedEvidence", nil, nil)
         case .protocolInvalid: return ("protocolInvalid", nil, nil)
         case .localVerificationFailure: return ("localVerificationFailure", nil, nil)
-        case .notYetAdmissible: return ("notYetAdmissible", nil, nil)
+        case .notYetValid: return ("notYetAdmissible", nil, nil)
         case .notAcceptedAtCurrentChain: return ("notAcceptedAtCurrentChain", nil, nil)
         case .revisionExhausted: return ("revisionExhausted", nil, nil)
         case .crossChainEvidenceRequired(let requirement):

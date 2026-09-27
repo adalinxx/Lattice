@@ -283,7 +283,7 @@ final class BlockMintingTests: XCTestCase {
             )
             XCTFail("a future block must report temporary inadmissibility")
         } catch let error as BlockValidationError {
-            XCTAssertEqual(error, .notYetAdmissible)
+            XCTAssertEqual(error, .notYetValid)
         }
     }
 

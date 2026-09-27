@@ -6,13 +6,13 @@ import LatticeValidation
 import LatticeProofs
 import LatticeBlockTree
 
-public enum ChainAdmissionFailure: Error, Sendable, Equatable {
+public enum BlockImportError: Error, Sendable, Equatable {
     case unavailableEvidence
     case providerMalformedEvidence
     case crossChainEvidenceRequired(CrossChainEvidenceRequirement)
     case protocolInvalid
     case localVerificationFailure
-    case notYetAdmissible
+    case notYetValid
     case notAcceptedAtCurrentChain
     case revisionExhausted
 }
@@ -92,7 +92,7 @@ public enum ChainLocalBlockResult: Sendable {
         promotedCommit: ChainCommit? = nil
     )
     case rejected(
-        ChainAdmissionFailure,
+        BlockImportError,
         parentCarrierLink: ParentCarrierLink? = nil,
         sameChainPredecessor: SameChainPredecessorRequirement? = nil
     )
@@ -130,7 +130,7 @@ public enum ChainLocalBlockResult: Sendable {
         }
     }
 
-    public var failure: ChainAdmissionFailure? {
+    public var failure: BlockImportError? {
         if case .rejected(let failure, _, _) = self { return failure }
         return nil
     }
@@ -158,7 +158,7 @@ public enum ChildChainBootstrapResult: Sendable {
     case accepted(ChildChainBootstrapAcceptance)
     case carrier(ParentCarrierLink)
     case rejected(
-        ChainAdmissionFailure,
+        BlockImportError,
         parentCarrierLink: ParentCarrierLink
     )
 
@@ -169,7 +169,7 @@ public enum ChildChainBootstrapResult: Sendable {
         }
     }
 
-    public var failure: ChainAdmissionFailure? {
+    public var failure: BlockImportError? {
         guard case .rejected(let failure, _) = self else { return nil }
         return failure
     }
@@ -450,7 +450,7 @@ private enum ChainLocalAdmission {
         _ package: ChildValidationPackage,
         child: Block,
         context: ChainRuntimeContext
-    ) async -> Result<VerifiedChildEvidence, ChainAdmissionFailure> {
+    ) async -> Result<VerifiedChildEvidence, BlockImportError> {
         await package.proof.verifySecuringWork(
             child: child,
             chainPath: context.path
@@ -463,7 +463,7 @@ private enum ChainLocalAdmission {
         childCID: String,
         context: ChainRuntimeContext,
         fetcher: any Fetcher
-    ) async -> ChainAdmissionFailure? {
+    ) async -> BlockImportError? {
         let parentPath = Array(context.path.dropLast())
         if child.parent == nil {
             guard child.hasGenesisAdmissionShape() else {
@@ -850,7 +850,7 @@ private enum ChainLocalAdmission {
         }
         func excluded() -> Preparation {
             guard mayExclude else {
-                return .result(rejection(.notYetAdmissible, carrier: carrier))
+                return .result(rejection(.notYetValid, carrier: carrier))
             }
             return .ready(PreparedAdmission(
                 resolvedHeader: resolvedHeader,
@@ -863,7 +863,7 @@ private enum ChainLocalAdmission {
                 kind: .exclusion
             ))
         }
-        func rejected(_ failure: ChainAdmissionFailure) -> Preparation {
+        func rejected(_ failure: BlockImportError) -> Preparation {
             // A completed deterministic check is a verdict; anything else
             // (unavailable, ordering) is retryable and never excludes.
             isDeterministicInvalidity(failure)
@@ -928,7 +928,7 @@ private enum ChainLocalAdmission {
     /// ordering) keeps the requirement so the node can retry after acquiring.
     static func predecessorRequirement(
         _ requirement: SameChainPredecessorRequirement?,
-        after failure: ChainAdmissionFailure
+        after failure: BlockImportError
     ) -> SameChainPredecessorRequirement? {
         isDeterministicInvalidity(failure) ? nil : requirement
     }
@@ -938,7 +938,7 @@ private enum ChainLocalAdmission {
     /// the failure (`predecessorRequirement`), so no site can hand the node a
     /// predecessor to acquire on behalf of a proven-invalid block.
     static func rejection(
-        _ failure: ChainAdmissionFailure,
+        _ failure: BlockImportError,
         parentCarrierLink: ParentCarrierLink? = nil,
         sameChainPredecessor: SameChainPredecessorRequirement? = nil
     ) -> ChainLocalBlockResult {
@@ -952,7 +952,7 @@ private enum ChainLocalAdmission {
     }
 
     static func rejection(
-        _ failure: ChainAdmissionFailure,
+        _ failure: BlockImportError,
         carrier: (
             relayLink: ParentCarrierLink,
             issuableLink: ParentCarrierLink?,
@@ -969,12 +969,12 @@ private enum ChainLocalAdmission {
     /// A failure is a validity verdict only when execution completed and the
     /// block is provably invalid. Availability, ordering and capacity failures
     /// are transient: they must be retried, never recorded as an exclusion.
-    static func isDeterministicInvalidity(_ failure: ChainAdmissionFailure) -> Bool {
+    static func isDeterministicInvalidity(_ failure: BlockImportError) -> Bool {
         switch failure {
         case .protocolInvalid, .localVerificationFailure:
             return true
         case .unavailableEvidence, .providerMalformedEvidence,
-             .crossChainEvidenceRequired, .notYetAdmissible,
+             .crossChainEvidenceRequired, .notYetValid,
              .notAcceptedAtCurrentChain, .revisionExhausted:
             return false
         }
@@ -989,7 +989,7 @@ private enum ChainLocalAdmission {
     static func childCommitments(
         of blockHeader: BlockHeader,
         fetcher: any Fetcher
-    ) async -> Result<[String: String], ChainAdmissionFailure> {
+    ) async -> Result<[String: String], BlockImportError> {
         do {
             let resolved = try await blockHeader.resolve(
                 paths: [[CHILDREN_PROPERTY]: .targeted],
@@ -1007,7 +1007,7 @@ private enum ChainLocalAdmission {
     static func resolveBlock(
         _ blockHeader: BlockHeader,
         fetcher: any Fetcher
-    ) async -> Result<(header: BlockHeader, block: Block), ChainAdmissionFailure> {
+    ) async -> Result<(header: BlockHeader, block: Block), BlockImportError> {
         do {
             let resolved = try await blockHeader.resolve(fetcher: fetcher)
             guard let block = resolved.node else {
@@ -1042,7 +1042,7 @@ private enum ChainLocalAdmission {
         childPackage: ChildValidationPackage?,
         context: ChainRuntimeContext,
         validationContext: ValidationContext
-    ) async -> Result<ExecutedTransition, ChainAdmissionFailure> {
+    ) async -> Result<ExecutedTransition, BlockImportError> {
         let validation: (Bool, StateDiff, LatticeState?)
         do {
             if block.parent == nil {
@@ -1124,7 +1124,7 @@ private enum ChainLocalAdmission {
         fetcher: any Fetcher,
         chain: ChainState,
         validationContext: ValidationContext
-    ) async -> ChainAdmissionFailure? {
+    ) async -> BlockImportError? {
         do {
             let linked = try await block.validateHeaderLinkage(
                 fetcher: fetcher,
@@ -1225,7 +1225,7 @@ private enum ChainLocalAdmission {
     }
 }
 
-private func classifyResolutionFailure(_ error: Error) -> ChainAdmissionFailure {
+private func classifyResolutionFailure(_ error: Error) -> BlockImportError {
     if error is FetcherError { return .unavailableEvidence }
     if let dataError = error as? DataErrors { return classifyDataError(dataError) }
     if error is CashewDecodingError || error is ResolutionErrors {
@@ -1239,7 +1239,7 @@ private func classifyResolutionFailure(_ error: Error) -> ChainAdmissionFailure 
 
 private func mapProofFailure(
     _ failure: ChildProofVerificationFailure
-) -> ChainAdmissionFailure {
+) -> BlockImportError {
     switch failure {
     case .crossChainEvidenceRequired(let requirement):
         .crossChainEvidenceRequired(requirement)
@@ -1248,8 +1248,8 @@ private func mapProofFailure(
     }
 }
 
-private func classifyValidationFailure(_ error: Error) -> ChainAdmissionFailure {
-    if error is BlockValidationError { return .notYetAdmissible }
+private func classifyValidationFailure(_ error: Error) -> BlockImportError {
+    if error is BlockValidationError { return .notYetValid }
     if let dataError = error as? DataErrors { return classifyDataError(dataError) }
     if error is FetcherError { return .unavailableEvidence }
     if let validationError = error as? ValidationErrors {
@@ -1294,7 +1294,7 @@ private func classifyValidationFailure(_ error: Error) -> ChainAdmissionFailure 
     return .unavailableEvidence
 }
 
-private func classifyDataError(_ error: DataErrors) -> ChainAdmissionFailure {
+private func classifyDataError(_ error: DataErrors) -> BlockImportError {
     switch error {
     case .nodeNotAvailable, .keyNotFound:
         return .unavailableEvidence
@@ -1313,7 +1313,7 @@ public extension ChainLevel {
     /// Test seam for the availability-vs-invalidity partition that gates the
     /// validated tier's exclusion verdict.
     static func isDeterministicInvalidityForTesting(
-        _ failure: ChainAdmissionFailure
+        _ failure: BlockImportError
     ) -> Bool {
         ChainLocalAdmission.isDeterministicInvalidity(failure)
     }
@@ -1322,13 +1322,13 @@ public extension ChainLevel {
     /// must classify as retryable, never as an excluding verdict.
     static func classifyValidationFailureForTesting(
         _ error: Error
-    ) -> ChainAdmissionFailure {
+    ) -> BlockImportError {
         classifyValidationFailure(error)
     }
 
     static func classifyResolutionFailureForTesting(
         _ error: Error
-    ) -> ChainAdmissionFailure {
+    ) -> BlockImportError {
         classifyResolutionFailure(error)
     }
 #endif
@@ -1448,7 +1448,7 @@ public extension ChainLevel {
             guard possessed, standsOnAnotherRoot else {
                 await chain.releaseAdmissionRevision()
                 return ChainLocalAdmission.rejection(
-                    .notYetAdmissible,
+                    .notYetValid,
                     parentCarrierLink: prepared.carrierLink,
                     sameChainPredecessor: prepared.sameChainPredecessor
                 )
@@ -1572,14 +1572,14 @@ public extension ChainLevel {
         commit: ChainCommit,
         parentCarrierLink: ParentCarrierLink
     ) {
-        guard context.isRoot else { throw ChainAdmissionFailure.protocolInvalid }
+        guard context.isRoot else { throw BlockImportError.protocolInvalid }
         let resolved: (header: BlockHeader, block: Block)
         switch await ChainLocalAdmission.resolveBlock(genesisHeader, fetcher: fetcher) {
         case .failure(let failure): throw failure
         case .success(let value): resolved = value
         }
         guard resolved.block.parent == nil, resolved.block.height == 0 else {
-            throw ChainAdmissionFailure.protocolInvalid
+            throw BlockImportError.protocolInvalid
         }
         // Genesis must satisfy its own declared target like any block: a target-0
         // (or otherwise target-miss) genesis is rejected here, matching child
@@ -1587,7 +1587,7 @@ public extension ChainLevel {
         // confirms it. The canonical max-target genesis passes trivially.
         let rootHash = resolved.block.proofOfWorkHash()
         guard resolved.block.validateProofOfWork(nexusHash: rootHash) else {
-            throw ChainAdmissionFailure.notAcceptedAtCurrentChain
+            throw BlockImportError.notAcceptedAtCurrentChain
         }
         let transition: ChainLocalAdmission.ExecutedTransition
         switch await ChainLocalAdmission.executeTransition(
@@ -1634,14 +1634,14 @@ public extension ChainLevel {
         materializedVolumeStorer: any VolumeStorer,
         stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void
     ) async throws -> ChildChainBootstrapResult {
-        guard !context.isRoot else { throw ChainAdmissionFailure.protocolInvalid }
+        guard !context.isRoot else { throw BlockImportError.protocolInvalid }
         let resolved: (header: BlockHeader, block: Block)
         switch await ChainLocalAdmission.resolveBlock(genesisHeader, fetcher: fetcher) {
         case .failure(let failure): throw failure
         case .success(let value): resolved = value
         }
         guard resolved.block.parent == nil, resolved.block.height == 0 else {
-            throw ChainAdmissionFailure.protocolInvalid
+            throw BlockImportError.protocolInvalid
         }
         let childCID = resolved.header.rawCID
         // A child genesis is self-contained and SELF-mined, exactly like a root

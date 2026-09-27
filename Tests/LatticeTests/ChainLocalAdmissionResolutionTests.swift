@@ -28,7 +28,7 @@ private struct UnknownFailingAdmissionFetcher: Fetcher {
 private struct ResolutionCase {
     let name: String
     let fetcher: any Fetcher
-    let expectedFailure: ChainAdmissionFailure
+    let expectedFailure: BlockImportError
 }
 
 final class ChainLocalAdmissionResolutionTests: XCTestCase {
@@ -306,6 +306,6 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
 
         let result = try await AdmissionFixture.makeLevel(genesis: genesis).admit(future, fetcher: fetcher)
 
-        XCTAssertEqual(result.failure, .notYetAdmissible)
+        XCTAssertEqual(result.failure, .notYetValid)
     }
 }
