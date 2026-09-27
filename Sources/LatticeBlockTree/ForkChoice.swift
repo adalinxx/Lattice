@@ -715,7 +715,7 @@ extension ChainState {
     }
 
     /// Rebuild non-consensus diagnostic totals lazily. Fork choice always uses
-    /// the identity-aware segment cache instead.
+    /// the identity-aware Euler work index (`weights`) instead.
     func materializeLocalWorkCachesIfNeeded() {
         guard localWorkCachesDirty else { return }
         graph.recomputeWorkCaches()
@@ -730,7 +730,8 @@ extension ChainState {
     }
 
     /// GHOST descent chooses the child with greatest deduplicated verified
-    /// work. Equal work prefers the smaller segment-base CID.
+    /// work. Equal work prefers the child block with the lexicographically
+    /// smaller canonical CID bytes (spec §9.4).
     func chainWithMostWork(
         startingBlock: BlockMeta
     ) -> (subtreeWork: WorkSum, tipHash: String, blocks: Set<String>) {
