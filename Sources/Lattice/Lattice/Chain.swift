@@ -140,6 +140,27 @@ public struct BlockMeta: Sendable {
         self.attributedRuns = []
     }
 
+    /// The read view of one block the graph holds, assembled from its tables.
+    init(
+        record: BlockRecord,
+        childHashes: [String],
+        work: BlockWork,
+        difficultyAnchor: DifficultyAnchor?,
+        diagnostics: BlockDiagnostics
+    ) {
+        self.blockHash = record.blockHash
+        self.parentBlockHash = record.parentBlockHash
+        self.blockHeight = record.blockHeight
+        self.childCommitments = record.childCommitments
+        self.childHashes = childHashes
+        self.workContributions = work.contributions
+        self.attributedRuns = work.attributedRuns
+        self.work = work.work
+        self.difficultyAnchor = difficultyAnchor
+        self.cumulativeWork = diagnostics.cumulativeWork
+        self.subtreeWeight = diagnostics.subtreeWeight
+    }
+
     /// Fill commitments a pre-field fact left unrecorded. Write-once, like the
     /// difficulty anchor: commitments are PoW-bound content, so a second value
     /// for a block that has one would mean the content was misread.
@@ -464,9 +485,9 @@ public actor ChainState {
     // Restore validates this invariant; optional access keeps query paths fail-closed.
     var highestBlockHeight: UInt64 { graph.height(of: chainTip) ?? 0 }
 
-    /// Every held block's public read view, keyed by hash. Test-facing:
-    /// production reads `graph`.
-    var hashToBlock: [String: BlockMeta] { graph.blocksByHash }
+    /// Every held block's public read view, keyed by hash. Test-facing and
+    /// O(N) — assembled on read; production reads `graph`.
+    var hashToBlock: [String: BlockMeta] { graph.metas }
 
     package init(
         chainTip: String,

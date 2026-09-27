@@ -469,14 +469,19 @@ extension ChainState {
     }
 
     /// Rebuild exact local prefix and subtree measures after a graph or work-fact
-    /// mutation without retaining an identity map at every block.
+    /// mutation without retaining an identity map at every block. Returns the
+    /// graph's diagnostic table with every recomputed total written into it.
     nonisolated static func recomputeWorkCaches(
-        in blocks: inout [String: BlockMeta]
-    ) {
+        in graph: BlockGraph
+    ) -> [String: BlockDiagnostics] {
+        var result = graph.diagnosticsByHash
+        func contributions(_ hash: String) -> [String: VerifiedWorkContribution] {
+            graph.work(of: hash)?.contributions ?? [:]
+        }
         // Quantity is a property of the physical grind, not of the segment
         // containing its one location.
         var strongestWork: [String: UInt256] = [:]
-        for contribution in blocks.values.flatMap(\.workContributions.values)
+        for contribution in graph.records.flatMap({ contributions($0.blockHash).values })
         where contribution.work > (strongestWork[contribution.id] ?? .zero) {
             strongestWork[contribution.id] = contribution.work
         }
@@ -486,12 +491,12 @@ extension ChainState {
                 work: strongestWork[contribution.id] ?? contribution.work
             )
         }
-        let ascending = blocks.values.sorted {
+        let ascending = graph.records.sorted {
             if $0.blockHeight != $1.blockHeight { return $0.blockHeight < $1.blockHeight }
             return $0.blockHash < $1.blockHash
         }
         let roots = ascending.filter { meta in
-            meta.parentBlockHash.flatMap { blocks[$0] } == nil
+            meta.parentBlockHash.flatMap { graph[$0] } == nil
         }
         for root in roots {
             var activeCounts: [String: [UInt256: Int]] = [:]
@@ -525,20 +530,20 @@ extension ChainState {
             }
             var pending: [(hash: String, exiting: Bool)] = [(root.blockHash, false)]
             while let frame = pending.popLast() {
-                guard let meta = blocks[frame.hash] else { continue }
+                guard let meta = graph[frame.hash] else { continue }
                 if frame.exiting {
-                    for contribution in meta.workContributions.values {
+                    for contribution in contributions(meta.blockHash).values {
                         adjustActiveWork(normalized(contribution), by: -1)
                     }
                     continue
                 }
 
-                for contribution in meta.workContributions.values {
+                for contribution in contributions(meta.blockHash).values {
                     adjustActiveWork(normalized(contribution), by: 1)
                 }
-                blocks[meta.blockHash]?.setCumulativeWork(activeWork)
+                result[meta.blockHash]?.cumulativeWork = activeWork
                 pending.append((meta.blockHash, true))
-                for childHash in meta.childHashes.reversed() {
+                for childHash in graph.children(of: meta.blockHash).reversed() {
                     pending.append((childHash, false))
                 }
             }
@@ -560,14 +565,15 @@ extension ChainState {
         }
 
         for meta in ascending.reversed() {
-            let largestChild = meta.childHashes.max {
+            let childHashes = graph.children(of: meta.blockHash)
+            let largestChild = childHashes.max {
                 (subtreeAccumulators[$0]?.entries.count ?? 0)
                     < (subtreeAccumulators[$1]?.entries.count ?? 0)
             }
             var accumulator = largestChild.flatMap {
                 subtreeAccumulators.removeValue(forKey: $0)
             } ?? Accumulator(entries: [:], total: .zero)
-            for childHash in meta.childHashes where childHash != largestChild {
+            for childHash in childHashes where childHash != largestChild {
                 guard let child = subtreeAccumulators.removeValue(forKey: childHash) else {
                     continue
                 }
@@ -575,16 +581,17 @@ extension ChainState {
                     insert(id: id, work: work, into: &accumulator)
                 }
             }
-            for (id, contribution) in meta.workContributions {
+            for (id, contribution) in contributions(meta.blockHash) {
                 insert(
                     id: id,
                     work: strongestWork[id] ?? contribution.work,
                     into: &accumulator
                 )
             }
-            blocks[meta.blockHash]?.setSubtreeWeight(accumulator.total)
+            result[meta.blockHash]?.subtreeWeight = accumulator.total
             subtreeAccumulators[meta.blockHash] = accumulator
         }
+        return result
     }
 
     @discardableResult
