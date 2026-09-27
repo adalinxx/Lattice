@@ -51,10 +51,10 @@ final class SegmentTailProjectionTests: XCTestCase {
             0,
             "a canonical unary-tail append must update the cached tail, not rebuild the path"
         )
-        XCTAssertTrue(result.extendsMainChain)
+        XCTAssertTrue(result.extendsCanonical)
         XCTAssertEqual(commit.tipHash, appended.hash)
-        XCTAssertEqual(commit.mainChainBlocksAdded, [appended.hash: appended.height])
-        XCTAssertEqual(commit.mainChainBlocksRemoved, Set<String>())
+        XCTAssertEqual(commit.canonicalBlocksAdded, [appended.hash: appended.height])
+        XCTAssertEqual(commit.canonicalBlocksRemoved, Set<String>())
         XCTAssertEqual(
             finalMainChain,
             Set([root.hash] + canonicalTail.map(\.hash) + [appended.hash])
@@ -101,8 +101,8 @@ final class SegmentTailProjectionTests: XCTestCase {
         let nonReorgCommit = try XCTUnwrap(commit)
         XCTAssertFalse(nonReorgCommit.canonicalChanged)
         XCTAssertEqual(nonReorgCommit.tipHash, tipBefore)
-        XCTAssertEqual(nonReorgCommit.mainChainBlocksAdded, [:])
-        XCTAssertEqual(nonReorgCommit.mainChainBlocksRemoved, Set<String>())
+        XCTAssertEqual(nonReorgCommit.canonicalBlocksAdded, [:])
+        XCTAssertEqual(nonReorgCommit.canonicalBlocksRemoved, Set<String>())
         XCTAssertEqual(projectionCount, 0)
         XCTAssertEqual(tipAfter, tipBefore)
         XCTAssertEqual(mainChainAfter, mainChainBefore)
@@ -205,7 +205,7 @@ final class SegmentTailProjectionTests: XCTestCase {
 
         XCTAssertEqual(commit.tipHash, c1.hash)
         XCTAssertEqual(
-            commit.mainChainBlocksAdded,
+            commit.canonicalBlocksAdded,
             [
                 b0.hash: b0.height,
                 b1.hash: b1.height,
@@ -214,15 +214,15 @@ final class SegmentTailProjectionTests: XCTestCase {
                 c1.hash: c1.height,
             ]
         )
-        XCTAssertEqual(commit.mainChainBlocksRemoved, Set([a0.hash, a1.hash, a2.hash]))
+        XCTAssertEqual(commit.canonicalBlocksRemoved, Set([a0.hash, a1.hash, a2.hash]))
         XCTAssertEqual(
             finalMainChain,
             Set([root.hash, prefix.hash, b0.hash, b1.hash, fork.hash, c0.hash, c1.hash])
         )
         XCTAssertFalse(d0IsCanonical)
-        XCTAssertFalse(commit.mainChainBlocksAdded.keys.contains(d0.hash))
-        XCTAssertFalse(commit.mainChainBlocksAdded.keys.contains(root.hash))
-        XCTAssertFalse(commit.mainChainBlocksAdded.keys.contains(prefix.hash))
+        XCTAssertFalse(commit.canonicalBlocksAdded.keys.contains(d0.hash))
+        XCTAssertFalse(commit.canonicalBlocksAdded.keys.contains(root.hash))
+        XCTAssertFalse(commit.canonicalBlocksAdded.keys.contains(prefix.hash))
         await assertSegmentTailReferenceParity(chain)
     }
 
@@ -264,11 +264,11 @@ final class SegmentTailProjectionTests: XCTestCase {
 
         XCTAssertEqual(commit.tipHash, f.hash)
         XCTAssertEqual(
-            commit.mainChainBlocksAdded,
+            commit.canonicalBlocksAdded,
             [d.hash: d.height, e.hash: e.height, f.hash: f.height],
             "only the blocks that joined may be reported as added"
         )
-        XCTAssertEqual(commit.mainChainBlocksRemoved, Set<String>())
+        XCTAssertEqual(commit.canonicalBlocksRemoved, Set<String>())
         XCTAssertEqual(
             mainChainAfter,
             mainChainBefore.union([d.hash, e.hash, f.hash])

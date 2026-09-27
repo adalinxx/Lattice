@@ -147,8 +147,8 @@ public enum LatticeConsensusSimulator {
             let candidateRoot = forkRoot(for: release.blockHash, visible: visibleHashes, currentMain: currentMain, blocksByHash: blocksByHash)
             let commit = await chain.reevaluateForkChoice()
             if let commit {
-                currentMain.subtract(commit.mainChainBlocksRemoved)
-                currentMain.formUnion(commit.mainChainBlocksAdded.keys)
+                currentMain.subtract(commit.canonicalBlocksRemoved)
+                currentMain.formUnion(commit.canonicalBlocksAdded.keys)
             }
 
             let tip = await chain.canonicalTip

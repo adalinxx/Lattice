@@ -108,18 +108,18 @@ public struct BlockMeta: Sendable {
 public struct SubmissionResult: Sendable {
     public let addedBlock: Bool
     public let addedContribution: Bool
-    public let extendsMainChain: Bool
+    public let extendsCanonical: Bool
     public let commit: ChainCommit?
 
     init(
         addedBlock: Bool,
         addedContribution: Bool = false,
-        extendsMainChain: Bool,
+        extendsCanonical: Bool,
         commit: ChainCommit? = nil
     ) {
         self.addedBlock = addedBlock
         self.addedContribution = addedContribution
-        self.extendsMainChain = extendsMainChain
+        self.extendsCanonical = extendsCanonical
         self.commit = commit
     }
 
@@ -127,7 +127,7 @@ public struct SubmissionResult: Sendable {
         SubmissionResult(
             addedBlock: false,
             addedContribution: false,
-            extendsMainChain: false
+            extendsCanonical: false
         )
     }
 }
@@ -135,31 +135,31 @@ public struct SubmissionResult: Sendable {
 public struct ChainCommit: Sendable, Equatable {
     public let revision: UInt64
     public let tipHash: String
-    public let mainChainBlocksAdded: [String: UInt64]
-    public let mainChainBlocksRemoved: Set<String>
+    public let canonicalBlocksAdded: [String: UInt64]
+    public let canonicalBlocksRemoved: Set<String>
 
     public init(
         revision: UInt64 = 0,
         tipHash: String,
-        mainChainBlocksAdded: [String: UInt64] = [:],
-        mainChainBlocksRemoved: Set<String> = []
+        canonicalBlocksAdded: [String: UInt64] = [:],
+        canonicalBlocksRemoved: Set<String> = []
     ) {
         self.revision = revision
         self.tipHash = tipHash
-        self.mainChainBlocksAdded = mainChainBlocksAdded
-        self.mainChainBlocksRemoved = mainChainBlocksRemoved
+        self.canonicalBlocksAdded = canonicalBlocksAdded
+        self.canonicalBlocksRemoved = canonicalBlocksRemoved
     }
 
     public var canonicalChanged: Bool {
-        !mainChainBlocksAdded.isEmpty || !mainChainBlocksRemoved.isEmpty
+        !canonicalBlocksAdded.isEmpty || !canonicalBlocksRemoved.isEmpty
     }
 
     func atRevision(_ revision: UInt64) -> ChainCommit {
         ChainCommit(
             revision: revision,
             tipHash: tipHash,
-            mainChainBlocksAdded: mainChainBlocksAdded,
-            mainChainBlocksRemoved: mainChainBlocksRemoved
+            canonicalBlocksAdded: canonicalBlocksAdded,
+            canonicalBlocksRemoved: canonicalBlocksRemoved
         )
     }
 }
@@ -844,12 +844,12 @@ public actor ChainState {
             // the cheapest instance of this one, a descent of a single step.
             canonicalChange = projectCanonicalChain(monotoneIncreaseAt: blockHash)
         }
-        let extendsMainChain = input.parentBlockHash == oldTip
+        let extendsCanonical = input.parentBlockHash == oldTip
             && canonicalHashes.contains(blockHash)
         return SubmissionResult(
             addedBlock: true,
             addedContribution: result.addedContribution,
-            extendsMainChain: extendsMainChain,
+            extendsCanonical: extendsCanonical,
             commit: (canonicalChange ?? ChainCommit(tipHash: canonicalTip))
                 .atRevision(mutationGeneration)
         )
@@ -948,7 +948,7 @@ public actor ChainState {
         return SubmissionResult(
             addedBlock: true,
             addedContribution: addedContribution,
-            extendsMainChain: false
+            extendsCanonical: false
         )
     }
 
@@ -1017,7 +1017,7 @@ public actor ChainState {
         return SubmissionResult(
             addedBlock: false,
             addedContribution: true,
-            extendsMainChain: false,
+            extendsCanonical: false,
             commit: (canonicalChange ?? ChainCommit(tipHash: canonicalTip))
                 .atRevision(mutationGeneration)
         )
@@ -1174,7 +1174,7 @@ public actor ChainState {
         return SubmissionResult(
             addedBlock: false,
             addedContribution: false,
-            extendsMainChain: false,
+            extendsCanonical: false,
             commit: (canonicalChange ?? ChainCommit(tipHash: canonicalTip))
                 .atRevision(mutationGeneration)
         )

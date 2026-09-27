@@ -149,7 +149,7 @@ final class BlockSubmissionE2ETests: XCTestCase {
             block: block1
         )
         XCTAssertTrue(result1.addedBlock)
-        XCTAssertTrue(result1.extendsMainChain)
+        XCTAssertTrue(result1.extendsCanonical)
         XCTAssertTrue(result1.commit?.canonicalChanged == true)
 
         let newTip = await chain.canonicalTip
@@ -171,7 +171,7 @@ final class BlockSubmissionE2ETests: XCTestCase {
                 block: block
             )
             XCTAssertTrue(result.addedBlock, "Block \(i) should be added")
-            XCTAssertTrue(result.extendsMainChain, "Block \(i) should extend main chain")
+            XCTAssertTrue(result.extendsCanonical, "Block \(i) should extend main chain")
             prev = block
         }
 
@@ -448,7 +448,7 @@ final class FullPipelineSmokeTests: XCTestCase {
                 blockHeader: blockHeader(block),
                 block: block
             )
-            XCTAssertTrue(result.extendsMainChain, "Block \(i) should extend")
+            XCTAssertTrue(result.extendsCanonical, "Block \(i) should extend")
             mainChainBlocks.append(block)
         }
 

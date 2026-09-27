@@ -109,7 +109,7 @@ final class CrashRecoveryTests: XCTestCase {
         let result = await chain2.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block6), block: block6
         )
-        XCTAssertTrue(result.extendsMainChain)
+        XCTAssertTrue(result.extendsCanonical)
 
         let finalHeight = await chain2.getHighestBlockHeight()
         XCTAssertEqual(finalHeight, 6)

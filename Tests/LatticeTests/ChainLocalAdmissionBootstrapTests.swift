@@ -115,7 +115,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             bootstrap.commit,
             ChainCommit(
                 tipHash: header.rawCID,
-                mainChainBlocksAdded: [header.rawCID: 0]
+                canonicalBlocksAdded: [header.rawCID: 0]
             )
         )
         let childTip = await child.chain.canonicalTip
@@ -289,7 +289,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             result.commit,
             ChainCommit(
                 tipHash: header.rawCID,
-                mainChainBlocksAdded: [header.rawCID: 0]
+                canonicalBlocksAdded: [header.rawCID: 0]
             )
         )
     }
