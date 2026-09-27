@@ -67,10 +67,22 @@ enum GoldenFile {
             return
         }
         let expected = try JSONDecoder().decode(T.self, from: data)
-        guard expected != actual else { return }
-        XCTFail(
-            "\(name) diverged from the checked-in golden:\n"
-                + diff(expected, actual).joined(separator: "\n"),
+        guard expected == actual else {
+            XCTFail(
+                "\(name) diverged from the checked-in golden:\n"
+                    + diff(expected, actual).joined(separator: "\n"),
+                file: file, line: line
+            )
+            return
+        }
+        // The values agree; the bytes must too. A hand-edited or stale file
+        // that happens to decode to the right value is still not the file this
+        // encoder would write, and the next regeneration would show a diff
+        // nobody made.
+        XCTAssertEqual(
+            encoded, data,
+            "\(name) decodes to the expected value but its bytes are not the "
+                + "canonical encoding; regenerate with \(regenerateEnvironmentKey)=1",
             file: file, line: line
         )
     }

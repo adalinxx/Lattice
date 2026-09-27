@@ -59,6 +59,33 @@ struct ForkChoiceGoldenGraph {
         testCID("fork-choice-golden/\(seed)/\(role)/\(index)")
     }
 
+    /// A second LIVE arrival order for the same facts: the seed root first,
+    /// then a full seeded shuffle of the block arrivals — so most blocks are
+    /// deep orphans grafted later — with each block's other facts (work,
+    /// exclusion, validation) following its arrival in their shuffled order,
+    /// since a node never applies a fact about a block it does not hold.
+    func alternateArrivalOrder(seed: UInt64 = 0xA17E_0DE5) -> [ForkChoiceGoldenEvent] {
+        var random = GoldenRandom(seed: seed)
+        var shuffled = Array(events.dropFirst())
+        random.shuffle(&shuffled)
+        var ordered = [events[0]]
+        var arrived: Set<String> = [events[0].subject]
+        var waiting: [String: [ForkChoiceGoldenEvent]] = [:]
+        for event in shuffled {
+            if event.kind == .block {
+                ordered.append(event)
+                arrived.insert(event.subject)
+                ordered += waiting.removeValue(forKey: event.subject) ?? []
+            } else if arrived.contains(event.subject) {
+                ordered.append(event)
+            } else {
+                waiting[event.subject, default: []].append(event)
+            }
+        }
+        precondition(waiting.isEmpty && ordered.count == events.count)
+        return ordered
+    }
+
     static func generate(seed: UInt64 = 0x600D_F0C5, blockCount: Int = 300) -> ForkChoiceGoldenGraph {
         precondition(blockCount >= 16)
         var random = GoldenRandom(seed: seed)
@@ -123,8 +150,12 @@ struct ForkChoiceGoldenGraph {
         var events: [ForkChoiceGoldenEvent] = []
         var arrived: [Int] = []
         var excluded = Set<Int>()
-        var trunkExcluded = false
+        var decisiveExclusions = 0
         var validated = Set<Int>()
+        // The spec oracle follows the script so exclusion targets can be
+        // chosen against the CURRENT canonical selection, not a guess at it.
+        var oracle = ForkChoiceOracle()
+        let indexByHash = Dictionary(uniqueKeysWithValues: blocks.map { ($0.hash, $0.index) })
         var strength: [Int: UInt64] = [:]
         var extraCounter = 0
         func blockBatch(_ block: Block) -> ChainAdmissionBatch {
@@ -156,6 +187,7 @@ struct ForkChoiceGoldenGraph {
             events.append(ForkChoiceGoldenEvent(
                 index: events.count, kind: kind, subject: block.name, batch: batch
             ))
+            oracle.apply(batch)
         }
         func arrive(_ index: Int) {
             let block = blocks[index]
@@ -215,29 +247,28 @@ struct ForkChoiceGoldenGraph {
                         )),
                     ]))
                 } else if roll < 75 {
-                    // Exclude a recent LOSING block — one that is not on the
-                    // line from the root to the highest arrived block — so the
-                    // verdicts prune side branches rather than decapitate the
-                    // tree (the generator keeps extending the highest blocks,
-                    // exclusion or not, exactly as miners that have not executed
-                    // a block keep extending it). Once, late in the script, a
-                    // block ON that line is excluded, so the golden also pins a
+                    // Mostly exclude a recent LOSING block — one off the current
+                    // canonical selection — so the verdicts prune side branches
+                    // rather than decapitate the tree (the generator keeps
+                    // extending the highest blocks, exclusion or not, exactly as
+                    // miners that have not executed a block keep extending it).
+                    // Twice, past the halfway and the nine-tenths marks, a block
+                    // ON the canonical selection is excluded: a DECISIVE
+                    // exclusion, which must move the tip, so the golden pins a
                     // canonical retreat onto the heaviest selectable branch.
-                    var trunk = Set<Int>()
-                    var walk: Int? = arrived.max { blocks[$0].height < blocks[$1].height }
-                    while let step = walk {
-                        trunk.insert(step)
-                        walk = blocks[step].parentName.map { byIndex[$0]! }
-                    }
+                    let canonical = Set(
+                        (oracle.view().canonicalProjection()?.path ?? []).compactMap { indexByHash[$0] }
+                    )
                     let window = arrived.suffix(20)
-                    let lateTrunkExclusion = !trunkExcluded && arrived.count > blockCount * 9 / 10
+                    let decisive = (decisiveExclusions == 0 && arrived.count > blockCount / 2)
+                        || (decisiveExclusions == 1 && arrived.count > blockCount * 9 / 10)
                     let candidates = window.filter {
                         blocks[$0].parentHash != nil && !excluded.contains($0)
-                            && (lateTrunkExclusion ? trunk.contains($0) : !trunk.contains($0))
+                            && (decisive ? canonical.contains($0) : !canonical.contains($0))
                     }
                     guard !candidates.isEmpty else { continue }
                     let chosen = blocks[candidates[random.nextInt(candidates.count)]]
-                    if lateTrunkExclusion { trunkExcluded = true }
+                    if decisive { decisiveExclusions += 1 }
                     excluded.insert(chosen.index)
                     add(.exclusion, chosen, ChainAdmissionBatch(facts: [
                         .exclusion(ChainExclusionFact(blockHash: chosen.hash)),
@@ -431,6 +462,61 @@ struct ForkChoiceGolden: Codable, Equatable {
     }
 }
 
+/// What only a LIVE order can show: the tip after each checkpoint and after
+/// each exclusion, how many commits removed canonical blocks (reorgs), and
+/// how many exclusions moved the tip (decisive, §9.9). Order-specific, so it
+/// is pinned per arrival order in its own file; the final state is in
+/// `fork-choice-replay.json`.
+struct ForkChoiceTraceGolden: Codable, Equatable {
+    struct Checkpoint: Codable, Equatable {
+        let event: Int
+        let kind: String
+        let subject: String
+        let tip: String
+        let tipHeight: UInt64
+        /// Canonical blocks the event's commit removed.
+        let removed: [String]
+    }
+
+    struct OrderTrace: Codable, Equatable {
+        let reorgCommits: Int
+        let decisiveExclusions: Int
+        let checkpoints: [Checkpoint]
+    }
+
+    let arrival: OrderTrace
+    let alternate: OrderTrace
+
+    static func diff(expected: ForkChoiceTraceGolden, actual: ForkChoiceTraceGolden) -> [String] {
+        var lines: [String] = []
+        for (order, expectedTrace, actualTrace) in [
+            ("arrival", expected.arrival, actual.arrival),
+            ("alternate", expected.alternate, actual.alternate),
+        ] {
+            lines += GoldenFile.fieldDiff(order, [
+                ("reorgCommits", "\(expectedTrace.reorgCommits)", "\(actualTrace.reorgCommits)"),
+                ("decisiveExclusions", "\(expectedTrace.decisiveExclusions)", "\(actualTrace.decisiveExclusions)"),
+                ("checkpointCount", "\(expectedTrace.checkpoints.count)", "\(actualTrace.checkpoints.count)"),
+            ])
+            let actualByEvent = Dictionary(uniqueKeysWithValues: actualTrace.checkpoints.map { ($0.event, $0) })
+            for checkpoint in expectedTrace.checkpoints {
+                guard let other = actualByEvent[checkpoint.event] else {
+                    lines.append("\(order) event \(checkpoint.event): missing from actual")
+                    continue
+                }
+                lines += GoldenFile.fieldDiff("\(order) event \(checkpoint.event)", [
+                    ("kind", checkpoint.kind, other.kind),
+                    ("subject", checkpoint.subject, other.subject),
+                    ("tip", checkpoint.tip, other.tip),
+                    ("tipHeight", "\(checkpoint.tipHeight)", "\(other.tipHeight)"),
+                    ("removed", "\(checkpoint.removed)", "\(other.removed)"),
+                ])
+            }
+        }
+        return lines
+    }
+}
+
 // MARK: - Tests
 
 /// Pins the consensus outcome of one scripted graph as data: subtree work,
@@ -440,31 +526,76 @@ struct ForkChoiceGolden: Codable, Equatable {
 @MainActor
 final class ForkChoiceReplayGoldenTests: XCTestCase {
     static let goldenName = "fork-choice-replay.json"
+    static let traceGoldenName = "fork-choice-replay-trace.json"
 
     private let graph = ForkChoiceGoldenGraph.generate()
 
-    /// Live admission: every batch applied in scripted arrival order, run
-    /// attribution served from the start so the per-block live path settles it.
-    func testIncrementalAdmissionInArrivalOrderMatchesGolden() async throws {
-        let chain = try await ChainState.restore(replaying: [graph.events[0].batch])
+    /// Live admission through `replay` in the given order, run attribution
+    /// served from the start so the per-block live path settles it. Returns
+    /// the chain and the order's trace.
+    private func admitLive(
+        _ order: [ForkChoiceGoldenEvent]
+    ) async throws -> (chain: ChainState, trace: ForkChoiceTraceGolden.OrderTrace) {
+        let names = graph.nameByHash
+        func name(_ hash: String) -> String { names[hash] ?? hash }
+        let chain = try await ChainState.restore(replaying: [order[0].batch])
         await chain.serveRuns(for: ForkChoiceGoldenGraph.directory)
-        for event in graph.events.dropFirst() {
+        var reorgCommits = 0
+        var decisiveExclusions = 0
+        var checkpoints: [ForkChoiceTraceGolden.Checkpoint] = []
+        for (position, event) in order.enumerated().dropFirst() {
+            let commit: ChainCommit?
             do {
-                _ = try await chain.replay(event.batch)
+                commit = try await chain.replay(event.batch)
             } catch {
-                XCTFail("event \(event.index) (\(event.kind.rawValue) \(event.subject)) threw \(error)")
-                return
+                XCTFail("position \(position), event \(event.index) (\(event.kind.rawValue) \(event.subject)) threw \(error)")
+                throw error
+            }
+            let removed = commit?.mainChainBlocksRemoved ?? []
+            if !removed.isEmpty { reorgCommits += 1 }
+            if event.kind == .exclusion, !removed.isEmpty { decisiveExclusions += 1 }
+            if position % 25 == 0 || event.kind == .exclusion {
+                let tip = await chain.getMainChainTip()
+                let tipHeight = await chain.getHighestBlockHeight()
+                checkpoints.append(ForkChoiceTraceGolden.Checkpoint(
+                    event: event.index,
+                    kind: event.kind.rawValue,
+                    subject: event.subject,
+                    tip: name(tip),
+                    tipHeight: tipHeight,
+                    removed: removed.map(name).sorted()
+                ))
             }
         }
         let unresolved = await chain.unresolvedSameChainPredecessors()
         XCTAssertTrue(unresolved.isEmpty, "every block must connect once all have arrived")
+        return (chain, ForkChoiceTraceGolden.OrderTrace(
+            reorgCommits: reorgCommits,
+            decisiveExclusions: decisiveExclusions,
+            checkpoints: checkpoints
+        ))
+    }
 
+    /// Live admission in the scripted arrival order.
+    func testIncrementalAdmissionInArrivalOrderMatchesGolden() async throws {
+        let (chain, _) = try await admitLive(graph.events)
+        let golden = try await ForkChoiceGolden.capture(chain, graph: graph)
+        try GoldenFile.assert(golden, matches: Self.goldenName, diff: ForkChoiceGolden.diff)
+    }
+
+    /// Live admission in a second, fully shuffled arrival order — the live
+    /// path (not restore's sorted replay) must reach the same final state.
+    func testAlternateArrivalOrderMatchesGolden() async throws {
+        let order = graph.alternateArrivalOrder()
+        XCTAssertNotEqual(order.map(\.index), graph.events.map(\.index), "the alternate order must differ")
+        let (chain, _) = try await admitLive(order)
         let golden = try await ForkChoiceGolden.capture(chain, graph: graph)
         try GoldenFile.assert(golden, matches: Self.goldenName, diff: ForkChoiceGolden.diff)
     }
 
     /// Recovery: the same durable facts handed to `restore` in a shuffled
-    /// order, run attribution served only afterwards over the whole graph.
+    /// order (restore sorts them itself), run attribution served afterwards
+    /// over the whole graph.
     func testShuffledRestoreReplayMatchesGolden() async throws {
         var batches = graph.events.map(\.batch)
         var random = GoldenRandom(seed: 0x5EED_5EED)
@@ -476,6 +607,22 @@ final class ForkChoiceReplayGoldenTests: XCTestCase {
 
         let golden = try await ForkChoiceGolden.capture(chain, graph: graph)
         try GoldenFile.assert(golden, matches: Self.goldenName, diff: ForkChoiceGolden.diff)
+    }
+
+    /// The order-specific observables of both live orders: checkpoint tips,
+    /// reorg commits, and decisive exclusions. Reorgs and at least one
+    /// decisive exclusion must occur in the scripted order — otherwise the
+    /// golden pins a graph in which fork choice never had to choose.
+    func testLiveAdmissionTracesMatchGolden() async throws {
+        let (_, arrival) = try await admitLive(graph.events)
+        let (_, alternate) = try await admitLive(graph.alternateArrivalOrder())
+        XCTAssertGreaterThan(arrival.reorgCommits, 0, "the scripted order must reorg")
+        XCTAssertGreaterThan(arrival.decisiveExclusions, 0, "some exclusion must move the tip")
+        try GoldenFile.assert(
+            ForkChoiceTraceGolden(arrival: arrival, alternate: alternate),
+            matches: Self.traceGoldenName,
+            diff: ForkChoiceTraceGolden.diff
+        )
     }
 
     /// The generator's coverage claims, so a later edit to it cannot quietly
@@ -510,6 +657,20 @@ final class ForkChoiceReplayGoldenTests: XCTestCase {
         XCTAssertTrue(
             graph.events.contains { $0.kind == .strengthen && byName[$0.subject]?.commitsChild == true },
             "a committer is strengthened, so ownWork moves after settlement"
+        )
+
+        // Exclusions are decisive on the final graph too: selection on weight
+        // alone lands somewhere the excluded set forbids (§9.9), judged by the
+        // spec oracle, independent of the chain.
+        var oracle = ForkChoiceOracle()
+        for event in graph.events { oracle.apply(event.batch) }
+        let selected = oracle.view().canonicalProjection()
+        let unselected = oracle.view(ignoringExclusions: true).canonicalProjection()
+        XCTAssertNotEqual(selected?.tip, unselected?.tip, "the excluded set must change the final selection")
+        let excludedHashes = Set(graph.events.filter { $0.kind == .exclusion }.map { byName[$0.subject]!.hash })
+        XCTAssertTrue(
+            unselected?.path.contains { excludedHashes.contains($0) } == true,
+            "weight alone must select through an excluded block"
         )
     }
 }

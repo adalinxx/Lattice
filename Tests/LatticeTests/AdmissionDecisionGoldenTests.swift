@@ -33,7 +33,13 @@ struct AdmissionDecisionGolden: Codable, Equatable {
         let candidate: String
         /// `accepted`, `carrier`, `duplicate` or `rejected`.
         let result: String
+        /// A stable classification of the failure (`kind.subkind`), produced by
+        /// an exhaustive switch — never a runtime description of the enum.
         let failure: String?
+        /// Chain path named by the failure, when it names one.
+        let failurePath: [String]?
+        /// Content ids named by the failure, rendered by fixture name.
+        let failureCIDs: [String]?
         let predecessorOf: String?
         let predecessor: String?
         let carrier: String?
@@ -69,6 +75,8 @@ struct AdmissionDecisionGolden: Codable, Equatable {
                 ("candidate", step.candidate, other.candidate),
                 ("result", step.result, other.result),
                 ("failure", step.failure ?? "nil", other.failure ?? "nil"),
+                ("failurePath", "\(step.failurePath ?? [])", "\(other.failurePath ?? [])"),
+                ("failureCIDs", "\(step.failureCIDs ?? [])", "\(other.failureCIDs ?? [])"),
                 ("predecessorOf", step.predecessorOf ?? "nil", other.predecessorOf ?? "nil"),
                 ("predecessor", step.predecessor ?? "nil", other.predecessor ?? "nil"),
                 ("carrier", step.carrier ?? "nil", other.carrier ?? "nil"),
@@ -96,12 +104,16 @@ struct AdmissionDecisionGolden: Codable, Equatable {
 private enum AdmissionFixtureError: Error, CustomStringConvertible {
     /// The pinned signature no longer verifies over the fixed transfer body.
     case stalePinnedSignature(fresh: String)
+    /// The target-miss fixture's carrier happened to beat the hard target.
+    case carrierHitsTheHardTarget
 
     var description: String {
         switch self {
         case .stalePinnedSignature(let fresh):
             "the transfer body changed; pin the fresh signature "
                 + "in AdmissionFixtures.transferSignature: \(fresh)"
+        case .carrierHitsTheHardTarget:
+            "missCarrier must miss the child's target of 1; change its nonce"
         }
     }
 }
@@ -134,6 +146,9 @@ private struct AdmissionFixtures {
     static let transferSignature = "100b23f8087d38114e8cf1ac895a8835988d5acc7d908b3260f9ecb19119f7ff5d8740069e145189737ed5429203186c4a5ed061a2fa0c808064a9bc5e3a9802"
 
     let fetcher = StorableFetcher()
+    /// Block boundaries and the spec only — what a node holds after weighing —
+    /// so a validate-tier execution finds no body to run.
+    let bodyless = StorableFetcher()
     private(set) var names: [String: String] = [:]
     private(set) var blocks: [String: Block] = [:]
     private(set) var packages: [String: ChildValidationPackage] = [:]
@@ -242,21 +257,81 @@ private struct AdmissionFixtures {
             fetcher: fixtures.fetcher
         )
         fixtures.packages["childCandidate"] = ChildValidationPackage(proof: proof)
+
+        // A child block whose own target the carrier's hash MISSES: the proof
+        // still relays work for descendants, but at this level the block is a
+        // carrier, never admitted.
+        let hardTarget = UInt256(1)
+        let hardChildGenesis = try fixtures.register("hardChildGenesis", try await buildAndStoreGenesis(
+            spec: spec, timestamp: 1_000, target: hardTarget, nonce: 1, fetcher: fixtures.fetcher
+        ))
+        let missedChild = try fixtures.register("missedChild", try await buildAndStoreBlock(
+            previous: hardChildGenesis, parentChainBlock: genesis,
+            timestamp: 2_000, target: hardTarget, nextTarget: easy, nonce: 2, fetcher: fixtures.fetcher
+        ))
+        let missCarrier = try fixtures.register("missCarrier", try await buildAndStoreGenesis(
+            spec: spec, children: [childDirectory: missedChild],
+            timestamp: 3_000, target: easy, nonce: 3, fetcher: fixtures.fetcher
+        ))
+        guard missCarrier.proofOfWorkHash() > hardTarget else {
+            throw AdmissionFixtureError.carrierHitsTheHardTarget
+        }
+        fixtures.packages["missedChild"] = ChildValidationPackage(proof: try await ChildBlockProof.generate(
+            rootHeader: try BlockHeader(node: missCarrier),
+            childDirectory: childDirectory,
+            fetcher: fixtures.fetcher
+        ))
+
+        try await BlockHeader(node: valid).storeBlockBoundary(fetcher: fixtures.fetcher, storer: fixtures.bodyless)
+        try await BlockHeader(node: genesis).storeBlockBoundary(fetcher: fixtures.fetcher, storer: fixtures.bodyless)
+        fixtures.bodyless.store(
+            rawCid: genesis.spec.rawCID,
+            data: try await fixtures.fetcher.fetch(rawCid: genesis.spec.rawCID)
+        )
         return fixtures
     }
 
     func name(_ hash: String) -> String { names[hash] ?? hash }
 
-    /// Replace every known hash inside free text (a failure description).
-    func named(_ text: String) -> String {
-        names.reduce(text) { $0.replacingOccurrences(of: $1.key, with: "<\($1.value)>") }
+    func hash(named name: String) throws -> String {
+        try BlockHeader(node: try XCTUnwrap(blocks[name], "no fixture named \(name)")).rawCID
     }
 
-    func level(genesis: String, path: [String] = [DEFAULT_ROOT_DIRECTORY]) -> ChainLevel {
+    func level(genesis: String, path: [String] = [DEFAULT_ROOT_DIRECTORY]) throws -> ChainLevel {
         ChainLevel(
-            chain: ChainState.fromGenesis(block: blocks[genesis]!),
+            chain: ChainState.fromGenesis(block: try XCTUnwrap(blocks[genesis], "no fixture named \(genesis)")),
             context: testChainContext(path: path)
         )
+    }
+
+    /// The stable classification the golden records for a failure.
+    func classify(_ failure: ChainAdmissionFailure) -> (kind: String, path: [String]?, cids: [String]?) {
+        switch failure {
+        case .unavailableEvidence: return ("unavailableEvidence", nil, nil)
+        case .providerMalformedEvidence: return ("providerMalformedEvidence", nil, nil)
+        case .protocolInvalid: return ("protocolInvalid", nil, nil)
+        case .localVerificationFailure: return ("localVerificationFailure", nil, nil)
+        case .notYetAdmissible: return ("notYetAdmissible", nil, nil)
+        case .notAcceptedAtCurrentChain: return ("notAcceptedAtCurrentChain", nil, nil)
+        case .revisionExhausted: return ("revisionExhausted", nil, nil)
+        case .crossChainEvidenceRequired(let requirement):
+            switch requirement {
+            case .childProof(let chainPath, let childCID):
+                return ("crossChainEvidenceRequired.childProof", chainPath, [name(childCID)])
+            case .parentGenesis(let parentPath, let directory, let childGenesisCID, let parentStateCID):
+                return (
+                    "crossChainEvidenceRequired.parentGenesis",
+                    parentPath + [directory],
+                    [name(childGenesisCID), name(parentStateCID)]
+                )
+            case .parentStateContinuity(let parentPath, let fromStateCID, let toStateCID):
+                return (
+                    "crossChainEvidenceRequired.parentStateContinuity",
+                    parentPath,
+                    [name(fromStateCID), name(toStateCID)]
+                )
+            }
+        }
     }
 }
 
@@ -267,6 +342,8 @@ private struct AdmissionScenario {
         let candidate: String
         var package: Bool = false
         var missing: String? = nil
+        /// Resolve against the boundary-only fetcher.
+        var bodyless: Bool = false
         /// Overrides the sweep mode for sequence scenarios.
         var mode: AdmissionMode? = nil
     }
@@ -298,6 +375,19 @@ private struct AdmissionScenario {
             name: "carriedChildWithoutProof", genesis: "childGenesis",
             path: [DEFAULT_ROOT_DIRECTORY, AdmissionFixtures.childDirectory],
             steps: [Step(candidate: "childCandidate")]
+        ),
+        AdmissionScenario(
+            name: "targetMissCarrier", genesis: "hardChildGenesis",
+            path: [DEFAULT_ROOT_DIRECTORY, AdmissionFixtures.childDirectory],
+            steps: [Step(candidate: "missedChild", package: true)]
+        ),
+        AdmissionScenario(
+            name: "weighedThenValidateWithoutBody", genesis: "genesis",
+            steps: [
+                Step(candidate: "valid", bodyless: true, mode: .weighed),
+                Step(candidate: "valid", bodyless: true, mode: .validate),
+            ],
+            sequence: true
         ),
         AdmissionScenario(
             name: "weighedThenValidate", genesis: "genesis",
@@ -356,19 +446,23 @@ final class AdmissionDecisionGoldenTests: XCTestCase {
         sweep: AdmissionMode?,
         fixtures: AdmissionFixtures
     ) async throws -> [AdmissionDecisionGolden.Step] {
-        let level = fixtures.level(genesis: scenario.genesis, path: scenario.path)
+        let level = try fixtures.level(genesis: scenario.genesis, path: scenario.path)
         var steps: [AdmissionDecisionGolden.Step] = []
         for (index, step) in scenario.steps.enumerated() {
             let mode = step.mode ?? sweep ?? .eager
             let block = try XCTUnwrap(fixtures.blocks[step.candidate])
             let header = try BlockHeader(node: block)
             let recorder = StagingRecorder()
-            let fetcher: any Fetcher = step.missing.map { name in
-                MissingCIDFetcher(
-                    backing: fixtures.fetcher,
-                    missingCID: try! BlockHeader(node: fixtures.blocks[name]!).rawCID
-                ) as any Fetcher
-            } ?? fixtures.fetcher
+            let fetcher: any Fetcher
+            if let missing = step.missing {
+                fetcher = MissingCIDFetcher(
+                    backing: fixtures.fetcher, missingCID: try fixtures.hash(named: missing)
+                )
+            } else if step.bodyless {
+                fetcher = fixtures.bodyless
+            } else {
+                fetcher = fixtures.fetcher
+            }
             let result = try await level.admitBlockHeaderChainLocal(
                 header,
                 fetcher: fetcher,
@@ -412,13 +506,16 @@ final class AdmissionDecisionGoldenTests: XCTestCase {
             let possessed = await level.chain.contains(blockHash: header.rawCID)
             let executed = await level.chain.hasExecutedAncestry(blockHash: header.rawCID)
             let excluded = await level.chain.excludedRootsForTesting.contains(header.rawCID)
+            let failure = result.failure.map(fixtures.classify)
             steps.append(AdmissionDecisionGolden.Step(
                 scenario: scenario.name,
                 mode: scenario.sequence ? "sequence" : modeName(mode),
                 step: index,
                 candidate: step.candidate,
                 result: resultName,
-                failure: result.failure.map { fixtures.named(String(describing: $0)) },
+                failure: failure?.kind,
+                failurePath: failure?.path,
+                failureCIDs: failure?.cids,
                 predecessorOf: result.sameChainPredecessor.map { fixtures.name($0.descendantCID) },
                 predecessor: result.sameChainPredecessor.map { fixtures.name($0.predecessorCID) },
                 carrier: result.parentCarrierLink.map { fixtures.name($0.carrierCID) },

@@ -127,7 +127,10 @@ final class ForkChoiceOracleTests: XCTestCase {
         var livePath: [String] = []
         let tipHeight = await chain.getHighestBlockHeight()
         for height in 0...tipHeight {
-            if let hash = await chain.getMainChainBlockHash(atIndex: height) { livePath.append(hash) }
+            let hash = await chain.getMainChainBlockHash(atIndex: height)
+            livePath.append(try XCTUnwrap(
+                hash, "\(event): canonical index has a hole at height \(height)", file: file, line: line
+            ))
         }
         XCTAssertEqual(livePath, projection.path, "\(event): canonical path", file: file, line: line)
 

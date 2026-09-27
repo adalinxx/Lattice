@@ -12,7 +12,8 @@ struct AdmissionBatchEncodingGolden: Codable, Equatable {
         let name: String
         let byteCount: Int
         let hex: String
-        /// `ChainFactID` of each fact, the identity the fact log dedups by.
+        /// `ChainFactID` of each fact — the identity the fact log dedups by —
+        /// encoded with the same encoder, as its JSON text (ASCII bytes).
         let factIDs: [String]
     }
 
@@ -142,7 +143,9 @@ final class AdmissionBatchEncodingGoldenTests: XCTestCase {
                 name: fixture.name,
                 byteCount: bytes.count,
                 hex: bytes.hexDigits,
-                factIDs: fixture.batch.facts.map { String(describing: $0.id) }
+                factIDs: try fixture.batch.facts.map {
+                    String(decoding: try Self.encoder().encode($0.id), as: UTF8.self)
+                }
             )
         }
         try GoldenFile.assert(
