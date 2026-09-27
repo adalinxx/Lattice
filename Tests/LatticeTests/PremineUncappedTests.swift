@@ -16,15 +16,13 @@ final class PremineUncappedTests: XCTestCase {
     private let halvingInterval: UInt64 = 10_000
 
     private func spec(premine: UInt64, directory: String = "Nexus") -> ChainSpec {
-        ChainSpec(
+        ChainSpec.test(
             maxNumberOfTransactionsPerBlock: 1000,
             maxStateGrowth: 1_000_000,
-            maxBlockSize: 1_000_000,
             premine: premine,
             targetBlockTime: 10_000,
             initialReward: initialReward,
-            halvingInterval: halvingInterval,
-            halfLife: 5
+            halvingInterval: halvingInterval
         )
     }
 
@@ -73,30 +71,24 @@ final class PremineUncappedTests: XCTestCase {
     }
 
     func testPremineAmountDoesNotTrapOnLargeHalvingInterval() {
-        let s = ChainSpec(
+        let s = ChainSpec.test(
             maxNumberOfTransactionsPerBlock: 1000,
             maxStateGrowth: 1_000_000,
-            maxBlockSize: 1_000_000,
             premine: UInt64.max - 1,
             targetBlockTime: 10_000,
-            initialReward: 1024,
-            halvingInterval: UInt64.max / 2,
-            halfLife: 5
+            halvingInterval: UInt64.max / 2
         )
 
         XCTAssertEqual(s.premineAmount(), UInt64.max)
     }
 
     func testTotalRewardsDoesNotTrapOnLargeHalvingInterval() {
-        let s = ChainSpec(
+        let s = ChainSpec.test(
             maxNumberOfTransactionsPerBlock: 1000,
             maxStateGrowth: 1_000_000,
-            maxBlockSize: 1_000_000,
             premine: UInt64.max - 1,
             targetBlockTime: 10_000,
-            initialReward: 1024,
-            halvingInterval: UInt64.max / 2,
-            halfLife: 5
+            halvingInterval: UInt64.max / 2
         )
 
         XCTAssertEqual(s.totalRewards(upToBlock: UInt64.max), UInt64.max)

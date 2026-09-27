@@ -81,10 +81,7 @@ final class GhostReorgEdgeCaseTests: XCTestCase {
         let fetcher = StorableFetcher()
         let diff = UInt256(1000)
         let base = Int64(Date().timeIntervalSince1970 * 1000) - 50_000
-        let spec = ChainSpec(maxNumberOfTransactionsPerBlock: 100,
-                             maxStateGrowth: 100_000, maxBlockSize: 1_000_000, premine: 0,
-                             targetBlockTime: 1_000, initialReward: 1024, halvingInterval: 10_000,
-                             halfLife: 5)
+        let spec = ChainSpec.test()
         let genesis = try await buildAndStoreGenesis(spec: spec, timestamp: base, target: diff, fetcher: fetcher)
         let chain = ChainState.fromGenesis(block: genesis)
         // Main chain G→A→B (2 blocks).
@@ -123,10 +120,7 @@ final class ReorgBookkeepingTests: XCTestCase {
         let fetcher = StorableFetcher()
         let diff = UInt256(1000)
         let base = Int64(Date().timeIntervalSince1970 * 1000) - 50_000
-        let spec = ChainSpec(maxNumberOfTransactionsPerBlock: 100,
-                             maxStateGrowth: 100_000, maxBlockSize: 1_000_000, premine: 0,
-                             targetBlockTime: 1_000, initialReward: 1024, halvingInterval: 10_000,
-                             halfLife: 5)
+        let spec = ChainSpec.test()
         let genesis = try await buildAndStoreGenesis(spec: spec, timestamp: base, target: diff, fetcher: fetcher)
         let chain = ChainState.fromGenesis(block: genesis)
         let cid = { (blk: Block) in try! VolumeImpl<Block>(node: blk).rawCID }

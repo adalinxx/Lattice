@@ -34,6 +34,10 @@ final class StorableFetcher: Fetcher, Storer, VolumeStorer, Sendable {
         state.withLock { $0[rawCid] != nil }
     }
 
+    var entries: [String: Data] {
+        state.withLock { $0 }
+    }
+
     func fetch(rawCid: String) async throws -> Data {
         guard let data = state.withLock({ $0[rawCid] }) else {
             throw cashew.FetcherError.notFound(rawCid)
@@ -56,8 +60,65 @@ func testCID(_ seed: String) -> String {
 }
 
 struct ThrowingFetcher: Fetcher {
+    /// The error every fetch throws; `nil` throws `FetcherError.notFound` for
+    /// the requested CID (the "nothing is available" stub).
+    let error: (any Error)?
+
+    init(error: (any Error)? = nil) {
+        self.error = error
+    }
+
     func fetch(rawCid: String) async throws -> Data {
-        throw cashew.FetcherError.notFound(rawCid)
+        throw error ?? cashew.FetcherError.notFound(rawCid)
+    }
+}
+
+/// Wraps a store and counts how many objects a walk pulls through it: the
+/// DEPTH of a walk is a property only a fetch count can see.
+actor CountingFetcher: Fetcher, Storer, VolumeStorer {
+    let backing: StorableFetcher
+    private var fetches = 0
+
+    init(backing: StorableFetcher = StorableFetcher()) {
+        self.backing = backing
+    }
+
+    func count() -> Int { fetches }
+    func resetCount() { fetches = 0 }
+
+    func fetch(rawCid: String) async throws -> Data {
+        fetches += 1
+        return try await backing.fetch(rawCid: rawCid)
+    }
+
+    func store(entries: [String: Data]) async { await backing.store(entries: entries) }
+    func store(volume: SerializedVolume) async { await backing.store(volume: volume) }
+}
+
+/// Serves a fully populated store except for the CIDs it is told to deny,
+/// which fail as `FetcherError.notFound` — the data is genuinely available but
+/// momentarily un-fetchable (peer withholding, an in-flight re-request, a
+/// source that went away). Re-pointing `denied` simulates the data arriving;
+/// `denyAll()` is one-way — the source is gone for good, and `setDenied`
+/// cannot bring it back.
+actor DenyingFetcher: Fetcher {
+    private let backing: StorableFetcher
+    private var denied: Set<String>
+    private var deniesEverything = false
+
+    init(backing: StorableFetcher, denied: Set<String> = []) {
+        self.backing = backing
+        self.denied = denied
+    }
+
+    func setDenied(_ cids: Set<String>) { denied = cids }
+    func denyAll() { deniesEverything = true }
+
+    func fetch(rawCid: String) async throws -> Data {
+        if deniesEverything || denied.contains(rawCid) {
+            throw cashew.FetcherError.notFound(rawCid)
+        }
+        return try await backing.fetch(rawCid: rawCid)
     }
 }
 

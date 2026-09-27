@@ -19,16 +19,7 @@ private actor StagingContextRecorder {
 final class AdmissionStagingContextTests: XCTestCase {
     func testRootBootstrapStagesItsVerifiedCarrierLink() async throws {
         let fetcher = StorableFetcher()
-        let spec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            maxBlockSize: 1_000_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1_024,
-            halvingInterval: 10_000,
-            halfLife: 5
-        )
+        let spec = ChainSpec.test()
         let genesis = try await buildAndStoreGenesis(
             spec: spec,
             timestamp: Int64(Date().timeIntervalSince1970 * 1_000),
