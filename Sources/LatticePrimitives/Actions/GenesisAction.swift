@@ -19,7 +19,7 @@ public struct GenesisAction: Codable, Sendable {
         case blockCID
     }
 
-    func stateDelta() -> Int {
+    package func stateDelta() -> Int {
         blockCID.utf8.count + directory.utf8.count
     }
 }

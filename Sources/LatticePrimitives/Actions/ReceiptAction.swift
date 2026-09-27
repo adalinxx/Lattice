@@ -16,7 +16,7 @@ public struct ReceiptAction: Codable, Sendable {
         self.directory = directory
     }
 
-    func stateDelta() -> Int {
+    package func stateDelta() -> Int {
         withdrawer.utf8.count + demander.utf8.count + directory.utf8.count + 24
     }
 }

@@ -1,4 +1,5 @@
 import cashew
+import LatticePrimitives
 
 public extension ReceiptStateHeader {
     func proveExistenceAndVerifyWithdrawers(directory: String, withdrawalActions: [WithdrawalAction], fetcher: Fetcher) async throws -> ReceiptStateHeader {

@@ -1,6 +1,8 @@
 import cashew
 import CID
 import UInt256
+import LatticePrimitives
+import LatticePoW
 
 // Parent-attributed run work (§9.10): what a parent serves its children
 // about committing blocks, and how a child derives a strengthening from

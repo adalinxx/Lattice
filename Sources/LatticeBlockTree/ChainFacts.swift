@@ -1,5 +1,7 @@
 import Foundation
 import cashew
+import LatticePrimitives
+import LatticePoW
 
 public struct SameChainPredecessorRequirement: Sendable, Equatable {
     public let descendantCID: String
@@ -177,6 +179,12 @@ public struct ChainAdmissionBatch: Codable, Sendable, Equatable {
 
     init(facts: [ChainAdmissionFact]) {
         self.facts = facts
+    }
+
+    /// A batch staged by the import funnel in another module. The initializer
+    /// itself stays internal, so general batch construction is not public API.
+    package static func staged(_ facts: [ChainAdmissionFact]) -> ChainAdmissionBatch {
+        ChainAdmissionBatch(facts: facts)
     }
 
     /// The one batch shape a node may author: "this block's transition was

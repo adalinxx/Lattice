@@ -55,7 +55,7 @@ public struct Transaction {
         (try? Multikey.decode(fromHex: value))?.hexEncoded ?? value
     }
 
-    private static func normalized(
+    package static func normalized(
         _ signatures: [String: String]
     ) -> [String: String]? {
         var result: [String: String] = [:]

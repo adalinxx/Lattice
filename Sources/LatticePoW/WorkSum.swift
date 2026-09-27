@@ -1,4 +1,5 @@
 import UInt256
+import LatticePrimitives
 
 /// An exact, growable sum of fixed-width proof-of-work contributions.
 /// Individual targets remain `UInt256`; cumulative and subtree work must not
@@ -149,32 +150,32 @@ public struct WorkSum: Codable, Hashable, Sendable, Comparable, CustomStringConv
 /// Exact proof-of-work keyed by physical grind identity. A grind has one block
 /// location per chain, but may appear once at every level of the hierarchy.
 /// If several levels observe its difficulty, the strongest verified value wins.
-struct WorkMeasure: Sendable, Equatable {
+package struct WorkMeasure: Sendable, Equatable {
     private var workByGrind: [String: UInt256]
 
-    static let zero = WorkMeasure()
+    package static let zero = WorkMeasure()
 
-    init() {
+    package init() {
         workByGrind = [:]
     }
 
-    init(_ contributions: some Sequence<VerifiedWorkContribution>) {
+    package init(_ contributions: some Sequence<VerifiedWorkContribution>) {
         workByGrind = [:]
         for contribution in contributions {
             insert(contribution)
         }
     }
 
-    var total: WorkSum {
+    package var total: WorkSum {
         workByGrind.values.reduce(.zero) { $0 + $1 }
     }
 
-    var entries: [String: UInt256] {
+    package var entries: [String: UInt256] {
         workByGrind
     }
 
     @discardableResult
-    mutating func insert(_ contribution: VerifiedWorkContribution) -> Bool {
+    package mutating func insert(_ contribution: VerifiedWorkContribution) -> Bool {
         let id = CIDIdentity.canonicalString(contribution.id) ?? contribution.id
         guard contribution.work > (workByGrind[id] ?? .zero) else {
             return false
@@ -183,7 +184,7 @@ struct WorkMeasure: Sendable, Equatable {
         return true
     }
 
-    mutating func formUnion(_ other: WorkMeasure) {
+    package mutating func formUnion(_ other: WorkMeasure) {
         for (id, work) in other.workByGrind where work > (workByGrind[id] ?? .zero) {
             workByGrind[id] = work
         }

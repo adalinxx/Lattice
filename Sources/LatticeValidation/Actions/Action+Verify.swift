@@ -1,3 +1,5 @@
+import LatticePrimitives
+
 extension AccountAction {
     public func verify() -> Bool {
         delta != 0 && delta != Int64.min

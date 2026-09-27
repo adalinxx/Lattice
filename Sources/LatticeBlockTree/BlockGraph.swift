@@ -1,4 +1,6 @@
 import UInt256
+import LatticePrimitives
+import LatticePoW
 
 /// The immutable identity of one held block: what its PoW-bound content says
 /// about its place in the tree. Nothing here changes once the block is held,

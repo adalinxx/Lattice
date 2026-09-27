@@ -1,5 +1,7 @@
 import Foundation
 import UInt256
+import LatticePrimitives
+import LatticePoW
 
 /// A permanent fact produced by the Lattice process responsible for
 /// `parentPath` after it verifies this exact grind's path to `carrierCID`.

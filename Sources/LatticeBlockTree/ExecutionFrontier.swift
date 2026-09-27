@@ -1,5 +1,6 @@
 import CID
 import UInt256
+import LatticePrimitives
 
 struct StateTransition: Hashable {
     let from: String
@@ -676,7 +677,7 @@ extension ChainState {
     /// One coherent canonical context for transaction preflight. Keeping the
     /// tip and its snapshot in one actor read lets callers reject a result if
     /// the canonical tip changes while content is being resolved.
-    func transactionPreflightTip() -> (cid: String, snapshot: TipBlockSnapshot?) {
+    package func transactionPreflightTip() -> (cid: String, snapshot: TipBlockSnapshot?) {
         (chainTip, tipSnapshot)
     }
 
@@ -799,7 +800,7 @@ extension ChainState {
     /// Whether some OTHER genesis root of this chain is on the executed
     /// frontier — "is there a chain to stand on", the test a producer runs
     /// before it may exclude a root (§9.9).
-    func hasExecutedRoot(besides blockHash: String) -> Bool {
+    package func hasExecutedRoot(besides blockHash: String) -> Bool {
         (indexToBlockHash[0] ?? []).contains {
             $0 != blockHash
                 && graph.parent(of: $0) == nil

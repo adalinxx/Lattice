@@ -16,7 +16,7 @@ public struct WithdrawalAction: Codable, Sendable {
         self.amountWithdrawn = amountWithdrawn
     }
 
-    func stateDelta() -> Int {
+    package func stateDelta() -> Int {
         withdrawer.utf8.count + demander.utf8.count + 32
     }
 }

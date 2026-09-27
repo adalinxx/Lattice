@@ -1,5 +1,6 @@
 import cashew
 import Foundation
+import LatticePrimitives
 
 extension Transaction {
     /// The consensus signature rule: every attached signature must verify over
@@ -66,7 +67,7 @@ extension Transaction {
         return true
     }
 
-    func validateTransactionForNexus(fetcher: Fetcher) async throws -> Bool {
+    package func validateTransactionForNexus(fetcher: Fetcher) async throws -> Bool {
         guard let bodyNode = try await validateSignaturesAndResolve(fetcher: fetcher) else { return false }
         if !bodyNode.stateAtomsAreValid() { return false }
         if !bodyNode.accountActionsAreValid() { return false }

@@ -41,4 +41,4 @@ public struct DepositKey: LosslessStringConvertible {
 
 public typealias DepositState = VolumeMerkleDictionaryImpl<UInt64>
 public typealias DepositStateHeader = VolumeImpl<DepositState>
-let SPENT_DEPOSIT_MARKER: UInt64 = 0
+package let SPENT_DEPOSIT_MARKER: UInt64 = 0

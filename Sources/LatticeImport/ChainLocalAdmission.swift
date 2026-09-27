@@ -1,5 +1,10 @@
 import Foundation
 import cashew
+import LatticePrimitives
+import LatticePoW
+import LatticeValidation
+import LatticeProofs
+import LatticeBlockTree
 
 public enum ChainAdmissionFailure: Error, Sendable, Equatable {
     case unavailableEvidence
@@ -218,7 +223,7 @@ fileprivate struct PreparedAdmission: Sendable {
         // An exclusion is a standalone verdict: exactly one `.exclusion` fact,
         // no block or work fact (both already durable from the weighed tier).
         if case .exclusion = kind {
-            return ChainAdmissionBatch(facts: [
+            return ChainAdmissionBatch.staged([
                 .exclusion(ChainExclusionFact(blockHash: resolvedHeader.rawCID)),
             ])
         }
@@ -253,7 +258,7 @@ fileprivate struct PreparedAdmission: Sendable {
                 blockHash: resolvedHeader.rawCID
             )))
         }
-        return ChainAdmissionBatch(facts: facts)
+        return ChainAdmissionBatch.staged(facts)
     }
 
     /// Store the immutable validation Volumes before the node takes its
