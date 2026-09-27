@@ -559,12 +559,13 @@ private struct TrustedAdmissionBatch {
 }
 
 public actor ChainState {
-    var chainTip: String
-    var mainChainHashes: Set<String>
     var indexToBlockHash: [UInt64: Set<String>]
     var hashToBlock: [String: BlockMeta]
     /// GHOST weights, grind locations and excluded roots (ForkChoice.swift).
     var forkChoice: ForkChoice
+    /// The canonical projection, the executed-from-genesis frontier and the
+    /// state-transition index (ExecutionFrontier.swift).
+    var frontier: ExecutionFrontier
     /// Run work per child directory per committing block (§9.10): the sum of
     /// credited work — grinds and attributed runs alike — over CONNECTED
     /// blocks whose nearest committer into that directory is the key.
@@ -577,18 +578,6 @@ public actor ChainState {
     /// by what this node asked for, not by what any block commits into.
     private var servedDirectories: Set<String>
 #if DEBUG
-    /// Test-visible diagnostic for a whole-block canonical materialization.
-    var fullCanonicalProjectionCount: UInt64
-    /// Projections that re-descended from the divergence point instead of the
-    /// root. A truncation that silently never fired would still be CORRECT, so
-    /// the cost tests assert this rises rather than only that the answers match.
-    var truncatedCanonicalProjectionCount: UInt64
-    /// Blocks materialized by canonical projections, and segments walked to
-    /// select the canonical spine. The projection COUNT cannot show the cost
-    /// PER projection, which is what live-sync admission actually pays.
-    var canonicalProjectionBlockVisitCount: UInt64
-    var canonicalProjectionSegmentVisitCount: UInt64
-    var stateContinuityBlockVisitCount: UInt64
     /// Run-bucket updates. Each connected block costs one per directory it
     /// has a nearest committer for, so this is O(#directories) per block —
     /// asserted by ratio, never by stopwatch.
@@ -598,15 +587,6 @@ public actor ChainState {
     /// fork-choice inputs and are rebuilt only when an API exposes them.
     var localWorkCachesDirty: Bool
 
-    var mainChainBlockAtIndex: [UInt64: String]
-    /// Generation at which the canonical projection was last brought current
-    /// BY AN ACTUAL PROJECTION. Every graph/weight mutation flows through
-    /// submitBlock or addWorkContribution, both of which advance
-    /// `mutationGeneration`, so equality proves the projection is exact and
-    /// re-projection is a no-op. `nil` = never verified: the package
-    /// initializer can construct a deliberately stale projection (simulation
-    /// and tests do), so currency is only ever established by projecting.
-    var projectedGeneration: UInt64?
     /// Restore-replay defers the derived canonical projection: batches are
     /// durable, already-admitted facts, their commits are discarded, and no
     /// replay step reads the projection — so it is computed exactly once at
@@ -618,37 +598,6 @@ public actor ChainState {
     /// reservations are fungible and disappear on restart; staged facts replay
     /// against the same pre-stage revision floor.
     var reservedAdmissionRevisions: UInt64
-
-    public internal(set) var tipSnapshot: TipBlockSnapshot?
-    var tipSnapshotsByHash: [String: TipBlockSnapshot]
-    var blocksByStateTransition: [StateTransition: Set<String>]
-    var blocksByPostState: [String: Set<String>]
-
-    /// Blocks whose transition this chain EXECUTED, so their `postState` is a
-    /// reproduced result rather than a declared claim. Grows only: execution is
-    /// a fact about immutable bytes, so it is never retracted, and a re-
-    /// delivered weighed fact must never downgrade an executed block.
-    ///
-    /// Kept beside `tipSnapshotsByHash` rather than inside it because snapshot
-    /// equality is used as a corruption predicate: a block whose committed
-    /// fields changed means a corrupt graph, whereas a block that has since
-    /// been executed is ordinary progress.
-    var validatedBlocks: Set<String>
-
-    /// Blocks reachable from this chain's genesis through an unbroken run of
-    /// EXECUTED blocks — i.e. every state on the path was produced, not merely
-    /// declared.
-    ///
-    /// This is what "the chain produced this state" means, and keeping it as an
-    /// index makes answering it O(1) instead of a walk whose length grows with
-    /// chain height. Block 1 of a child chain anchors against `emptyHeader`,
-    /// which is reachable only at the parent's genesis, so without this the
-    /// anchor cost would grow without bound and a deployment would eventually
-    /// become unanswerable.
-    ///
-    /// Monotone, like `validatedBlocks`: execution is a fact about immutable
-    /// bytes and an ancestor never stops having been executed.
-    var anchoredBlocks: Set<String>
 
     // Restore validates this invariant; optional access keeps query paths fail-closed.
     var highestBlock: BlockMeta? { hashToBlock[chainTip] }
@@ -664,8 +613,6 @@ public actor ChainState {
         validatedBlocks: Set<String> = [],
         mutationGeneration: UInt64 = 0
     ) throws {
-        self.chainTip = chainTip
-        self.mainChainHashes = mainChainHashes
         guard hashToBlock.values.allSatisfy({ meta in
             guard Set(meta.childHashes).count == meta.childHashes.count,
                   (meta.parentBlockHash == nil) == (meta.blockHeight == 0)
@@ -690,11 +637,6 @@ public actor ChainState {
         self.hashToBlock = hashToBlock
         self.forkChoice = ForkChoice()
 #if DEBUG
-        self.fullCanonicalProjectionCount = 0
-        self.truncatedCanonicalProjectionCount = 0
-        self.canonicalProjectionBlockVisitCount = 0
-        self.canonicalProjectionSegmentVisitCount = 0
-        self.stateContinuityBlockVisitCount = 0
         self.runAttributionUpdateCount = 0
 #endif
         self.localWorkCachesDirty = true
@@ -703,34 +645,8 @@ public actor ChainState {
             allByHeight[meta.blockHeight, default: []].insert(meta.blockHash)
         }
         self.indexToBlockHash = allByHeight
-        self.tipSnapshot = tipSnapshot
-        self.tipSnapshotsByHash = tipSnapshotsByHash
-        if let tipSnapshot {
-            self.tipSnapshotsByHash[chainTip] = tipSnapshot
-        }
-        self.validatedBlocks = validatedBlocks
-        self.anchoredBlocks = []
-        self.blocksByStateTransition = [:]
-        self.blocksByPostState = [:]
-        for (blockHash, snapshot) in self.tipSnapshotsByHash
-        where hashToBlock[blockHash] != nil {
-            self.blocksByStateTransition[
-                StateTransition(
-                    from: snapshot.prevStateCID,
-                    to: snapshot.postStateCID
-                ),
-                default: []
-            ].insert(blockHash)
-            if snapshot.prevStateCID != snapshot.postStateCID {
-                self.blocksByPostState[
-                    snapshot.postStateCID,
-                    default: []
-                ].insert(blockHash)
-            }
-        }
         self.mutationGeneration = mutationGeneration
         self.reservedAdmissionRevisions = 0
-        self.mainChainBlockAtIndex = [:]
         for meta in self.hashToBlock.values {
             let contributions = meta.workContributions.values
             guard !contributions.isEmpty else {
@@ -748,13 +664,18 @@ public actor ChainState {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
         self.forkChoice = ForkChoice.build(from: self.hashToBlock)
-        for hash in mainChainHashes {
-            guard let height = self.hashToBlock[hash]?.blockHeight,
-                  self.mainChainBlockAtIndex[height] == nil else {
-                throw ChainStateRestoreError.corruptConsensusGraph
-            }
-            self.mainChainBlockAtIndex[height] = hash
-        }
+        // Seed the executed-from-genesis frontier. Replay hands validations to
+        // `markValidated` one at a time, but a graph restored wholesale needs
+        // it computed once, downward from every genesis it holds.
+        self.frontier = try ExecutionFrontier(
+            chainTip: chainTip,
+            mainChainHashes: mainChainHashes,
+            tipSnapshot: tipSnapshot,
+            snapshots: tipSnapshotsByHash,
+            validated: validatedBlocks,
+            in: self.hashToBlock,
+            excluded: self.forkChoice.excludedRoots
+        )
         // Runs (§9.10) are settled by `serveRuns(for:)`, one directory at a
         // time, through the same per-block step live admission uses — one
         // algorithm, not a rebuild twin. Connectivity IS the weight index:
@@ -765,14 +686,6 @@ public actor ChainState {
         guard hashToBlock.values.allSatisfy({ $0.nearestCommitter.isEmpty }) else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
-        // Seed the executed-from-genesis frontier. Replay hands validations to
-        // `markValidated` one at a time, but a graph restored wholesale needs
-        // it computed once, downward from every genesis it holds.
-        self.anchoredBlocks = Self.anchoredFrontier(
-            in: self.hashToBlock,
-            validated: self.validatedBlocks,
-            excluded: self.forkChoice.excludedRoots
-        )
     }
 
     package static func fromGenesis(
@@ -891,7 +804,7 @@ public actor ChainState {
     private func completeReplayProjectionDeferral() {
         deferProjectionForReplay = false
         _ = projectCanonicalChain(forceFull: true)
-        tipSnapshot = tipSnapshotsByHash[chainTip]
+        frontier.refreshTipSnapshot()
     }
 
     private static func replay(
@@ -1340,7 +1253,7 @@ public actor ChainState {
             ? nil
             : projectCanonicalChain(monotoneIncreaseAt: blockHash)
         if canonicalChange != nil {
-            tipSnapshot = tipSnapshotsByHash[chainTip]
+            frontier.refreshTipSnapshot()
         }
         return SubmissionResult(
             addedBlock: false,
@@ -1562,7 +1475,7 @@ public actor ChainState {
         if let input = trusted.block {
             if let existing = hashToBlock[input.blockHash] {
                 guard matchesGraph(existing, input: input),
-                      tipSnapshotsByHash[input.blockHash].map({
+                      frontier.snapshot(of: input.blockHash).map({
                           $0 == input.snapshot
                       }) ?? true else {
                     throw ChainStateRestoreError.corruptConsensusGraph
@@ -1680,7 +1593,7 @@ public actor ChainState {
             ? nil
             : projectCanonicalChain(forceFull: true)
         if canonicalChange != nil {
-            tipSnapshot = tipSnapshotsByHash[chainTip]
+            frontier.refreshTipSnapshot()
         }
         return SubmissionResult(
             addedBlock: false,
@@ -1739,8 +1652,9 @@ public actor ChainState {
 
     private func hydrateMetadata(from input: ConsensusBlockInput) {
         indexStateTransition(input.snapshot, blockHash: input.blockHash)
+        // The index above just recorded `input.snapshot` for this block.
         if chainTip == input.blockHash {
-            tipSnapshot = input.snapshot
+            frontier.refreshTipSnapshot()
         }
         if let commitments = input.childCommitments {
             adoptChildCommitments(commitments, at: input.blockHash)
