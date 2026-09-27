@@ -78,6 +78,9 @@ let package = Package(
                 "DeterminismGoldens",
                 .product(name: "WasmParser", package: "WasmKit"),
                 .product(name: "WAT", package: "WasmKit"),
-            ])
+            ],
+            // Checked-in golden expectations, read from the source tree via
+            // `#filePath` (see GoldenFile.swift), not as bundle resources.
+            exclude: ["Goldens"])
     ]
 )
