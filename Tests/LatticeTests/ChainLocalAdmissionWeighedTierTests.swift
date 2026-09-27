@@ -603,6 +603,128 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         )
     }
 
+    // MARK: - Liveness: a parked anchor resolves once the ancestry connects
+
+    /// Builds genesis -> B1...B(count), all held in `fetcher`, with timestamps
+    /// 1_000 apart, and the anchor every one of them must resolve to.
+    private func heldChain(
+        count: Int, fetcher: StorableFetcher
+    ) async throws -> (genesis: Block, blocks: [Block], cids: [String], anchor: DifficultyAnchor) {
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        var blocks: [Block] = []
+        var previous = genesis
+        for i in 1...count {
+            previous = try await AdmissionFixture.makeChild(
+                of: previous, fetcher: fetcher, timestamp: 1_000 + Int64(i) * 1_000, nonce: UInt64(i)
+            )
+            blocks.append(previous)
+        }
+        let cids = try blocks.map { try BlockHeader(node: $0).rawCID }
+        let anchor = DifficultyAnchor(
+            blockHeight: 1, timestamp: blocks[0].timestamp, target: blocks[0].target
+        )
+        return (genesis, blocks, cids, anchor)
+    }
+
+    func testParkedCandidateIsAdmittedOnceItsAncestryConnects() async throws {
+        // B5 parks while only genesis is known. After B1...B4 are admitted in
+        // order, re-admitting the same B5 must be accepted and inherit block
+        // one's anchor. Parking is only safe if it is never permanent.
+        let fetcher = StorableFetcher()
+        let held = try await heldChain(count: 5, fetcher: fetcher)
+        let level = AdmissionFixture.makeLevel(genesis: held.genesis)
+
+        let parked = try await level.admit(held.blocks[4], mode: .header, fetcher: fetcher)
+        XCTAssertEqual(parked.failure, .unavailableEvidence)
+        XCTAssertEqual(parked.sameChainPredecessor?.predecessorCID, held.cids[3])
+
+        for (block, cid) in zip(held.blocks.prefix(4), held.cids) {
+            let result = try await level.admit(block, mode: .header, fetcher: fetcher)
+            guard case .accepted = result else {
+                return XCTFail("B\(block.height) extends the chain, got \(result)")
+            }
+            XCTAssertNil(result.sameChainPredecessor, "B\(block.height) \(cid) is connected")
+        }
+
+        let readmitted = try await level.admit(held.blocks[4], mode: .header, fetcher: fetcher)
+        guard case .accepted = readmitted else {
+            return XCTFail("B5 must be admitted once B4 connects, got \(readmitted)")
+        }
+        XCTAssertNil(readmitted.sameChainPredecessor)
+        let anchor = await level.chain.difficultyAnchor(forBlockHash: held.cids[4])
+        XCTAssertEqual(anchor, held.anchor, "B5 inherits block one's anchor")
+    }
+
+    func testCandidateOverAHeldButDisconnectedParentIsAdmittedOnceThatParentConnects() async throws {
+        // B2 is weighed in over a missing B1 (its height-1 parent anchors it),
+        // so B2 is HELD but DISCONNECTED and carries no anchor. B3 over B2
+        // cannot resolve one (B2 has none, B1 is not in the graph) and parks
+        // on B2. Once B1 arrives, the lazy backfill in
+        // `ChainState.difficultyAnchor` answers for B2, and B3 is accepted.
+        let fetcher = StorableFetcher()
+        let held = try await heldChain(count: 3, fetcher: fetcher)
+        let level = AdmissionFixture.makeLevel(genesis: held.genesis)
+
+        let blockTwo = try await level.admit(held.blocks[1], mode: .header, fetcher: fetcher)
+        guard case .accepted = blockTwo else {
+            return XCTFail("B2 over a height-1 parent is weighed in, got \(blockTwo)")
+        }
+        XCTAssertEqual(blockTwo.sameChainPredecessor?.predecessorCID, held.cids[0])
+        let disconnectedAnchor = await level.chain.difficultyAnchor(forBlockHash: held.cids[1])
+        XCTAssertNil(disconnectedAnchor, "a disconnected B2 has no anchor to inherit")
+
+        let parked = try await level.admit(held.blocks[2], mode: .header, fetcher: fetcher)
+        XCTAssertEqual(parked.failure, .unavailableEvidence)
+        XCTAssertEqual(parked.sameChainPredecessor?.predecessorCID, held.cids[1])
+
+        let blockOne = try await level.admit(held.blocks[0], mode: .header, fetcher: fetcher)
+        guard case .accepted = blockOne else {
+            return XCTFail("B1 extends genesis, got \(blockOne)")
+        }
+
+        let readmitted = try await level.admit(held.blocks[2], mode: .header, fetcher: fetcher)
+        guard case .accepted = readmitted else {
+            return XCTFail("B3 must be admitted once B2 connects, got \(readmitted)")
+        }
+        XCTAssertNil(readmitted.sameChainPredecessor)
+        let backfilled = await level.chain.difficultyAnchor(forBlockHash: held.cids[1])
+        XCTAssertEqual(backfilled, held.anchor, "B2's anchor is backfilled from B1")
+        let inherited = await level.chain.difficultyAnchor(forBlockHash: held.cids[2])
+        XCTAssertEqual(inherited, held.anchor, "B3 inherits block one's anchor")
+    }
+
+    func testRestoredOrphanResolvesItsAnchorOnceItsAncestryIsReplayed() async throws {
+        // Restore replays facts in the order they were written, so an orphan
+        // (B2 recorded before B1) comes back without an anchor. Replaying B1
+        // after it connects the orphan: the anchor lookup resolves and B3 over
+        // B2 is accepted. The control restore without B1 parks B3 on B2.
+        let fetcher = StorableFetcher()
+        let held = try await heldChain(count: 3, fetcher: fetcher)
+        let genesisBatch = try testAdmissionBatch(for: held.genesis)
+        let orphanBatch = try testAdmissionBatch(for: held.blocks[1])
+        let connectingBatch = try testAdmissionBatch(for: held.blocks[0])
+
+        let orphaned = ChainLevel(testChain: try await ChainState.restore(
+            replaying: [genesisBatch, orphanBatch]
+        ))
+        let orphanAnchor = await orphaned.chain.difficultyAnchor(forBlockHash: held.cids[1])
+        XCTAssertNil(orphanAnchor, "control: the replayed orphan has no anchor")
+        let parked = try await orphaned.admit(held.blocks[2], mode: .header, fetcher: fetcher)
+        XCTAssertEqual(parked.failure, .unavailableEvidence)
+        XCTAssertEqual(parked.sameChainPredecessor?.predecessorCID, held.cids[1])
+
+        let connected = ChainLevel(testChain: try await ChainState.restore(
+            replaying: [genesisBatch, orphanBatch, connectingBatch]
+        ))
+        let resolved = await connected.chain.difficultyAnchor(forBlockHash: held.cids[1])
+        XCTAssertEqual(resolved, held.anchor, "the replayed B1 connects the orphan B2")
+        let accepted = try await connected.admit(held.blocks[2], mode: .header, fetcher: fetcher)
+        guard case .accepted = accepted else {
+            return XCTFail("B3 over the connected B2 is accepted, got \(accepted)")
+        }
+        XCTAssertNil(accepted.sameChainPredecessor)
+    }
+
     func testWeighedAdmissionIssuesNoCrossChainFacts() async throws {
         // Deferred-execution safety: a weighed (not-yet-executed) child block
         // must issue NO carrier link and NO parent-genesis link, because a child
