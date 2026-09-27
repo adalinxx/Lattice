@@ -31,7 +31,7 @@ private func gapSpec() -> ChainSpec {
         targetBlockTime: 1_000,
         initialReward: 1024,
         halvingInterval: 10_000,
-        retargetWindow: 5
+        halfLife: 5
     )
 }
 
@@ -224,7 +224,7 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024,
             halvingInterval: 10_000,
-            retargetWindow: 5
+            halfLife: 5
         )
     }
 

@@ -156,8 +156,8 @@ creates no local consensus fact and does not tell Lattice to retain the carrier.
   canonicity and unproven parent hashpower are not inherited.
 - Deeper hierarchies increase proof, availability, and process-coordination work;
   they do not require canonical confirmation at every ancestor level.
-- More committed child data increases trie and availability load, while a block
-  itself commits the children trie by one CID-bearing header.
+- More committed child data increases index and availability load, while a
+  block itself commits the child index by one CID-bearing header.
 - The library does not define peer transport, filesystem layout, storage budgets,
   or process topology.
 

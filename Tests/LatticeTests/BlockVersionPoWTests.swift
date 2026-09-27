@@ -14,7 +14,7 @@ final class BlockVersionPoWTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024,
             halvingInterval: 10_000,
-            retargetWindow: 5
+            halfLife: 5
         )
     }
 
@@ -97,7 +97,7 @@ final class BlockVersionPoWTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024,
             halvingInterval: 10_000,
-            retargetWindow: 5
+            halfLife: 5
         )
         let otherSpec = try! VolumeImpl<ChainSpec>(node: differentContentSpec)
         let sameScalarsDifferentContent = copy(block, spec: otherSpec)
@@ -140,7 +140,7 @@ final class BlockVersionPoWTests: XCTestCase {
         let block = try await deterministicGenesis()
         let preimage = Block.makeProofOfWorkPreimage(block: block, nonce: 0)
         let digest = UInt256.hash(preimage).toHexString()
-        let goldenDigest = "c6094511585691aa3d5397be0b6047d548d9124fcebca65f8f4fb65ca6b1439a"
+        let goldenDigest = "22bddfd8357f49ee0f435ce3f7ae8c2a5df7c2114ea15bdd757f39f9733facd0"
 
         XCTAssertEqual(
             digest,

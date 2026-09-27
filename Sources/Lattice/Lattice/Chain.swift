@@ -110,7 +110,7 @@ public struct BlockMeta: Sendable {
     /// run it serves and reaches the next level down.
     public private(set) var attributedRuns: Set<String>
     /// Directory → child block CID this block commits, read from its PoW-bound
-    /// `children` trie at admission and carried on the durable block fact, so
+    /// `children` index at admission and carried on the durable block fact, so
     /// live admission and replay see the same commitments (§9.10).
     /// Nil when NOT RECORDED — a fact written before this field existed — which
     /// is not "commits nothing": replay tolerates it, and a later fact for the

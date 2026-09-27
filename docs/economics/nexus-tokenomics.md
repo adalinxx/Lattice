@@ -30,16 +30,13 @@ not automatically inherit all Nexus hashpower or Nexus canonicity.
 | `halvingInterval` | `876,600` blocks | About 100 years at one-hour blocks |
 | `premine` | `175,320` blocks | Front-of-schedule issuance |
 | `targetBlockTime` | `3,600,000` ms | One hour |
-| `retargetWindow` | `120` blocks | About five days |
+| `halfLife` | `120` blocks | The schedule's half-life, about five days |
 | `maxBlockSize` | `1,000,000` bytes | Unique canonical block + transaction Volume bytes |
 | `maxStateGrowth` | `3,000,000` bytes | Per block |
 | `maxNumberOfTransactionsPerBlock` | `5,000` | Per block |
-| `maxTargetChange` | unset (`nil`) | No per-retarget clamp |
 
-`ChainSpec.maxTargetChange` defaults to `nil` — no per-retarget clamp. A chain
-may commit a factor; **Nexus commits none**, so Nexus retargets by the full
-unclamped proportional correction. There is no minimum-target floor. A chain
-directory is positional path data, not a `ChainSpec` field.
+There is no per-retarget clamp and no minimum-target floor: the schedule is
+absolute. A chain directory is positional path data, not a `ChainSpec` field.
 
 ## Emission
 
@@ -105,12 +102,10 @@ Nexus retargets every block by an **absolute schedule (ASERT)** measured from
 the height-1 anchor of the block's own branch, not by a window over recent
 intervals. A block's target is its parent's `nextTarget` or voluntarily harder,
 never easier — there is no minimum-target floor and no recovery exception.
-`maxTargetChange` is no longer read: an absolute schedule has no proportional
-step to clamp.
 
 The schedule holds difficulty steady at exactly one-hour spacing, and moves one
 doubling per half-life of accumulated drift, where the half-life is
-`retargetWindow × targetBlockTime` = 120 hours. Because the target depends only
+`halfLife × targetBlockTime` = 120 hours. Because the target depends only
 on the anchor and the present block, a stretch of unusual block times stops
 mattering the moment it stops happening — there is no window to drain and no
 clustered-window attractor to walk back out of. Moving a timestamp backwards

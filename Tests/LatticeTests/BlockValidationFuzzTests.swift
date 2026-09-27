@@ -58,7 +58,8 @@ final class ChainSpecFuzzTests: XCTestCase {
                 premine: premine,
                 targetBlockTime: 1000,
                 initialReward: reward,
-                halvingInterval: interval
+                halvingInterval: interval,
+                halfLife: 10
             )
             guard spec.isValid else { continue }
 
@@ -80,7 +81,8 @@ final class ChainSpecFuzzTests: XCTestCase {
                 premine: 0,
                 targetBlockTime: 1000,
                 initialReward: reward,
-                halvingInterval: interval
+                halvingInterval: interval,
+                halfLife: 10
             )
             guard spec.isValid else { continue }
 
@@ -107,7 +109,8 @@ final class ChainSpecFuzzTests: XCTestCase {
                 premine: 0,
                 targetBlockTime: 1000,
                 initialReward: reward,
-                halvingInterval: interval
+                halvingInterval: interval,
+                halfLife: 10
             )
             guard spec.isValid else { continue }
 
@@ -120,42 +123,6 @@ final class ChainSpecFuzzTests: XCTestCase {
                            "Mismatch for reward=\(reward), interval=\(interval), blockCount=\(blockCount)")
         }
     }
-
-    func testPairDifficultyTracksTargetRatio() {
-        var rng = SeededRNG(seed: 303)
-        let spec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 1_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1_024,
-            halvingInterval: 10_000
-        )
-
-        for _ in 0..<500 {
-            let prevDiff = UInt256(UInt64.random(in: 100...UInt64.max / 2, using: &rng))
-            let prevTime: Int64 = 1_000_000
-            let delta = Int64.random(in: 1...600_000, using: &rng)
-            let blockTime = prevTime + delta
-
-            let newDiff = spec.calculateMinimumTarget(
-                previousTarget: prevDiff,
-                blockTimestamp: blockTime,
-                previousTimestamp: prevTime
-            )
-
-            let actual = UInt256(UInt64(delta))
-            let target = UInt256(spec.targetBlockTime)
-            let quotient = prevDiff / target
-            let remainder = prevDiff % target
-            let scaledQuotient = quotient > UInt256.max / actual ? UInt256.max : quotient * actual
-            let scaledRemainderProduct = remainder > UInt256.max / actual ? UInt256.max : remainder * actual
-            let scaledRemainder = scaledRemainderProduct / target
-            let expected = scaledQuotient > UInt256.max - scaledRemainder ? UInt256.max : scaledQuotient + scaledRemainder
-            XCTAssertEqual(newDiff, expected, "Difficulty must follow exact target ratio: \(prevDiff), delta=\(delta)ms")
-        }
-    }
-
     func testChainSpecValidationEdgeCases() {
         var rng = SeededRNG(seed: 404)
         for _ in 0..<500 {
@@ -172,7 +139,8 @@ final class ChainSpecFuzzTests: XCTestCase {
                 premine: premine,
                 targetBlockTime: blockTime,
                 initialReward: reward,
-                halvingInterval: interval
+                halvingInterval: interval,
+                halfLife: 10
             )
 
             if spec.isValid {
@@ -202,7 +170,8 @@ final class ChainSpecFuzzTests: XCTestCase {
                 premine: premine,
                 targetBlockTime: 1000,
                 initialReward: reward,
-                halvingInterval: interval
+                halvingInterval: interval,
+                halfLife: 10
             )
             guard spec.isValid else { continue }
 

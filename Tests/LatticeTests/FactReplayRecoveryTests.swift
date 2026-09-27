@@ -188,7 +188,8 @@ private func recoverySpec() -> ChainSpec {
         premine: 0,
         targetBlockTime: 1_000,
         initialReward: 1,
-        halvingInterval: 1_000
+        halvingInterval: 1_000,
+        halfLife: 10
     )
 }
 
