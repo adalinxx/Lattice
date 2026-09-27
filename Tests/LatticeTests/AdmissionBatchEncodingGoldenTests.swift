@@ -70,19 +70,21 @@ final class AdmissionBatchEncodingGoldenTests: XCTestCase {
 
     private func cid(_ seed: String) -> String { testCID("batch-encoding/\(seed)") }
 
-    /// Sorted keys, no whitespace: the one canonical presentation the bytes are
-    /// compared under. (The node's own encoder configuration lives outside this
-    /// package; what this pins is the coding-key set and every value's form.)
+    /// Sorted keys, unescaped slashes, no whitespace — the configuration the
+    /// node's fact log writes with (lattice-node `NodeStore`), so these bytes
+    /// are the bytes recovery reads. What this pins is the coding-key set and
+    /// every value's form; a fixture key carries a "/" so escaping drift shows.
     private static func encoder() -> JSONEncoder {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return encoder
     }
 
     /// One batch of every durable shape the reducer accepts.
-    private func fixedBatches() -> [(name: String, batch: ChainAdmissionBatch)] {
+    private func fixedBatches() throws -> [(name: String, batch: ChainAdmissionBatch)] {
         let block = cid("block")
         let identity = AttributedRunIdentity(committerBlockHash: cid("committer"), directory: "Child")
+        let identityID = try XCTUnwrap(identity.contributionID, "attributed-run identity has no CID")
         return [
             ("blockWithWorkAndValidation", ChainAdmissionBatch(facts: [
                 .block(ChainBlockFact(
@@ -96,7 +98,11 @@ final class AdmissionBatchEncodingGoldenTests: XCTestCase {
                     nextTarget: UInt256(999).toHexString(),
                     timestamp: 1_700_000_000_123,
                     stateDiff: StateDiff(replaced: [cid("replaced"): 1], created: [cid("created"): 2]),
-                    childCommitments: ["Child": cid("child-block"), "Other": cid("other-block")]
+                    childCommitments: [
+                        "Child": cid("child-block"),
+                        "Other": cid("other-block"),
+                        "With/Slash": cid("slash-block"),
+                    ]
                 )),
                 .work(ChainWorkFact(
                     blockHash: block,
@@ -125,7 +131,7 @@ final class AdmissionBatchEncodingGoldenTests: XCTestCase {
             ("attributedRun", ChainAdmissionBatch(facts: [
                 .work(ChainWorkFact(
                     blockHash: block,
-                    contribution: VerifiedWorkContribution(id: identity.contributionID!, work: UInt256(42)),
+                    contribution: VerifiedWorkContribution(id: identityID, work: UInt256(42)),
                     attributedRun: identity
                 )),
             ])),
@@ -160,7 +166,7 @@ final class AdmissionBatchEncodingGoldenTests: XCTestCase {
     func testGoldenBytesRoundTripThroughDecodeAndReencode() throws {
         let data = try XCTUnwrap(FileManager.default.contents(atPath: GoldenFile.url(Self.goldenName).path))
         let golden = try JSONDecoder().decode(AdmissionBatchEncodingGolden.self, from: data)
-        let fixtures = Dictionary(uniqueKeysWithValues: fixedBatches().map { ($0.name, $0.batch) })
+        let fixtures = Dictionary(uniqueKeysWithValues: try fixedBatches().map { ($0.name, $0.batch) })
         XCTAssertEqual(Set(golden.entries.map(\.name)), Set(fixtures.keys))
         for entry in golden.entries {
             let bytes = try XCTUnwrap(Data(hex: entry.hex), "\(entry.name): golden hex is malformed")

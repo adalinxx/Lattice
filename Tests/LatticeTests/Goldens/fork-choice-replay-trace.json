@@ -2,144 +2,245 @@
   "alternate" : {
     "checkpoints" : [
       {
-        "event" : 329,
+        "event" : 438,
         "kind" : "block",
         "removed" : [
 
         ],
-        "subject" : "b217",
+        "subject" : "b296",
         "tip" : "b0",
         "tipHeight" : 0
       },
       {
-        "event" : 296,
-        "kind" : "block",
-        "removed" : [
-
-        ],
-        "subject" : "b199",
-        "tip" : "b0",
-        "tipHeight" : 0
-      },
-      {
-        "event" : 47,
-        "kind" : "block",
-        "removed" : [
-
-        ],
-        "subject" : "b31",
-        "tip" : "b0",
-        "tipHeight" : 0
-      },
-      {
-        "event" : 353,
+        "event" : 136,
         "kind" : "exclusion",
         "removed" : [
 
         ],
-        "subject" : "b217",
+        "subject" : "b82",
         "tip" : "b0",
         "tipHeight" : 0
       },
       {
-        "event" : 340,
+        "event" : 100,
         "kind" : "block",
         "removed" : [
 
         ],
-        "subject" : "b226",
-        "tip" : "b0",
+        "subject" : "b60",
+        "tip" : "b1",
         "tipHeight" : 0
       },
       {
-        "event" : 379,
-        "kind" : "attributedRun",
-        "removed" : [
-
-        ],
-        "subject" : "b25",
-        "tip" : "b0",
-        "tipHeight" : 0
-      },
-      {
-        "event" : 183,
+        "event" : 315,
         "kind" : "exclusion",
         "removed" : [
 
         ],
-        "subject" : "b108",
-        "tip" : "b0",
+        "subject" : "b213",
+        "tip" : "b1",
         "tipHeight" : 0
       },
       {
-        "event" : 2,
-        "kind" : "block",
-        "removed" : [
-          "b0"
-        ],
-        "subject" : "b1",
-        "tip" : "b8",
-        "tipHeight" : 1
-      },
-      {
-        "event" : 165,
+        "event" : 159,
         "kind" : "block",
         "removed" : [
 
         ],
-        "subject" : "b114",
-        "tip" : "b8",
-        "tipHeight" : 1
+        "subject" : "b104",
+        "tip" : "b1",
+        "tipHeight" : 0
       },
       {
-        "event" : 51,
-        "kind" : "validation",
-        "removed" : [
-
-        ],
-        "subject" : "b4",
-        "tip" : "b8",
-        "tipHeight" : 1
-      },
-      {
-        "event" : 92,
+        "event" : 31,
         "kind" : "block",
         "removed" : [
 
         ],
-        "subject" : "b64",
-        "tip" : "b8",
-        "tipHeight" : 1
+        "subject" : "b18",
+        "tip" : "b1",
+        "tipHeight" : 0
       },
       {
-        "event" : 371,
+        "event" : 270,
+        "kind" : "block",
+        "removed" : [
+
+        ],
+        "subject" : "b182",
+        "tip" : "b171",
+        "tipHeight" : 4
+      },
+      {
+        "event" : 310,
         "kind" : "exclusion",
         "removed" : [
 
         ],
-        "subject" : "b236",
-        "tip" : "b8",
-        "tipHeight" : 1
+        "subject" : "b192",
+        "tip" : "b171",
+        "tipHeight" : 4
       },
       {
-        "event" : 150,
-        "kind" : "secondGrind",
-        "removed" : [
-
-        ],
-        "subject" : "b80",
-        "tip" : "b8",
-        "tipHeight" : 1
-      },
-      {
-        "event" : 108,
+        "event" : 13,
         "kind" : "exclusion",
         "removed" : [
 
         ],
-        "subject" : "b65",
+        "subject" : "b7",
+        "tip" : "b171",
+        "tipHeight" : 4
+      },
+      {
+        "event" : 61,
+        "kind" : "block",
+        "removed" : [
+
+        ],
+        "subject" : "b38",
+        "tip" : "b171",
+        "tipHeight" : 4
+      },
+      {
+        "event" : 48,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b9",
+        "tip" : "b171",
+        "tipHeight" : 4
+      },
+      {
+        "event" : 154,
+        "kind" : "block",
+        "removed" : [
+
+        ],
+        "subject" : "b98",
+        "tip" : "b171",
+        "tipHeight" : 4
+      },
+      {
+        "event" : 240,
+        "kind" : "block",
+        "removed" : [
+
+        ],
+        "subject" : "b163",
+        "tip" : "b171",
+        "tipHeight" : 4
+      },
+      {
+        "event" : 326,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b207",
+        "tip" : "b171",
+        "tipHeight" : 4
+      },
+      {
+        "event" : 28,
+        "kind" : "exclusion",
+        "removed" : [
+          "b5",
+          "b6"
+        ],
+        "subject" : "b5",
+        "tip" : "b171",
+        "tipHeight" : 4
+      },
+      {
+        "event" : 24,
+        "kind" : "block",
+        "removed" : [
+
+        ],
+        "subject" : "b14",
+        "tip" : "b171",
+        "tipHeight" : 4
+      },
+      {
+        "event" : 27,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b11",
+        "tip" : "b171",
+        "tipHeight" : 4
+      },
+      {
+        "event" : 404,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b259",
+        "tip" : "b171",
+        "tipHeight" : 4
+      },
+      {
+        "event" : 17,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b6",
+        "tip" : "b171",
+        "tipHeight" : 4
+      },
+      {
+        "event" : 248,
+        "kind" : "block",
+        "removed" : [
+
+        ],
+        "subject" : "b165",
+        "tip" : "b171",
+        "tipHeight" : 4
+      },
+      {
+        "event" : 256,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b154",
         "tip" : "b8",
-        "tipHeight" : 1
+        "tipHeight" : 2
+      },
+      {
+        "event" : 226,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b146",
+        "tip" : "b8",
+        "tipHeight" : 2
+      },
+      {
+        "event" : 30,
+        "kind" : "block",
+        "removed" : [
+
+        ],
+        "subject" : "b19",
+        "tip" : "b8",
+        "tipHeight" : 2
+      },
+      {
+        "event" : 416,
+        "kind" : "block",
+        "removed" : [
+
+        ],
+        "subject" : "b283",
+        "tip" : "b8",
+        "tipHeight" : 2
       },
       {
         "event" : 189,
@@ -147,185 +248,277 @@
         "removed" : [
 
         ],
-        "subject" : "b105",
+        "subject" : "b110",
         "tip" : "b8",
-        "tipHeight" : 1
-      },
-      {
-        "event" : 312,
-        "kind" : "exclusion",
-        "removed" : [
-
-        ],
-        "subject" : "b198",
-        "tip" : "b8",
-        "tipHeight" : 1
-      },
-      {
-        "event" : 255,
-        "kind" : "exclusion",
-        "removed" : [
-
-        ],
-        "subject" : "b165",
-        "tip" : "b8",
-        "tipHeight" : 1
-      },
-      {
-        "event" : 31,
-        "kind" : "exclusion",
-        "removed" : [
-
-        ],
-        "subject" : "b16",
-        "tip" : "b8",
-        "tipHeight" : 1
-      },
-      {
-        "event" : 211,
-        "kind" : "block",
-        "removed" : [
-
-        ],
-        "subject" : "b142",
-        "tip" : "b8",
-        "tipHeight" : 1
-      },
-      {
-        "event" : 187,
-        "kind" : "exclusion",
-        "removed" : [
-
-        ],
-        "subject" : "b109",
-        "tip" : "b11",
         "tipHeight" : 2
       },
       {
-        "event" : 199,
+        "event" : 62,
         "kind" : "exclusion",
         "removed" : [
 
         ],
-        "subject" : "b122",
-        "tip" : "b18",
-        "tipHeight" : 3
+        "subject" : "b38",
+        "tip" : "b8",
+        "tipHeight" : 2
       },
       {
-        "event" : 433,
-        "kind" : "validation",
+        "event" : 38,
+        "kind" : "exclusion",
         "removed" : [
 
         ],
         "subject" : "b13",
-        "tip" : "b18",
-        "tipHeight" : 3
+        "tip" : "b8",
+        "tipHeight" : 2
       },
       {
-        "event" : 343,
-        "kind" : "strengthen",
-        "removed" : [
-
-        ],
-        "subject" : "b203",
-        "tip" : "b290",
-        "tipHeight" : 4
-      },
-      {
-        "event" : 378,
+        "event" : 245,
         "kind" : "secondGrind",
         "removed" : [
 
         ],
-        "subject" : "b52",
-        "tip" : "b290",
-        "tipHeight" : 4
+        "subject" : "b13",
+        "tip" : "b8",
+        "tipHeight" : 2
       },
       {
-        "event" : 166,
-        "kind" : "block",
+        "event" : 206,
+        "kind" : "exclusion",
         "removed" : [
 
         ],
-        "subject" : "b115",
-        "tip" : "b4",
-        "tipHeight" : 3
+        "subject" : "b133",
+        "tip" : "b8",
+        "tipHeight" : 2
       },
       {
-        "event" : 265,
+        "event" : 358,
         "kind" : "secondGrind",
         "removed" : [
 
         ],
-        "subject" : "b167",
-        "tip" : "b4",
-        "tipHeight" : 3
+        "subject" : "b150",
+        "tip" : "b8",
+        "tipHeight" : 2
+      },
+      {
+        "event" : 46,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b14",
+        "tip" : "b8",
+        "tipHeight" : 2
+      },
+      {
+        "event" : 235,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b155",
+        "tip" : "b8",
+        "tipHeight" : 2
+      },
+      {
+        "event" : 3,
+        "kind" : "validation",
+        "removed" : [
+
+        ],
+        "subject" : "b1",
+        "tip" : "b8",
+        "tipHeight" : 2
+      },
+      {
+        "event" : 42,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b12",
+        "tip" : "b8",
+        "tipHeight" : 2
+      },
+      {
+        "event" : 292,
+        "kind" : "secondGrind",
+        "removed" : [
+
+        ],
+        "subject" : "b110",
+        "tip" : "b8",
+        "tipHeight" : 2
+      },
+      {
+        "event" : 93,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b45",
+        "tip" : "b8",
+        "tipHeight" : 2
+      },
+      {
+        "event" : 176,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b116",
+        "tip" : "b8",
+        "tipHeight" : 2
       }
     ],
-    "decisiveExclusions" : 0,
-    "reorgCommits" : 7
+    "decisiveExclusions" : 1,
+    "reorgCommits" : 7,
+    "reorgCommitsAfterFirstDecisiveExclusion" : 3
   },
   "arrival" : {
     "checkpoints" : [
+      {
+        "event" : 13,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b7",
+        "tip" : "b3",
+        "tipHeight" : 2
+      },
+      {
+        "event" : 17,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b6",
+        "tip" : "b11",
+        "tipHeight" : 3
+      },
       {
         "event" : 25,
         "kind" : "block",
         "removed" : [
 
         ],
-        "subject" : "b13",
-        "tip" : "b16",
+        "subject" : "b15",
+        "tip" : "b14",
         "tipHeight" : 4
       },
       {
-        "event" : 31,
+        "event" : 27,
         "kind" : "exclusion",
         "removed" : [
 
         ],
-        "subject" : "b16",
-        "tip" : "b17",
-        "tipHeight" : 5
+        "subject" : "b11",
+        "tip" : "b14",
+        "tipHeight" : 4
+      },
+      {
+        "event" : 28,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b5",
+        "tip" : "b14",
+        "tipHeight" : 4
+      },
+      {
+        "event" : 38,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b13",
+        "tip" : "b23",
+        "tipHeight" : 7
+      },
+      {
+        "event" : 42,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b12",
+        "tip" : "b23",
+        "tipHeight" : 7
+      },
+      {
+        "event" : 46,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b14",
+        "tip" : "b23",
+        "tipHeight" : 7
+      },
+      {
+        "event" : 48,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b9",
+        "tip" : "b29",
+        "tipHeight" : 8
       },
       {
         "event" : 50,
         "kind" : "block",
         "removed" : [
-
+          "b22",
+          "b29"
         ],
-        "subject" : "b34",
-        "tip" : "b32",
-        "tipHeight" : 11
+        "subject" : "b31",
+        "tip" : "b31",
+        "tipHeight" : 8
       },
       {
-        "event" : 75,
-        "kind" : "secondGrind",
-        "removed" : [
-
-        ],
-        "subject" : "b11",
-        "tip" : "b47",
-        "tipHeight" : 13
-      },
-      {
-        "event" : 100,
-        "kind" : "secondGrind",
-        "removed" : [
-
-        ],
-        "subject" : "b45",
-        "tip" : "b65",
-        "tipHeight" : 17
-      },
-      {
-        "event" : 108,
+        "event" : 62,
         "kind" : "exclusion",
         "removed" : [
 
         ],
-        "subject" : "b65",
-        "tip" : "b72",
-        "tipHeight" : 20
+        "subject" : "b38",
+        "tip" : "b39",
+        "tipHeight" : 11
+      },
+      {
+        "event" : 75,
+        "kind" : "attributedRun",
+        "removed" : [
+
+        ],
+        "subject" : "b39",
+        "tip" : "b40",
+        "tipHeight" : 12
+      },
+      {
+        "event" : 93,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b45",
+        "tip" : "b56",
+        "tipHeight" : 16
+      },
+      {
+        "event" : 100,
+        "kind" : "block",
+        "removed" : [
+
+        ],
+        "subject" : "b60",
+        "tip" : "b56",
+        "tipHeight" : 16
       },
       {
         "event" : 125,
@@ -333,48 +526,50 @@
         "removed" : [
 
         ],
-        "subject" : "b85",
-        "tip" : "b84",
-        "tipHeight" : 21
+        "subject" : "b80",
+        "tip" : "b80",
+        "tipHeight" : 23
+      },
+      {
+        "event" : 136,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b82",
+        "tip" : "b83",
+        "tipHeight" : 25
       },
       {
         "event" : 150,
-        "kind" : "secondGrind",
+        "kind" : "block",
         "removed" : [
-
+          "b88",
+          "b92",
+          "b93"
         ],
-        "subject" : "b80",
-        "tip" : "b102",
-        "tipHeight" : 26
+        "subject" : "b95",
+        "tip" : "b95",
+        "tipHeight" : 27
       },
       {
         "event" : 175,
-        "kind" : "strengthen",
+        "kind" : "block",
         "removed" : [
 
         ],
-        "subject" : "b17",
-        "tip" : "b116",
-        "tipHeight" : 32
+        "subject" : "b116",
+        "tip" : "b111",
+        "tipHeight" : 33
       },
       {
-        "event" : 183,
+        "event" : 176,
         "kind" : "exclusion",
         "removed" : [
 
         ],
-        "subject" : "b108",
-        "tip" : "b116",
-        "tipHeight" : 32
-      },
-      {
-        "event" : 187,
-        "kind" : "exclusion",
-        "removed" : [
-
-        ],
-        "subject" : "b109",
-        "tip" : "b127",
+        "subject" : "b116",
+        "tip" : "b111",
         "tipHeight" : 33
       },
       {
@@ -383,19 +578,9 @@
         "removed" : [
 
         ],
-        "subject" : "b105",
-        "tip" : "b128",
-        "tipHeight" : 34
-      },
-      {
-        "event" : 199,
-        "kind" : "exclusion",
-        "removed" : [
-
-        ],
-        "subject" : "b122",
-        "tip" : "b135",
-        "tipHeight" : 36
+        "subject" : "b110",
+        "tip" : "b125",
+        "tipHeight" : 35
       },
       {
         "event" : 200,
@@ -403,73 +588,110 @@
         "removed" : [
 
         ],
-        "subject" : "b134",
-        "tip" : "b135",
-        "tipHeight" : 36
+        "subject" : "b135",
+        "tip" : "b125",
+        "tipHeight" : 35
+      },
+      {
+        "event" : 206,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b133",
+        "tip" : "b137",
+        "tipHeight" : 37
       },
       {
         "event" : 225,
         "kind" : "block",
         "removed" : [
-          "b150",
-          "b151"
+
         ],
-        "subject" : "b154",
-        "tip" : "b154",
-        "tipHeight" : 42
+        "subject" : "b150",
+        "tip" : "b149",
+        "tipHeight" : 41
+      },
+      {
+        "event" : 226,
+        "kind" : "exclusion",
+        "removed" : [
+          "b146",
+          "b149"
+        ],
+        "subject" : "b146",
+        "tip" : "b148",
+        "tipHeight" : 40
+      },
+      {
+        "event" : 235,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b155",
+        "tip" : "b153",
+        "tipHeight" : 41
       },
       {
         "event" : 250,
         "kind" : "block",
         "removed" : [
-          "b157",
-          "b159"
+
         ],
         "subject" : "b167",
-        "tip" : "b167",
-        "tipHeight" : 46
+        "tip" : "b153",
+        "tipHeight" : 41
       },
       {
-        "event" : 255,
+        "event" : 256,
         "kind" : "exclusion",
         "removed" : [
-          "b165",
-          "b167",
-          "b170"
+
         ],
-        "subject" : "b165",
-        "tip" : "b156",
+        "subject" : "b154",
+        "tip" : "b172",
         "tipHeight" : 44
       },
       {
         "event" : 275,
-        "kind" : "validation",
+        "kind" : "strengthen",
         "removed" : [
 
         ],
-        "subject" : "b61",
-        "tip" : "b156",
-        "tipHeight" : 44
+        "subject" : "b169",
+        "tip" : "b187",
+        "tipHeight" : 47
       },
       {
         "event" : 300,
-        "kind" : "secondGrind",
+        "kind" : "block",
         "removed" : [
 
         ],
-        "subject" : "b159",
-        "tip" : "b156",
-        "tipHeight" : 44
+        "subject" : "b201",
+        "tip" : "b193",
+        "tipHeight" : 51
       },
       {
-        "event" : 312,
+        "event" : 310,
         "kind" : "exclusion",
         "removed" : [
 
         ],
-        "subject" : "b198",
-        "tip" : "b156",
-        "tipHeight" : 44
+        "subject" : "b192",
+        "tip" : "b207",
+        "tipHeight" : 54
+      },
+      {
+        "event" : 315,
+        "kind" : "exclusion",
+        "removed" : [
+
+        ],
+        "subject" : "b213",
+        "tip" : "b207",
+        "tipHeight" : 54
       },
       {
         "event" : 325,
@@ -477,72 +699,79 @@
         "removed" : [
 
         ],
-        "subject" : "b219",
-        "tip" : "b156",
-        "tipHeight" : 44
+        "subject" : "b221",
+        "tip" : "b220",
+        "tipHeight" : 57
       },
       {
-        "event" : 350,
-        "kind" : "block",
+        "event" : 326,
+        "kind" : "exclusion",
         "removed" : [
 
         ],
-        "subject" : "b234",
-        "tip" : "b156",
-        "tipHeight" : 44
+        "subject" : "b207",
+        "tip" : "b220",
+        "tipHeight" : 57
       },
       {
-        "event" : 353,
-        "kind" : "exclusion",
+        "event" : 350,
+        "kind" : "strengthen",
+        "removed" : [
+
+        ],
+        "subject" : "b43",
+        "tip" : "b239",
+        "tipHeight" : 60
+      },
+      {
+        "event" : 375,
+        "kind" : "strengthen",
+        "removed" : [
+
+        ],
+        "subject" : "b189",
+        "tip" : "b250",
+        "tipHeight" : 63
+      },
+      {
+        "event" : 400,
+        "kind" : "secondGrind",
         "removed" : [
 
         ],
         "subject" : "b217",
-        "tip" : "b156",
-        "tipHeight" : 44
+        "tip" : "b266",
+        "tipHeight" : 68
       },
       {
-        "event" : 371,
+        "event" : 404,
         "kind" : "exclusion",
         "removed" : [
-
+          "b259",
+          "b262",
+          "b266",
+          "b270",
+          "b271"
         ],
-        "subject" : "b236",
-        "tip" : "b156",
-        "tipHeight" : 44
-      },
-      {
-        "event" : 375,
-        "kind" : "block",
-        "removed" : [
-
-        ],
-        "subject" : "b252",
-        "tip" : "b156",
-        "tipHeight" : 44
-      },
-      {
-        "event" : 400,
-        "kind" : "block",
-        "removed" : [
-
-        ],
-        "subject" : "b270",
-        "tip" : "b156",
-        "tipHeight" : 44
+        "subject" : "b259",
+        "tip" : "b265",
+        "tipHeight" : 67
       },
       {
         "event" : 425,
         "kind" : "block",
         "removed" : [
-
+          "b281",
+          "b283",
+          "b285"
         ],
-        "subject" : "b285",
-        "tip" : "b156",
-        "tipHeight" : 44
+        "subject" : "b287",
+        "tip" : "b288",
+        "tipHeight" : 73
       }
     ],
-    "decisiveExclusions" : 1,
-    "reorgCommits" : 48
+    "decisiveExclusions" : 2,
+    "reorgCommits" : 69,
+    "reorgCommitsAfterFirstDecisiveExclusion" : 35
   }
 }

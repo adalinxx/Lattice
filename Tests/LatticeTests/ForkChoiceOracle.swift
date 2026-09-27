@@ -83,8 +83,20 @@ struct OracleBlock {
 }
 
 struct ForkChoiceOracle {
+    /// A grind offered at a second block (§9.1 refuses it). Production
+    /// answers `.discarded` on the live path and `corruptConsensusGraph` on
+    /// replay; the oracle records it so a test can assert on it — and the
+    /// agreement check asserts there were none, so a conflict is never what
+    /// silently makes the oracle and the chain agree.
+    struct LocationConflict: Equatable {
+        let grind: String
+        let located: String
+        let offered: String
+    }
+
     private(set) var blocks: [String: OracleBlock] = [:]
     private(set) var excluded: Set<String> = []
+    private(set) var conflicts: [LocationConflict] = []
 
     init() {}
 
@@ -117,8 +129,11 @@ struct ForkChoiceOracle {
 
     mutating func observe(_ grind: String, _ work: UInt256, at blockHash: String) {
         // §9.1: one grind has exactly one location per chain; a conflicting
-        // location is rejected, never re-homed.
-        if let located = locationByGrind[grind], located != blockHash { return }
+        // location is rejected, never re-homed — and recorded, never silent.
+        if let located = locationByGrind[grind], located != blockHash {
+            conflicts.append(LocationConflict(grind: grind, located: located, offered: blockHash))
+            return
+        }
         guard var block = blocks[blockHash] else {
             // A work fact for a block whose fact has not arrived yet: keep it
             // pending on a placeholder that the block fact fills in.
@@ -137,8 +152,12 @@ struct ForkChoiceOracle {
 
     /// Fold work that arrived before its block into the block once it exists.
     private mutating func settlePending() {
-        for (hash, observations) in pendingObservations where blocks[hash] != nil {
-            for (grind, work) in observations { observe(grind, work, at: hash) }
+        // Sorted, so two pending observations of one grind at two blocks
+        // settle in a fixed order rather than by dictionary seed.
+        for hash in pendingObservations.keys.sorted() where blocks[hash] != nil {
+            for (grind, work) in (pendingObservations[hash] ?? [:]).sorted(by: { $0.key < $1.key }) {
+                observe(grind, work, at: hash)
+            }
             pendingObservations[hash] = nil
         }
     }
