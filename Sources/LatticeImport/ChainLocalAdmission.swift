@@ -1251,6 +1251,9 @@ private func mapProofFailure(
 
 private func classifyValidationFailure(_ error: Error) -> BlockImportError {
     if error is BlockValidationError { return .notYetValid }
+    // The difficulty anchor is not resolvable from the graph: the block parks
+    // on its predecessor and is retried when that connects, never excluded.
+    if error is AnchorUnavailable { return .unavailableEvidence }
     if let dataError = error as? DataErrors { return classifyDataError(dataError) }
     if error is FetcherError { return .unavailableEvidence }
     if let validationError = error as? ValidationErrors {
