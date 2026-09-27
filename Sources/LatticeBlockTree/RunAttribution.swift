@@ -69,11 +69,19 @@ public struct ParentRunReport: Sendable, Equatable {
 /// own price and add it again), whereas a separate contribution ratchets on
 /// its own value.
 public struct AttributedRunIdentity: Hashable, Scalar {
-    public let committerBlockHash: String
+    public let carrierBlockHash: String
     public let directory: String
 
-    public init(committerBlockHash: String, directory: String) {
-        self.committerBlockHash = committerBlockHash
+    /// The encoded key stays `committerBlockHash`: this value's DAG-CBOR CID
+    /// is the contribution ID credited on parent and child, so renaming the
+    /// key would change every attributed-run ID.
+    private enum CodingKeys: String, CodingKey {
+        case carrierBlockHash = "committerBlockHash"
+        case directory
+    }
+
+    public init(carrierBlockHash: String, directory: String) {
+        self.carrierBlockHash = carrierBlockHash
         self.directory = directory
     }
 
@@ -343,7 +351,7 @@ extension ChainState {
               let committer = CIDIdentity.canonicalString(report.blockHash),
               report.grinds.contains(where: { workContribution(id: $0, at: hash) != nil }),
               let attributedID = AttributedRunIdentity(
-                  committerBlockHash: committer, directory: directory
+                  carrierBlockHash: committer, directory: directory
               ).contributionID else {
             return .notCommitterOfChild
         }
@@ -363,7 +371,7 @@ extension ChainState {
                 blockHash: hash,
                 contribution: VerifiedWorkContribution(id: attributedID, work: derivedWork),
                 attributedRun: AttributedRunIdentity(
-                    committerBlockHash: committer, directory: directory
+                    carrierBlockHash: committer, directory: directory
                 )
             )),
         ]))

@@ -302,7 +302,7 @@ struct ForkChoiceGoldenGraph {
                     // credited like a grind, but no grind of the block (§9.10).
                     extraCounter += 1
                     let identity = AttributedRunIdentity(
-                        committerBlockHash: cid(seed, "committer", extraCounter),
+                        carrierBlockHash: cid(seed, "committer", extraCounter),
                         directory: directory
                     )
                     guard let identityID = identity.contributionID else {

@@ -476,7 +476,7 @@ final class ParentRunAttributionTests: XCTestCase {
     // MARK: - The child's side: mint
 
     private func attributed(_ chain: ChainState, committer: String = "p1") async -> UInt256? {
-        let id = AttributedRunIdentity(committerBlockHash: h(committer), directory: d).contributionID!
+        let id = AttributedRunIdentity(carrierBlockHash: h(committer), directory: d).contributionID!
         return await chain.workContribution(id: id, at: h("c"))?.work
     }
 
@@ -743,7 +743,7 @@ final class ParentRunAttributionTests: XCTestCase {
     /// marked, stronger one reclassifies it — in full, and without a halt.
     func testUnmarkedAttributedFactIsReclassifiedByAMarkedOne() async throws {
         let a = try await linearByReplay()
-        let identity = AttributedRunIdentity(committerBlockHash: h("n"), directory: "A")
+        let identity = AttributedRunIdentity(carrierBlockHash: h("n"), directory: "A")
         let id = identity.contributionID!
         _ = try await a.replay(BlockImportBatch(facts: [.work(ChainWorkFact(
             blockHash: h("p1"), contribution: VerifiedWorkContribution(id: id, work: UInt256(100))
@@ -772,7 +772,7 @@ final class ParentRunAttributionTests: XCTestCase {
         let encoded = try JSONEncoder().encode(grindFact)
         XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains("attributedRun"))
         XCTAssertEqual(try JSONDecoder().decode(ChainWorkFact.self, from: encoded), grindFact)
-        let identity = AttributedRunIdentity(committerBlockHash: h("n"), directory: "A")
+        let identity = AttributedRunIdentity(carrierBlockHash: h("n"), directory: "A")
         let attributedFact = ChainWorkFact(
             blockHash: h("p1"),
             contribution: VerifiedWorkContribution(id: identity.contributionID!, work: UInt256(100)),
