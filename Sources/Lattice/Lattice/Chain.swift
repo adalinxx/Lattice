@@ -1330,24 +1330,6 @@ public actor ChainState {
         return mainChainBlockAtIndex[height] == hash
     }
 
-    /// Sum work for up to `limit` ancestors from the current tip.
-    public func getCumulativeWork(limit: UInt64) -> WorkSum {
-        var measure = WorkMeasure.zero
-        let strongestWork = Self.strongestWorkByGrind(in: hashToBlock)
-        var current: String? = chainTip
-        var walked: UInt64 = 0
-        while let hash = current, walked <= limit {
-            guard let meta = hashToBlock[hash] else { break }
-            measure.formUnion(
-                WorkMeasure(meta.workContributions.values)
-                    .normalized(using: strongestWork)
-            )
-            current = meta.parentBlockHash
-            walked += 1
-        }
-        return measure.total
-    }
-
     /// Exact total proof-of-work from genesis to the current chain tip.
     public func getTipCumulativeWork() -> WorkSum {
         materializeLocalWorkCachesIfNeeded()
@@ -3303,26 +3285,6 @@ public actor ChainState {
             mainChainBlocksAdded: added,
             mainChainBlocksRemoved: removed
         )
-    }
-
-    // MARK: - Orphan Detection
-
-    func findEarliestOrphanConnectedToMainChain(blockHeader: String) -> String? {
-        guard var current = hashToBlock[blockHeader] else { return nil }
-        var currentHash = blockHeader
-
-        while let prevHash = current.parentBlockHash,
-              !mainChainHashes.contains(prevHash)
-        {
-            guard let prev = hashToBlock[prevHash] else { return nil }
-            current = prev
-            currentHash = prevHash
-        }
-
-        if current.parentBlockHash == nil {
-            return current.blockHeight == 0 ? currentHash : nil
-        }
-        return currentHash
     }
 
 }
