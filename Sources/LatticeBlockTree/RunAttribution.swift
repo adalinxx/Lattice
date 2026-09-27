@@ -100,7 +100,7 @@ public enum ParentReportStrengthening: Sendable, Equatable {
     /// The report does not name this child block, or none of the committer's
     /// grinds is credited here — so the reported block is not a committer of
     /// this child block as far as this chain knows.
-    case notCommitterOfChild
+    case notCarrierOfChild
     /// The report is for another directory: a parent committing into several
     /// directories serves one run per directory, and only this chain's own
     /// may be applied here.
@@ -149,7 +149,7 @@ struct RunAttribution: Sendable {
     /// O(#served) per block, never O(#directories ever committed); inherited
     /// from the parent like `difficultyAnchor`, and absent until the block is
     /// connected.
-    private(set) var nearestCommitter: [String: [String: String]] = [:]
+    private(set) var nearestCarrier: [String: [String: String]] = [:]
 #if DEBUG
     /// Run-bucket updates. Each connected block costs one per directory it
     /// has a nearest committer for, so this is O(#directories) per block —
@@ -209,8 +209,8 @@ struct RunAttribution: Sendable {
     ) {
         guard let meta = graph[hash], let work = graph.work(of: hash) else { return }
         let inherited = meta.parentBlockHash
-            .flatMap { nearestCommitter[$0] } ?? [:]
-        var nearest = nearestCommitter[hash] ?? [:]
+            .flatMap { nearestCarrier[$0] } ?? [:]
+        var nearest = nearestCarrier[hash] ?? [:]
         var credited: [String: String] = [:]
         for directory in directories {
             let committer = meta.childCommitments?[directory] != nil ? hash : inherited[directory]
@@ -218,14 +218,14 @@ struct RunAttribution: Sendable {
             nearest[directory] = committer
             credited[directory] = committer
         }
-        nearestCommitter[hash] = nearest
+        nearestCarrier[hash] = nearest
         credit(work.work, nearest: credited)
     }
 
     /// A connected block's own work rose by `delta`: its runs rise by exactly
     /// that much.
     mutating func credit(_ delta: WorkSum, at hash: String) {
-        credit(delta, nearest: nearestCommitter[hash] ?? [:])
+        credit(delta, nearest: nearestCarrier[hash] ?? [:])
     }
 
     private mutating func credit(_ work: WorkSum, nearest: [String: String]) {
@@ -243,8 +243,8 @@ struct RunAttribution: Sendable {
     mutating func forget(directory: String) {
         served.remove(directory)
         runWork[directory] = nil
-        for block in nearestCommitter.keys {
-            nearestCommitter[block]?[directory] = nil
+        for block in nearestCarrier.keys {
+            nearestCarrier[block]?[directory] = nil
         }
     }
 }
@@ -353,7 +353,7 @@ extension ChainState {
               let attributedID = AttributedRunIdentity(
                   carrierBlockHash: committer, directory: directory
               ).contributionID else {
-            return .notCommitterOfChild
+            return .notCarrierOfChild
         }
         guard forkChoice.acceptsLocation(of: attributedID, at: hash) else { return .locationConflict }
         guard let derived = report.runWork.subtracting(report.ownWork) else {
