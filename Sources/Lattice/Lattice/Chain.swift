@@ -659,6 +659,12 @@ public actor ChainState {
     /// has a nearest committer for, so this is O(#directories) per block —
     /// asserted by ratio, never by stopwatch.
     var runAttributionUpdateCount: UInt64
+    /// TEMPORARY evidence for deleting the reference fallback family: every
+    /// entry into it — a nil `blockGhostDescent` or a weight the Euler index
+    /// could not answer — counts here. The invariant tests assert it stays
+    /// zero over the golden orders and the differential seeds; it goes away
+    /// with the fallback.
+    var descentFallbackCount: UInt64
 #endif
     /// Diagnostic prefix/subtree totals are derived local views. They are not
     /// fork-choice inputs and are rebuilt only when an API exposes them.
@@ -780,6 +786,7 @@ public actor ChainState {
         self.segmentGraftBlockVisitCount = 0
         self.stateContinuityBlockVisitCount = 0
         self.runAttributionUpdateCount = 0
+        self.descentFallbackCount = 0
 #endif
         self.localWorkCachesDirty = true
         var allByHeight = indexToBlockHash
@@ -1405,6 +1412,7 @@ public actor ChainState {
         ) {
             return (descent.tipHash, descent.blocks)
         }
+        descentFallbackCount += 1
         let direct = Self.referenceGhostDescent(
             from: root,
             in: hashToBlock,
@@ -2787,7 +2795,7 @@ public actor ChainState {
         // nowhere: nothing below a proven-invalid block is selectable.
         if excludedRoots.contains(startingBlock.blockHash) {
             let weight = subtreeWorkIndex.subtreeWork(startingBlock.blockHash)
-                ?? effectiveSubtreeWork(for: startingBlock.blockHash)
+                ?? fallbackSubtreeWork(for: startingBlock.blockHash)
             return (weight, startingBlock.blockHash, [startingBlock.blockHash])
         }
         // Weights are pure work; `excluding` only steers the descent past
@@ -2801,9 +2809,12 @@ public actor ChainState {
             excluding: excludedRoots
         ) {
             let baseWeight = subtreeWorkIndex.subtreeWork(start.blockHash)
-                ?? effectiveSubtreeWork(for: start.blockHash)
+                ?? fallbackSubtreeWork(for: start.blockHash)
             return (baseWeight, descent.tipHash, descent.blocks)
         }
+#if DEBUG
+        descentFallbackCount += 1
+#endif
         let direct = Self.referenceGhostDescent(
             from: start.blockHash,
             in: hashToBlock,
@@ -2814,6 +2825,13 @@ public actor ChainState {
             direct.tipHash,
             direct.blocks
         )
+    }
+
+    private func fallbackSubtreeWork(for blockHash: String) -> WorkSum {
+#if DEBUG
+        descentFallbackCount += 1
+#endif
+        return effectiveSubtreeWork(for: blockHash)
     }
 
     private func effectiveSubtreeWork(for blockHash: String) -> WorkSum {
@@ -3057,16 +3075,24 @@ public actor ChainState {
 #if DEBUG
         fullCanonicalProjectionCount += 1
 #endif
-        let descent = Self.blockGhostDescent(
+        let descent: (tipHash: String, blocks: Set<String>)
+        if let live = Self.blockGhostDescent(
             from: root,
             in: hashToBlock,
             workIndex: subtreeWorkIndex,
             excluding: excludedRoots
-        ) ?? Self.referenceGhostDescent(
-            from: root,
-            in: hashToBlock,
-            excluding: excludedRoots
-        )
+        ) {
+            descent = live
+        } else {
+#if DEBUG
+            descentFallbackCount += 1
+#endif
+            descent = Self.referenceGhostDescent(
+                from: root,
+                in: hashToBlock,
+                excluding: excludedRoots
+            )
+        }
 #if DEBUG
         // Descent steps ARE blocks now: with no quotient there is no hop to
         // take, so this column and the block column converge by construction.
@@ -3218,7 +3244,12 @@ public actor ChainState {
                   workIndex: subtreeWorkIndex,
                   excluding: excludedRoots
               )
-        else { return nil }
+        else {
+#if DEBUG
+            descentFallbackCount += 1
+#endif
+            return nil
+        }
 #if DEBUG
         canonicalProjectionSegmentVisitCount += UInt64(descent.blocks.count)
         canonicalProjectionBlockVisitCount += UInt64(descent.blocks.count)
