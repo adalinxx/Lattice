@@ -9,7 +9,7 @@ import UInt256
 /// incrementally-built one.
 @MainActor
 final class ReplayProjectionDeferralTests: XCTestCase {
-    private struct Node {
+    struct Node {
         let hash: String
         let parent: String?
         let height: UInt64
@@ -17,7 +17,7 @@ final class ReplayProjectionDeferralTests: XCTestCase {
         let name: String
     }
 
-    private func node(
+    private static func node(
         _ name: String, parent: String?, height: UInt64, work: UInt64 = 1
     ) -> Node {
         Node(
@@ -29,7 +29,7 @@ final class ReplayProjectionDeferralTests: XCTestCase {
         )
     }
 
-    private func admission(_ n: Node) -> ChainAdmissionBatch {
+    private static func admission(_ n: Node) -> ChainAdmissionBatch {
         ChainAdmissionBatch(facts: [
             .block(ChainBlockFact(
                 blockHash: n.hash,
@@ -53,7 +53,7 @@ final class ReplayProjectionDeferralTests: XCTestCase {
         ])
     }
 
-    private func extraWork(_ n: Node, grind: String, work: UInt64) -> ChainAdmissionBatch {
+    private static func extraWork(_ n: Node, grind: String, work: UInt64) -> ChainAdmissionBatch {
         ChainAdmissionBatch(facts: [
             .work(ChainWorkFact(
                 blockHash: n.hash,
@@ -67,8 +67,9 @@ final class ReplayProjectionDeferralTests: XCTestCase {
 
     /// A bushy merged-mining-shaped graph: a canonical spine with a sibling
     /// (duplicate-height side block) at every third height plus extra carrier
-    /// work batches — the shape that defeats the append fast path.
-    private func bushyBatches() -> (batches: [ChainAdmissionBatch], root: Node) {
+    /// work batches — the shape that defeats the append fast path. Static so
+    /// the independent oracle (`ForkChoiceOracleTests`) checks the same graph.
+    static func bushyBatches() -> (batches: [ChainAdmissionBatch], root: Node) {
         let root = node("root", parent: nil, height: 0)
         var batches = [admission(root)]
         var previous = root
@@ -88,7 +89,7 @@ final class ReplayProjectionDeferralTests: XCTestCase {
     }
 
     func testRestoreReplayProjectsOnceAndMatchesIncrementalConsensus() async throws {
-        let (batches, root) = bushyBatches()
+        let (batches, root) = Self.bushyBatches()
 
         // Incremental reference: genesis restore, then every batch applied live
         // with per-event projection (the pre-existing behavior for live sync).
@@ -133,7 +134,7 @@ final class ReplayProjectionDeferralTests: XCTestCase {
     }
 
     func testReevaluationIsFreeWhenNoFactChangedAndStillPromotesAfterMutation() async throws {
-        let (batches, _) = bushyBatches()
+        let (batches, _) = Self.bushyBatches()
         let chain = try await ChainState.restore(replaying: batches)
 
         // A duplicate delivery that added nothing must not pay a projection.
