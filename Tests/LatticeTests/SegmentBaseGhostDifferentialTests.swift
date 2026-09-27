@@ -964,3 +964,30 @@ private struct DifferentialRandom {
         }
     }
 }
+
+/// Fixture access for the independent oracle (`ForkChoiceOracleTests`): the
+/// same planned graphs and fact batches the live differential tests drive, so
+/// the oracle is checked on exactly those shapes.
+enum SegmentBaseDifferentialFixtures {
+    struct Planned {
+        let hash: String
+        let parentHash: String?
+        let height: UInt64
+        let batch: ChainAdmissionBatch
+    }
+
+    static func planned(seed: UInt64) -> [Planned] {
+        var random = DifferentialRandom(seed: seed)
+        return plannedBlocks(seed: seed, random: &random).map {
+            Planned(hash: $0.hash, parentHash: $0.parentHash, height: $0.height, batch: admission(for: $0))
+        }
+    }
+
+    static func work(blockHash: String, id: String, work: UInt64) -> ChainAdmissionBatch {
+        workAdmission(blockHash: blockHash, id: id, work: work)
+    }
+
+    static func exclusion(of blockHash: String) -> ChainAdmissionBatch {
+        ChainAdmissionBatch(facts: [.exclusion(ChainExclusionFact(blockHash: blockHash))])
+    }
+}
