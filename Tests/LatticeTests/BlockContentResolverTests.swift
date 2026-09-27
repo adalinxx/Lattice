@@ -2,14 +2,11 @@ import XCTest
 @testable import Lattice
 import ArrayTrie
 import cashew
-#if canImport(os)
-import os
-#endif
 import UInt256
 
 final class BlockContentResolverTests: XCTestCase {
     func testBuilderReturnsTransitionWithoutWritingToFetcher() async throws {
-        let fetcher = TestVolumeFetcher()
+        let fetcher = StorableFetcher()
         let body = TransactionBody(
             accountActions: [AccountAction(owner: "alice", delta: 10)],
             actions: [],
@@ -103,7 +100,7 @@ final class BlockContentResolverTests: XCTestCase {
     }
 
     func testResolveBlockContentIncludesTransactionsAndSpecButLeavesChildrenIndependent() async throws {
-        let fetcher = TestVolumeFetcher()
+        let fetcher = StorableFetcher()
         let parent = try await buildAndStoreGenesis(
             spec: testSpec(directory: "Nexus"),
             timestamp: 1,
@@ -143,7 +140,7 @@ final class BlockContentResolverTests: XCTestCase {
             nonce: 0,
             fetcher: fetcher
         )
-        let contentOnly = TestVolumeFetcher()
+        let contentOnly = StorableFetcher()
         try await VolumeImpl<Block>(node: block).store(
             paths: Block.contentResolutionPaths,
             storer: contentOnly
@@ -175,10 +172,10 @@ final class BlockContentResolverTests: XCTestCase {
     }
 
     func testStoreBlockCopiesTheSameValidationPackageFromNodefulAndDecodedBlocks() async throws {
-        let source = TestVolumeFetcher()
-        let nodeDestination = TestVolumeFetcher()
-        let decodedDestination = TestVolumeFetcher()
-        let unresolvedDestination = TestVolumeFetcher()
+        let source = StorableFetcher()
+        let nodeDestination = StorableFetcher()
+        let decodedDestination = StorableFetcher()
+        let unresolvedDestination = StorableFetcher()
         let genesisResult = try await BlockBuilder.buildGenesisWithTransition(
             spec: testSpec(directory: "Nexus"),
             timestamp: 1,
@@ -231,15 +228,15 @@ final class BlockContentResolverTests: XCTestCase {
 
         XCTAssertEqual(nodeDestination.entries, decodedDestination.entries)
         XCTAssertEqual(nodeDestination.entries, unresolvedDestination.entries)
-        XCTAssertTrue(nodeDestination.volumeRoots.contains(cid))
-        XCTAssertTrue(nodeDestination.volumeRoots.contains(block.spec.rawCID))
-        XCTAssertTrue(nodeDestination.volumeRoots.contains(block.prevState.rawCID))
-        XCTAssertTrue(nodeDestination.volumeRoots.contains(try VolumeImpl<Transaction>(node: transaction).rawCID))
+        XCTAssertTrue(nodeDestination.volumeRoots().contains(cid))
+        XCTAssertTrue(nodeDestination.volumeRoots().contains(block.spec.rawCID))
+        XCTAssertTrue(nodeDestination.volumeRoots().contains(block.prevState.rawCID))
+        XCTAssertTrue(nodeDestination.volumeRoots().contains(try VolumeImpl<Transaction>(node: transaction).rawCID))
         XCTAssertFalse(nodeDestination.contains(rawCid: block.postState.rawCID))
         XCTAssertFalse(nodeDestination.contains(rawCid: try XCTUnwrap(block.parent).rawCID))
-        XCTAssertFalse(nodeDestination.volumeRoots.contains(block.postState.rawCID))
-        XCTAssertFalse(nodeDestination.volumeRoots.contains(try XCTUnwrap(block.parent).rawCID))
-        XCTAssertFalse(nodeDestination.volumeRoots.contains(try VolumeImpl<Block>(node: child).rawCID))
+        XCTAssertFalse(nodeDestination.volumeRoots().contains(block.postState.rawCID))
+        XCTAssertFalse(nodeDestination.volumeRoots().contains(try XCTUnwrap(block.parent).rawCID))
+        XCTAssertFalse(nodeDestination.volumeRoots().contains(try VolumeImpl<Block>(node: child).rawCID))
 
         let copied = try await VolumeImpl<Block>(rawCID: cid).resolveBlockContent(fetcher: decodedDestination)
         XCTAssertNotNil(copied.node?.transactions.node)
@@ -251,8 +248,8 @@ final class BlockContentResolverTests: XCTestCase {
     }
 
     func testStoreBlockIncludesPrevStateRootWithoutTransactions() async throws {
-        let source = TestVolumeFetcher()
-        let destination = TestVolumeFetcher()
+        let source = StorableFetcher()
+        let destination = StorableFetcher()
         let genesisResult = try await BlockBuilder.buildGenesisWithTransition(
             spec: testSpec(directory: "Nexus"),
             timestamp: 1,
@@ -479,7 +476,7 @@ final class BlockContentResolverTests: XCTestCase {
 
         let valid = try await decoded.validateBlockSize(
             spec: sizeSpec(maxBlockSize: 16 * 1_024 * 1_024),
-            fetcher: FailingFetcher(error: BlockContentSizeError.overflow)
+            fetcher: ThrowingFetcher(error: BlockContentSizeError.overflow)
         )
         XCTAssertFalse(valid)
     }
@@ -576,47 +573,4 @@ private func stateContentTransaction(payloadBytes: Int) -> Transaction {
         chainPath: ["Nexus"]
     )
     return Transaction(signatures: [:], body: try! HeaderImpl(node: body))
-}
-
-private struct FailingFetcher: Fetcher {
-    let error: BlockContentSizeError
-
-    func fetch(rawCid _: String) async throws -> Data {
-        throw error
-    }
-}
-
-/// A flat in-memory CAS: stores every node by CID and fetches it back. cashew
-/// 3.x resolution is per-CID over a plain `Fetcher`; there is no `VolumeAware`
-/// enter/exit side-channel, so a content-by-CID dictionary is all that
-/// `resolveBlockContent` needs.
-private final class TestVolumeFetcher: Fetcher, Storer, VolumeStorer, @unchecked Sendable {
-    private let state = OSAllocatedUnfairLock(initialState: [String: Data]())
-    private let roots = OSAllocatedUnfairLock(initialState: Set<String>())
-
-    func store(entries: [String: Data]) async {
-        state.withLock { $0.merge(entries) { _, new in new } }
-    }
-
-    func store(volume: SerializedVolume) async {
-        roots.withLock { _ = $0.insert(volume.root) }
-        state.withLock { $0.merge(volume.entries) { _, new in new } }
-    }
-
-    func contains(rawCid: String) -> Bool {
-        state.withLock { $0[rawCid] != nil }
-    }
-
-    var entries: [String: Data] {
-        state.withLock { $0 }
-    }
-
-    var volumeRoots: Set<String> {
-        roots.withLock { $0 }
-    }
-
-    func fetch(rawCid: String) async throws -> Data {
-        guard let data = state.withLock({ $0[rawCid] }) else { throw cashew.FetcherError.notFound(rawCid) }
-        return data
-    }
 }

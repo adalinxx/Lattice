@@ -29,16 +29,6 @@ private struct UnknownFailingAdmissionFetcher: Fetcher {
     }
 }
 
-private struct MissingCIDAdmissionFetcher: Fetcher {
-    let backing: StorableFetcher
-    let missingCID: String
-
-    func fetch(rawCid: String) async throws -> Data {
-        if rawCid == missingCID { throw FetcherError.notFound(rawCid) }
-        return try await backing.fetch(rawCid: rawCid)
-    }
-}
-
 private struct ResolutionCase {
     let name: String
     let fetcher: any Fetcher
@@ -111,35 +101,6 @@ private actor AdmissionStageRecorder {
 
     func recordedBatches() -> [ChainAdmissionBatch] { batches }
     func recordedContexts() -> [ChainAdmissionStagingContext] { contexts }
-}
-
-private actor FetchCountingAdmissionFetcher: Fetcher {
-    private var count = 0
-
-    func fetch(rawCid: String) async throws -> Data {
-        count += 1
-        throw FetcherError.notFound(rawCid)
-    }
-
-    func fetchCount() -> Int { count }
-}
-
-private actor DisableableAdmissionFetcher: Fetcher {
-    private let backing: StorableFetcher
-    private var enabled = true
-
-    init(backing: StorableFetcher) {
-        self.backing = backing
-    }
-
-    func fetch(rawCid: String) async throws -> Data {
-        guard enabled else { throw FetcherError.notFound(rawCid) }
-        return try await backing.fetch(rawCid: rawCid)
-    }
-
-    func disable() {
-        enabled = false
-    }
 }
 
 private actor StorageBarrier: Storer, VolumeStorer {
@@ -567,9 +528,9 @@ final class ChainLocalAdmissionTests: XCTestCase {
         let candidate = try await makeChild(
             of: blockTwo, fetcher: fetcher, timestamp: 4_000, nonce: 3
         )
-        let missingAnchor = MissingCIDAdmissionFetcher(
+        let missingAnchor = DenyingFetcher(
             backing: fetcher,
-            missingCID: try BlockHeader(node: blockOne).rawCID
+            denied: [try BlockHeader(node: blockOne).rawCID]
         )
 
         let result = try await makeLevel(genesis: genesis).admitBlockHeaderChainLocal(
@@ -600,9 +561,9 @@ final class ChainLocalAdmissionTests: XCTestCase {
         )
         let parentCID = try BlockHeader(node: parent).rawCID
         let candidateCID = try BlockHeader(node: candidate).rawCID
-        let missingParent = MissingCIDAdmissionFetcher(
+        let missingParent = DenyingFetcher(
             backing: fetcher,
-            missingCID: parentCID
+            denied: [parentCID]
         )
 
         let result = try await makeLevel(genesis: genesis)
@@ -646,9 +607,9 @@ final class ChainLocalAdmissionTests: XCTestCase {
             nonce: 1,
             fetcher: fetcher
         )
-        let missingModule = MissingCIDAdmissionFetcher(
+        let missingModule = DenyingFetcher(
             backing: fetcher,
-            missingCID: policy.moduleCID
+            denied: [policy.moduleCID]
         )
 
         let result = try await makeLevel(genesis: genesis).admitBlockHeaderChainLocal(
@@ -1319,7 +1280,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
 
         // A fetcher that cannot serve any ancestor beyond the parent still
         // validates the side candidate: the window came from the held graph.
-        let noAncestors = MissingCIDAdmissionFetcher(backing: full, missingCID: genesisHash)
+        let noAncestors = DenyingFetcher(backing: full, denied: [genesisHash])
         let result = try await level.admitBlockHeaderChainLocal(
             try BlockHeader(node: sideTwo),
             fetcher: noAncestors,
@@ -4355,7 +4316,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
         )
         let level = makeLevel(genesis: genesis)
         let genesisBatch = try testAdmissionBatch(for: genesis)
-        let source = DisableableAdmissionFetcher(backing: backing)
+        let source = DenyingFetcher(backing: backing)
         let recorder = AdmissionStageRecorder()
         let candidateHeader = try BlockHeader(node: candidate)
         let unresolvedCandidate = BlockHeader(rawCID: candidateHeader.rawCID)
@@ -4372,7 +4333,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
                     blockHeader: siblingHeader,
                     block: sibling
                 )
-                await source.disable()
+                await source.denyAll()
             }
         )
 
@@ -4544,7 +4505,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             nonce: 1
         )
         let level = makeLevel(genesis: genesis)
-        let source = DisableableAdmissionFetcher(backing: backing)
+        let source = DenyingFetcher(backing: backing)
         let validationCache = StorableFetcher()
         let materialized = RecordingAdmissionStorer()
         let recorder = AdmissionStageRecorder()
@@ -4559,7 +4520,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             return XCTFail("valid candidate must produce a commit token")
         }
 
-        await source.disable()
+        await source.denyAll()
         let committed = try await level.commitPreflight(
             preflight,
             materializedVolumeStorer: materialized,
@@ -4832,7 +4793,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             materializedVolumeStorer: backing,
             stage: { context in await recorder.stage(context) }
         )
-        let source = DisableableAdmissionFetcher(backing: backing)
+        let source = DenyingFetcher(backing: backing)
         let preflight = try await level.preflightBlockHeaderChainLocal(
             orphanHeader,
             fetcher: source,
@@ -4849,7 +4810,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             materializedVolumeStorer: backing,
             stage: { context in await recorder.stage(context) }
         )
-        await source.disable()
+        await source.denyAll()
         let resolved = try await level.resolveDuplicatePreflight(duplicate)
 
         guard case .duplicate(let link, let predecessor, _) = resolved.result else {
