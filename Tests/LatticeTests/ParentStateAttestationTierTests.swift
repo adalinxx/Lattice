@@ -155,7 +155,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
             fetcher: fetcher,
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
-            mode: .weighed,
+            mode: .header,
             stage: testAdmissionStage
         )
         guard case .accepted = admitted else {
@@ -221,7 +221,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         let weighed = try await level.admitBlockHeaderChainLocal(
             header, fetcher: fetcher,
             validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
-            mode: .weighed, stage: testAdmissionStage
+            mode: .header, stage: testAdmissionStage
         )
         guard case .accepted = weighed else {
             return XCTFail("weighed admission must accept, got \(weighed)")
@@ -238,7 +238,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         let validated = try await level.admitBlockHeaderChainLocal(
             header, fetcher: fetcher,
             validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
-            mode: .validate, stage: testAdmissionStage
+            mode: .execution, stage: testAdmissionStage
         )
         if case .rejected(let failure, _, _) = validated {
             return XCTFail("validate tier must not reject an honest block: \(failure)")
@@ -642,7 +642,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         let weighed = try await level.admitBlockHeaderChainLocal(
             header, fetcher: fetcher,
             validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
-            mode: .weighed, stage: testAdmissionStage
+            mode: .header, stage: testAdmissionStage
         )
         guard case .accepted = weighed else {
             return XCTFail("weighed admission must possess the block, got \(weighed)")
@@ -746,7 +746,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
                 childPackage: try await package(nonce: nonce),
                 validationContentStorer: fetcher,
                 materializedVolumeStorer: fetcher,
-                mode: .weighed, stage: record
+                mode: .header, stage: record
             )
         }
 
@@ -826,7 +826,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
             try BlockHeader(node: blockOne),
             fetcher: fetcher, childPackage: packageOne,
             validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
-            mode: .weighed, stage: testAdmissionStage
+            mode: .header, stage: testAdmissionStage
         )
         guard case .accepted = weighed else {
             return XCTFail("weighed admission possesses without proving, got \(weighed)")
@@ -846,7 +846,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
             try BlockHeader(node: blockTwo),
             fetcher: fetcher, childPackage: packageTwo,
             validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
-            mode: .validate, stage: testAdmissionStage
+            mode: .execution, stage: testAdmissionStage
         )
         guard case .rejected(let failure, _, _) = outcome else {
             return XCTFail(

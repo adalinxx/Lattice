@@ -13,7 +13,7 @@ import WAT
 
 final class ChainLocalAdmissionValidateTierTests: XCTestCase {
     func testValidateTierExecutesLikeEagerAndMaterializesState() async throws {
-        // Validated tier (deferred execution): `.validate` executes a block and
+        // Validated tier (deferred execution): `.execution` executes a block and
         // records the validity verdict. On a valid block it does exactly what
         // eager does — runs the transition, materializes the post-state, emits
         // the block fact carrying the real `stateDiff` — the durable "validated"
@@ -46,7 +46,7 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
         let validateLevel = AdmissionFixture.makeLevel(genesis: validateGenesis)
         let validated = try await validateLevel.admit(
             candidate,
-            mode: .validate,
+            mode: .execution,
             fetcher: validateFetcher
         )
 
@@ -110,7 +110,7 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
         let executedBefore = await level.chain.hasExecutedAncestry(blockHash: candidateHash)
         XCTAssertFalse(executedBefore, "possessed, not yet executed")
 
-        let validated = try await level.admit(candidate, mode: .validate, fetcher: fetcher)
+        let validated = try await level.admit(candidate, mode: .execution, fetcher: fetcher)
         guard case .duplicate = validated else {
             return XCTFail("validating a possessed block is a promotion, got \(validated)")
         }
@@ -134,7 +134,7 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
         let stagedCounter = StageCounter()
         let result = try await level.admit(
             genesis,
-            mode: .validate,
+            mode: .execution,
             fetcher: fetcher,
             stage: { _ in await stagedCounter.bump() }
         )

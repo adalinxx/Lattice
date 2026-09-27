@@ -13,7 +13,7 @@ import WAT
 
 final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
     func testWeighedAdmissionMatchesEagerForkChoiceWithoutMaterializedState() async throws {
-        // Deferred execution (weight-first-acquisition): a `.weighed` admission
+        // Deferred execution (weight-first-acquisition): a `.header` admission
         // possesses the block and verifies its PoW, so its work enters fork
         // choice with exactly the eager path's weight — the consensus graph
         // never reads `stateDiff` — while it executes no state transition and
@@ -49,7 +49,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         let weighedLevel = AdmissionFixture.makeLevel(genesis: weighedGenesis)
         let weighed = try await weighedLevel.admit(
             candidate,
-            mode: .weighed,
+            mode: .header,
             fetcher: weighedFetcher
         )
 
@@ -99,7 +99,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
     }
 
     func testWeighedAdmissionStoresOnlyBlockBoundaryNotBody() async throws {
-        // Tier-2 body deferral: a `.weighed` admission stores the block BOUNDARY
+        // Tier-2 body deferral: a `.header` admission stores the block BOUNDARY
         // (root node + tx/children tries — so the block is servable and locally
         // present for fork choice) but MUST NOT resolve or store tier-3 (tx
         // bodies, validation-path states, WASM modules, genesis empty-state).
@@ -125,7 +125,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         let boundaryStore = StorableFetcher()
         let weighed = try await AdmissionFixture.makeLevel(genesis: genesis).admit(
             candidate,
-            mode: .weighed,
+            mode: .header,
             fetcher: fetcher,
             storer: boundaryStore,
             materialized: NoopStorer()
@@ -184,7 +184,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         // Weighed admission succeeds against the body-less fetcher.
         let weighed = try await AdmissionFixture.makeLevel(genesis: genesis).admit(
             header,
-            mode: .weighed,
+            mode: .header,
             fetcher: bodyless,
             storer: NoopStorer()
         )
@@ -275,7 +275,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         for (name, variant) in variants {
             let header = try BlockHeader(node: variant)
             XCTAssertTrue(variant.validateProofOfWork(nexusHash: variant.proofOfWorkHash()), name)
-            for mode in [AdmissionMode.weighed, .eager] {
+            for mode in [ImportMode.header, .full] {
                 let level = AdmissionFixture.makeLevel(genesis: genesis)
                 let result = try await level.admit(header, mode: mode, fetcher: fetcher)
                 XCTAssertEqual(result.failure, .protocolInvalid, "\(name) \(mode)")
@@ -288,7 +288,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         // being executed.
         let accepted = try await AdmissionFixture.makeLevel(genesis: genesis).admit(
             valid,
-            mode: .weighed,
+            mode: .header,
             fetcher: fetcher
         )
         guard case .accepted = accepted else {
@@ -317,7 +317,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         XCTAssertGreaterThan(tooEasy.target, genesis.nextTarget)
         let header = try BlockHeader(node: tooEasy)
 
-        for mode in [AdmissionMode.weighed, .eager] {
+        for mode in [ImportMode.header, .full] {
             let level = AdmissionFixture.makeLevel(genesis: genesis)
             let result = try await level.admit(header, mode: mode, fetcher: fetcher)
             XCTAssertEqual(result.failure, .protocolInvalid, "\(mode)")
@@ -341,7 +341,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         let header = try BlockHeader(node: future)
 
         let level = AdmissionFixture.makeLevel(genesis: genesis)
-        let result = try await level.admit(header, mode: .weighed, fetcher: fetcher)
+        let result = try await level.admit(header, mode: .header, fetcher: fetcher)
 
         XCTAssertEqual(result.failure, .notYetValid)
         let inserted = await level.chain.contains(blockHash: header.rawCID)
@@ -357,7 +357,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         let header = try BlockHeader(node: rival)
 
         let level = AdmissionFixture.makeLevel(genesis: genesis)
-        let result = try await level.admit(header, mode: .weighed, fetcher: fetcher)
+        let result = try await level.admit(header, mode: .header, fetcher: fetcher)
 
         XCTAssertEqual(result.failure, .protocolInvalid)
         let inserted = await level.chain.contains(blockHash: header.rawCID)
@@ -426,7 +426,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
             let level = childLevel()
             let result = try await level.admit(
                 header,
-                mode: .weighed,
+                mode: .header,
                 fetcher: fetcher,
                 childPackage: try await packaged(variant, nonce: UInt64(10 + index))
             )
@@ -437,7 +437,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
 
         let accepted = try await childLevel().admit(
             valid,
-            mode: .weighed,
+            mode: .header,
             fetcher: fetcher,
             childPackage: try await packaged(valid, nonce: 20)
         )
@@ -463,7 +463,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         )
         let header = try BlockHeader(node: invalid)
 
-        for mode in [AdmissionMode.weighed, .eager] {
+        for mode in [ImportMode.header, .full] {
             let result = try await AdmissionFixture.makeLevel(genesis: genesis).admit(
                 header,
                 mode: mode,
@@ -494,7 +494,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         )
 
         let level = AdmissionFixture.makeLevel(genesis: genesis)
-        let result = try await level.admit(header, mode: .weighed, fetcher: parentless)
+        let result = try await level.admit(header, mode: .header, fetcher: parentless)
 
         XCTAssertEqual(result.failure, .unavailableEvidence)
         XCTAssertEqual(result.sameChainPredecessor, SameChainPredecessorRequirement(
@@ -534,7 +534,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
             descendantHeader,
             fetcher: fetcher,
             validationContentStorer: fetcher,
-            mode: .weighed
+            mode: .header
         )
         guard case .ready(let preflight) = preflightResult else {
             return XCTFail("valid weighed descendant must produce a commit token")
