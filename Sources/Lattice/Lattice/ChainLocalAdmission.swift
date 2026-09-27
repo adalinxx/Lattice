@@ -958,43 +958,26 @@ private enum ChainLocalAdmission {
             ))
         }
 
-        let transition: Result<(StateDiff, LatticeState?), ChainAdmissionFailure>
         if block.parent == nil {
             guard !context.isRoot, block.height == 0 else {
                 // Carrier link intentionally not relayed here
                 // (pre-existing quirk); see follow-up.
                 return .result(rejection(.protocolInvalid))
             }
-            transition = await validateGenesis(
-                block: block,
-                fetcher: fetcher,
-                context: context,
-                validationContext: validationContext
-            )
-        } else {
-            transition = await validateBlock(
-                block: block,
-                fetcher: fetcher,
-                chain: level.chain,
-                context: context,
-                validationContext: validationContext
-            )
         }
 
-        switch transition {
+        switch await executeTransition(
+            block: block,
+            blockHash: blockHash,
+            fetcher: fetcher,
+            chain: level.chain,
+            childPackage: childPackage,
+            context: context,
+            validationContext: validationContext
+        ) {
         case .failure(let failure):
             return .result(rejection(failure, carrier: carrier))
-        case .success(let (stateDiff, state)):
-            if !context.isRoot, let childPackage,
-               let failure = await validateParentFacts(
-                   childPackage,
-                   child: block,
-                   childCID: blockHash,
-                   context: context,
-                   fetcher: fetcher
-               ) {
-                return .result(rejection(failure, carrier: carrier))
-            }
+        case .success(let transition):
             let commitments: [String: String]
             switch await childCommitments(of: resolvedHeader, fetcher: fetcher) {
             case .success(let enumerated): commitments = enumerated
@@ -1009,7 +992,11 @@ private enum ChainLocalAdmission {
                 carrierLink: carrierLink,
                 verifiedCarrierLink: carrier.issuableLink,
                 sameChainPredecessor: carrier.sameChainPredecessor,
-                kind: .block(stateDiff, state, validated: true),
+                kind: .block(
+                    transition.stateDiff,
+                    transition.materializedPostState,
+                    validated: true
+                ),
                 childCommitments: commitments
             ))
         }
@@ -1070,41 +1057,24 @@ private enum ChainLocalAdmission {
                 : .result(rejection(failure, carrier: carrier))
         }
 
-        let transition: Result<(StateDiff, LatticeState?), ChainAdmissionFailure>
         if block.parent == nil {
             guard !context.isRoot, block.height == 0 else {
                 return excluded()
             }
-            transition = await validateGenesis(
-                block: block,
-                fetcher: fetcher,
-                context: context,
-                validationContext: validationContext
-            )
-        } else {
-            transition = await validateBlock(
-                block: block,
-                fetcher: fetcher,
-                chain: level.chain,
-                context: context,
-                validationContext: validationContext
-            )
         }
 
-        switch transition {
+        switch await executeTransition(
+            block: block,
+            blockHash: blockHash,
+            fetcher: fetcher,
+            chain: level.chain,
+            childPackage: childPackage,
+            context: context,
+            validationContext: validationContext
+        ) {
         case .failure(let failure):
             return rejected(failure)
-        case .success(let (stateDiff, state)):
-            if !context.isRoot, let childPackage,
-               let failure = await validateParentFacts(
-                   childPackage,
-                   child: block,
-                   childCID: blockHash,
-                   context: context,
-                   fetcher: fetcher
-               ) {
-                return rejected(failure)
-            }
+        case .success(let transition):
             // Commitments (§9.10) only on the one outcome that emits a block
             // fact, and after every verdict above — so a malformed trie is
             // classified by the same funnel as any other deterministic
@@ -1128,7 +1098,11 @@ private enum ChainLocalAdmission {
                 carrierLink: carrierLink,
                 verifiedCarrierLink: carrier.issuableLink,
                 sameChainPredecessor: carrier.sameChainPredecessor,
-                kind: .block(stateDiff, state, validated: true),
+                kind: .block(
+                    transition.stateDiff,
+                    transition.materializedPostState,
+                    validated: true
+                ),
                 childCommitments: commitments
             ))
         }
@@ -1235,24 +1209,62 @@ private enum ChainLocalAdmission {
         }
     }
 
-    static func validateGenesis(
+    struct ExecutedTransition: Sendable {
+        let stateDiff: StateDiff
+        let materializedPostState: LatticeState?
+    }
+
+    /// The one place a block's state transition is executed for admission:
+    /// genesis or ordinary dispatch on `parent`, a thrown failure classified
+    /// first, a false verdict as `.protocolInvalid`, and — only after the
+    /// transition succeeded — the child's parent facts checked against its
+    /// package. `chain` is the difficulty-anchor lookup for ordinary blocks
+    /// (nil at bootstrap, where only a genesis is ever executed).
+    static func executeTransition(
         block: Block,
+        blockHash: String,
         fetcher: any Fetcher,
+        chain: ChainState?,
+        childPackage: ChildValidationPackage?,
         context: ChainRuntimeContext,
         validationContext: ValidationContext
-    ) async -> Result<(StateDiff, LatticeState?), ChainAdmissionFailure> {
+    ) async -> Result<ExecutedTransition, ChainAdmissionFailure> {
+        let validation: (Bool, StateDiff, LatticeState?)
         do {
-            let validation = try await block.validateGenesisTransition(
-                fetcher: fetcher,
-                chainPath: context.path,
-                reportTemporalFailure: true,
-                validationContext: validationContext
-            )
-            guard validation.0 else { return .failure(.protocolInvalid) }
-            return .success((validation.1, validation.2))
+            if block.parent == nil {
+                validation = try await block.validateGenesisTransition(
+                    fetcher: fetcher,
+                    chainPath: context.path,
+                    reportTemporalFailure: true,
+                    validationContext: validationContext
+                )
+            } else {
+                validation = try await block.validateNexus(
+                    fetcher: fetcher,
+                    chain: chain,
+                    chainPath: context.path,
+                    reportTemporalFailure: true,
+                    validationContext: validationContext
+                )
+            }
         } catch {
             return .failure(classifyValidationFailure(error))
         }
+        guard validation.0 else { return .failure(.protocolInvalid) }
+        if !context.isRoot, let childPackage,
+           let failure = await validateParentFacts(
+               childPackage,
+               child: block,
+               childCID: blockHash,
+               context: context,
+               fetcher: fetcher
+           ) {
+            return .failure(failure)
+        }
+        return .success(ExecutedTransition(
+            stateDiff: validation.1,
+            materializedPostState: validation.2
+        ))
     }
 
     /// A real grind may carry descendant work even when this block is invalid
@@ -1312,35 +1324,13 @@ private enum ChainLocalAdmission {
         }
     }
 
-    static func validateBlock(
-        block: Block,
-        fetcher: any Fetcher,
-        chain: ChainState,
-        context: ChainRuntimeContext,
-        validationContext: ValidationContext
-    ) async -> Result<(StateDiff, LatticeState?), ChainAdmissionFailure> {
-        do {
-            let validation = try await block.validateNexus(
-                fetcher: fetcher,
-                chain: chain,
-                chainPath: context.path,
-                reportTemporalFailure: true,
-                validationContext: validationContext
-            )
-            guard validation.0 else { return .failure(.protocolInvalid) }
-            return .success((validation.1, validation.2))
-        } catch {
-            return .failure(classifyValidationFailure(error))
-        }
-    }
-
     static func finishBootstrap(
         context: ChainRuntimeContext,
         resolved: (header: BlockHeader, block: Block),
         fetcher: any Fetcher,
         contribution: VerifiedWorkContribution,
         carrierLink: ParentCarrierLink,
-        transition: (StateDiff, LatticeState?),
+        transition: ExecutedTransition,
         validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
         stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void
@@ -1359,7 +1349,11 @@ private enum ChainLocalAdmission {
             carrierLink: carrierLink,
             verifiedCarrierLink: carrierLink,
             sameChainPredecessor: nil,
-            kind: .block(transition.0, transition.1, validated: true)
+            kind: .block(
+                transition.stateDiff,
+                transition.materializedPostState,
+                validated: true
+            )
         )
         try await prepared.cacheValidationContent(to: validationContentStorer)
         let stagingContext = try await prepared.stagingContext()
@@ -1370,8 +1364,8 @@ private enum ChainLocalAdmission {
         let chain = try await ChainState.restore(replaying: [prepared.facts])
         return (
             ChainLevel(chain: chain, context: context),
-            transition.0,
-            transition.1,
+            transition.stateDiff,
+            transition.materializedPostState,
             ChainCommit(
                 tipHash: resolved.header.rawCID,
                 mainChainBlocksAdded: [resolved.header.rawCID: 0]
@@ -1781,10 +1775,13 @@ public extension ChainLevel {
         guard resolved.block.validateProofOfWork(nexusHash: rootHash) else {
             throw ChainAdmissionFailure.notAcceptedAtCurrentChain
         }
-        let transition: (StateDiff, LatticeState?)
-        switch await ChainLocalAdmission.validateGenesis(
+        let transition: ChainLocalAdmission.ExecutedTransition
+        switch await ChainLocalAdmission.executeTransition(
             block: resolved.block,
+            blockHash: resolved.header.rawCID,
             fetcher: fetcher,
+            chain: nil,
+            childPackage: nil,
             context: context,
             validationContext: validationContext
         ) {
@@ -1868,10 +1865,13 @@ public extension ChainLevel {
             id: childCID,
             work: workForTarget(resolved.block.target)
         )
-        let transition: (StateDiff, LatticeState?)
-        switch await ChainLocalAdmission.validateGenesis(
+        let transition: ChainLocalAdmission.ExecutedTransition
+        switch await ChainLocalAdmission.executeTransition(
             block: resolved.block,
+            blockHash: childCID,
             fetcher: fetcher,
+            chain: nil,
+            childPackage: nil,
             context: context,
             validationContext: validationContext
         ) {
