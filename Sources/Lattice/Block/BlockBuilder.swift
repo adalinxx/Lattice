@@ -373,21 +373,6 @@ public struct BlockBuilder {
         )
     }
 
-    private static func collectAncestorTimestamps(from block: Block, count: UInt64, fetcher: Fetcher) async -> [Int64] {
-        guard count > 0 else { return [] }
-        var timestamps: [Int64] = [block.timestamp]
-        var current = block
-        for _ in 1..<count {
-            guard let parentRef = current.parent,
-                  let parent = try? await parentRef.resolve(fetcher: fetcher).node else {
-                break
-            }
-            timestamps.append(parent.timestamp)
-            current = parent
-        }
-        return timestamps
-    }
-
     // MARK: - Mining (find valid nonce)
 
     public static func mine(
