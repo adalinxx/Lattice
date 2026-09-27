@@ -525,7 +525,7 @@ public actor ChainState {
         guard Self.hasUniqueWorkLocations(in: self.graph) else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
-        self.forkChoice = ForkChoice.build(from: self.graph.blocksByHash)
+        self.forkChoice = ForkChoice.build(from: self.graph)
         // Seed the executed-from-genesis frontier. Replay hands validations to
         // `markValidated` one at a time, but a graph restored wholesale needs
         // it computed once, downward from every genesis it holds.
@@ -535,7 +535,7 @@ public actor ChainState {
             tipSnapshot: tipSnapshot,
             snapshots: tipSnapshotsByHash,
             validated: validatedBlocks,
-            in: self.graph.blocksByHash,
+            in: self.graph,
             excluded: self.forkChoice.excludedRoots
         )
         // Runs (§9.10) are settled by `serveRuns(for:)`, one directory at a

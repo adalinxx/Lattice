@@ -152,17 +152,17 @@ struct RunAttribution: Sendable {
     /// the UNFILTERED graph. Idempotent.
     mutating func serve(
         _ directory: String,
-        in hashToBlock: [String: BlockMeta],
+        in graph: BlockGraph,
         isRouted: (String) -> Bool
     ) {
         guard served.insert(directory).inserted else { return }
-        var stack = hashToBlock.values
+        var stack = graph.records
             .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
             .map(\.blockHash)
         while let hash = stack.popLast() {
-            guard isRouted(hash), let meta = hashToBlock[hash] else { continue }
-            settle(hash, in: hashToBlock, directories: [directory])
-            stack.append(contentsOf: meta.childHashes)
+            guard isRouted(hash), graph.contains(hash) else { continue }
+            settle(hash, in: graph, directories: [directory])
+            stack.append(contentsOf: graph.children(of: hash))
         }
     }
 
@@ -174,14 +174,14 @@ struct RunAttribution: Sendable {
     /// excluded descendant is still connected and still credited.
     mutating func connect(
         rootedAt rootHash: String,
-        in hashToBlock: [String: BlockMeta]
+        in graph: BlockGraph
     ) {
         var stack = [rootHash]
         var visited = Set<String>()
         while let hash = stack.popLast() {
-            guard let meta = hashToBlock[hash], visited.insert(hash).inserted else { continue }
-            settle(hash, in: hashToBlock, directories: served)
-            stack.append(contentsOf: meta.childHashes)
+            guard graph.contains(hash), visited.insert(hash).inserted else { continue }
+            settle(hash, in: graph, directories: served)
+            stack.append(contentsOf: graph.children(of: hash))
         }
     }
 
@@ -194,10 +194,10 @@ struct RunAttribution: Sendable {
     /// definition.
     private mutating func settle(
         _ hash: String,
-        in hashToBlock: [String: BlockMeta],
+        in graph: BlockGraph,
         directories: Set<String>
     ) {
-        guard let meta = hashToBlock[hash] else { return }
+        guard let meta = graph[hash], let work = graph.work(of: hash) else { return }
         let inherited = meta.parentBlockHash
             .flatMap { nearestCommitter[$0] } ?? [:]
         var nearest = nearestCommitter[hash] ?? [:]
@@ -209,7 +209,7 @@ struct RunAttribution: Sendable {
             credited[directory] = committer
         }
         nearestCommitter[hash] = nearest
-        credit(meta.work, nearest: credited)
+        credit(work.work, nearest: credited)
     }
 
     /// A connected block's own work rose by `delta`: its runs rise by exactly
@@ -255,11 +255,11 @@ extension ChainState {
     /// directory it hosts after every restart, and it runs synchronously on
     /// the actor — one whole-graph walk per directory.
     public func serveRuns(for directory: String) {
-        runs.serve(directory, in: graph.blocksByHash, isRouted: { forkChoice.isRouted($0) })
+        runs.serve(directory, in: graph, isRouted: { forkChoice.isRouted($0) })
     }
 
     func connectForRunAttribution(rootedAt rootHash: String) {
-        runs.connect(rootedAt: rootHash, in: graph.blocksByHash)
+        runs.connect(rootedAt: rootHash, in: graph)
     }
 
     /// The run report a parent serves for one of its committing blocks. Nil
