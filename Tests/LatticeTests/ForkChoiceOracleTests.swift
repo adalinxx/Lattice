@@ -119,6 +119,7 @@ final class ForkChoiceOracleTests: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) async throws {
+        XCTAssertTrue(oracle.conflicts.isEmpty, "\(event): a grind was offered a second location", file: file, line: line)
         let view = oracle.view()
         let projection = try XCTUnwrap(view.canonicalProjection(), "\(event): no selectable root", file: file, line: line)
         let liveTip = await chain.getMainChainTip()
@@ -146,6 +147,66 @@ final class ForkChoiceOracleTests: XCTestCase {
                 "\(event): cumulativeWork of \(hash)", file: file, line: line
             )
         }
+    }
+
+    /// §9.1: a grind has one location per chain. Production refuses a second
+    /// one two ways — `.discarded` on the live path, `corruptConsensusGraph`
+    /// from the replay reducer — and the oracle records the conflict without
+    /// re-homing the grind, so its weights still match the untouched chain.
+    func testSecondLocationForAGrindIsRefusedByProductionAndRecordedByTheOracle() async throws {
+        let genesis = block("g", parent: nil, height: 0, work: 1)
+        let located = block("a", parent: "g", height: 1, grind: "shared", work: 3)
+        let other = block("b", parent: "g", height: 1, work: 2)
+        let chain = try await ChainState.restore(replaying: [genesis])
+        var oracle = ForkChoiceOracle()
+        for batch in [genesis, located, other] {
+            _ = try await chain.replay(batch)
+            oracle.apply(batch)
+        }
+        try await assertAgreement(chain, oracle, "before the conflict")
+
+        // Live path: a stronger observation of the grind at another block.
+        let live = await chain.addWorkContribution(
+            VerifiedWorkContribution(id: cid("shared"), work: UInt256(9)), to: cid("b")
+        )
+        XCTAssertFalse(live.addedContribution, "the live path discards a second location")
+        XCTAssertFalse(live.addedBlock)
+
+        // Replay reducer: the same work-only fact is a corrupt graph.
+        let relocated = work("b", grind: "shared", work: 9)
+        do {
+            _ = try await chain.replay(relocated)
+            XCTFail("replay must refuse a second location")
+        } catch let error as ChainStateRestoreError {
+            XCTAssertEqual(error, .corruptConsensusGraph)
+        }
+        // And so is a block fact whose own grind is already located elsewhere.
+        let stolen = block("c", parent: "b", height: 2, grind: "shared", work: 9)
+        do {
+            _ = try await chain.replay(stolen)
+            XCTFail("replay must refuse a block carrying a grind located elsewhere")
+        } catch let error as ChainStateRestoreError {
+            XCTAssertEqual(error, .corruptConsensusGraph)
+        }
+
+        oracle.apply(relocated)
+        oracle.apply(stolen)
+        XCTAssertEqual(oracle.conflicts, [
+            ForkChoiceOracle.LocationConflict(grind: cid("shared"), located: cid("a"), offered: cid("b")),
+            ForkChoiceOracle.LocationConflict(grind: cid("shared"), located: cid("a"), offered: cid("c")),
+        ])
+        // The refused facts moved nothing on either side. (The oracle holds
+        // the refused block `c` as a weightless leaf; the chain never
+        // inserted it, so compare only the blocks both hold.)
+        let view = oracle.view()
+        for name in ["g", "a", "b"] {
+            let subtree = await chain.subtreeWeight(forHash: cid(name))
+            XCTAssertEqual(subtree?.toHexString(), view.trueCumWork(of: cid(name)).hex, name)
+        }
+        let tip = await chain.getMainChainTip()
+        XCTAssertEqual(tip, cid("a"))
+        let contains = await chain.contains(blockHash: cid("c"))
+        XCTAssertFalse(contains)
     }
 
     func testOracleAgreesWithChainStateOnTheGoldenGraph() async throws {
