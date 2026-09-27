@@ -2,6 +2,12 @@ import Foundation
 import XCTest
 import UInt256
 @testable import Lattice
+@testable import LatticePrimitives
+@testable import LatticePoW
+@testable import LatticeValidation
+@testable import LatticeProofs
+@testable import LatticeBlockTree
+@testable import LatticeImport
 
 /// The durable on-disk shape of `ChainAdmissionBatch`: a fixed set of batches
 /// encoded to JSON bytes, pinned as hex. Recovery replays these bytes from a

@@ -1,6 +1,12 @@
 import XCTest
 import UInt256
 @testable import Lattice
+@testable import LatticePrimitives
+@testable import LatticePoW
+@testable import LatticeValidation
+@testable import LatticeProofs
+@testable import LatticeBlockTree
+@testable import LatticeImport
 
 final class WorkMeasureTests: XCTestCase {
     private func contribution(_ id: String, _ work: UInt64) -> VerifiedWorkContribution {
