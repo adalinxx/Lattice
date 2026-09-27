@@ -16,8 +16,8 @@ final class ChainSpecPropertyTests: XCTestCase {
     func testRewardFunctionIsPure() {
         let specs: [ChainSpec] = [
             .bitcoin, .ethereum, .development,
-            ChainSpec(maxNumberOfTransactionsPerBlock: 500, maxStateGrowth: 5000, premine: 42, targetBlockTime: 5000, initialReward: 4096, halvingInterval: 50_000),
-            ChainSpec(maxNumberOfTransactionsPerBlock: 1, maxStateGrowth: 1, premine: 0, targetBlockTime: 1, initialReward: 1, halvingInterval: 1),
+            ChainSpec(maxNumberOfTransactionsPerBlock: 500, maxStateGrowth: 5000, premine: 42, targetBlockTime: 5000, initialReward: 4096, halvingInterval: 50_000, halfLife: 10),
+            ChainSpec(maxNumberOfTransactionsPerBlock: 1, maxStateGrowth: 1, premine: 0, targetBlockTime: 1, initialReward: 1, halvingInterval: 1, halfLife: 10),
         ]
 
         for spec in specs {
@@ -33,9 +33,9 @@ final class ChainSpecPropertyTests: XCTestCase {
 
     func testTotalRewardsIsExactSum() {
         let specs: [ChainSpec] = [
-            ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: 16, halvingInterval: 500),
-            ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 5, targetBlockTime: 1000, initialReward: 16, halvingInterval: 500),
-            ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 100, targetBlockTime: 1000, initialReward: 256, halvingInterval: 500),
+            ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: 16, halvingInterval: 500, halfLife: 10),
+            ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 5, targetBlockTime: 1000, initialReward: 16, halvingInterval: 500, halfLife: 10),
+            ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 100, targetBlockTime: 1000, initialReward: 256, halvingInterval: 500, halfLife: 10),
         ]
 
         for spec in specs {
@@ -53,7 +53,7 @@ final class ChainSpecPropertyTests: XCTestCase {
     }
 
     func testRewardNonIncreasing() {
-        let spec = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: 16, halvingInterval: 500)
+        let spec = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: 16, halvingInterval: 500, halfLife: 10)
         let halvingInterval = spec.halvingInterval
 
         var prev = spec.rewardAtBlock(0)
@@ -69,7 +69,7 @@ final class ChainSpecPropertyTests: XCTestCase {
     func testPremineAmountEqualsTotalRewards() {
         let premineValues: [UInt64] = [0, 1, 10, 100, 1000, 5000]
         for premine in premineValues {
-            let spec = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: premine, targetBlockTime: 1000, initialReward: 32_768, halvingInterval: 100_000)
+            let spec = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: premine, targetBlockTime: 1000, initialReward: 32_768, halvingInterval: 100_000, halfLife: 10)
             guard spec.isValid else { continue }
             XCTAssertEqual(spec.premineAmount(), spec.totalRewards(upToBlock: premine),
                            "premineAmount != totalRewards(premine) for premine=\(premine)")
@@ -77,7 +77,7 @@ final class ChainSpecPropertyTests: XCTestCase {
     }
 
     func testTotalRewardsAdditivity() {
-        let spec = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: 64, halvingInterval: 500)
+        let spec = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: 64, halvingInterval: 500, halfLife: 10)
 
         for _ in 0..<50 {
             let a = UInt64.random(in: 0...1000)
@@ -95,7 +95,7 @@ final class ChainSpecPropertyTests: XCTestCase {
             (1, 1), (2, 2), (4, 3), (8, 4), (16, 5), (1024, 11), (65536, 17),
         ]
         for (reward, expectedHalvings) in testCases {
-            let spec = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: reward, halvingInterval: 1000)
+            let spec = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: reward, halvingInterval: 1000, halfLife: 10)
             XCTAssertEqual(spec.totalHalvings, expectedHalvings)
         }
     }
@@ -104,7 +104,7 @@ final class ChainSpecPropertyTests: XCTestCase {
         let rewards: [UInt64] = [4, 16, 256]
         for reward in rewards {
             let interval: UInt64 = 1000
-            let spec = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: reward, halvingInterval: interval)
+            let spec = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: reward, halvingInterval: interval, halfLife: 10)
             let halvingsToGetTo2 = spec.totalHalvings - 2  // reward >> (totalHalvings - 2) == 2 when reward is power of 2
             let penultimateBlock = interval * halvingsToGetTo2
             let r = spec.rewardAtBlock(penultimateBlock)
@@ -116,7 +116,7 @@ final class ChainSpecPropertyTests: XCTestCase {
         let rewards: [UInt64] = [4, 16, 256]
         for reward in rewards {
             let interval: UInt64 = 1000
-            let spec = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: reward, halvingInterval: interval)
+            let spec = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: reward, halvingInterval: interval, halfLife: 10)
             let halvingsToGetTo1 = spec.totalHalvings - 1
             let finalBlock = interval * halvingsToGetTo1
             let r = spec.rewardAtBlock(finalBlock)
@@ -124,34 +124,32 @@ final class ChainSpecPropertyTests: XCTestCase {
         }
     }
 
-    // Property: Difficulty adjustment is symmetric around target
+    // Property: the schedule hardens ahead of schedule and eases behind it
     func testDifficultyAdjustmentSymmetry() {
         let spec = ChainSpec.development
-        let baseDiff = UInt256(10000)
-        let target = Int64(spec.targetBlockTime)
+        let anchor = UInt256(10000)
+        let blockTime = Int64(spec.targetBlockTime)
+        func scheduled(at timestamp: Int64) -> UInt256 {
+            spec.calculateAsertTarget(
+                anchorTarget: anchor, anchorTimestamp: 0, anchorHeight: 1,
+                blockTimestamp: timestamp, blockHeight: 2
+            )
+        }
 
-        let halfTarget = target / 2
-        let doubleTarget = target * 2
-
-        let fasterDiff = spec.calculateMinimumTarget(
-            previousTarget: baseDiff, blockTimestamp: halfTarget, previousTimestamp: 0)
-        let slowerDiff = spec.calculateMinimumTarget(
-            previousTarget: baseDiff, blockTimestamp: doubleTarget, previousTimestamp: 0)
-
-        XCTAssertTrue(fasterDiff < baseDiff, "Faster blocks should decrease target target")
-        XCTAssertTrue(slowerDiff > baseDiff, "Slower blocks should increase target target")
+        XCTAssertTrue(scheduled(at: blockTime / 2) < anchor, "a block ahead of schedule hardens the target")
+        XCTAssertTrue(scheduled(at: blockTime * 2) > anchor, "a block behind schedule eases the target")
     }
 
-    // Property: Exact target timing produces no change
+    // Property: exactly on schedule holds the anchor's target
     func testExactTargetTimingNoChange() {
         let specs: [ChainSpec] = [.bitcoin, .ethereum, .development]
         for spec in specs {
-            let baseDiff = UInt256(999999)
-            let target = Int64(spec.targetBlockTime)
-            let newDiff = spec.calculateMinimumTarget(
-                previousTarget: baseDiff, blockTimestamp: target, previousTimestamp: 0)
-            XCTAssertEqual(newDiff, baseDiff,
-                           "Exact target timing should not change target for spec")
+            let anchor = UInt256(999999)
+            let onSchedule = spec.calculateAsertTarget(
+                anchorTarget: anchor, anchorTimestamp: 0, anchorHeight: 1,
+                blockTimestamp: Int64(spec.targetBlockTime), blockHeight: 2
+            )
+            XCTAssertEqual(onSchedule, anchor, "on schedule holds the anchor's target")
         }
     }
 }

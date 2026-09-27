@@ -24,7 +24,8 @@ func testSpec() -> ChainSpec {
         premine: 0,
         targetBlockTime: 1_000,
         initialReward: 1024,
-        halvingInterval: 10_000
+        halvingInterval: 10_000,
+        halfLife: 10
     )
 }
 
@@ -100,7 +101,8 @@ final class BlockBuilderTests: XCTestCase {
             premine: 0,
             targetBlockTime: 1_000,
             initialReward: 1_024,
-            halvingInterval: 10_000
+            halvingInterval: 10_000,
+            halfLife: 10
         )
         let invalidHeader = try VolumeImpl<ChainSpec>(node: invalidSpec)
         try await invalidHeader.storeRecursively(storer: fetcher)
@@ -592,6 +594,7 @@ final class WasmPolicyTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024,
             halvingInterval: 10_000,
+            halfLife: 10,
             wasmPolicies: [policy]
         )
         let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
@@ -614,6 +617,7 @@ final class WasmPolicyTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024,
             halvingInterval: 10_000,
+            halfLife: 10,
             wasmPolicies: [policy]
         )
         let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
@@ -642,6 +646,7 @@ final class WasmPolicyTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024,
             halvingInterval: 10_000,
+            halfLife: 10,
             wasmPolicies: [policy]
         )
         let lowAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [lowFee], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
@@ -666,6 +671,7 @@ final class WasmPolicyTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024,
             halvingInterval: 10_000,
+            halfLife: 10,
             wasmPolicies: [policy]
         )
         let acceptedOnMatchingPath = try await TransactionBody.batchVerifyPolicies(
@@ -699,6 +705,7 @@ final class WasmPolicyTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024,
             halvingInterval: 10_000,
+            halfLife: 10,
             wasmPolicies: [acceptingPolicy, rejectingPolicy]
         )
         let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
@@ -714,6 +721,7 @@ final class WasmPolicyTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024,
             halvingInterval: 10_000,
+            halfLife: 10,
             wasmPolicies: [policy]
         )
         let body = TransactionBody(
@@ -737,7 +745,7 @@ final class WasmPolicyTests: XCTestCase {
             actionIndex: nil
         )
         let hex = try context.canonicalData().map { String(format: "%02x", $0) }.joined()
-        XCTAssertEqual(hex, "4c5750435458000100010000000106a9677072656d696e65006c6d6178426c6f636b53697a651a000f42406c7761736d506f6c696369657381a46573636f70656b7472616e73616374696f6e696d6f64756c654349446b626166792d706f6c6963796a61626956657273696f6e016a656e747279706f696e74781c6c6174746963655f76616c69646174655f7472616e73616374696f6e6d696e697469616c5265776172641904006e6d6178537461746547726f7774681a000186a06e726574617267657457696e646f770a6f68616c76696e67496e74657276616c1927106f746172676574426c6f636b54696d651903e8781f6d61784e756d6265724f665472616e73616374696f6e73506572426c6f636b186400000001000000054e6578757301000000a9aa6366656507656e6f6e63650967616374696f6e7381a2636b65796b6170702f76312f64617461686e657756616c75656576616c7565677369676e6572738165616c69636569636861696e5061746881654e657875736e6163636f756e74416374696f6e73806e6465706f736974416374696f6e73806e67656e65736973416374696f6e73806e72656365697074416374696f6e7380717769746864726177616c416374696f6e73800000")
+        XCTAssertEqual(hex, "4c5750435458000100010000000100a9677072656d696e65006868616c664c6966650a6c6d6178426c6f636b53697a651a000f42406c7761736d506f6c696369657381a46573636f70656b7472616e73616374696f6e696d6f64756c654349446b626166792d706f6c6963796a61626956657273696f6e016a656e747279706f696e74781c6c6174746963655f76616c69646174655f7472616e73616374696f6e6d696e697469616c5265776172641904006e6d6178537461746547726f7774681a000186a06f68616c76696e67496e74657276616c1927106f746172676574426c6f636b54696d651903e8781f6d61784e756d6265724f665472616e73616374696f6e73506572426c6f636b186400000001000000054e6578757301000000a9aa6366656507656e6f6e63650967616374696f6e7381a2636b65796b6170702f76312f64617461686e657756616c75656576616c7565677369676e6572738165616c69636569636861696e5061746881654e657875736e6163636f756e74416374696f6e73806e6465706f736974416374696f6e73806e67656e65736973416374696f6e73806e72656365697074416374696f6e7380717769746864726177616c416374696f6e73800000")
 
         let actionContext = WasmPolicyContext(
             scope: .action,
@@ -748,7 +756,7 @@ final class WasmPolicyTests: XCTestCase {
             actionIndex: 0
         )
         let actionHex = try actionContext.canonicalData().map { String(format: "%02x", $0) }.joined()
-        XCTAssertEqual(actionHex, "4c5750435458000100010100000106a9677072656d696e65006c6d6178426c6f636b53697a651a000f42406c7761736d506f6c696369657381a46573636f70656b7472616e73616374696f6e696d6f64756c654349446b626166792d706f6c6963796a61626956657273696f6e016a656e747279706f696e74781c6c6174746963655f76616c69646174655f7472616e73616374696f6e6d696e697469616c5265776172641904006e6d6178537461746547726f7774681a000186a06e726574617267657457696e646f770a6f68616c76696e67496e74657276616c1927106f746172676574426c6f636b54696d651903e8781f6d61784e756d6265724f665472616e73616374696f6e73506572426c6f636b186400000001000000054e6578757301000000a9aa6366656507656e6f6e63650967616374696f6e7381a2636b65796b6170702f76312f64617461686e657756616c75656576616c7565677369676e6572738165616c69636569636861696e5061746881654e657875736e6163636f756e74416374696f6e73806e6465706f736974416374696f6e73806e67656e65736973416374696f6e73806e72656365697074416374696f6e7380717769746864726177616c416374696f6e73800100000020a2636b65796b6170702f76312f64617461686e657756616c75656576616c7565010000000000000000")
+        XCTAssertEqual(actionHex, "4c5750435458000100010100000100a9677072656d696e65006868616c664c6966650a6c6d6178426c6f636b53697a651a000f42406c7761736d506f6c696369657381a46573636f70656b7472616e73616374696f6e696d6f64756c654349446b626166792d706f6c6963796a61626956657273696f6e016a656e747279706f696e74781c6c6174746963655f76616c69646174655f7472616e73616374696f6e6d696e697469616c5265776172641904006e6d6178537461746547726f7774681a000186a06f68616c76696e67496e74657276616c1927106f746172676574426c6f636b54696d651903e8781f6d61784e756d6265724f665472616e73616374696f6e73506572426c6f636b186400000001000000054e6578757301000000a9aa6366656507656e6f6e63650967616374696f6e7381a2636b65796b6170702f76312f64617461686e657756616c75656576616c7565677369676e6572738165616c69636569636861696e5061746881654e657875736e6163636f756e74416374696f6e73806e6465706f736974416374696f6e73806e67656e65736973416374696f6e73806e72656365697074416374696f6e7380717769746864726177616c416374696f6e73800100000020a2636b65796b6170702f76312f64617461686e657756616c75656576616c7565010000000000000000")
     }
 
     func testActionPolicyAccepts() async throws {
@@ -768,6 +776,7 @@ final class WasmPolicyTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024,
             halvingInterval: 10_000,
+            halfLife: 10,
             wasmPolicies: [policy]
         )
         let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
@@ -786,6 +795,7 @@ final class WasmPolicyTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024,
             halvingInterval: 10_000,
+            halfLife: 10,
             wasmPolicies: [policy]
         )
         let goodBody = TransactionBody(accountActions: [], actions: [goodAction], depositActions: [], genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 1, nonce: 1, chainPath: ["Nexus"])
@@ -817,6 +827,7 @@ final class WasmPolicyTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024,
             halvingInterval: 10_000,
+            halfLife: 10,
             wasmPolicies: [policy]
         )
         let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
@@ -872,6 +883,7 @@ final class WasmPolicyTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024,
             halvingInterval: 10_000,
+            halfLife: 10,
             wasmPolicies: [policy]
         )
         let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
@@ -888,6 +900,7 @@ final class WasmPolicyTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024,
             halvingInterval: 10_000,
+            halfLife: 10,
             wasmPolicies: [policy]
         )
         let body = TransactionBody(
@@ -1161,6 +1174,7 @@ final class WasmPolicyTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024,
             halvingInterval: 10_000,
+            halfLife: 10,
             wasmPolicies: [policy]
         )
     }

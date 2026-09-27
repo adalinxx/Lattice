@@ -34,7 +34,7 @@ public struct ChainBlockFact: Codable, Sendable, Equatable {
     public let timestamp: Int64
     public let stateDiff: StateDiff
     /// Directory → child block CID this block commits, from its PoW-bound
-    /// `children` trie (§9.10). Optional so facts written before it existed
+    /// `children` index (§9.10). Optional so facts written before it existed
     /// still decode; absent means NOT RECORDED — never "commits nothing" — and
     /// a later fact for the same block supplies the map (see
     /// `BlockMeta.childCommitments`, `matchesGraph`).
@@ -826,7 +826,7 @@ private enum ChainLocalAdmission {
 
         // §9.10: the weighed and eager sites below enumerate the block's child
         // commitments only where a block fact is emitted — after its work is
-        // verified (walking an attacker-sized `children` trie costs
+        // verified (reading an attacker-sized `children` index costs
         // proof-of-work) and after the duplicate and evidence short-circuits (a
         // re-delivered block costs nothing here). The validate tier orders its
         // own enumeration after its verdict funnel, in `prepareValidatedTier`.
@@ -1197,7 +1197,7 @@ private enum ChainLocalAdmission {
     }
 
     /// Every child commitment this block makes, `directory → child CID`, read
-    /// from its PoW-bound `children` trie (§9.10). Called only after the
+    /// from its PoW-bound `children` index (§9.10). Called only after the
     /// block's work is verified and only on paths that emit a block fact, so
     /// the walk is never spent on an unauthenticated header. A failure is
     /// classified like any other boundary resolution: an unavailable node is
@@ -1208,13 +1208,13 @@ private enum ChainLocalAdmission {
     ) async -> Result<[String: String], ChainAdmissionFailure> {
         do {
             let resolved = try await blockHeader.resolve(
-                paths: [[CHILDREN_PROPERTY, ""]: .list],
+                paths: [[CHILDREN_PROPERTY]: .targeted],
                 fetcher: fetcher
             )
             guard let children = resolved.node?.children.node else {
                 return .failure(.unavailableEvidence)
             }
-            return .success(try children.allKeysAndValues().mapValues(\.rawCID))
+            return .success(children.entries.mapValues(\.rawCID))
         } catch {
             return .failure(classifyResolutionFailure(error))
         }

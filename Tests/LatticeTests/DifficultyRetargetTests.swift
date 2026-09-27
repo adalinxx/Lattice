@@ -12,10 +12,12 @@ func selfDifficultyAnchor(_ block: Block) -> DifficultyAnchor {
     )
 }
 
-
+/// The scheduled `nextTarget` at the edges validation checks: block 1 is its
+/// own anchor, so its schedule starts at its own target, and a `nextTarget`
+/// on either side of the schedule is a forgery.
 @MainActor
 final class DifficultyRetargetTests: XCTestCase {
-    private func spec(window: UInt64 = 120, target: UInt64 = 3_600_000, maxTargetChange: UInt8? = nil) -> ChainSpec {
+    private func spec(halfLife: UInt64 = 120, target: UInt64 = 3_600_000) -> ChainSpec {
         ChainSpec(
             maxNumberOfTransactionsPerBlock: 100,
             maxStateGrowth: 100_000,
@@ -24,40 +26,8 @@ final class DifficultyRetargetTests: XCTestCase {
             targetBlockTime: target,
             initialReward: 1024,
             halvingInterval: 10_000,
-            retargetWindow: window,
-            maxTargetChange: maxTargetChange
+            halfLife: halfLife
         )
-    }
-
-    private func oracleLWMA(previousTarget: UInt256, targetBlockTime: UInt64, window: UInt64, newestFirstTimestamps: [Int64]) -> UInt256 {
-        let intervalCount = min(newestFirstTimestamps.count - 1, Int(window))
-        guard intervalCount > 0 else { return previousTarget }
-
-        var weightedActual = UInt256.zero
-        var weightSum = UInt256.zero
-        for index in 0..<intervalCount {
-            let solveTime = max(Int64(0), newestFirstTimestamps[index] - newestFirstTimestamps[index + 1])
-            let weight = UInt256(UInt64(intervalCount - index))
-            let solve = UInt256(UInt64(solveTime))
-            let weightedSolve = solve > UInt256.max / weight ? UInt256.max : solve * weight
-            weightedActual = weightedActual > UInt256.max - weightedSolve ? UInt256.max : weightedActual + weightedSolve
-            weightSum = weightSum + weight
-        }
-        guard weightedActual > .zero else { return .zero }
-
-        let weightedTarget = UInt256(targetBlockTime) * weightSum
-        return oracleMultiplyDividingSaturating(previousTarget, by: weightedActual, over: weightedTarget)
-    }
-
-    private func oracleMultiplyDividingSaturating(_ value: UInt256, by numerator: UInt256, over denominator: UInt256) -> UInt256 {
-        guard denominator > .zero else { return UInt256.max }
-        guard numerator > .zero else { return .zero }
-        let quotient = value / denominator
-        let remainder = value % denominator
-        let scaledQuotient = quotient > UInt256.max / numerator ? UInt256.max : quotient * numerator
-        let scaledRemainderProduct = remainder > UInt256.max / numerator ? UInt256.max : remainder * numerator
-        let scaledRemainder = scaledRemainderProduct / denominator
-        return scaledQuotient > UInt256.max - scaledRemainder ? UInt256.max : scaledQuotient + scaledRemainder
     }
 
     private func makeGenesis(spec: ChainSpec, timestamp: Int64, target: UInt256, fetcher: StorableFetcher) async throws -> Block {
@@ -83,231 +53,13 @@ final class DifficultyRetargetTests: XCTestCase {
         try await VolumeImpl<Block>(node: block).storeBlock(storer: fetcher)
     }
 
-    func testLwmaRetargetWeightedAverageUsesRecentWeights() {
-        let s = spec(window: 4, target: 1_000)
-        let previous = UInt256(10_000)
-        let timestamps: [Int64] = [10_000, 9_000, 7_500, 5_000, 1_000]
-
-        let expected = oracleLWMA(
-            previousTarget: previous,
-            targetBlockTime: s.targetBlockTime,
-            window: s.retargetWindow,
-            newestFirstTimestamps: timestamps
-        )
-
-        XCTAssertEqual(expected, UInt256(17_500))
-        XCTAssertEqual(s.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: timestamps), expected)
-    }
-
-    // MARK: - Proportional-retarget window/clamp invariant (E4.6 /
-
-    /// Bound a single retarget step the way the choke point must: at most the
-    /// COMMITTED `maxTargetChange`× in either direction. There is no absolute
-    /// floor — a committed clamp is the only bound, and only when committed.
-    private func clampBounds(previousTarget: UInt256, factor committed: UInt8) -> (lower: UInt256, upper: UInt256) {
-        let factor = UInt256(UInt64(committed))
-        let upper = previousTarget > UInt256.max / factor ? UInt256.max : previousTarget * factor
-        let lower = previousTarget / factor
-        return (lower, upper)
-    }
-
-    private func assertRetargetInvariants(
-        _ s: ChainSpec,
-        previousTarget: UInt256,
-        ancestorTimestamps: [Int64],
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) {
-        let result = s.calculateWindowedTarget(previousTarget: previousTarget, ancestorTimestamps: ancestorTimestamps)
-        if let committed = s.maxTargetChange, committed > 0 {
-            // Per-retarget move bounded by the COMMITTED factor in either
-            // direction. The clamp is the only bound: no absolute target floor.
-            let (lower, upper) = clampBounds(previousTarget: previousTarget, factor: committed)
-            XCTAssertLessThanOrEqual(result, upper, "target rose by more than maxTargetChange×", file: file, line: line)
-            XCTAssertGreaterThanOrEqual(result, lower, "target fell by more than maxTargetChange×", file: file, line: line)
-        } else {
-            // Uncommitted = unclamped. Exact LWMA pass-through is asserted by
-            // the targeted tests on tame inputs; under adversarial extremes
-            // the saturating arithmetic legitimately diverges from the naive
-            // oracle, so the property here is the no-brick invariant: the
-            // retarget NEVER proposes the unmineable zero target.
-            XCTAssertGreaterThan(result, .zero, "uncommitted retarget must never propose target zero", file: file, line: line)
-        }
-    }
-
-    /// A chain that COMMITS a clamp cannot have difficulty swung by more than
-    /// its committed factor in one retarget; an uncommitted chain retargets by
-    /// the full unclamped LWMA — its committed choice, either way.
-    func testGrindedLongSolveTimesClampedOnlyWhenCommitted() {
-        let unclamped = spec(window: 4, target: 1_000)
-        let clamped = spec(window: 4, target: 1_000, maxTargetChange: 2)
-        let previous = UInt256(10_000)
-        // Newest-first timestamps with huge gaps ⇒ LWMA wants a far-easier target.
-        let timestamps: [Int64] = [1_000_000, 800_000, 500_000, 100_000, 0]
-
-        let unclampedOracle = oracleLWMA(
-            previousTarget: previous,
-            targetBlockTime: unclamped.targetBlockTime,
-            window: unclamped.retargetWindow,
-            newestFirstTimestamps: timestamps
-        )
-        // Sanity: the proportional correction blows past a 2× ceiling.
-        XCTAssertGreaterThan(unclampedOracle, previous * UInt256(2))
-
-        // Uncommitted: the unclamped LWMA passes through exactly.
-        XCTAssertEqual(
-            unclamped.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: timestamps),
-            unclampedOracle,
-            "an uncommitted spec must not be clamped by any default"
-        )
-        // Committed: easing saturates at the committed factor.
-        XCTAssertEqual(
-            clamped.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: timestamps),
-            previous * UInt256(2),
-            "easing must saturate at the committed maxTargetChange×"
-        )
-        assertRetargetInvariants(unclamped, previousTarget: previous, ancestorTimestamps: timestamps)
-        assertRetargetInvariants(clamped, previousTarget: previous, ancestorTimestamps: timestamps)
-    }
-
-    /// All-zero solve times (every block "instant") are unreachable in
-    /// consensus (strictly increasing timestamps); the degenerate window keeps
-    /// the previous target — never an impossible zero — clamp or no clamp.
-    func testGrindedZeroSolveTimesKeepPreviousTarget() {
-        let previous = UInt256(10_000)
-        // Equal timestamps ⇒ zero solve time.
-        let timestamps: [Int64] = [5_000, 5_000, 5_000, 5_000, 5_000]
-
-        for s in [spec(window: 4, target: 1_000), spec(window: 4, target: 1_000, maxTargetChange: 2)] {
-            let result = s.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: timestamps)
-            XCTAssertEqual(result, previous, "a zero-solve window must keep the previous target")
-        }
-        assertRetargetInvariants(spec(window: 4, target: 1_000), previousTarget: previous, ancestorTimestamps: timestamps)
-    }
-
-    /// The window must consume at most `retargetWindow` intervals: timestamps
-    /// beyond the window are ignored, so padding with adversarial far-history
-    /// cannot change the result.
-    func testWindowUsesAtMostRetargetWindowIntervals() {
-        let s = spec(window: 3, target: 1_000)
-        let previous = UInt256(10_000)
-        // 4 intervals' worth of timestamps but window == 3.
-        let windowed: [Int64] = [4_000, 3_000, 2_000, 1_000]
-        // Same newest 3 intervals; the first beyond-window timestamp is made
-        // adversarial so the (retargetWindow + 1)th interval is NOT a normal
-        // 1,000-second interval. Here windowed ends at 1,000 and the first
-        // padded element is -10_000_000, so an off-by-one that consumed one
-        // extra interval would inject a ~10_000_001s solve time — easing the
-        // target hard enough to hit the maxTargetChange× ceiling. A correct
-        // window ignores it, so `a == b` only holds when exactly
-        // `retargetWindow` intervals are consumed.
-        let padded: [Int64] = windowed + [Int64](repeating: -10_000_000, count: 50)
-
-        // Sanity: an off-by-one that consumed `retargetWindow + 1` intervals
-        // would read a fundamentally different target. We model both via the
-        // oracle (true window vs. window + 1) and confirm the adversarial
-        // boundary interval makes them diverge — so this test can actually
-        // catch a one-extra-interval bug rather than absorbing it as another
-        // normal 1,000-second interval.
-        let correctOracle = oracleLWMA(previousTarget: previous, targetBlockTime: s.targetBlockTime, window: s.retargetWindow, newestFirstTimestamps: padded)
-        let offByOneOracle = oracleLWMA(previousTarget: previous, targetBlockTime: s.targetBlockTime, window: s.retargetWindow + 1, newestFirstTimestamps: padded)
-        XCTAssertNotEqual(correctOracle, offByOneOracle, "adversarial boundary interval must move the result if consumed")
-        XCTAssertGreaterThan(offByOneOracle, correctOracle * UInt256(100), "the (retargetWindow + 1)th interval must ease the target by a large factor, not by a normal interval")
-
-        let a = s.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: windowed)
-        let b = s.calculateWindowedTarget(previousTarget: previous, ancestorTimestamps: padded)
-        XCTAssertEqual(a, b, "intervals beyond retargetWindow must not affect the result")
-        assertRetargetInvariants(s, previousTarget: previous, ancestorTimestamps: padded)
-    }
-
-    /// Property sweep: across a range of adversarial timestamp spreads the two
-    /// clamp invariants (clamp up, clamp down) always hold.
-    func testRetargetInvariantsHoldAcrossAdversarialTimestamps() {
-        let s = spec(window: 8, target: 1_000)
-        let previousTargets: [UInt256] = [UInt256(1), UInt256(2), UInt256(1_000), UInt256(10_000), UInt256.max]
-        let spreads: [Int64] = [0, 1, 500, 1_000, 10_000, 1_000_000, 1_000_000_000]
-
-        for previous in previousTargets {
-            for spread in spreads {
-                // Decreasing newest-first timestamps with a fixed per-interval spread.
-                var ts: [Int64] = []
-                var t: Int64 = spread * 16
-                for _ in 0...10 {
-                    ts.append(t)
-                    t -= spread
-                }
-                assertRetargetInvariants(s, previousTarget: previous, ancestorTimestamps: ts)
-
-                // Also the reversed (increasing) ordering, which yields zero solve times.
-                assertRetargetInvariants(s, previousTarget: previous, ancestorTimestamps: ts.reversed())
-            }
-        }
-    }
-
-    /// When the timestamp window has 0 or 1 elements no retarget interval can be
-    /// computed, so the early-return keeps the previous target unchanged. There is
-    /// no minimum-target floor: a zero previousTarget passes straight through. A
-    /// zero-target chain is unmineable, but that is a deployer/operator condition,
-    /// not a protocol violation the retarget invents a floor to paper over.
-    func testEmptyOrSingleWindowKeepsPreviousTargetUnchanged() {
-        let s = spec(window: 8, target: 1_000)
-
-        // Empty window.
-        XCTAssertEqual(
-            s.calculateWindowedTarget(previousTarget: .zero, ancestorTimestamps: []),
-            .zero,
-            "an empty window must keep the previous target unchanged"
-        )
-
-        // Single-element window (still no interval available).
-        XCTAssertEqual(
-            s.calculateWindowedTarget(previousTarget: .zero, ancestorTimestamps: [10_000]),
-            .zero,
-            "a single timestamp must keep the previous target unchanged"
-        )
-    }
-
-    func testExtremeTimestampRangeDoesNotTrap() {
-        let s = spec(window: .max, target: 1_000)
-        let previous = UInt256(10_000)
-
-        XCTAssertGreaterThan(
-            s.calculateMinimumTarget(
-                previousTarget: previous,
-                blockTimestamp: .max,
-                previousTimestamp: .min
-            ),
-            previous
-        )
-        // A one-interval window is definitionally the pair formula, so the
-        // extreme range must ease unclamped to exactly the pair target (and
-        // never trap on the saturated elapsed time).
-        let extreme = s.calculateWindowedTarget(
-            previousTarget: previous,
-            ancestorTimestamps: [.max, .min]
-        )
-        XCTAssertGreaterThan(extreme, previous)
-        XCTAssertEqual(
-            extreme,
-            s.calculateMinimumTarget(
-                previousTarget: previous,
-                blockTimestamp: .max,
-                previousTimestamp: .min
-            )
-        )
-    }
-
-    func testValidateNextDifficultyRejectsOldBandNearMisses() async throws {
-        let s = spec(window: 120, target: 1_000)
+    func testValidateNextDifficultyRejectsScheduleNearMisses() async throws {
+        let s = spec(target: 1_000)
         let fetcher = StorableFetcher()
         let parent = try await makeGenesis(spec: s, timestamp: 1_000, target: UInt256(10_000), fetcher: fetcher)
         let blockTimestamp: Int64 = 2_000
-        let expected = oracleLWMA(
-            previousTarget: parent.nextTarget,
-            targetBlockTime: s.targetBlockTime,
-            window: s.retargetWindow,
-            newestFirstTimestamps: [blockTimestamp, parent.timestamp]
-        )
+        // Block 1 anchors itself: its schedule starts at its own target.
+        let expected = parent.nextTarget
 
         let valid = try await makeNext(
             previous: parent,
@@ -338,23 +90,16 @@ final class DifficultyRetargetTests: XCTestCase {
     }
 
     func testEasierThanScheduledTargetRejected() async throws {
-        let s = spec(window: 120, target: 1_000)
+        let s = spec(target: 1_000)
         let fetcher = StorableFetcher()
         let parent = try await makeGenesis(spec: s, timestamp: 1_000, target: UInt256(10_000), fetcher: fetcher)
-        let blockTimestamp: Int64 = 2_000
-        let expected = oracleLWMA(
-            previousTarget: parent.nextTarget,
-            targetBlockTime: s.targetBlockTime,
-            window: s.retargetWindow,
-            newestFirstTimestamps: [blockTimestamp, parent.timestamp]
-        )
         // A larger target is easier than the scheduled parent.nextTarget → rejected.
         let easier = parent.nextTarget + UInt256(1)
         let block = try await makeNext(
             previous: parent,
-            timestamp: blockTimestamp,
+            timestamp: 2_000,
             target: easier,
-            nextTarget: expected,
+            nextTarget: easier,
             fetcher: fetcher
         )
 
@@ -362,32 +107,25 @@ final class DifficultyRetargetTests: XCTestCase {
     }
 
     func testHarderThanScheduledTargetAccepted() async throws {
-        let s = spec(window: 120, target: 1_000)
+        let s = spec(target: 1_000)
         let fetcher = StorableFetcher()
         let parent = try await makeGenesis(spec: s, timestamp: 1_000, target: UInt256(10_000), fetcher: fetcher)
-        let blockTimestamp: Int64 = 2_000
         // A smaller target is HARDER than the scheduled parent.nextTarget → allowed;
-        // nextTarget is recomputed from the actual (harder) target.
+        // the schedule then starts from the actual (harder) target.
         let harder = parent.nextTarget / UInt256(2)
-        let expected = oracleLWMA(
-            previousTarget: harder,
-            targetBlockTime: s.targetBlockTime,
-            window: s.retargetWindow,
-            newestFirstTimestamps: [blockTimestamp, parent.timestamp]
-        )
         let block = try await makeNext(
             previous: parent,
-            timestamp: blockTimestamp,
+            timestamp: 2_000,
             target: harder,
-            nextTarget: expected,
+            nextTarget: harder,
             fetcher: fetcher
         )
 
         XCTAssertTrue(block.validateNextTarget(spec: s, parent: parent, difficultyAnchor: selfDifficultyAnchor(block)))
     }
 
-    func testMissingAncestorIsUnavailableInsteadOfTwoBlockFallback() async throws {
-        let s = spec(window: 120, target: 1_000)
+    func testMissingAncestorIsUnavailableInsteadOfAFallback() async throws {
+        let s = spec(target: 1_000)
         let fullFetcher = StorableFetcher()
         let genesis = try await makeGenesis(spec: s, timestamp: 1_000, target: UInt256(10_000), fetcher: fullFetcher)
         let block1 = try await makeNext(
@@ -397,16 +135,18 @@ final class DifficultyRetargetTests: XCTestCase {
             nextTarget: UInt256(10_000),
             fetcher: fullFetcher
         )
-        let fallbackOnlyNext = s.calculateMinimumTarget(
-            previousTarget: block1.nextTarget,
+        let scheduled = s.calculateAsertTarget(
+            anchorTarget: block1.target,
+            anchorTimestamp: block1.timestamp,
+            anchorHeight: 1,
             blockTimestamp: 3_000,
-            previousTimestamp: block1.timestamp
+            blockHeight: 2
         )
         let block2 = try await makeNext(
             previous: block1,
             timestamp: 3_000,
             target: block1.nextTarget,
-            nextTarget: fallbackOnlyNext,
+            nextTarget: scheduled,
             fetcher: fullFetcher
         )
 
@@ -419,14 +159,14 @@ final class DifficultyRetargetTests: XCTestCase {
 
         do {
             _ = try await block2.validateNexus(fetcher: partialFetcher)
-            XCTFail("missing ancestors must be unavailable instead of using a two-block retarget")
+            XCTFail("missing ancestors must be unavailable instead of using a fallback schedule")
         } catch is FetcherError {
             // Admission maps this to retriable unavailable evidence.
         }
     }
 
     func testGeneratedChainPassesValidateNexus() async throws {
-        let s = spec(window: 120, target: 1_000)
+        let s = spec(target: 1_000)
         let fetcher = StorableFetcher()
         let genesis = try await makeGenesis(spec: s, timestamp: 1_000, target: UInt256.max, fetcher: fetcher)
         try await storeBlock(genesis, to: fetcher)
@@ -448,23 +188,17 @@ final class DifficultyRetargetTests: XCTestCase {
     }
 
     func testForgedNextDifficultyRejectedByValidateNexus() async throws {
-        let s = spec(window: 120, target: 1_000)
+        let s = spec(target: 1_000)
         let fetcher = StorableFetcher()
         let genesis = try await makeGenesis(spec: s, timestamp: 1_000, target: UInt256.max, fetcher: fetcher)
         try await storeBlock(genesis, to: fetcher)
 
-        let blockTimestamp: Int64 = 2_000
-        let expected = oracleLWMA(
-            previousTarget: genesis.nextTarget,
-            targetBlockTime: s.targetBlockTime,
-            window: s.retargetWindow,
-            newestFirstTimestamps: [blockTimestamp, genesis.timestamp]
-        )
+        // Block 1 anchors itself, so its scheduled nextTarget is its own target.
         let forged = try await makeNext(
             previous: genesis,
-            timestamp: blockTimestamp,
+            timestamp: 2_000,
             target: genesis.nextTarget,
-            nextTarget: expected - UInt256(1),
+            nextTarget: genesis.nextTarget - UInt256(1),
             fetcher: fetcher
         )
         try await storeBlock(forged, to: fetcher)

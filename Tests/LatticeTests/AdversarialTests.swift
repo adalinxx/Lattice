@@ -9,7 +9,7 @@ private func makeFetcher() -> StorableFetcher { StorableFetcher() }
 private func spec(_ dir: String = "Nexus", premine: UInt64 = 1000) -> ChainSpec {
     ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
               maxBlockSize: 1_000_000, premine: premine, targetBlockTime: 1_000,
-              initialReward: 1024, halvingInterval: 10_000, retargetWindow: 5)
+              initialReward: 1024, halvingInterval: 10_000, halfLife: 5)
 }
 
 private func sign(_ body: TransactionBody, _ kp: (privateKey: String, publicKey: String)) -> Transaction {
@@ -760,7 +760,7 @@ final class BlockLimitTests: XCTestCase {
         let base = t() - 10_000
         let s = ChainSpec(maxNumberOfTransactionsPerBlock: 2, maxStateGrowth: 100_000,
                           maxBlockSize: 1_000_000, premine: 0, targetBlockTime: 1_000,
-                          initialReward: 1024, halvingInterval: 10_000, retargetWindow: 5)
+                          initialReward: 1024, halvingInterval: 10_000, halfLife: 5)
 
         let genesis = try await buildAndStoreGenesis(
             spec: s, timestamp: base, target: UInt256(1000), fetcher: fetcher
@@ -812,7 +812,7 @@ final class BlockLimitTests: XCTestCase {
         let base = t() - 10_000
         let tinySpec = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
                                  maxBlockSize: 100, premine: 0, targetBlockTime: 1_000,
-                                 initialReward: 1024, halvingInterval: 10_000, retargetWindow: 5)
+                                 initialReward: 1024, halvingInterval: 10_000, halfLife: 5)
 
         let genesis = try await buildAndStoreGenesis(
             spec: tinySpec, timestamp: base, target: UInt256(1000), fetcher: fetcher
@@ -831,17 +831,17 @@ final class BlockLimitTests: XCTestCase {
 
         let zeroTx = ChainSpec(maxNumberOfTransactionsPerBlock: 0, maxStateGrowth: 100,
                                maxBlockSize: 100, premine: 0, targetBlockTime: 1000,
-                               initialReward: 1024, halvingInterval: 10_000, retargetWindow: 5)
+                               initialReward: 1024, halvingInterval: 10_000, halfLife: 5)
         XCTAssertFalse(zeroTx.isValid)
 
         let zeroTarget = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100,
                                    maxBlockSize: 100, premine: 0, targetBlockTime: 0,
-                                   initialReward: 1024, halvingInterval: 10_000, retargetWindow: 5)
+                                   initialReward: 1024, halvingInterval: 10_000, halfLife: 5)
         XCTAssertFalse(zeroTarget.isValid)
 
         let zeroReward = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100,
                                    maxBlockSize: 100, premine: 0, targetBlockTime: 1000,
-                                   initialReward: 0, halvingInterval: 10_000, retargetWindow: 5)
+                                   initialReward: 0, halvingInterval: 10_000, halfLife: 5)
         XCTAssertFalse(zeroReward.isValid)
     }
 }

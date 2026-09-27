@@ -237,7 +237,7 @@ public enum LatticeConsensusSimulator {
             targetBlockTime: 3_600_000,
             initialReward: 1_048_576,
             halvingInterval: 876_600,
-            retargetWindow: 120
+            halfLife: 120
         )
         // Drive the CONSENSUS path: the absolute schedule measured from the
         // height-1 anchor. The windowed retarget this used to call is no longer

@@ -30,87 +30,15 @@ not automatically inherit all Nexus hashpower or Nexus canonicity.
 | `halvingInterval` | `876,600` blocks | About 100 years at one-hour blocks |
 | `premine` | `175,320` blocks | Front-of-schedule issuance |
 | `targetBlockTime` | `3,600,000` ms | One hour |
-| `retargetWindow` | `120` blocks | About five days |
+| `halfLife` | `120` blocks | The schedule's half-life, about five days |
 | `maxBlockSize` | `1,000,000` bytes | Unique canonical block + transaction Volume bytes |
 | `maxStateGrowth` | `3,000,000` bytes | Per block |
 | `maxNumberOfTransactionsPerBlock` | `5,000` | Per block |
-| `maxTargetChange` | unset (`nil`) | No per-retarget clamp |
 
-`ChainSpec.maxTargetChange` defaults to `nil` — no per-retarget clamp. A chain
-may commit a factor; **Nexus commits none**, so Nexus retargets by the full
-unclamped proportional correction. There is no minimum-target floor. A chain
-directory is positional path data, not a `ChainSpec` field.
-
-## Emission
-
-The public block subsidy is
-
-```text
-rewardAtBlock(height)
-    = initialReward >> ((height + premine) / halvingInterval)
-```
-
-`premine` advances public mining along the same reward curve. For Nexus, the
-first public halving is therefore
-
-```text
-876,600 - 175,320 = 701,280 blocks
-```
-
-or about 80 years at the target cadence. Later halvings remain 876,600 blocks
-apart. Integer shifts eventually reduce the reward to zero; there is no tail
-emission.
-
-The implementation returns zero instead of trapping if `height + premine`
-overflows or the shift reaches 64 bits.
-
-## Premine
-
-Because the Nexus premine is shorter than one halving interval, every premined
-block uses the initial reward:
-
-```text
-premineAmount
-    = 175,320 * 1,048,576
-    = 183,836,344,320
-```
-
-The recipient and exact genesis transaction are fixed by
-`NexusGenesis.swift`. Generic genesis validation permits total credits up to the
-configured `premineAmount`; it does not infer a recipient.
-
-## Supply
-
-The geometric closed-form limit is
-
-```text
-2 * halvingInterval * initialReward
-    = 1,838,363,443,200
-```
-
-The exact integer-terminated schedule is
-
-```text
-halvingInterval * (2^21 - 1)
-    = 1,838,362,566,600
-```
-
-The premine is exactly 10% of the closed-form limit and approximately 10% of the
-exact integer-terminated supply. The small difference is the finite tail removed
-by integer halving.
-
-## Cadence And Fees
-
-Nexus retargets every block by an **absolute schedule (ASERT)** measured from
-the height-1 anchor of the block's own branch, not by a window over recent
-intervals. A block's target is its parent's `nextTarget` or voluntarily harder,
-never easier — there is no minimum-target floor and no recovery exception.
-`maxTargetChange` is no longer read: an absolute schedule has no proportional
-step to clamp.
 
 The schedule holds difficulty steady at exactly one-hour spacing, and moves one
 doubling per half-life of accumulated drift, where the half-life is
-`retargetWindow × targetBlockTime` = 120 hours. Because the target depends only
+`halfLife × targetBlockTime` = 120 hours. Because the target depends only
 on the anchor and the present block, a stretch of unusual block times stops
 mattering the moment it stops happening — there is no window to drain and no
 clustered-window attractor to walk back out of. Moving a timestamp backwards

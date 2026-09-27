@@ -14,7 +14,7 @@ private func chainLocalSpec(wasmPolicies: [WasmPolicyRef] = []) -> ChainSpec {
         targetBlockTime: 1_000,
         initialReward: 1_024,
         halvingInterval: 10_000,
-        retargetWindow: 5,
+        halfLife: 5,
         wasmPolicies: wasmPolicies
     )
 }
@@ -966,7 +966,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1_024,
             halvingInterval: 10_000,
-            retargetWindow: 6
+            halfLife: 6
         )
 
         let variants: [(String, Block)] = [
@@ -1267,12 +1267,10 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertFalse(inserted)
     }
 
-    func testUnboundedRetargetWindowNeitherTrapsNorOverWalks() async throws {
-        // `retargetWindow` is an unbounded UInt64 from the spec — attacker-
-        // supplied when the parent is disconnected. The ancestor walk must be
-        // bounded by the chain's actual depth: never reserve or walk the raw
-        // window (`Int(UInt64.max)` traps), and serve exactly parentDepth
-        // timestamps on a short chain.
+    func testUnboundedHalfLifeNeitherTrapsNorOverWalks() async throws {
+        // `halfLife` is an unbounded UInt64 from the spec — attacker-supplied
+        // when the parent is disconnected. Nothing may size a walk or a
+        // reservation by it (`Int(UInt64.max)` traps); the schedule saturates.
         let fetcher = StorableFetcher()
         let genesis = try await buildAndStoreGenesis(
             spec: ChainSpec(
@@ -1283,7 +1281,7 @@ final class ChainLocalAdmissionTests: XCTestCase {
                 targetBlockTime: 1_000,
                 initialReward: 1_024,
                 halvingInterval: 10_000,
-                retargetWindow: UInt64.max
+                halfLife: UInt64.max
             ),
             timestamp: 1_000,
             target: easy,

@@ -17,7 +17,7 @@ private func childSpec(_ dir: String = "Child") -> ChainSpec {
         targetBlockTime: 1_000,
         initialReward: 1024,
         halvingInterval: 10_000,
-        retargetWindow: 5
+        halfLife: 5
     )
 }
 
@@ -30,7 +30,7 @@ private func nexusSpec(_ dir: String = "Nexus") -> ChainSpec {
         targetBlockTime: 1_000,
         initialReward: 1024,
         halvingInterval: 10_000,
-        retargetWindow: 5
+        halfLife: 5
     )
 }
 

@@ -22,7 +22,7 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1024,
             halvingInterval: 10_000,
-            retargetWindow: 5
+            halfLife: 5
         )
     }
 
@@ -127,7 +127,7 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
                 maxNumberOfTransactionsPerBlock: 100,
                 maxStateGrowth: 100_000, maxBlockSize: 1_000_000, premine: 0,
                 targetBlockTime: 1_000, initialReward: 1024, halvingInterval: 10_000,
-                retargetWindow: 5
+                halfLife: 5
             ),
             timestamp: t - 20_000, target: UInt256(1000), fetcher: fetcher
         )

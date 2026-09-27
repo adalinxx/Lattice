@@ -41,7 +41,8 @@ let spec = ChainSpec(
     premine: 0,
     targetBlockTime: 10_000,
     initialReward: 1_000_000_000,
-    halvingInterval: 15_768_000
+    halvingInterval: 15_768_000,
+    halfLife: 10
 )
 
 print("Chain spec: \(DEFAULT_ROOT_DIRECTORY)")

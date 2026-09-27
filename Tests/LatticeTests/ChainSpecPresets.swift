@@ -18,7 +18,7 @@ extension ChainSpec {
         targetBlockTime: 600_000,
         initialReward: 5_000_000_000,
         halvingInterval: 210_000,
-        retargetWindow: 2016
+        halfLife: 2016
     )
 
     static let ethereum: ChainSpec = ChainSpec(
@@ -29,7 +29,7 @@ extension ChainSpec {
         targetBlockTime: 12_000,
         initialReward: 2_000_000_000_000_000_000,
         halvingInterval: 100_000_000,
-        retargetWindow: 20
+        halfLife: 20
     )
 
     static let development: ChainSpec = ChainSpec(
@@ -40,6 +40,6 @@ extension ChainSpec {
         targetBlockTime: 1_000,
         initialReward: 1024,
         halvingInterval: 10_000,
-        retargetWindow: 5
+        halfLife: 5
     )
 }
