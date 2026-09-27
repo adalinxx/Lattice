@@ -1,17 +1,18 @@
 import XCTest
 @testable import Lattice
 
-/// Evidence that the reference fallback family in `ChainState` is unreachable.
+/// The invariants `blockGhostDescent` stands on now that it has no fallback.
 ///
-/// `blockGhostDescent` returns nil in exactly two cases: a block visited twice
-/// (a cycle in `childHashes`) or a fork at which no non-excluded child is
-/// routed. Neither can happen from a routed start point if the routed set is
-/// closed under child edges and every child edge is parent-consistent and one
-/// height down — a routed block's children are then routed, and no routed
-/// block can be its own descendant. This asserts exactly that, after every
-/// event of the golden orders and (through the differential helpers) after
-/// every step of the differential seeds, and pins `descentFallbackCount` — a
-/// temporary counter on every entry into the fallback family — at zero.
+/// The descent fails closed in exactly two cases: a block visited twice (a
+/// cycle in `childHashes`) or a fork at which no non-excluded child is routed.
+/// Neither can happen from a routed start point if the routed set is closed
+/// under child edges and every child edge is parent-consistent and one height
+/// down — a routed block's children are then routed, and no routed block can
+/// be its own descendant. This asserts exactly that after every event of the
+/// golden orders and (through the differential helpers) after every step of
+/// the differential seeds, and descends from every routed block afterwards.
+/// The reference walk that used to catch a broken invariant was deleted once
+/// a temporary counter on every entry into it stayed zero over these runs.
 
 /// Every routed block's children are all routed, parent-consistent and one
 /// height above it, and its parent, when it has one, is routed.
@@ -64,15 +65,13 @@ final class ForkChoiceInvariantTests: XCTestCase {
     private let graph = ForkChoiceGoldenGraph.generate()
 
     /// `chainWithMostWork` from every routed block — the descent every
-    /// `forkChoiceSnapshot` takes, excluded starts included — then the counter.
-    private func assertNoFallback(_ chain: ChainState, _ label: String) async {
+    /// `forkChoiceSnapshot` takes, excluded starts included.
+    private func assertDescendsFromEveryRoutedBlock(_ chain: ChainState, _ label: String) async {
         let blocks = await chain.hashToBlock
         for hash in blocks.keys.sorted() where await chain.hasConnectedAncestry(blockHash: hash) {
             let snapshot = await chain.forkChoiceSnapshot(startingAt: hash)
             XCTAssertNotNil(snapshot, "\(label): no snapshot from routed \(hash)")
         }
-        let fallbacks = await chain.descentFallbackCount
-        XCTAssertEqual(fallbacks, 0, "\(label): the reference fallback was entered")
     }
 
     private func admitCheckingInvariants(_ order: [ForkChoiceGoldenEvent], _ label: String) async throws {
@@ -83,30 +82,30 @@ final class ForkChoiceInvariantTests: XCTestCase {
             _ = try await chain.replay(event.batch)
             await assertRoutedClosedUnderChildren(chain, "\(label): event \(event.index)")
         }
-        await assertNoFallback(chain, label)
+        await assertDescendsFromEveryRoutedBlock(chain, label)
     }
 
-    func testGoldenArrivalOrderKeepsTheRoutedSetClosedAndNeverFallsBack() async throws {
+    func testGoldenArrivalOrderKeepsTheRoutedSetClosed() async throws {
         try await admitCheckingInvariants(graph.events, "arrival")
     }
 
-    func testGoldenAlternateOrderKeepsTheRoutedSetClosedAndNeverFallsBack() async throws {
+    func testGoldenAlternateOrderKeepsTheRoutedSetClosed() async throws {
         try await admitCheckingInvariants(graph.alternateArrivalOrder(), "alternate")
     }
 
-    func testGoldenShuffledRestoreKeepsTheRoutedSetClosedAndNeverFallsBack() async throws {
+    func testGoldenShuffledRestoreKeepsTheRoutedSetClosed() async throws {
         var batches = graph.events.map(\.batch)
         var random = GoldenRandom(seed: 0x5EED_5EED)
         random.shuffle(&batches)
         let chain = try await ChainState.restore(replaying: batches)
         await chain.serveRuns(for: ForkChoiceGoldenGraph.directory)
         await assertRoutedClosedUnderChildren(chain, "shuffled restore")
-        await assertNoFallback(chain, "shuffled restore")
+        await assertDescendsFromEveryRoutedBlock(chain, "shuffled restore")
     }
 
     /// The differential fixtures in the order the oracle tests deliver them:
     /// descendants before ancestors, strengthenings, then exclusions.
-    func testDifferentialSeedsKeepTheRoutedSetClosedAndNeverFallBack() async throws {
+    func testDifferentialSeedsKeepTheRoutedSetClosed() async throws {
         for seed: UInt64 in [
             0xC0FFEE, 0xD1FF_EA5E, 0xFACE_FEED, 0xBADC_0DE,
             0x1234_5678, 0x8765_4321, 0x0DDC_0FFE, 0x51DE_CAFE,
@@ -129,7 +128,7 @@ final class ForkChoiceInvariantTests: XCTestCase {
                 _ = try await chain.replay(SegmentBaseDifferentialFixtures.exclusion(of: planned[index].hash))
                 await assertRoutedClosedUnderChildren(chain, "seed \(seed) exclusion \(index)")
             }
-            await assertNoFallback(chain, "seed \(seed)")
+            await assertDescendsFromEveryRoutedBlock(chain, "seed \(seed)")
         }
     }
 }

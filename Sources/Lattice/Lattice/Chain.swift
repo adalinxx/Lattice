@@ -659,12 +659,6 @@ public actor ChainState {
     /// has a nearest committer for, so this is O(#directories) per block —
     /// asserted by ratio, never by stopwatch.
     var runAttributionUpdateCount: UInt64
-    /// TEMPORARY evidence for deleting the reference fallback family: every
-    /// entry into it — a nil `blockGhostDescent` or a weight the Euler index
-    /// could not answer — counts here. The invariant tests assert it stays
-    /// zero over the golden orders and the differential seeds; it goes away
-    /// with the fallback.
-    var descentFallbackCount: UInt64
 #endif
     /// Diagnostic prefix/subtree totals are derived local views. They are not
     /// fork-choice inputs and are rebuilt only when an API exposes them.
@@ -786,7 +780,6 @@ public actor ChainState {
         self.segmentGraftBlockVisitCount = 0
         self.stateContinuityBlockVisitCount = 0
         self.runAttributionUpdateCount = 0
-        self.descentFallbackCount = 0
 #endif
         self.localWorkCachesDirty = true
         var allByHeight = indexToBlockHash
@@ -1404,21 +1397,13 @@ public actor ChainState {
         }
         guard let root = Self.preferred(among: roots, workIndex: subtreeWorkIndex)
         else { return nil }
-        if let descent = Self.blockGhostDescent(
+        let descent = Self.blockGhostDescent(
             from: root,
             in: hashToBlock,
             workIndex: subtreeWorkIndex,
             excluding: excludedRoots
-        ) {
-            return (descent.tipHash, descent.blocks)
-        }
-        descentFallbackCount += 1
-        let direct = Self.referenceGhostDescent(
-            from: root,
-            in: hashToBlock,
-            excluding: excludedRoots
         )
-        return (direct.tipHash, direct.blocks)
+        return (descent.tipHash, descent.blocks)
     }
 
     /// Test-only view of the excluded roots so a differential test can drive
@@ -2604,62 +2589,6 @@ public actor ChainState {
 
     // MARK: - Fork Choice
 
-    nonisolated private static func strongestWorkByGrind(
-        in blocks: [String: BlockMeta]
-    ) -> [String: UInt256] {
-        var strongestWork: [String: UInt256] = [:]
-        for block in blocks.values {
-            for contribution in block.workContributions.values
-            where contribution.work > (strongestWork[contribution.id] ?? .zero) {
-                strongestWork[contribution.id] = contribution.work
-            }
-        }
-        return strongestWork
-    }
-
-    nonisolated private static func effectiveSubtreeMeasures(
-        startingAt startHashes: [String],
-        retaining retainedHashes: Set<String>,
-        in blocks: [String: BlockMeta],
-        strongestWork: [String: UInt256]
-    ) -> [String: WorkMeasure] {
-        var order: [String] = []
-        var pending = startHashes
-        var visited = Set<String>()
-        while let hash = pending.popLast() {
-            guard visited.insert(hash).inserted,
-                  let meta = blocks[hash] else { continue }
-            order.append(hash)
-            pending.append(contentsOf: meta.childHashes)
-        }
-
-        var accumulators: [String: WorkMeasure] = [:]
-        var retained: [String: WorkMeasure] = [:]
-        for hash in order.reversed() {
-            guard let meta = blocks[hash] else { continue }
-            let children = meta.childHashes
-            let largestChild = children.max {
-                (accumulators[$0]?.entries.count ?? 0)
-                    < (accumulators[$1]?.entries.count ?? 0)
-            }
-            var measure = largestChild.flatMap {
-                accumulators.removeValue(forKey: $0)
-            } ?? .zero
-            for childHash in children where childHash != largestChild {
-                if let child = accumulators.removeValue(forKey: childHash) {
-                    measure.formUnion(child)
-                }
-            }
-            measure.formUnion(
-                WorkMeasure(meta.workContributions.values)
-                    .normalized(using: strongestWork)
-            )
-            if retainedHashes.contains(hash) { retained[hash] = measure }
-            accumulators[hash] = measure
-        }
-        return retained
-    }
-
     /// Build the derived GHOST weight index as one Euler tour of the routed
     /// graph. Recovery uses this linear builder; every live mutation is
     /// incremental.
@@ -2741,31 +2670,6 @@ public actor ChainState {
 
     nonisolated private static func preferred(
         among hashes: [String],
-        weights: [String: WorkSum]
-    ) -> String? {
-        // Skip candidates with no weight (a block not yet routed) rather than
-        // bailing when the FIRST is weightless — selection must not depend on
-        // child ordering.
-        var selected: String?
-        for candidate in hashes {
-            guard let candidateWork = weights[candidate] else { continue }
-            guard let current = selected, let selectedWork = weights[current] else {
-                selected = candidate
-                continue
-            }
-            if candidateWork > selectedWork ||
-                (candidateWork == selectedWork && forkChoicePrefersBlock(
-                    candidate,
-                    over: current
-                )) {
-                selected = candidate
-            }
-        }
-        return selected
-    }
-
-    nonisolated private static func preferred(
-        among hashes: [String],
         workIndex: EulerWorkIndex
     ) -> String? {
         var selected: String?
@@ -2791,57 +2695,27 @@ public actor ChainState {
     func chainWithMostWork(
         startingBlock: BlockMeta
     ) -> (subtreeWork: WorkSum, tipHash: String, blocks: Set<String>) {
+        let startHash = startingBlock.blockHash
+        // Every caller starts at a routed block (`forkChoiceSnapshot` refuses
+        // any other), and a routed block always has a weight.
+        guard let weight = subtreeWorkIndex.subtreeWork(startHash) else {
+            preconditionFailure("fork choice from an unrouted block \(startHash)")
+        }
         // An excluded start point weighs what its work weighs and descends
         // nowhere: nothing below a proven-invalid block is selectable.
-        if excludedRoots.contains(startingBlock.blockHash) {
-            let weight = subtreeWorkIndex.subtreeWork(startingBlock.blockHash)
-                ?? fallbackSubtreeWork(for: startingBlock.blockHash)
-            return (weight, startingBlock.blockHash, [startingBlock.blockHash])
+        if excludedRoots.contains(startHash) {
+            return (weight, startHash, [startHash])
         }
         // Weights are pure work; `excluding` only steers the descent past
         // excluded roots, which are never stepped into. No-op when nothing is
         // excluded — the steady-state path is unchanged.
-        let start = hashToBlock[startingBlock.blockHash] ?? startingBlock
-        if let descent = Self.blockGhostDescent(
-            from: start.blockHash,
+        let descent = Self.blockGhostDescent(
+            from: startHash,
             in: hashToBlock,
             workIndex: subtreeWorkIndex,
             excluding: excludedRoots
-        ) {
-            let baseWeight = subtreeWorkIndex.subtreeWork(start.blockHash)
-                ?? fallbackSubtreeWork(for: start.blockHash)
-            return (baseWeight, descent.tipHash, descent.blocks)
-        }
-#if DEBUG
-        descentFallbackCount += 1
-#endif
-        let direct = Self.referenceGhostDescent(
-            from: start.blockHash,
-            in: hashToBlock,
-            excluding: excludedRoots
         )
-        return (
-            effectiveSubtreeWork(for: start.blockHash),
-            direct.tipHash,
-            direct.blocks
-        )
-    }
-
-    private func fallbackSubtreeWork(for blockHash: String) -> WorkSum {
-#if DEBUG
-        descentFallbackCount += 1
-#endif
-        return effectiveSubtreeWork(for: blockHash)
-    }
-
-    private func effectiveSubtreeWork(for blockHash: String) -> WorkSum {
-        let measure = Self.effectiveSubtreeMeasures(
-            startingAt: [blockHash],
-            retaining: [blockHash],
-            in: hashToBlock,
-            strongestWork: Self.strongestWorkByGrind(in: hashToBlock)
-        )
-        return measure[blockHash]?.total ?? .zero
+        return (weight, descent.tipHash, descent.blocks)
     }
 
     /// GHOST descent over blocks, with no quotient in between.
@@ -2854,19 +2728,24 @@ public actor ChainState {
     /// materialized, at every chain length measured. The accelerator compressed
     /// nothing on the workload it had to serve.
     ///
-    /// A lone child is followed without a weight lookup, matching the reference
-    /// walk. Nil on a malformed graph — a cycle — so the caller keeps its
-    /// independent slow fallback.
+    /// A lone child is followed without a weight lookup. Every start point is
+    /// routed and the routed set is closed under child edges — each routing
+    /// site keeps it so, and `ForkChoiceInvariantTests` pins it — so a revisit
+    /// or a fork with no routed child is a broken invariant, never an input,
+    /// and the descent fails closed on either rather than guessing.
     nonisolated private static func blockGhostDescent(
         from startHash: String,
         in blocksByHash: [String: BlockMeta],
         workIndex: EulerWorkIndex,
         excluding: Set<String> = []
-    ) -> (tipHash: String, blocks: Set<String>)? {
+    ) -> (tipHash: String, blocks: Set<String>) {
         var currentHash = startHash
         var blocks = Set<String>()
         while true {
-            guard blocks.insert(currentHash).inserted else { return nil }
+            precondition(
+                blocks.insert(currentHash).inserted,
+                "cycle in child edges at \(currentHash)"
+            )
             let all = blocksByHash[currentHash]?.childHashes ?? []
             let children = excluding.isEmpty
                 ? all
@@ -2875,163 +2754,11 @@ public actor ChainState {
             let next = children.count == 1
                 ? children[0]
                 : preferred(among: children, workIndex: workIndex)
-            guard let next else { return nil }
-            currentHash = next
-        }
-    }
-
-    /// Slow direct GHOST walk kept separate from the live implementation
-    /// so differential tests can detect a routing-cache bug.
-    nonisolated private static func referenceGhostDescent(
-        from startHash: String,
-        in blocksByHash: [String: BlockMeta],
-        weights: [String: WorkSum],
-        excluding: Set<String> = []
-    ) -> (tipHash: String, blocks: Set<String>) {
-        var currentHash = startHash
-        var blocks: Set<String> = [currentHash]
-        while true {
-            let allChildren = blocksByHash[currentHash]?.childHashes ?? []
-            let children = excluding.isEmpty
-                ? allChildren
-                : allChildren.filter { !excluding.contains($0) }
-            guard !children.isEmpty else { break }
-            let next: String?
-            if children.count == 1 {
-                next = children[0]
-            } else {
-                next = preferred(among: children, weights: weights)
+            guard let next else {
+                preconditionFailure("no routed child under \(currentHash)")
             }
-            guard let next,
-                  blocks.insert(next).inserted else { break }
             currentHash = next
         }
-        return (currentHash, blocks)
-    }
-
-    /// Expensive cache-independent fallback used only when derived segment
-    /// routing is malformed. It recomputes the exact direct comparison weights
-    /// from raw work facts rather than trusting a potentially stale cache.
-    nonisolated private static func referenceGhostDescent(
-        from startHash: String,
-        in blocksByHash: [String: BlockMeta],
-        excluding: Set<String> = []
-    ) -> (tipHash: String, blocks: Set<String>) {
-        let measures = effectiveSubtreeMeasures(
-            startingAt: [startHash],
-            retaining: Set(blocksByHash.keys),
-            in: blocksByHash,
-            strongestWork: strongestWorkByGrind(in: blocksByHash)
-        )
-        return referenceGhostDescent(
-            from: startHash,
-            in: blocksByHash,
-            weights: measures.mapValues(\.total),
-            excluding: excluding
-        )
-    }
-
-    nonisolated static func canonicalProjection(
-        in blocksByHash: [String: BlockMeta]
-    ) -> (chainTip: String, mainChainHashes: Set<String>)? {
-        var workByGrind = workIndex(in: blocksByHash)
-        let workIndex = buildSubtreeWorkIndex(
-            in: blocksByHash,
-            workByGrind: &workByGrind
-        )
-        return canonicalProjection(
-            in: blocksByHash,
-            workIndex: workIndex
-        )
-    }
-
-    /// Slow, exact per-block reference used only by differential tests. The
-    /// normal restore validator intentionally uses the compact cache builder.
-    nonisolated static func referenceCanonicalProjection(
-        in blocksByHash: [String: BlockMeta]
-    ) -> (chainTip: String, mainChainHashes: Set<String>)? {
-        let roots = blocksByHash.values
-            .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
-            .map(\.blockHash)
-        let measures = effectiveSubtreeMeasures(
-            startingAt: roots,
-            retaining: Set(blocksByHash.keys),
-            in: blocksByHash,
-            strongestWork: strongestWorkByGrind(in: blocksByHash)
-        )
-        return referenceCanonicalProjection(
-            in: blocksByHash,
-            weights: measures.mapValues(\.total)
-        )
-    }
-
-    nonisolated private static func canonicalProjection(
-        in blocksByHash: [String: BlockMeta],
-        workIndex: EulerWorkIndex
-    ) -> (chainTip: String, mainChainHashes: Set<String>)? {
-        let roots = blocksByHash.values
-            .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
-            .map(\.blockHash)
-        guard let root = preferred(among: roots, workIndex: workIndex) else {
-            return nil
-        }
-        let descent = blockGhostDescent(
-            from: root,
-            in: blocksByHash,
-            workIndex: workIndex
-        )
-        if let descent {
-            return (descent.tipHash, descent.blocks)
-        }
-        let direct = referenceGhostDescent(
-            from: root,
-            in: blocksByHash
-        )
-        return (direct.tipHash, direct.blocks)
-    }
-
-    /// Reference oracle with exclusions, used by differential tests: weights
-    /// are pure work over the whole graph, and the descent never steps into an
-    /// excluded root — work weighs, validity selects.
-    nonisolated static func referenceCanonicalProjection(
-        in blocksByHash: [String: BlockMeta],
-        excluding excludedRoots: Set<String>
-    ) -> (chainTip: String, mainChainHashes: Set<String>)? {
-        let roots = blocksByHash.values
-            .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
-            .map(\.blockHash)
-        let measures = effectiveSubtreeMeasures(
-            startingAt: roots,
-            retaining: Set(blocksByHash.keys),
-            in: blocksByHash,
-            strongestWork: strongestWorkByGrind(in: blocksByHash)
-        )
-        let weights = measures.mapValues(\.total)
-        let selectable = roots.filter { !excludedRoots.contains($0) }
-        guard let root = preferred(among: selectable, weights: weights) else { return nil }
-        let descent = referenceGhostDescent(
-            from: root,
-            in: blocksByHash,
-            weights: weights,
-            excluding: excludedRoots
-        )
-        return (descent.tipHash, descent.blocks)
-    }
-
-    nonisolated private static func referenceCanonicalProjection(
-        in blocksByHash: [String: BlockMeta],
-        weights: [String: WorkSum]
-    ) -> (chainTip: String, mainChainHashes: Set<String>)? {
-        let roots = blocksByHash.values
-            .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
-            .map(\.blockHash)
-        guard let root = preferred(among: roots, weights: weights) else { return nil }
-        let descent = referenceGhostDescent(
-            from: root,
-            in: blocksByHash,
-            weights: weights
-        )
-        return (descent.tipHash, descent.blocks)
     }
 
     /// Project the canonical path after one fork-choice mutation.
@@ -3075,24 +2802,12 @@ public actor ChainState {
 #if DEBUG
         fullCanonicalProjectionCount += 1
 #endif
-        let descent: (tipHash: String, blocks: Set<String>)
-        if let live = Self.blockGhostDescent(
+        let descent = Self.blockGhostDescent(
             from: root,
             in: hashToBlock,
             workIndex: subtreeWorkIndex,
             excluding: excludedRoots
-        ) {
-            descent = live
-        } else {
-#if DEBUG
-            descentFallbackCount += 1
-#endif
-            descent = Self.referenceGhostDescent(
-                from: root,
-                in: hashToBlock,
-                excluding: excludedRoots
-            )
-        }
+        )
 #if DEBUG
         // Descent steps ARE blocks now: with no quotient there is no hop to
         // take, so this column and the block column converge by construction.
@@ -3209,7 +2924,7 @@ public actor ChainState {
         // whole-chain projection per such block.
         guard !children.isEmpty else { return TruncatedProjectionOutcome(commit: nil) }
         // One GHOST step, taken exactly as the descent takes it: a lone child is
-        // followed WITHOUT a weight lookup, matching the reference walk, so a
+        // followed WITHOUT a weight lookup, matching `blockGhostDescent`, so a
         // single-child step cannot depend on a weight comparison at all.
         let chosen = children.count == 1
             ? children[0]
@@ -3238,18 +2953,12 @@ public actor ChainState {
         // The suffix begins at a block taken straight from the divergence
         // point's own children, so the boundary below it holds by construction
         // rather than by assumption.
-        guard let descent = Self.blockGhostDescent(
-                  from: chosen,
-                  in: hashToBlock,
-                  workIndex: subtreeWorkIndex,
-                  excluding: excludedRoots
-              )
-        else {
-#if DEBUG
-            descentFallbackCount += 1
-#endif
-            return nil
-        }
+        let descent = Self.blockGhostDescent(
+            from: chosen,
+            in: hashToBlock,
+            workIndex: subtreeWorkIndex,
+            excluding: excludedRoots
+        )
 #if DEBUG
         canonicalProjectionSegmentVisitCount += UInt64(descent.blocks.count)
         canonicalProjectionBlockVisitCount += UInt64(descent.blocks.count)

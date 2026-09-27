@@ -725,8 +725,6 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
                     chain, seed: seed, event: "final exclusion"
                 )
             }
-            let fallbacks = await chain.descentFallbackCount
-            XCTAssertEqual(fallbacks, 0, "seed \(seed): the reference fallback was entered")
         }
     }
 }
