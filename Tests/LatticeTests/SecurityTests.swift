@@ -937,10 +937,10 @@ final class ConsensusStressTests: XCTestCase {
         )
 
         let r1 = await chain.submitTestBlock(blockHeader: header(blocks[1]), block: blocks[1])
-        XCTAssertTrue(r1.extendsMainChain)
+        XCTAssertTrue(r1.extendsCanonical)
 
         let r2 = await chain.submitTestBlock(blockHeader: header(blocks[2]), block: blocks[2])
-        XCTAssertTrue(r2.extendsMainChain)
+        XCTAssertTrue(r2.extendsCanonical)
 
         let r4 = await chain.submitTestBlock(blockHeader: header(blocks[4]), block: blocks[4])
         XCTAssertTrue(r4.addedBlock)

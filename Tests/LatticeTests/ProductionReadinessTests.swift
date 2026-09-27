@@ -126,7 +126,7 @@ final class GenesisCeremonyTests: XCTestCase {
             blockHeader: try! VolumeImpl<Block>(node: block1),
             block: block1
         )
-        XCTAssertTrue(submitResult.extendsMainChain, "Should be able to extend genesis chain")
+        XCTAssertTrue(submitResult.extendsCanonical, "Should be able to extend genesis chain")
     }
 }
 
@@ -177,7 +177,7 @@ final class BlockReceptionTests: XCTestCase {
             blockHeader: header,
             block: block1
         )
-        XCTAssertTrue(submitResult.extendsMainChain)
+        XCTAssertTrue(submitResult.extendsCanonical)
 
         let tip = await result.chainState.canonicalTip
         XCTAssertEqual(tip, header.rawCID)
@@ -213,7 +213,7 @@ final class GenesisToBlockE2ETests: XCTestCase {
                 blockHeader: header,
                 block: mined
             )
-            XCTAssertTrue(result.extendsMainChain, "Block \(i) should extend")
+            XCTAssertTrue(result.extendsCanonical, "Block \(i) should extend")
             prev = mined
         }
 
@@ -245,12 +245,12 @@ final class GenesisToBlockE2ETests: XCTestCase {
         let resultOnA = await nodeA.chainState.submitTestBlock(
             blockHeader: headerA1, block: blockA1
         )
-        XCTAssertTrue(resultOnA.extendsMainChain)
+        XCTAssertTrue(resultOnA.extendsCanonical)
 
         let resultOnB = await nodeB.chainState.submitTestBlock(
             blockHeader: headerA1, block: blockA1
         )
-        XCTAssertTrue(resultOnB.extendsMainChain, "Node B accepts block mined by Node A")
+        XCTAssertTrue(resultOnB.extendsCanonical, "Node B accepts block mined by Node A")
 
         let tipA = await nodeA.chainState.canonicalTip
         let tipB = await nodeB.chainState.canonicalTip

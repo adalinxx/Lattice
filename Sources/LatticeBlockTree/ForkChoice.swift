@@ -45,13 +45,13 @@ public struct ForkChoiceSnapshot: Sendable, Equatable {
     public let startingHash: String
     public let subtreeWork: WorkSum
     public let tipHash: String
-    public let mainChainPath: Set<String>
+    public let canonicalPath: Set<String>
 
-    public init(startingHash: String, subtreeWork: WorkSum, tipHash: String, mainChainPath: Set<String>) {
+    public init(startingHash: String, subtreeWork: WorkSum, tipHash: String, canonicalPath: Set<String>) {
         self.startingHash = startingHash
         self.subtreeWork = subtreeWork
         self.tipHash = tipHash
-        self.mainChainPath = mainChainPath
+        self.canonicalPath = canonicalPath
     }
 }
 
@@ -466,7 +466,7 @@ extension ChainState {
             startingHash: hash,
             subtreeWork: choice.subtreeWork,
             tipHash: choice.tipHash,
-            mainChainPath: choice.blocks
+            canonicalPath: choice.blocks
         )
     }
 

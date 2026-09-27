@@ -173,7 +173,7 @@ final class BlockBuilderSubmissionTests: XCTestCase {
                 blockHeader: header,
                 block: block
             )
-            XCTAssertTrue(result.extendsMainChain, "Block \(i) should extend")
+            XCTAssertTrue(result.extendsCanonical, "Block \(i) should extend")
             prev = block
             ts += 1_000
         }

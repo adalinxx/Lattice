@@ -625,7 +625,7 @@ final class ForkChoiceReplayGoldenTests: XCTestCase {
                 XCTFail("position \(position), event \(event.index) (\(event.kind.rawValue) \(event.subject)) threw \(error)")
                 throw error
             }
-            let removed = commit?.mainChainBlocksRemoved ?? []
+            let removed = commit?.canonicalBlocksRemoved ?? []
             if event.kind == .exclusion, !removed.isEmpty {
                 decisiveExclusions += 1
                 reorgCommitsAfterDecisiveExclusion.append(0)

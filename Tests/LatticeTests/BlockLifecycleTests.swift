@@ -451,7 +451,7 @@ final class BlockMintingTests: XCTestCase {
             let result = await chain.submitTestBlock(
                 blockHeader: try! VolumeImpl<Block>(node: block), block: block
             )
-            XCTAssertTrue(result.extendsMainChain, "Block \(i) should extend main chain")
+            XCTAssertTrue(result.extendsCanonical, "Block \(i) should extend main chain")
             prev = block
         }
 
@@ -1006,7 +1006,7 @@ final class BlockLifecycleTests: XCTestCase {
         let result = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: mined!), block: mined!
         )
-        XCTAssertTrue(result.extendsMainChain)
+        XCTAssertTrue(result.extendsCanonical)
 
         let height = await chain.getHighestBlockHeight()
         XCTAssertEqual(height, 1)

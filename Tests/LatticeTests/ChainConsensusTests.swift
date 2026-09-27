@@ -178,8 +178,8 @@ final class ForkChoiceTests: XCTestCase {
         let revisionBefore = await chain.currentRevision()
         let reorg = await chain.reevaluateForkChoice()
         XCTAssertNotNil(reorg)
-        XCTAssertTrue(reorg!.mainChainBlocksAdded.keys.contains("B4"))
-        XCTAssertTrue(reorg!.mainChainBlocksRemoved.contains("A3"))
+        XCTAssertTrue(reorg!.canonicalBlocksAdded.keys.contains("B4"))
+        XCTAssertTrue(reorg!.canonicalBlocksRemoved.contains("A3"))
         XCTAssertEqual(reorg!.revision, revisionBefore + 1)
         let revisionAfter = await chain.currentRevision()
         XCTAssertEqual(revisionAfter, reorg!.revision)
@@ -338,11 +338,11 @@ final class ChainInvariantTests: XCTestCase {
         let reorg = await chain.reevaluateForkChoice()
 
         XCTAssertNotNil(reorg)
-        XCTAssertTrue(reorg!.mainChainBlocksAdded.keys.contains("B1"))
-        XCTAssertTrue(reorg!.mainChainBlocksAdded.keys.contains("B2"))
-        XCTAssertFalse(reorg!.mainChainBlocksAdded.keys.contains("G"))
-        XCTAssertTrue(reorg!.mainChainBlocksRemoved.contains("A1"))
-        XCTAssertFalse(reorg!.mainChainBlocksRemoved.contains("G"))
+        XCTAssertTrue(reorg!.canonicalBlocksAdded.keys.contains("B1"))
+        XCTAssertTrue(reorg!.canonicalBlocksAdded.keys.contains("B2"))
+        XCTAssertFalse(reorg!.canonicalBlocksAdded.keys.contains("G"))
+        XCTAssertTrue(reorg!.canonicalBlocksRemoved.contains("A1"))
+        XCTAssertFalse(reorg!.canonicalBlocksRemoved.contains("G"))
     }
 }
 

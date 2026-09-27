@@ -443,8 +443,8 @@ struct ExecutionFrontier: Sendable {
         tipSnapshot = snapshots[newTip]
         return ChainCommit(
             tipHash: newTip,
-            mainChainBlocksAdded: added,
-            mainChainBlocksRemoved: removed
+            canonicalBlocksAdded: added,
+            canonicalBlocksRemoved: removed
         )
     }
 
@@ -629,8 +629,8 @@ struct ExecutionFrontier: Sendable {
         tipSnapshot = snapshots[tipHash]
         return ChainCommit(
             tipHash: tipHash,
-            mainChainBlocksAdded: added,
-            mainChainBlocksRemoved: removed
+            canonicalBlocksAdded: added,
+            canonicalBlocksRemoved: removed
         )
     }
 }

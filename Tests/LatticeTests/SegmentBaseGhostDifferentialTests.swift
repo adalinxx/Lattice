@@ -829,8 +829,8 @@ private func assertCommitDelta(
     file: StaticString = #filePath,
     line: UInt = #line
 ) {
-    let added = Set((result?.commit?.mainChainBlocksAdded ?? [:]).keys)
-    let removed = result?.commit?.mainChainBlocksRemoved ?? []
+    let added = Set((result?.commit?.canonicalBlocksAdded ?? [:]).keys)
+    let removed = result?.commit?.canonicalBlocksRemoved ?? []
     XCTAssertEqual(
         added,
         newPath.subtracting(previousPath),

@@ -71,8 +71,8 @@ final class GhostReorgEdgeCaseTests: XCTestCase {
         let chain = makeChain(blocks: [g, m1, m2, f1, f2, f3], canonicalHashes: Set(["G", "M1", "M2"]))
         let reorg = await chain.reevaluateForkChoice()
         XCTAssertNotNil(reorg)
-        XCTAssertEqual(reorg?.mainChainBlocksRemoved, Set(["M1", "M2"]), "entire old suffix removed")
-        XCTAssertEqual(Set(reorg!.mainChainBlocksAdded.keys), Set(["F1", "F2", "F3"]), "winning path installed")
+        XCTAssertEqual(reorg?.canonicalBlocksRemoved, Set(["M1", "M2"]), "entire old suffix removed")
+        XCTAssertEqual(Set(reorg!.canonicalBlocksAdded.keys), Set(["F1", "F2", "F3"]), "winning path installed")
         let tip = await chain.canonicalTip; XCTAssertEqual(tip, "F3")
         // Old main blocks are no longer on the main chain.
         let m1OnMain = await chain.isCanonical(hash: "M1")
@@ -144,10 +144,10 @@ final class ReorgBookkeepingTests: XCTestCase {
         _ = await chain.submitTestBlock(blockHeader: try! VolumeImpl<Block>(node: gg), block: gg)
 
         let result = await chain.submitTestBlock(blockHeader: try! VolumeImpl<Block>(node: c1), block: c1)
-        XCTAssertTrue(result.extendsMainChain, "C1's parent is the tip, so this extends the main chain")
+        XCTAssertTrue(result.extendsCanonical, "C1's parent is the tip, so this extends the main chain")
         let finalTip = await chain.canonicalTip
         XCTAssertEqual(finalTip, cid(gg), "the tip advances past the out-of-order grandchild")
-        let added = result.commit?.mainChainBlocksAdded
+        let added = result.commit?.canonicalBlocksAdded
         XCTAssertNotNil(added, "tip-extend that advances past out-of-order descendants must emit a commit")
         XCTAssertTrue(added?.keys.contains(cid(c1)) ?? false, "connect set contains C1")
         XCTAssertTrue(added?.keys.contains(cid(gg)) ?? false, "connect set contains the out-of-order grandchild G")

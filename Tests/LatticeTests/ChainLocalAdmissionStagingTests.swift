@@ -425,8 +425,8 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             try BlockHeader(node: forkWinsTie ? fork2 : fork3).rawCID
         )
         XCTAssertTrue(commit.canonicalChanged)
-        XCTAssertEqual(Set(commit.mainChainBlocksAdded.keys), forkHashes)
-        XCTAssertEqual(commit.mainChainBlocksRemoved, mainHashes)
+        XCTAssertEqual(Set(commit.canonicalBlocksAdded.keys), forkHashes)
+        XCTAssertEqual(commit.canonicalBlocksRemoved, mainHashes)
         let finalTip = await level.chain.canonicalTip
         XCTAssertEqual(finalTip, try BlockHeader(node: fork3).rawCID)
     }

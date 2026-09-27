@@ -204,7 +204,7 @@ final class ForkChoicePropertyTests: XCTestCase {
         XCTAssertTrue(gOnMain, "Genesis must always remain on main chain")
     }
 
-    // Property: Reorg mainChainBlocksAdded and mainChainBlocksRemoved don't overlap
+    // Property: Reorg canonicalBlocksAdded and canonicalBlocksRemoved don't overlap
     func testReorgAddedAndRemovedDisjoint() async {
         let g = makeBlockMeta(hash: "G", height: 0, childHashes: ["A1", "B1"])
         let a1 = makeBlockMeta(hash: "A1", previousHash: "G", height: 1, childHashes: ["A2"])
@@ -218,8 +218,8 @@ final class ForkChoicePropertyTests: XCTestCase {
 
         XCTAssertNotNil(reorg)
         if let reorg = reorg {
-            let addedSet = Set(reorg.mainChainBlocksAdded.keys)
-            let intersection = addedSet.intersection(reorg.mainChainBlocksRemoved)
+            let addedSet = Set(reorg.canonicalBlocksAdded.keys)
+            let intersection = addedSet.intersection(reorg.canonicalBlocksRemoved)
             XCTAssertTrue(intersection.isEmpty,
                           "Added and removed sets must be disjoint, overlap: \(intersection)")
         }

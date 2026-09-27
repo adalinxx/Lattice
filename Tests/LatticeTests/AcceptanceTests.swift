@@ -39,7 +39,7 @@ final class FullPipelineAcceptanceTests: XCTestCase {
         let result = await chain.submitTestBlock(
             blockHeader: header, block: mined!
         )
-        XCTAssertTrue(result.extendsMainChain)
+        XCTAssertTrue(result.extendsCanonical)
 
         let tip = await chain.canonicalTip
         XCTAssertEqual(tip, header.rawCID)

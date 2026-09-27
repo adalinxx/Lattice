@@ -1182,7 +1182,7 @@ private enum BlockImport {
             transition.materializedPostState,
             ChainCommit(
                 tipHash: resolved.header.rawCID,
-                mainChainBlocksAdded: [resolved.header.rawCID: 0]
+                canonicalBlocksAdded: [resolved.header.rawCID: 0]
             ),
             carrierLink
         )
