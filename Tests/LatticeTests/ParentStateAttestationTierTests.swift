@@ -29,16 +29,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
     private let easy = UInt256.max
 
     private func spec() -> ChainSpec {
-        ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            maxBlockSize: 1_000_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1_024,
-            halvingInterval: 10_000,
-            halfLife: 5
-        )
+        ChainSpec.test()
     }
 
     /// A genesis whose post-state is NOT `emptyHeader`.

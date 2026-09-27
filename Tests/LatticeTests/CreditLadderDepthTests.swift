@@ -17,16 +17,7 @@ import cashew
 final class CreditLadderDepthTests: XCTestCase {
 
     private func ladderSpec() -> ChainSpec {
-        ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            maxBlockSize: 1_000_000,
-            premine: 0,
-            targetBlockTime: 1_000,
-            initialReward: 1_024,
-            halvingInterval: 10_000,
-            halfLife: 5
-        )
+        ChainSpec.test()
     }
 
     /// Independent restatement of the rule. `targets` is ROOT-FIRST: index 0 is

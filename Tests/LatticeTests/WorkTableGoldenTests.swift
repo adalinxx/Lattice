@@ -136,10 +136,7 @@ final class WorkTableGoldenTests: XCTestCase {
             )
         }
         let asert = Self.asertCases.map { asertCase in
-            let spec = ChainSpec(
-                maxNumberOfTransactionsPerBlock: 100,
-                maxStateGrowth: 100_000,
-                premine: 0,
+            let spec = ChainSpec.test(
                 targetBlockTime: asertCase.targetBlockTime,
                 initialReward: 1,
                 halvingInterval: 1,

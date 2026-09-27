@@ -9,27 +9,11 @@ private func makeFetcher() -> StorableFetcher {
 }
 
 private func lifecycleSpec(_ dir: String = "Nexus") -> ChainSpec {
-    ChainSpec(
-        maxNumberOfTransactionsPerBlock: 100,
-        maxStateGrowth: 100_000,
-        maxBlockSize: 1_000_000,
-        premine: 1000,
-        targetBlockTime: 1_000,
-        initialReward: 1024, halvingInterval: 10_000,
-        halfLife: 5
-    )
+    ChainSpec.test(premine: 1000)
 }
 
 private func noPremine(_ dir: String = "Nexus") -> ChainSpec {
-    ChainSpec(
-        maxNumberOfTransactionsPerBlock: 100,
-        maxStateGrowth: 100_000,
-        maxBlockSize: 1_000_000,
-        premine: 0,
-        targetBlockTime: 1_000,
-        initialReward: 1024, halvingInterval: 10_000,
-        halfLife: 5
-    )
+    ChainSpec.test()
 }
 
 private func signTransaction(

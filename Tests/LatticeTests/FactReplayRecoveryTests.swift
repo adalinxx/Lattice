@@ -182,11 +182,7 @@ final class FactReplayRecoveryTests: XCTestCase {
 }
 
 private func recoverySpec() -> ChainSpec {
-    ChainSpec(
-        maxNumberOfTransactionsPerBlock: 100,
-        maxStateGrowth: 100_000,
-        premine: 0,
-        targetBlockTime: 1_000,
+    ChainSpec.test(
         initialReward: 1,
         halvingInterval: 1_000,
         halfLife: 10

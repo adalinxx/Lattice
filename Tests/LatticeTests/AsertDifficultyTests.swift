@@ -11,14 +11,8 @@ import cashew
 final class AsertDifficultyTests: XCTestCase {
 
     private func spec(targetBlockTime: UInt64 = 3_600_000, halfLife: UInt64 = 120) -> ChainSpec {
-        ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            maxBlockSize: 1_000_000,
-            premine: 0,
+        ChainSpec.test(
             targetBlockTime: targetBlockTime,
-            initialReward: 1024,
-            halvingInterval: 10_000,
             halfLife: halfLife
         )
     }

@@ -23,16 +23,7 @@ import Foundation
 // MARK: - Shared infrastructure
 
 private func gapSpec() -> ChainSpec {
-    ChainSpec(
-        maxNumberOfTransactionsPerBlock: 100,
-        maxStateGrowth: 100_000,
-        maxBlockSize: 1_000_000,
-        premine: 0,
-        targetBlockTime: 1_000,
-        initialReward: 1024,
-        halvingInterval: 10_000,
-        halfLife: 5
-    )
+    ChainSpec.test()
 }
 
 private func gapHeader(_ block: Block) -> BlockHeader {
@@ -216,16 +207,7 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
 
     private func childSpecWithDeposit(_ depositAmount: UInt64) -> ChainSpec {
         // Premine funds the genesis deposit; nexus chain is the parent ["Nexus"].
-        ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000,
-            maxBlockSize: 1_000_000,
-            premine: depositAmount,
-            targetBlockTime: 1_000,
-            initialReward: 1024,
-            halvingInterval: 10_000,
-            halfLife: 5
-        )
+        ChainSpec.test(premine: depositAmount)
     }
 
     /// Builds a leaf chain whose genesis already holds a deposit, plus a nexus

@@ -7,9 +7,7 @@ import Foundation
 private func f() -> StorableFetcher { StorableFetcher() }
 
 private func s(_ dir: String = "Nexus", premine: UInt64 = 1000) -> ChainSpec {
-    ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 100_000,
-              maxBlockSize: 1_000_000, premine: premine, targetBlockTime: 1_000,
-              initialReward: 1024, halvingInterval: 10_000, halfLife: 5)
+    ChainSpec.test(premine: premine)
 }
 
 private func tx(_ body: TransactionBody, _ kp: (privateKey: String, publicKey: String)) -> Transaction {
@@ -402,13 +400,7 @@ final class ChainPolicyBlockTests: XCTestCase {
         let kpAddr = id(kp.publicKey)
 
         let acceptingPolicy = try await storeWasmPolicy(accepts: true, scope: .transaction, fetcher: fetcher)
-        let policySpec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000, maxBlockSize: 1_000_000,
-            premine: 0, targetBlockTime: 1_000, initialReward: 1024, halvingInterval: 10_000,
-            halfLife: 5,
-            wasmPolicies: [acceptingPolicy]
-        )
+        let policySpec = ChainSpec.test(wasmPolicies: [acceptingPolicy])
 
         let genesis = try await buildAndStoreGenesis(
             spec: policySpec, timestamp: base, target: UInt256(1000), fetcher: fetcher
@@ -435,13 +427,7 @@ final class ChainPolicyBlockTests: XCTestCase {
         let kpAddr = id(kp.publicKey)
 
         let rejectingPolicy = try await storeWasmPolicy(accepts: false, scope: .transaction, fetcher: fetcher)
-        let filteredSpec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000, maxBlockSize: 1_000_000,
-            premine: 0, targetBlockTime: 1_000, initialReward: 1024, halvingInterval: 10_000,
-            halfLife: 5,
-            wasmPolicies: [rejectingPolicy]
-        )
+        let filteredSpec = ChainSpec.test(wasmPolicies: [rejectingPolicy])
 
         let genesis = try await buildAndStoreGenesis(
             spec: filteredSpec, timestamp: base, target: UInt256(1000), fetcher: fetcher
@@ -471,13 +457,7 @@ final class ChainPolicyBlockTests: XCTestCase {
         let kpAddr = id(kp.publicKey)
 
         let rejectingPolicy = try await storeWasmPolicy(accepts: false, scope: .action, fetcher: fetcher)
-        let policySpec = ChainSpec(
-            maxNumberOfTransactionsPerBlock: 100,
-            maxStateGrowth: 100_000, maxBlockSize: 1_000_000,
-            premine: 0, targetBlockTime: 1_000, initialReward: 1024, halvingInterval: 10_000,
-            halfLife: 5,
-            wasmPolicies: [rejectingPolicy]
-        )
+        let policySpec = ChainSpec.test(wasmPolicies: [rejectingPolicy])
 
         let genesis = try await buildAndStoreGenesis(
             spec: policySpec, timestamp: base, target: UInt256(1000), fetcher: fetcher
