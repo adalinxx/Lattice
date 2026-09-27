@@ -19,12 +19,4 @@ public struct WithdrawalAction: Codable, Sendable {
     func stateDelta() -> Int {
         withdrawer.utf8.count + demander.utf8.count + 32
     }
-
-    public func totalSize() -> Int? {
-        return toData()?.count
-    }
-
-    public func toData() -> Data? {
-        return try? JSONEncoder().encode(self)
-    }
 }

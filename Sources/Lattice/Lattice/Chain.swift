@@ -1389,11 +1389,6 @@ public actor ChainState {
         return hashToBlock[hash]
     }
 
-    public func getHighestBlock() -> BlockMeta? {
-        materializeLocalWorkCachesIfNeeded()
-        return highestBlock
-    }
-
     public func getHighestBlockHeight() -> UInt64 {
         highestBlockHeight
     }
