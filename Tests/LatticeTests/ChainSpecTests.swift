@@ -1,5 +1,11 @@
 import XCTest
 @testable import Lattice
+@testable import LatticePrimitives
+@testable import LatticePoW
+@testable import LatticeValidation
+@testable import LatticeProofs
+@testable import LatticeBlockTree
+@testable import LatticeImport
 import UInt256
 import cashew
 
@@ -455,8 +461,13 @@ final class ChainSpecTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let sourceURL = packageRoot.appendingPathComponent("Sources/Lattice/Block/ChainSpec.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let source = try [
+            "Sources/LatticePrimitives/Block/ChainSpec.swift",
+            "Sources/LatticePoW/ChainSpec+Asert.swift",
+            "Sources/LatticeValidation/Block/ChainSpec+Validity.swift",
+        ].map {
+            try String(contentsOf: packageRoot.appendingPathComponent($0), encoding: .utf8)
+        }.joined()
         let removedValidatorNames = [
             ["validate", "Difficulty"].joined(),
             ["validate", "Block", "Hash"].joined(),

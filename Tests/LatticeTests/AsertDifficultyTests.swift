@@ -3,6 +3,12 @@ import Foundation
 import UInt256
 import cashew
 @testable import Lattice
+@testable import LatticePrimitives
+@testable import LatticePoW
+@testable import LatticeValidation
+@testable import LatticeProofs
+@testable import LatticeBlockTree
+@testable import LatticeImport
 
 /// The difficulty schedule is absolutely scheduled from one anchor: the
 /// height-1 ancestor of the block being targeted. These cover the properties

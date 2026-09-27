@@ -1,5 +1,11 @@
 import XCTest
 @testable import Lattice
+@testable import LatticePrimitives
+@testable import LatticePoW
+@testable import LatticeValidation
+@testable import LatticeProofs
+@testable import LatticeBlockTree
+@testable import LatticeImport
 import UInt256
 
 // SEC-101 /: the per-node depth-based finality floor has been removed

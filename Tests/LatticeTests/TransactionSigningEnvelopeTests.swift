@@ -1,5 +1,11 @@
 import XCTest
 @testable import Lattice
+@testable import LatticePrimitives
+@testable import LatticePoW
+@testable import LatticeValidation
+@testable import LatticeProofs
+@testable import LatticeBlockTree
+@testable import LatticeImport
 import cashew
 
 final class TransactionSigningEnvelopeTests: XCTestCase {
@@ -229,16 +235,18 @@ final class TransactionSigningEnvelopeTests: XCTestCase {
 
     func testProductionTransactionSigningIsCentralizedInEnvelopeHelper() throws {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        let sources = root.appendingPathComponent("Sources/Lattice")
-        let allowed = "Sources/Lattice/Transaction/TransactionSigning.swift"
-        let enumerator = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil) ?? FileManager.default.enumerator(atPath: sources.path)!
+        let allowed = "Sources/LatticePrimitives/Transaction/TransactionSigning.swift"
         var findings: [String] = []
 
-        for case let url as URL in enumerator where url.pathExtension == "swift" {
-            let relative = url.path.replacingOccurrences(of: root.path + "/", with: "")
-            let text = try String(contentsOf: url, encoding: .utf8)
-            if relative != allowed && text.contains("CryptoUtils.sign(") {
-                findings.append(relative)
+        for module in ["Lattice", "LatticePrimitives", "LatticePoW", "LatticeValidation", "LatticeProofs", "LatticeBlockTree", "LatticeImport"] {
+            let sources = root.appendingPathComponent("Sources/\(module)")
+            let enumerator = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil) ?? FileManager.default.enumerator(atPath: sources.path)!
+            for case let url as URL in enumerator where url.pathExtension == "swift" {
+                let relative = url.path.replacingOccurrences(of: root.path + "/", with: "")
+                let text = try String(contentsOf: url, encoding: .utf8)
+                if relative != allowed && text.contains("CryptoUtils.sign(") {
+                    findings.append(relative)
+                }
             }
         }
 
