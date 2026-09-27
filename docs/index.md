@@ -60,6 +60,5 @@ structures and their ownership boundaries.
 ## Reference
 
 - [Consensus simulator](consensus-simulator.md)
-- [Adversarial consensus report](consensus/tre-134-adversarial-report.md)
 - [Nexus tokenomics](economics/nexus-tokenomics.md)
 - [Fee policy and majority-reorg model](economics/fee-market-and-51pct.md)
