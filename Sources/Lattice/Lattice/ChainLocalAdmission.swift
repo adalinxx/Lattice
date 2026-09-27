@@ -759,7 +759,7 @@ private enum ChainLocalAdmission {
             resolvedHeader = resolved.header
             block = resolved.block
         case .failure(let failure):
-            return .result(.rejected(failure))
+            return .result(rejection(failure))
         }
         let blockHash = resolvedHeader.rawCID
         let knownBlock = await level.chain.contains(blockHash: blockHash)
@@ -768,7 +768,7 @@ private enum ChainLocalAdmission {
         let contribution: VerifiedWorkContribution?
         if context.isRoot {
             guard childPackage == nil else {
-                return .result(.rejected(.protocolInvalid))
+                return .result(rejection(.protocolInvalid))
             }
             let rootHash = block.proofOfWorkHash()
             grindID = blockHash
@@ -780,7 +780,7 @@ private enum ChainLocalAdmission {
                 : nil
         } else {
             guard let childPackage else {
-                return .result(.rejected(.crossChainEvidenceRequired(.childProof(
+                return .result(rejection(.crossChainEvidenceRequired(.childProof(
                     chainPath: context.path,
                     childCID: blockHash
                 ))))
@@ -794,7 +794,7 @@ private enum ChainLocalAdmission {
                 grindID = verified.grindID
                 contribution = verified.contribution
             case .failure(let failure):
-                return .result(.rejected(failure))
+                return .result(rejection(failure))
             }
         }
         let carrierLink = ParentCarrierLink(
@@ -827,15 +827,6 @@ private enum ChainLocalAdmission {
         // must not degrade to "commits nothing", which would route parent work
         // to an older committer and let availability decide a
         // consensus-visible number.
-        func commitmentsRejection(_ failure: ChainAdmissionFailure) -> Preparation {
-            .result(.rejected(
-                failure,
-                parentCarrierLink: carrier.relayLink,
-                sameChainPredecessor: predecessorRequirement(
-                    carrier.sameChainPredecessor, after: failure
-                )
-            ))
-        }
 
         // Validated tier: the block was already weighed (its work is verified
         // above and durable). Execute it now and record a validity verdict,
@@ -874,12 +865,11 @@ private enum ChainLocalAdmission {
                         fetcher: fetcher
                     )
                 } catch {
-                    let failure = classifyValidationFailure(error)
-                    return .result(.rejected(
-                        failure,
-                        sameChainPredecessor: predecessorRequirement(
-                            carrier.sameChainPredecessor, after: failure
-                        )
+                    // Carrier link intentionally not relayed here
+                    // (pre-existing quirk); see follow-up.
+                    return .result(rejection(
+                        classifyValidationFailure(error),
+                        sameChainPredecessor: carrier.sameChainPredecessor
                     ))
                 }
                 return .duplicate(PreparedDuplicateAdmissionState(
@@ -935,7 +925,9 @@ private enum ChainLocalAdmission {
         // admitted, eagerly, through bootstrap.
         if case .weighed = mode {
             guard block.parent != nil else {
-                return .result(.rejected(.protocolInvalid))
+                // Carrier link intentionally not relayed here
+                // (pre-existing quirk); see follow-up.
+                return .result(rejection(.protocolInvalid))
             }
             if let failure = await validateHeaderLinkage(
                 block: block,
@@ -943,18 +935,13 @@ private enum ChainLocalAdmission {
                 chain: level.chain,
                 validationContext: validationContext
             ) {
-                return .result(.rejected(
-                    failure,
-                    parentCarrierLink: carrier.relayLink,
-                    sameChainPredecessor: predecessorRequirement(
-                        carrier.sameChainPredecessor, after: failure
-                    )
-                ))
+                return .result(rejection(failure, carrier: carrier))
             }
             let commitments: [String: String]
             switch await childCommitments(of: resolvedHeader, fetcher: fetcher) {
             case .success(let enumerated): commitments = enumerated
-            case .failure(let failure): return commitmentsRejection(failure)
+            case .failure(let failure):
+                return .result(rejection(failure, carrier: carrier))
             }
             return .ready(PreparedAdmission(
                 resolvedHeader: resolvedHeader,
@@ -974,7 +961,9 @@ private enum ChainLocalAdmission {
         let transition: Result<(StateDiff, LatticeState?), ChainAdmissionFailure>
         if block.parent == nil {
             guard !context.isRoot, block.height == 0 else {
-                return .result(.rejected(.protocolInvalid))
+                // Carrier link intentionally not relayed here
+                // (pre-existing quirk); see follow-up.
+                return .result(rejection(.protocolInvalid))
             }
             transition = await validateGenesis(
                 block: block,
@@ -994,13 +983,7 @@ private enum ChainLocalAdmission {
 
         switch transition {
         case .failure(let failure):
-            return .result(.rejected(
-                failure,
-                parentCarrierLink: carrier.relayLink,
-                sameChainPredecessor: predecessorRequirement(
-                    carrier.sameChainPredecessor, after: failure
-                )
-            ))
+            return .result(rejection(failure, carrier: carrier))
         case .success(let (stateDiff, state)):
             if !context.isRoot, let childPackage,
                let failure = await validateParentFacts(
@@ -1010,18 +993,13 @@ private enum ChainLocalAdmission {
                    context: context,
                    fetcher: fetcher
                ) {
-                return .result(.rejected(
-                    failure,
-                    parentCarrierLink: carrier.relayLink,
-                    sameChainPredecessor: predecessorRequirement(
-                        carrier.sameChainPredecessor, after: failure
-                    )
-                ))
+                return .result(rejection(failure, carrier: carrier))
             }
             let commitments: [String: String]
             switch await childCommitments(of: resolvedHeader, fetcher: fetcher) {
             case .success(let enumerated): commitments = enumerated
-            case .failure(let failure): return commitmentsRejection(failure)
+            case .failure(let failure):
+                return .result(rejection(failure, carrier: carrier))
             }
             return .ready(PreparedAdmission(
                 resolvedHeader: resolvedHeader,
@@ -1071,11 +1049,7 @@ private enum ChainLocalAdmission {
         }
         func excluded() -> Preparation {
             guard mayExclude else {
-                return .result(.rejected(
-                    .notYetAdmissible,
-                    parentCarrierLink: carrier.relayLink,
-                    sameChainPredecessor: carrier.sameChainPredecessor
-                ))
+                return .result(rejection(.notYetAdmissible, carrier: carrier))
             }
             return .ready(PreparedAdmission(
                 resolvedHeader: resolvedHeader,
@@ -1093,11 +1067,7 @@ private enum ChainLocalAdmission {
             // (unavailable, ordering) is retryable and never excludes.
             isDeterministicInvalidity(failure)
                 ? excluded()
-                : .result(.rejected(
-                    failure,
-                    parentCarrierLink: carrier.relayLink,
-                    sameChainPredecessor: carrier.sameChainPredecessor
-                ))
+                : .result(rejection(failure, carrier: carrier))
         }
 
         let transition: Result<(StateDiff, LatticeState?), ChainAdmissionFailure>
@@ -1173,6 +1143,39 @@ private enum ChainLocalAdmission {
         after failure: ChainAdmissionFailure
     ) -> SameChainPredecessorRequirement? {
         isDeterministicInvalidity(failure) ? nil : requirement
+    }
+
+    /// The one way a preparation is refused: every rejection carries the
+    /// carrier link its site chose and a predecessor requirement filtered by
+    /// the failure (`predecessorRequirement`), so no site can hand the node a
+    /// predecessor to acquire on behalf of a proven-invalid block.
+    static func rejection(
+        _ failure: ChainAdmissionFailure,
+        parentCarrierLink: ParentCarrierLink? = nil,
+        sameChainPredecessor: SameChainPredecessorRequirement? = nil
+    ) -> ChainLocalBlockResult {
+        .rejected(
+            failure,
+            parentCarrierLink: parentCarrierLink,
+            sameChainPredecessor: predecessorRequirement(
+                sameChainPredecessor, after: failure
+            )
+        )
+    }
+
+    static func rejection(
+        _ failure: ChainAdmissionFailure,
+        carrier: (
+            relayLink: ParentCarrierLink,
+            issuableLink: ParentCarrierLink?,
+            sameChainPredecessor: SameChainPredecessorRequirement?
+        )
+    ) -> ChainLocalBlockResult {
+        rejection(
+            failure,
+            parentCarrierLink: carrier.relayLink,
+            sameChainPredecessor: carrier.sameChainPredecessor
+        )
     }
 
     /// A failure is a validity verdict only when execution completed and the
@@ -1613,7 +1616,7 @@ public extension ChainLevel {
             to: materializedVolumeStorer
         )
         guard await chain.reserveAdmissionRevision() else {
-            return .rejected(
+            return ChainLocalAdmission.rejection(
                 .revisionExhausted,
                 parentCarrierLink: prepared.carrierLink,
                 sameChainPredecessor: prepared.sameChainPredecessor
@@ -1636,7 +1639,7 @@ public extension ChainLevel {
             }
             guard possessed, standsOnAnotherRoot else {
                 await chain.releaseAdmissionRevision()
-                return .rejected(
+                return ChainLocalAdmission.rejection(
                     .notYetAdmissible,
                     parentCarrierLink: prepared.carrierLink,
                     sameChainPredecessor: prepared.sameChainPredecessor
