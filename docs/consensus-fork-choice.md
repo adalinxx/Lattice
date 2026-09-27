@@ -26,7 +26,7 @@ Fork choice asks one local question:
 > Which competing same-chain subtree contains the greatest total quantity of
 > uniquely located grinds?
 
-Parent canonicity, carrier validity, arrival order, and segment-tip target are
+Parent canonicity, carrier validity, arrival order, and tip target are
 not inputs.
 
 ## From A Root To A Candidate
@@ -117,14 +117,10 @@ Canonicity is an output of this descent, never a filter on work. Consequently a
 grind on a connected noncanonical branch remains eligible, and moving only a
 canonical pointer cannot change any weight.
 
-The implementation keeps each routed block's subtree work as a range over an
-Euler tour of the block tree. A subtree total is a difference of prefix sums,
-so no ancestor total is stored and a newly accepted work location updates
-nothing above its insertion point; the balanced sequence tree makes that
-insertion logarithmic, not proportional to chain height. GHOST descends block
-by block and reads weights only at forks. The immutable block graph and unique
-grind locations remain the source of truth; the work index is a rebuildable
-cache.
+Subtree totals are kept so that new work never walks its ancestors, at cost
+logarithmic in graph size, not proportional to height; GHOST reads weights only
+at forks. The immutable block graph and unique grind locations remain the source
+of truth; the totals are a rebuildable cache.
 
 ## Connectivity And Recovery
 

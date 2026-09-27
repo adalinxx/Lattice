@@ -888,8 +888,8 @@ Consensus comparisons use a `WorkMeasure`, conceptually `Map<RootCID, U256>`.
 Measure union takes the maximum value per root CID. `total(measure)` is the exact
 sum of the resulting distinct values. This deduplicates repeated observations
 and recursive inheritance of the same physical grind, while independent grinds
-always sum. A disconnected staged location remains durable but has no segment
-route until its same-chain predecessor attaches.
+always sum. A disconnected staged location remains durable but is not routed
+until its same-chain predecessor attaches.
 
 ### 9.2 Chain State and Hierarchical GHOST
 
