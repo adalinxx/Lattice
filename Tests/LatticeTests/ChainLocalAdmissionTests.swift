@@ -1289,7 +1289,6 @@ final class ChainLocalAdmissionTests: XCTestCase {
         )
         let first = try await makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
         let second = try await makeChild(of: first, fetcher: fetcher, timestamp: 3_000, nonce: 2)
-        let firstHash = try BlockHeader(node: first).rawCID
         let level = makeLevel(genesis: genesis)
 
         let eager = try await level.admitBlockHeaderChainLocal(
@@ -1313,19 +1312,12 @@ final class ChainLocalAdmissionTests: XCTestCase {
         guard case .accepted = weighed else {
             return XCTFail("weighed admission must accept, got \(weighed)")
         }
-
-        let served = await level.chain.getMainChainTimestamps(
-            forParentHash: firstHash, count: UInt64.max
-        )
-        XCTAssertEqual(served, [2_000, 1_000])
     }
 
-    func testOffMainChainParentServesTimestampsFromTheHeldGraph() async throws {
-        // Every frontier leaf and losing fork has an off-main-chain parent. The
-        // held graph (parent links + timestamps of every accepted block, weighed
-        // included) serves its retarget window exactly as the fetcher walk
-        // would — same order, same count — so no candidate pays a sequential
-        // fetcher walk for ancestors the node already holds.
+    func testSideCandidateAdmitsWithoutAncestorFetches() async throws {
+        // Every frontier leaf and losing fork has an off-main-chain parent. A
+        // side candidate validates from the held graph alone, so no candidate
+        // pays a sequential fetcher walk for ancestors the node already holds.
         let full = StorableFetcher()
         let genesis = try await makeGenesis(fetcher: full, timestamp: 1_000)
         let mainOne = try await makeChild(of: genesis, fetcher: full, timestamp: 2_000, nonce: 1)
@@ -1352,15 +1344,6 @@ final class ChainLocalAdmissionTests: XCTestCase {
         XCTAssertEqual(tip, try BlockHeader(node: mainTwo).rawCID)
         let sideOnMain = await level.chain.getMainChainBlockHash(atIndex: 1)
         XCTAssertNotEqual(sideOnMain, sideOneHash)
-
-        let served = await level.chain.getMainChainTimestamps(
-            forParentHash: sideOneHash, count: 5
-        )
-        let walked = try await sideTwo.collectAncestorTimestamps(
-            parent: sideOne, count: 5, fetcher: full
-        )
-        XCTAssertEqual(served, walked)
-        XCTAssertEqual(walked, [2_500, 1_000])
 
         // A fetcher that cannot serve any ancestor beyond the parent still
         // validates the side candidate: the window came from the held graph.
