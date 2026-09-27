@@ -45,7 +45,7 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
         XCTAssertEqual(tip, "F5")
     }
 
-    func testWindowedCumulativeWorkIsExactBeyondUInt256() async throws {
+    func testTipCumulativeWorkIsExactBeyondUInt256() async throws {
         let fetcher = bucketFetcher()
         let base = Int64(Date().timeIntervalSince1970 * 1_000) - 50_000
         let target = UInt256(1)
@@ -71,7 +71,7 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
         // cumulative work is 2^256 — beyond a single UInt256 (exercises WorkSum's
         // wide accumulation). Track the formula rather than a hardcoded literal.
         let unit = workForTarget(target)
-        let cumulativeWork = await chain.getCumulativeWork(limit: 10)
+        let cumulativeWork = await chain.getTipCumulativeWork()
         XCTAssertEqual(cumulativeWork, WorkSum(unit) + unit)
         XCTAssertGreaterThan(cumulativeWork, WorkSum(UInt256.max))
     }

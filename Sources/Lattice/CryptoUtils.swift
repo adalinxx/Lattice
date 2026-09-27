@@ -108,10 +108,6 @@ public struct CryptoUtils {
     public static func sha256(_ input: String) -> String {
         Data(SHA256.hash(data: Data(input.utf8))).hexString
     }
-
-    public static func sha256Data(_ data: Data) -> Data {
-        Data(SHA256.hash(data: data))
-    }
 }
 
 public extension Data {

@@ -17,12 +17,4 @@ public struct DepositAction: Codable, Sendable {
     func stateDelta() -> Int {
         return 32 + demander.count
     }
-
-    public func totalSize() -> Int? {
-        return toData()?.count
-    }
-
-    public func toData() -> Data? {
-        return try? JSONEncoder().encode(self)
-    }
 }

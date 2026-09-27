@@ -153,13 +153,4 @@ final class ReorgBookkeepingTests: XCTestCase {
         XCTAssertTrue(added?.keys.contains(cid(gg)) ?? false, "connect set contains the out-of-order grandchild G")
     }
 
-    // (6) getCumulativeWork(limit:) must retain exact ordering beyond UInt256.
-    func test_getCumulativeWorkLimitIsExact() async {
-        let g = makeBlockMeta(hash: "G", height: 0, childHashes: ["T"], work: UInt256.max)
-        let t = makeBlockMeta(hash: "T", previousHash: "G", height: 1, work: UInt256.max)
-        let chain = makeChain(blocks: [g, t], mainChainHashes: Set(["G", "T"]))
-        let total = await chain.getCumulativeWork(limit: 10)
-        XCTAssertEqual(total, WorkSum(UInt256.max) + UInt256.max)
-    }
-
 }

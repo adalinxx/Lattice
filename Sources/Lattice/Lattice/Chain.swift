@@ -692,7 +692,6 @@ public actor ChainState {
     /// replay step reads the projection — so it is computed exactly once at
     /// the end of replay instead of per event.
     private var deferProjectionForReplay = false
-    var blockTimestamps: [String: Int64]
     /// Advances for every successful consensus mutation.
     var mutationGeneration: UInt64
     /// Capacity held across the node's asynchronous stage boundary. These
@@ -740,7 +739,6 @@ public actor ChainState {
         mainChainHashes: Set<String>,
         indexToBlockHash: [UInt64: Set<String>],
         hashToBlock: [String: BlockMeta],
-        blockTimestamps: [String: Int64] = [:],
         tipSnapshot: TipBlockSnapshot? = nil,
         tipSnapshotsByHash: [String: TipBlockSnapshot] = [:],
         validatedBlocks: Set<String> = [],
@@ -814,7 +812,6 @@ public actor ChainState {
                 ].insert(blockHash)
             }
         }
-        self.blockTimestamps = blockTimestamps
         self.mutationGeneration = mutationGeneration
         self.reservedAdmissionRevisions = 0
         self.mainChainBlockAtIndex = [:]
@@ -922,7 +919,6 @@ public actor ChainState {
             mainChainHashes: Set([blockHash]),
             indexToBlockHash: [0: Set([blockHash])],
             hashToBlock: [blockHash: meta],
-            blockTimestamps: [blockHash: block.timestamp],
             tipSnapshot: Self.snapshot(for: block),
             validatedBlocks: [blockHash]
         )
@@ -954,7 +950,6 @@ public actor ChainState {
             mainChainHashes: [input.blockHash],
             indexToBlockHash: [0: [input.blockHash]],
             hashToBlock: [input.blockHash: meta],
-            blockTimestamps: [input.blockHash: input.timestamp],
             tipSnapshot: input.snapshot,
             validatedBlocks: [input.blockHash],
             mutationGeneration: mutationGeneration
@@ -1335,24 +1330,6 @@ public actor ChainState {
         return mainChainBlockAtIndex[height] == hash
     }
 
-    /// Sum work for up to `limit` ancestors from the current tip.
-    public func getCumulativeWork(limit: UInt64) -> WorkSum {
-        var measure = WorkMeasure.zero
-        let strongestWork = Self.strongestWorkByGrind(in: hashToBlock)
-        var current: String? = chainTip
-        var walked: UInt64 = 0
-        while let hash = current, walked <= limit {
-            guard let meta = hashToBlock[hash] else { break }
-            measure.formUnion(
-                WorkMeasure(meta.workContributions.values)
-                    .normalized(using: strongestWork)
-            )
-            current = meta.parentBlockHash
-            walked += 1
-        }
-        return measure.total
-    }
-
     /// Exact total proof-of-work from genesis to the current chain tip.
     public func getTipCumulativeWork() -> WorkSum {
         materializeLocalWorkCachesIfNeeded()
@@ -1392,11 +1369,6 @@ public actor ChainState {
         guard hashToBlock[hash] != nil else { return nil }
         materializeLocalWorkCachesIfNeeded()
         return hashToBlock[hash]
-    }
-
-    public func getHighestBlock() -> BlockMeta? {
-        materializeLocalWorkCachesIfNeeded()
-        return highestBlock
     }
 
     public func getHighestBlockHeight() -> UInt64 {
@@ -1452,14 +1424,6 @@ public actor ChainState {
         mainChainBlockAtIndex[index]
     }
 
-    /// Return up to `count` ancestor timestamps newest-first, starting at
-    /// `parentHash`. Fast path: walks the held graph's parent links via
-    /// `hashToBlock` + `blockTimestamps` — every accepted block, weighed
-    /// included, on or off the main chain — avoiding fetcher round-trips, with
-    /// exactly the order and count of `Block.collectAncestorTimestamps`. Returns
-    /// nil if `parentHash` is not held, or if any timestamp in the held window
-    /// is missing (e.g. pre-upgrade persisted data) — callers should fall back
-    /// to a fetcher walk.
     /// The difficulty anchor for a block, filling any gap and caching the
     /// result along the way.
     ///
@@ -1490,20 +1454,6 @@ public actor ChainState {
             hashToBlock[step]?.adoptDifficultyAnchor(anchor)
         }
         return anchor
-    }
-
-    public func getMainChainTimestamps(forParentHash parentHash: String, count: UInt64) -> [Int64]? {
-        guard count > 0 else { return [] }
-        guard hashToBlock[parentHash] != nil else { return nil }
-        var result: [Int64] = []
-        var current: String? = parentHash
-        for _ in 0..<count {
-            guard let hash = current else { break }
-            guard let ts = blockTimestamps[hash] else { return nil }
-            result.append(ts)
-            current = hashToBlock[hash]?.parentBlockHash
-        }
-        return result
     }
 
     // MARK: - Block Submission
@@ -1625,7 +1575,6 @@ public actor ChainState {
         )
 
         hashToBlock[blockHash] = meta
-        blockTimestamps[blockHash] = input.timestamp
         indexStateTransition(input.snapshot, blockHash: blockHash)
         if let prevHash = input.parentBlockHash,
            hashToBlock[prevHash]?.childHashes.contains(blockHash) == false {
@@ -1666,22 +1615,6 @@ public actor ChainState {
 
         for contribution in contributions {
             applyForkChoiceContribution(contribution, to: blockHash)
-        }
-
-        guard let previousBlockCID = input.parentBlockHash else {
-            return SubmissionResult(
-                addedBlock: true,
-                addedContribution: addedContribution,
-                extendsMainChain: false
-            )
-        }
-
-        if hashToBlock[previousBlockCID] == nil {
-            return SubmissionResult(
-                addedBlock: true,
-                addedContribution: addedContribution,
-                extendsMainChain: false
-            )
         }
 
         return SubmissionResult(
@@ -2325,9 +2258,6 @@ public actor ChainState {
         if let input = trusted.block {
             if let existing = hashToBlock[input.blockHash] {
                 guard matchesGraph(existing, input: input),
-                      blockTimestamps[input.blockHash].map({
-                          $0 == input.timestamp
-                      }) ?? true,
                       tipSnapshotsByHash[input.blockHash].map({
                           $0 == input.snapshot
                       }) ?? true else {
@@ -2578,7 +2508,6 @@ public actor ChainState {
     }
 
     private func hydrateMetadata(from input: ConsensusBlockInput) {
-        blockTimestamps[input.blockHash] = input.timestamp
         indexStateTransition(input.snapshot, blockHash: input.blockHash)
         if chainTip == input.blockHash {
             tipSnapshot = input.snapshot
@@ -3356,26 +3285,6 @@ public actor ChainState {
             mainChainBlocksAdded: added,
             mainChainBlocksRemoved: removed
         )
-    }
-
-    // MARK: - Orphan Detection
-
-    func findEarliestOrphanConnectedToMainChain(blockHeader: String) -> String? {
-        guard var current = hashToBlock[blockHeader] else { return nil }
-        var currentHash = blockHeader
-
-        while let prevHash = current.parentBlockHash,
-              !mainChainHashes.contains(prevHash)
-        {
-            guard let prev = hashToBlock[prevHash] else { return nil }
-            current = prev
-            currentHash = prevHash
-        }
-
-        if current.parentBlockHash == nil {
-            return current.blockHeight == 0 ? currentHash : nil
-        }
-        return currentHash
     }
 
 }
