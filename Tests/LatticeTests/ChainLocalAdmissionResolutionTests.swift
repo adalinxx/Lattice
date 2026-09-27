@@ -28,9 +28,9 @@ private struct ResolutionCase {
 final class ChainLocalAdmissionResolutionTests: XCTestCase {
     func testResolutionFailuresHaveTypedOutcomes() async throws {
         let storage = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: storage, timestamp: 1_000)
-        let candidate = try await makeChild(of: genesis, fetcher: storage, timestamp: 2_000, nonce: 1)
-        let unrelated = try await makeGenesis(fetcher: storage, timestamp: 3_000, nonce: 2)
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: storage, timestamp: 1_000)
+        let candidate = try await AdmissionFixture.makeChild(of: genesis, fetcher: storage, timestamp: 2_000, nonce: 1)
+        let unrelated = try await AdmissionFixture.makeGenesis(fetcher: storage, timestamp: 3_000, nonce: 2)
         let cases = [
             ResolutionCase(
                 name: "unavailable provider evidence",
@@ -54,7 +54,7 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
         let header = try BlockHeader(node: candidate)
 
         for testCase in cases {
-            let result = try await makeLevel(genesis: genesis).admit(
+            let result = try await AdmissionFixture.makeLevel(genesis: genesis).admit(
                 header,
                 fetcher: testCase.fetcher,
                 storer: NoopStorer()
@@ -65,14 +65,14 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
 
     func testInlineBlockHeaderCIDMismatchIsProviderMalformedEvidence() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let candidate = try await makeChild(
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let candidate = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: fetcher,
             timestamp: 2_000,
             nonce: 1
         )
-        let unrelated = try await makeChild(
+        let unrelated = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: fetcher,
             timestamp: 3_000,
@@ -85,7 +85,7 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
             encryptionInfo: nil
         )
 
-        let result = try await makeLevel(genesis: genesis).admit(forged, fetcher: fetcher)
+        let result = try await AdmissionFixture.makeLevel(genesis: genesis).admit(forged, fetcher: fetcher)
 
         XCTAssertEqual(result.failure, .providerMalformedEvidence)
     }
@@ -102,14 +102,14 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
     /// fetched at all.
     func testMissingAnchorAncestorIsUnavailableEvidence() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let blockOne = try await makeChild(
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let blockOne = try await AdmissionFixture.makeChild(
             of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1
         )
-        let blockTwo = try await makeChild(
+        let blockTwo = try await AdmissionFixture.makeChild(
             of: blockOne, fetcher: fetcher, timestamp: 3_000, nonce: 2
         )
-        let candidate = try await makeChild(
+        let candidate = try await AdmissionFixture.makeChild(
             of: blockTwo, fetcher: fetcher, timestamp: 4_000, nonce: 3
         )
         let missingAnchor = DenyingFetcher(
@@ -117,7 +117,7 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
             denied: [try BlockHeader(node: blockOne).rawCID]
         )
 
-        let result = try await makeLevel(genesis: genesis).admit(
+        let result = try await AdmissionFixture.makeLevel(genesis: genesis).admit(
             candidate,
             fetcher: missingAnchor,
             storer: fetcher
@@ -128,14 +128,14 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
 
     func testMissingImmediatePredecessorReturnsExactBackfillRequirement() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let parent = try await makeChild(
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let parent = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: fetcher,
             timestamp: 2_000,
             nonce: 1
         )
-        let candidate = try await makeChild(
+        let candidate = try await AdmissionFixture.makeChild(
             of: parent,
             fetcher: fetcher,
             timestamp: 3_000,
@@ -148,7 +148,7 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
             denied: [parentCID]
         )
 
-        let result = try await makeLevel(genesis: genesis)
+        let result = try await AdmissionFixture.makeLevel(genesis: genesis)
             .admit(candidate, fetcher: missingParent, storer: fetcher)
 
         XCTAssertEqual(result.failure, .unavailableEvidence)
@@ -173,13 +173,13 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
         let genesis = try await buildAndStoreGenesis(
             spec: spec,
             timestamp: 1_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             fetcher: fetcher
         )
         let candidate = try await buildAndStoreBlock(
             previous: genesis,
             timestamp: 2_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 1,
             fetcher: fetcher
         )
@@ -188,7 +188,7 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
             denied: [policy.moduleCID]
         )
 
-        let result = try await makeLevel(genesis: genesis).admit(
+        let result = try await AdmissionFixture.makeLevel(genesis: genesis).admit(
             candidate,
             fetcher: missingModule,
             storer: fetcher
@@ -199,8 +199,8 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
 
     func testProtocolInvalidCandidateIsRejected() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let valid = try await makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let valid = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
         let invalid = Block(
             version: valid.version,
             parent: valid.parent,
@@ -218,7 +218,7 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
         )
         try await storeBuiltBlock(invalid, in: fetcher)
 
-        let result = try await makeLevel(genesis: genesis).admit(invalid, fetcher: fetcher)
+        let result = try await AdmissionFixture.makeLevel(genesis: genesis).admit(invalid, fetcher: fetcher)
 
         XCTAssertEqual(result.failure, .protocolInvalid)
     }
@@ -231,12 +231,12 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
         let genesis = try await buildAndStoreGenesis(
             spec: ChainSpec.test(halfLife: UInt64.max),
             timestamp: 1_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             fetcher: fetcher
         )
-        let first = try await makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
-        let second = try await makeChild(of: first, fetcher: fetcher, timestamp: 3_000, nonce: 2)
-        let level = makeLevel(genesis: genesis)
+        let first = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
+        let second = try await AdmissionFixture.makeChild(of: first, fetcher: fetcher, timestamp: 3_000, nonce: 2)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
 
         let eager = try await level.admit(first, fetcher: fetcher)
         guard case .accepted = eager else {
@@ -253,15 +253,15 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
         // side candidate validates from the held graph alone, so no candidate
         // pays a sequential fetcher walk for ancestors the node already holds.
         let full = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: full, timestamp: 1_000)
-        let mainOne = try await makeChild(of: genesis, fetcher: full, timestamp: 2_000, nonce: 1)
-        let mainTwo = try await makeChild(of: mainOne, fetcher: full, timestamp: 3_000, nonce: 2)
-        let sideOne = try await makeChild(of: genesis, fetcher: full, timestamp: 2_500, nonce: 3)
-        let sideTwo = try await makeChild(of: sideOne, fetcher: full, timestamp: 3_500, nonce: 4)
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: full, timestamp: 1_000)
+        let mainOne = try await AdmissionFixture.makeChild(of: genesis, fetcher: full, timestamp: 2_000, nonce: 1)
+        let mainTwo = try await AdmissionFixture.makeChild(of: mainOne, fetcher: full, timestamp: 3_000, nonce: 2)
+        let sideOne = try await AdmissionFixture.makeChild(of: genesis, fetcher: full, timestamp: 2_500, nonce: 3)
+        let sideTwo = try await AdmissionFixture.makeChild(of: sideOne, fetcher: full, timestamp: 3_500, nonce: 4)
         let genesisHash = try BlockHeader(node: genesis).rawCID
         let sideOneHash = try BlockHeader(node: sideOne).rawCID
 
-        let level = makeLevel(genesis: genesis)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
         for block in [mainOne, mainTwo, sideOne] {
             let result = try await level.admit(block, fetcher: full)
             guard case .accepted = result else {
@@ -290,15 +290,15 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
     func testNotYetAdmissibleCandidateIsDeferredByTypedOutcome() async throws {
         let fetcher = StorableFetcher()
         let now = Int64(Date().timeIntervalSince1970 * 1_000)
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: now - 100_000)
-        let future = try await makeChild(
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: now - 100_000)
+        let future = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: fetcher,
             timestamp: now + 60_000,
             nonce: 1
         )
 
-        let result = try await makeLevel(genesis: genesis).admit(future, fetcher: fetcher)
+        let result = try await AdmissionFixture.makeLevel(genesis: genesis).admit(future, fetcher: fetcher)
 
         XCTAssertEqual(result.failure, .notYetAdmissible)
     }

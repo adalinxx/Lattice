@@ -98,7 +98,9 @@ actor CountingFetcher: Fetcher, Storer, VolumeStorer {
 /// Serves a fully populated store except for the CIDs it is told to deny,
 /// which fail as `FetcherError.notFound` — the data is genuinely available but
 /// momentarily un-fetchable (peer withholding, an in-flight re-request, a
-/// source that went away). Re-pointing `denied` simulates the data arriving.
+/// source that went away). Re-pointing `denied` simulates the data arriving;
+/// `denyAll()` is one-way — the source is gone for good, and `setDenied`
+/// cannot bring it back.
 actor DenyingFetcher: Fetcher {
     private let backing: StorableFetcher
     private var denied: Set<String>

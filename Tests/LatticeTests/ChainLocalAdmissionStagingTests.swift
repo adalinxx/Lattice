@@ -60,9 +60,9 @@ private actor StorageBarrier: Storer, VolumeStorer {
 final class ChainLocalAdmissionStagingTests: XCTestCase {
     func testStorageAndStageFailuresLeaveNoVisibleMutation() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let candidate = try await makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
-        let level = makeLevel(genesis: genesis)
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let candidate = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
         let beforeTip = await level.chain.getMainChainTip()
         let candidateHash = try BlockHeader(node: candidate).rawCID
 
@@ -100,12 +100,12 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
     }
 
     func testAdmissionStagesBlockWithInitialWorkThenOnlyNewGrind() async throws {
-        let fixture = try await makeChildProofFixture()
+        let fixture = try await AdmissionFixture.makeChildProofFixture()
         let alternateCarrier = try await buildAndStoreGenesis(
             spec: chainLocalSpec(),
             children: ["Child": fixture.candidate],
             timestamp: 4_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 4,
             fetcher: fixture.fetcher
         )
@@ -184,14 +184,14 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
 
     func testReplayIsDuplicateAndDoesNotRestage() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let candidate = try await makeChild(
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let candidate = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: fetcher,
             timestamp: 2_000,
             nonce: 1
         )
-        let level = makeLevel(genesis: genesis)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
         let recorder = AdmissionStageRecorder()
         let header = try BlockHeader(node: candidate)
 
@@ -216,9 +216,11 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
 
     func testAcceptedOrphanReportsItsSameChainPredecessor() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let missingParent = try await makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
-        let childGenesis = try await makeGenesis(
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let missingParent = try await AdmissionFixture.makeChild(
+            of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1
+        )
+        let childGenesis = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
             timestamp: 1_000,
             nonce: 9
@@ -248,12 +250,12 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             previous: missingParent,
             transactions: [signedTestTransaction(body, by: keyPair)],
             timestamp: 3_000,
-            target: easy,
+            target: AdmissionFixture.easy,
             nonce: 2,
             fetcher: fetcher
         )
         let orphanHeader = try BlockHeader(node: orphan)
-        let level = makeLevel(genesis: genesis)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
         let recorder = AdmissionStageRecorder()
 
         let result = try await level.admit(
@@ -315,14 +317,14 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         // points at a lighter fork — exactly the state the node reaches when the
         // connecting mutation reaches the graph through the duplicate seam.
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let incumbent = try await makeChild(
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let incumbent = try await AdmissionFixture.makeChild(
             of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1
         )
-        let heavier1 = try await makeChild(
+        let heavier1 = try await AdmissionFixture.makeChild(
             of: genesis, fetcher: fetcher, timestamp: 2_500, nonce: 2
         )
-        let heavier2 = try await makeChild(
+        let heavier2 = try await AdmissionFixture.makeChild(
             of: heavier1, fetcher: fetcher, timestamp: 3_500, nonce: 3
         )
         let genesisCID = try BlockHeader(node: genesis).rawCID
@@ -333,7 +335,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         // Admit every block through the normal path so the graph records their
         // real, self-consistent work facts. This level self-heals to the heavier
         // fork; it is only a source of authentic block metadata.
-        let source = makeLevel(genesis: genesis)
+        let source = AdmissionFixture.makeLevel(genesis: genesis)
         for block in [incumbent, heavier1, heavier2] {
             _ = try await source.admit(block, fetcher: fetcher)
         }
@@ -385,13 +387,13 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
 
     func testAdmissionReturnsExactChainLocalReorganization() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let main1 = try await makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
-        let main2 = try await makeChild(of: main1, fetcher: fetcher, timestamp: 3_000, nonce: 2)
-        let fork1 = try await makeChild(of: genesis, fetcher: fetcher, timestamp: 2_500, nonce: 3)
-        let fork2 = try await makeChild(of: fork1, fetcher: fetcher, timestamp: 3_500, nonce: 4)
-        let fork3 = try await makeChild(of: fork2, fetcher: fetcher, timestamp: 4_500, nonce: 5)
-        let level = makeLevel(genesis: genesis)
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let main1 = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
+        let main2 = try await AdmissionFixture.makeChild(of: main1, fetcher: fetcher, timestamp: 3_000, nonce: 2)
+        let fork1 = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_500, nonce: 3)
+        let fork2 = try await AdmissionFixture.makeChild(of: fork1, fetcher: fetcher, timestamp: 3_500, nonce: 4)
+        let fork3 = try await AdmissionFixture.makeChild(of: fork2, fetcher: fetcher, timestamp: 4_500, nonce: 5)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
 
         for block in [main1, main2] {
             _ = try await level.admit(block, fetcher: fetcher)
@@ -425,20 +427,20 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
 
     func testStagedAdmissionSurvivesConcurrentMutationAndSourceLoss() async throws {
         let backing = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: backing, timestamp: 1_000)
-        let candidate = try await makeChild(
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: backing, timestamp: 1_000)
+        let candidate = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: backing,
             timestamp: 2_000,
             nonce: 1
         )
-        let sibling = try await makeChild(
+        let sibling = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: backing,
             timestamp: 2_000,
             nonce: 2
         )
-        let level = makeLevel(genesis: genesis)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
         let genesisBatch = try testAdmissionBatch(for: genesis)
         let source = DenyingFetcher(backing: backing)
         let recorder = AdmissionStageRecorder()
@@ -478,20 +480,20 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
 
     func testStagedAdmissionReservesTheFinalCommitRevision() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let candidate = try await makeChild(
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let candidate = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: fetcher,
             timestamp: 2_000,
             nonce: 1
         )
-        let sibling = try await makeChild(
+        let sibling = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: fetcher,
             timestamp: 2_000,
             nonce: 2
         )
-        let fixture = try await makeLevel(genesis: genesis, revision: .max - 1)
+        let fixture = try await AdmissionFixture.makeLevel(genesis: genesis, revision: .max - 1)
         let recorder = AdmissionStageRecorder()
         let candidateHeader = try BlockHeader(node: candidate)
         let siblingHeader = try BlockHeader(node: sibling)
@@ -542,13 +544,13 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let siblingStageCount = await recorder.count(for: siblingHeader.rawCID)
         XCTAssertEqual(siblingStageCount, 0)
 
-        let missingParent = try await makeChild(
+        let missingParent = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: fetcher,
             timestamp: 2_500,
             nonce: 3
         )
-        let orphan = try await makeChild(
+        let orphan = try await AdmissionFixture.makeChild(
             of: missingParent,
             fetcher: fetcher,
             timestamp: 3_500,
@@ -579,14 +581,14 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
 
     func testFailedStageReleasesTheFinalCommitRevision() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let candidate = try await makeChild(
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let candidate = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: fetcher,
             timestamp: 2_000,
             nonce: 1
         )
-        let fixture = try await makeLevel(genesis: genesis, revision: .max - 1)
+        let fixture = try await AdmissionFixture.makeLevel(genesis: genesis, revision: .max - 1)
         let header = try BlockHeader(node: candidate)
 
         do {
@@ -606,14 +608,14 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
 
     func testPreflightCommitUsesNoRemoteFetchAfterPreflight() async throws {
         let backing = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: backing, timestamp: 1_000)
-        let candidate = try await makeChild(
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: backing, timestamp: 1_000)
+        let candidate = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: backing,
             timestamp: 2_000,
             nonce: 1
         )
-        let level = makeLevel(genesis: genesis)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
         let source = DenyingFetcher(backing: backing)
         let validationCache = StorableFetcher()
         let materialized = RecordingAdmissionStorer()
@@ -645,15 +647,15 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
 
     func testPreflightTokenIsLevelBoundAndOneUse() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let candidate = try await makeChild(
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let candidate = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: fetcher,
             timestamp: 2_000,
             nonce: 1
         )
-        let level = makeLevel(genesis: genesis)
-        let otherLevel = makeLevel(genesis: genesis)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
+        let otherLevel = AdmissionFixture.makeLevel(genesis: genesis)
         let header = try BlockHeader(node: candidate)
 
         let result = try await level.preflightBlockHeaderChainLocal(
@@ -709,20 +711,20 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
 
     func testPreflightRemainsValidAfterAnotherAdmissionCommits() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let first = try await makeChild(
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let first = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: fetcher,
             timestamp: 2_000,
             nonce: 1
         )
-        let sibling = try await makeChild(
+        let sibling = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: fetcher,
             timestamp: 2_000,
             nonce: 2
         )
-        let level = makeLevel(genesis: genesis)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
         let firstHeader = try BlockHeader(node: first)
         let siblingHeader = try BlockHeader(node: sibling)
 
@@ -756,20 +758,20 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
 
     func testPreflightCommitPromotesCarrierLinkAfterPredecessorConnects() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let predecessor = try await makeChild(
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let predecessor = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: fetcher,
             timestamp: 2_000,
             nonce: 1
         )
-        let descendant = try await makeChild(
+        let descendant = try await AdmissionFixture.makeChild(
             of: predecessor,
             fetcher: fetcher,
             timestamp: 3_000,
             nonce: 2
         )
-        let level = makeLevel(genesis: genesis)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
         let predecessorHeader = try BlockHeader(node: predecessor)
         let descendantHeader = try BlockHeader(node: descendant)
 
@@ -803,20 +805,20 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
 
     func testDuplicatePreflightPromotesCarrierLinkAfterPredecessorConnectsWithoutStaging() async throws {
         let backing = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: backing, timestamp: 1_000)
-        let predecessor = try await makeChild(
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: backing, timestamp: 1_000)
+        let predecessor = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: backing,
             timestamp: 2_000,
             nonce: 1
         )
-        let orphan = try await makeChild(
+        let orphan = try await AdmissionFixture.makeChild(
             of: predecessor,
             fetcher: backing,
             timestamp: 3_000,
             nonce: 2
         )
-        let level = makeLevel(genesis: genesis)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
         let recorder = AdmissionStageRecorder()
         let predecessorHeader = try BlockHeader(node: predecessor)
         let orphanHeader = try BlockHeader(node: orphan)
@@ -871,18 +873,18 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
     func testConcurrentAdmissionReachesStorageTogetherWithOneValidationContext() async throws {
         let fetcher = StorableFetcher()
         let now = Int64(Date().timeIntervalSince1970 * 1_000)
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: now)
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: now)
         // Candidates sit after genesis but within the validation context's clock
         // (set below to now + 2h), so the timestamp rule admits them and the test
         // exercises only the concurrent-admission path.
         let candidateTimestamp = now + 60 * 60 * 1_000
-        let first = try await makeChild(
+        let first = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: fetcher,
             timestamp: candidateTimestamp,
             nonce: 1
         )
-        let sibling = try await makeChild(
+        let sibling = try await AdmissionFixture.makeChild(
             of: genesis,
             fetcher: fetcher,
             timestamp: candidateTimestamp,
@@ -891,7 +893,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let validationContext = ValidationContext(
             nowMilliseconds: now + 2 * 60 * 60 * 1_000
         )
-        let level = makeLevel(genesis: genesis)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
         let barrier = StorageBarrier(backing: fetcher)
         let recorder = AdmissionStageRecorder()
         let firstHeader = try BlockHeader(node: first)

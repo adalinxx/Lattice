@@ -16,28 +16,28 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
         let genesisTimestamp: Int64 = 1_000
 
         let eagerFetcher = StorableFetcher()
-        let eagerGenesis = try await makeGenesis(
+        let eagerGenesis = try await AdmissionFixture.makeGenesis(
             fetcher: eagerFetcher, timestamp: genesisTimestamp
         )
-        let candidate = try await makeChild(
+        let candidate = try await AdmissionFixture.makeChild(
             of: eagerGenesis, fetcher: eagerFetcher, timestamp: 2_000, nonce: 1
         )
         let genesisHash = try BlockHeader(node: eagerGenesis).rawCID
         let candidateHash = try BlockHeader(node: candidate).rawCID
 
         let validateFetcher = StorableFetcher()
-        let validateGenesis = try await makeGenesis(
+        let validateGenesis = try await AdmissionFixture.makeGenesis(
             fetcher: validateFetcher, timestamp: genesisTimestamp
         )
-        _ = try await makeChild(
+        _ = try await AdmissionFixture.makeChild(
             of: validateGenesis, fetcher: validateFetcher, timestamp: 2_000, nonce: 1
         )
         XCTAssertEqual(try BlockHeader(node: validateGenesis).rawCID, genesisHash)
 
-        let eagerLevel = makeLevel(genesis: eagerGenesis)
+        let eagerLevel = AdmissionFixture.makeLevel(genesis: eagerGenesis)
         let eager = try await eagerLevel.admit(candidate, fetcher: eagerFetcher)
 
-        let validateLevel = makeLevel(genesis: validateGenesis)
+        let validateLevel = AdmissionFixture.makeLevel(genesis: validateGenesis)
         let validated = try await validateLevel.admit(
             candidate,
             mode: .validate,
@@ -81,10 +81,10 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
     /// the recorded path promotes.
     func testValidateTierPromotesAPossessedBlockFromItsRecordedCommitments() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let candidate = try await makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let candidate = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
         let candidateHash = try BlockHeader(node: candidate).rawCID
-        let level = makeLevel(genesis: genesis)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
         // Possess the block through a fact whose recorded map is not what the
         // (empty) trie would enumerate.
         let recordedMap = ["Alpha": testCID("recorded-alpha")]
@@ -121,8 +121,8 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
     /// replay could depend on order.
     func testValidateTierParksARootExclusionWithNoOtherExecutedRoot() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let level = makeLevel(genesis: genesis)
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
         let genesisHash = try BlockHeader(node: genesis).rawCID
         actor StageCounter { var count = 0; func bump() { count += 1 } }
         let stagedCounter = StageCounter()
