@@ -143,6 +143,6 @@ extension Block: Node {
     }
 }
 
-public enum ValidationErrors: Error {
+public enum ValidationErrors: Error, Sendable, Equatable {
     case transactionNotResolved, prevStateNotResolved, postStateNotResolved, serializationError
 }
