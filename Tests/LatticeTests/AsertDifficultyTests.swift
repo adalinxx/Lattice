@@ -446,19 +446,16 @@ final class AsertDifficultyTests: XCTestCase {
         )
     }
 
-    /// Validation against a chain must take the anchor from the GRAPH, not
-    /// descend to height 1.
-    ///
-    /// The anchor is inherited, so the grandparent's anchor is this block's.
-    /// While a chain syncs, the parent is routinely not admitted even though
-    /// its own parent is. A validator that walked the ancestry through the
-    /// fetcher instead turned an O(1) lookup into a descent to height 1 -- per
-    /// block. Cost grew with depth and stalled a live network at ~1,800
-    /// blocks, with every node asleep on I/O.
+    /// Stall guard, not a discriminator of the local-anchor rule: it passes
+    /// with the old fetcher walk too. What it pins is the cost of the common
+    /// sync shape -- the parent not yet admitted, the grandparent admitted --
+    /// which must be answered from the graph in a couple of fetches, never by
+    /// a descent to height 1. That descent, once per block, stalled a live
+    /// network at ~1,800 blocks with every node asleep on I/O.
     ///
     /// Counting fetches is the assertion: the depth of the walk IS the defect,
-    /// so a test that only checked the verdict would have passed throughout.
-    func testValidationAnchorsFromAGrandparentTheChainKnows() async throws {
+    /// so a test that only checked the verdict would pass throughout.
+    func testGrandparentInGraphValidatesWithoutDescentStallGuard() async throws {
         let fetcher = CountingFetcher()
         let chainSpec = spec(targetBlockTime: 1_000)
         let genesis = try await buildAndStoreGenesis(
