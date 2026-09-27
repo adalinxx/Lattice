@@ -78,22 +78,22 @@ public struct BlockMeta: Sendable {
     /// Derived, like `cumulativeWork` and `subtreeWeight` beside it: a pure
     /// function of this block's ancestry, rebuildable by walking to height 1.
     /// Carried rather than walked only so reaching it is O(1) instead of O(chain).
-    public private(set) var difficultyAnchor: DifficultyAnchor?
-    public private(set) var work: WorkSum
+    public let difficultyAnchor: DifficultyAnchor?
+    public let work: WorkSum
     public var childHashes: [String]
-    public private(set) var workContributions: [String: VerifiedWorkContribution]
+    public let workContributions: [String: VerifiedWorkContribution]
     /// The contribution IDs here that are a parent's attributed runs (§9.10),
     /// not grinds. A run report subtracts the committer's GRINDS — what the
     /// child already holds — so a run attributed AT the committer stays in the
     /// run it serves and reaches the next level down.
-    public private(set) var attributedRuns: Set<String>
+    public let attributedRuns: Set<String>
     /// Directory → child block CID this block commits, read from its PoW-bound
     /// `children` index at admission and carried on the durable block fact, so
     /// live admission and replay see the same commitments (§9.10).
     /// Nil when NOT RECORDED — a fact written before this field existed — which
     /// is not "commits nothing": replay tolerates it, and a later fact for the
-    /// same block supplies the real map (`adoptChildCommitments`).
-    public private(set) var childCommitments: [String: String]?
+    /// same block supplies the real map (`BlockGraph.adoptChildCommitments`).
+    public let childCommitments: [String: String]?
 
     /// Backward cumulative proof-of-work prefix measure from genesis through
     /// this block. Each physical grind has one block location in this chain.
@@ -101,11 +101,11 @@ public struct BlockMeta: Sendable {
     /// This is a derived diagnostic, rebuilt on demand from durable block work
     /// facts after recovery. It is never a fork-choice input or persisted
     /// source of truth.
-    public private(set) var cumulativeWork: WorkSum
+    public let cumulativeWork: WorkSum
 
     /// The forward same-chain subtree measure, deduplicated by physical grind.
     /// This derived diagnostic is rebuilt on demand from accepted work facts.
-    public private(set) var subtreeWeight: WorkSum
+    public let subtreeWeight: WorkSum
 
     package init(
         blockHash: String,
@@ -160,68 +160,6 @@ public struct BlockMeta: Sendable {
         self.cumulativeWork = diagnostics.cumulativeWork
         self.subtreeWeight = diagnostics.subtreeWeight
     }
-
-    /// Fill commitments a pre-field fact left unrecorded. Write-once, like the
-    /// difficulty anchor: commitments are PoW-bound content, so a second value
-    /// for a block that has one would mean the content was misread.
-    mutating func adoptChildCommitments(_ commitments: [String: String]) {
-        guard childCommitments == nil else { return }
-        childCommitments = commitments
-    }
-
-    /// Fill an anchor left absent by out-of-order admission. Write-once: the
-    /// anchor is a function of ancestry, which never changes for a given block,
-    /// so a second value would mean the ancestry was misread.
-    mutating func adoptDifficultyAnchor(_ anchor: DifficultyAnchor) {
-        guard difficultyAnchor == nil else { return }
-        difficultyAnchor = anchor
-    }
-
-    /// Internal-only: `ChainState` rebuilds this derived cache.
-    mutating func setCumulativeWork(_ value: WorkSum) {
-        cumulativeWork = value
-    }
-
-    /// Internal-only: `ChainState` rebuilds this derived cache.
-    mutating func setSubtreeWeight(_ value: WorkSum) {
-        subtreeWeight = value
-    }
-
-    mutating func setWorkContribution(
-        _ contribution: VerifiedWorkContribution,
-        attributed: Bool = false
-    ) -> Bool {
-        if let existing = workContributions[contribution.id],
-           existing.work >= contribution.work {
-            return false
-        }
-        if let existing = workContributions[contribution.id] {
-            work = work.subtracting(WorkSum(existing.work))!
-        }
-        workContributions[contribution.id] = contribution
-        work = work + contribution.work
-        // Once attributed, always attributed: the marker is a function of the
-        // id. A fact for this id that arrived without the marker (the shape
-        // written before the field existed) counts as a grind until a marked,
-        // STRONGER one reclassifies it — the strict-increase gate above admits
-        // nothing weaker or equal, marked or not.
-        if attributed {
-            attributedRuns.insert(contribution.id)
-        }
-        return true
-    }
-
-    /// This block's grinds: every contribution that is not an attributed run.
-    var grinds: Set<String> {
-        Set(workContributions.keys.filter { !attributedRuns.contains($0) })
-    }
-
-    /// The credited work of this block's grinds alone. Derived from the
-    /// contributions, never cached beside `work`, so it cannot drift from it.
-    var grindWork: WorkSum {
-        WorkMeasure(workContributions.values.filter { !attributedRuns.contains($0.id) }).total
-    }
-
 }
 
 public struct SubmissionResult: Sendable {
