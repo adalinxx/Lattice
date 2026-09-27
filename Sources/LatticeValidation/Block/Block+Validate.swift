@@ -13,6 +13,16 @@ public enum BlockValidationError: Error, Sendable, Equatable {
     case notYetValid
 }
 
+/// Validation against chain state could not resolve the block's difficulty
+/// anchor locally: neither the parent nor the grandparent is in the graph with
+/// an anchor. It is unavailable evidence, never a verdict — the block parks on
+/// its predecessor and is retried when that connects. Validation never walks
+/// the missing ancestry over the network to find out: those hops are
+/// attacker-served links with no work or height checked per hop.
+public struct AnchorUnavailable: Error, Sendable, Equatable {
+    public init() {}
+}
+
 public struct ValidationContext: Sendable, Equatable {
     public let nowMilliseconds: Int64
     /// Node-local WASM policy resource guard, carried alongside the clock because
@@ -136,9 +146,11 @@ public extension Block {
             validationContext: validationContext
         ) { return false }
         // Resolve the schedule's origin: the height-1 ancestor of this block.
-        // Chain state carries it, inherited at admission in O(1); without a
-        // chain to ask, fall back to the SAME walk the builder uses, so the two
-        // can never disagree about which block anchors the schedule.
+        // Chain state carries it, inherited at admission in O(1). With a chain,
+        // it is answered from what is already in hand or in the graph, or not
+        // at all (`AnchorUnavailable`); without a chain to ask, fall back to
+        // the SAME walk the builder uses, so the two can never disagree about
+        // which block anchors the schedule.
         let anchor: DifficultyAnchor?
         if parent.height == 0 {
             // This block is height 1: it anchors itself, and its own committed
@@ -146,15 +158,28 @@ public extension Block {
             anchor = DifficultyAnchor(
                 blockHeight: 1, timestamp: timestamp, target: target
             )
-        } else if let chain, let parentHash = self.parent?.rawCID,
-                  let carried = await chain.difficultyAnchor(forBlockHash: parentHash) {
-            anchor = carried
+        } else if parent.height == 1 {
+            // The parent, already in hand, is the anchor.
+            anchor = DifficultyAnchor(
+                blockHeight: 1, timestamp: parent.timestamp, target: parent.target
+            )
+        } else if let chain {
+            // The anchor is inherited, so the parent's or the grandparent's is
+            // this block's. The grandparent CID comes from the parent header
+            // already fetched. Nothing is walked: a block whose nearest two
+            // ancestors are unknown parks on its predecessor instead.
+            if let parentHash = self.parent?.rawCID,
+               let carried = await chain.difficultyAnchor(forBlockHash: parentHash) {
+                anchor = carried
+            } else if let grandparentHash = parent.parent?.rawCID,
+                      let carried = await chain.difficultyAnchor(forBlockHash: grandparentHash) {
+                anchor = carried
+            } else {
+                throw AnchorUnavailable()
+            }
         } else {
-            // Hand the chain down: the walk consults it at every step, so a
-            // parent that is not admitted yet costs a hop or two rather than a
-            // descent to height 1.
             anchor = try await BlockBuilder.resolveDifficultyAnchor(
-                from: parent, fetcher: fetcher, chain: chain
+                from: parent, fetcher: fetcher
             )
         }
         guard let anchor else { return false }
