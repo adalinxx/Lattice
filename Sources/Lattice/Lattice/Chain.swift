@@ -692,7 +692,6 @@ public actor ChainState {
     /// replay step reads the projection — so it is computed exactly once at
     /// the end of replay instead of per event.
     private var deferProjectionForReplay = false
-    var blockTimestamps: [String: Int64]
     /// Advances for every successful consensus mutation.
     var mutationGeneration: UInt64
     /// Capacity held across the node's asynchronous stage boundary. These
@@ -740,7 +739,6 @@ public actor ChainState {
         mainChainHashes: Set<String>,
         indexToBlockHash: [UInt64: Set<String>],
         hashToBlock: [String: BlockMeta],
-        blockTimestamps: [String: Int64] = [:],
         tipSnapshot: TipBlockSnapshot? = nil,
         tipSnapshotsByHash: [String: TipBlockSnapshot] = [:],
         validatedBlocks: Set<String> = [],
@@ -814,7 +812,6 @@ public actor ChainState {
                 ].insert(blockHash)
             }
         }
-        self.blockTimestamps = blockTimestamps
         self.mutationGeneration = mutationGeneration
         self.reservedAdmissionRevisions = 0
         self.mainChainBlockAtIndex = [:]
@@ -922,7 +919,6 @@ public actor ChainState {
             mainChainHashes: Set([blockHash]),
             indexToBlockHash: [0: Set([blockHash])],
             hashToBlock: [blockHash: meta],
-            blockTimestamps: [blockHash: block.timestamp],
             tipSnapshot: Self.snapshot(for: block),
             validatedBlocks: [blockHash]
         )
@@ -954,7 +950,6 @@ public actor ChainState {
             mainChainHashes: [input.blockHash],
             indexToBlockHash: [0: [input.blockHash]],
             hashToBlock: [input.blockHash: meta],
-            blockTimestamps: [input.blockHash: input.timestamp],
             tipSnapshot: input.snapshot,
             validatedBlocks: [input.blockHash],
             mutationGeneration: mutationGeneration
@@ -1603,7 +1598,6 @@ public actor ChainState {
         )
 
         hashToBlock[blockHash] = meta
-        blockTimestamps[blockHash] = input.timestamp
         indexStateTransition(input.snapshot, blockHash: blockHash)
         if let prevHash = input.parentBlockHash,
            hashToBlock[prevHash]?.childHashes.contains(blockHash) == false {
@@ -2553,7 +2547,6 @@ public actor ChainState {
     }
 
     private func hydrateMetadata(from input: ConsensusBlockInput) {
-        blockTimestamps[input.blockHash] = input.timestamp
         indexStateTransition(input.snapshot, blockHash: input.blockHash)
         if chainTip == input.blockHash {
             tipSnapshot = input.snapshot
