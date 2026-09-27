@@ -120,7 +120,7 @@ final class ChildIndexTests: XCTestCase {
             timestamp: 2_000,
             fetcher: fetcher
         )
-        let counting = FetchCounter(backing: fetcher)
+        let counting = CountingFetcher(backing: fetcher)
         let header = BlockHeader(rawCID: try BlockHeader(node: carrier).rawCID)
         let resolved = try await header.resolve(
             paths: [[CHILDREN_PROPERTY]: .targeted], fetcher: counting
@@ -131,15 +131,4 @@ final class ChildIndexTests: XCTestCase {
         let fetches = await counting.count()
         XCTAssertEqual(fetches, 2, "the block and its index")
     }
-}
-
-private actor FetchCounter: Fetcher {
-    private let backing: StorableFetcher
-    private var fetched = 0
-    init(backing: StorableFetcher) { self.backing = backing }
-    func fetch(rawCid: String) async throws -> Data {
-        fetched += 1
-        return try await backing.fetch(rawCid: rawCid)
-    }
-    func count() -> Int { fetched }
 }

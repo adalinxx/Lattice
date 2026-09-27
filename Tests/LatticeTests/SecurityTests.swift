@@ -7,12 +7,6 @@ import Crypto
 
 // MARK: - Shared Test Infrastructure
 
-private struct TestFetcher: Fetcher {
-    func fetch(rawCid: String) async throws -> Data {
-        throw NSError(domain: "TestFetcher", code: 1)
-    }
-}
-
 /// Storing, not the throwing stub: these suites build real multi-block chains
 /// and the difficulty schedule is anchored at the height-1 ancestor, so a block
 /// past height 2 has to be able to reach back through its own ancestry. The old

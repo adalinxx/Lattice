@@ -5,12 +5,6 @@ import cashew
 import WasmParser
 import WAT
 
-struct NoopFetcher: Fetcher {
-    func fetch(rawCid: String) async throws -> Data {
-        throw NSError(domain: "NoopFetcher", code: 1)
-    }
-}
-
 /// Storing rather than no-op: these suites build multi-block chains, and the
 /// difficulty schedule is anchored at the height-1 ancestor, so a block past
 /// height 2 must be able to reach back through its own ancestry. A block's
