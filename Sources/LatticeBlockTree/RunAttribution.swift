@@ -272,6 +272,16 @@ extension ChainState {
         runs.connect(rootedAt: rootHash, in: graph)
     }
 
+    /// The nearest block at or above `blockHash`, by parent pointer, that
+    /// commits into `directory` — the block itself where it commits — as run
+    /// attribution settled it. Answers only for a directory this node serves
+    /// (`serveRuns(for:)`) and a connected block; nil otherwise, never "none".
+    /// The hash is looked up as given, not canonicalized.
+    public func nearestCarrier(of blockHash: String, directory: String) -> String? {
+        guard runs.served.contains(directory) else { return nil }
+        return runs.nearestCarrier[blockHash]?[directory]
+    }
+
     /// The run report a parent serves for one of its committing blocks. Nil
     /// when `directory` is not served here (`serveRuns(for:)`), or the block is
     /// unknown, not connected, or does not commit into `directory` — a child

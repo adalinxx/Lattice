@@ -203,6 +203,74 @@ final class ParentRunAttributionTests: XCTestCase {
         }
     }
 
+    /// `nearestCarrier(of:directory:)` is the per-block pointer run attribution
+    /// settles: each block names the nearest block at or above it that commits
+    /// into the directory, and the blocks naming a carrier are exactly that
+    /// carrier's run. Unserved directories and unconnected blocks answer nil.
+    func testNearestCarrierIsTheBlocksRunCarrier() async throws {
+        //        g
+        //        |
+        //       p1  (commits c1 into d, b1 into e)
+        //      /  \
+        //    p2    x        p2 commits c2 into d
+        //    |
+        //    q
+        let e = "Markets"
+        let work: [String: UInt64] = ["g": 1, "p1": 5, "p2": 3, "x": 11, "q": 7]
+        let byInit = makeChain(blocks: [
+            meta("g", parent: nil, height: 0, children: ["p1"], work: 1),
+            meta("p1", parent: "g", height: 1, children: ["p2", "x"], work: 5,
+                 commits: [d: testCID("c1"), e: testCID("b1")]),
+            meta("p2", parent: "p1", height: 2, children: ["q"], work: 3, commits: [d: testCID("c2")]),
+            meta("x", parent: "p1", height: 2, work: 11),
+            meta("q", parent: "p2", height: 3, work: 7),
+        ])
+        await byInit.serveRuns(for: d)
+        let byReplay = try await ChainState.restore(replaying: [batch("g", parent: nil, height: 0, work: 1)])
+        await byReplay.serveRuns(for: d)
+        _ = try await byReplay.replay(batch("p1", parent: "g", height: 1, work: 5,
+                                            commits: [d: testCID("c1"), e: testCID("b1")]))
+        _ = try await byReplay.replay(batch("p2", parent: "p1", height: 2, work: 3, commits: [d: testCID("c2")]))
+        _ = try await byReplay.replay(batch("x", parent: "p1", height: 2, work: 11))
+        _ = try await byReplay.replay(batch("q", parent: "p2", height: 3, work: 7))
+
+        let expected: [String: String?] = ["g": nil, "p1": "p1", "p2": "p2", "x": "p1", "q": "p2"]
+        for (label, chain) in [("init", byInit), ("replay", byReplay)] {
+            var runOf: [String: WorkSum] = [:]
+            for (block, carrier) in expected {
+                let actual = await chain.nearestCarrier(of: h(block), directory: d)
+                XCTAssertEqual(actual, carrier.map(h), "\(label): carrier of \(block)")
+                if let carrier {
+                    runOf[carrier] = (runOf[carrier] ?? .zero) + sum(work[block]!)
+                }
+                let unserved = await chain.nearestCarrier(of: h(block), directory: e)
+                XCTAssertNil(unserved, "\(label): \(block) in an unserved directory, though p1 commits into it")
+            }
+            // The blocks naming a carrier are exactly the run it serves.
+            for (carrier, total) in runOf {
+                let served = await run(chain, at: carrier)
+                XCTAssertEqual(served, total, "\(label): \(carrier)'s run is the blocks naming it")
+            }
+            let unknown = await chain.nearestCarrier(of: h("nope"), directory: d)
+            XCTAssertNil(unknown, "\(label): unknown block")
+        }
+
+        // An orphan has no carrier until it connects; then it inherits one.
+        _ = try await byReplay.replay(batch("r2", parent: "r1", height: 5, work: 2))
+        let orphaned = await byReplay.nearestCarrier(of: h("r2"), directory: d)
+        XCTAssertNil(orphaned, "an unconnected block has no carrier yet")
+        _ = try await byReplay.replay(batch("r1", parent: "q", height: 4, work: 2))
+        let connected = await byReplay.nearestCarrier(of: h("r2"), directory: d)
+        XCTAssertEqual(connected, h("p2"), "connecting through q inherits p2")
+
+        // Serving a directory late settles the same pointers.
+        await byReplay.serveRuns(for: e)
+        let lateP2 = await byReplay.nearestCarrier(of: h("p2"), directory: e)
+        let lateG = await byReplay.nearestCarrier(of: h("g"), directory: e)
+        XCTAssertEqual(lateP2, h("p1"), "p2 commits nothing into e, so p1 carries it")
+        XCTAssertNil(lateG)
+    }
+
     func testDirectoriesAreIndependentPartitions() async throws {
         let e = "Markets"
         let chain = makeChain(blocks: [
