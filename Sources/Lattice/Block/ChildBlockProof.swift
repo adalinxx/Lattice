@@ -334,13 +334,6 @@ public struct ChildBlockProof: Sendable {
         return nil
     }
 
-    /// Verify only the root entry and return its exact physical work. Nodes may
-    /// use this cheap result for local admission policy before resolving the
-    /// descendant path.
-    public func verifiedRootWork() -> Result<UInt256, ChildProofVerificationFailure> {
-        verifiedRoot().map { workForHash($0.hash) }
-    }
-
     private func verifiedRoot() -> Result<(block: Block, hash: UInt256), ChildProofVerificationFailure> {
         let rootEntries = entries.filter { $0.cid == rootCID }
         guard rootEntries.count == 1,

@@ -26,12 +26,4 @@ public struct AccountAction: Codable, Sendable {
         // conservatively assume mutation (no size change)
         return 0
     }
-
-    public func totalSize() -> Int? {
-        return toData()?.count
-    }
-
-    public func toData() -> Data? {
-        return try? JSONEncoder().encode(self)
-    }
 }
