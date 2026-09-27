@@ -70,6 +70,31 @@ final class ChainLocalAdmissionContextTests: XCTestCase {
         XCTAssertFalse(ChainLevel.isDeterministicInvalidityForTesting(resolution))
     }
 
+    func testValidationErrorsPartitionIntoAvailabilityAndLocalFailure() {
+        // Every `ValidationErrors` case classifies to exactly one side of the
+        // availability/verdict partition: an unresolved input is retryable,
+        // a serialization failure is this node's own fault and never a
+        // consensus verdict. Neither side may drift into `.protocolInvalid`.
+        let cases: [ValidationErrors] = [
+            .transactionNotResolved,
+            .prevStateNotResolved,
+            .postStateNotResolved,
+            .serializationError,
+        ]
+        for error in cases {
+            let expected: ChainAdmissionFailure = error == .serializationError
+                ? .localVerificationFailure
+                : .unavailableEvidence
+            let classified = ChainLevel.classifyValidationFailureForTesting(error)
+            XCTAssertEqual(classified, expected, "\(error)")
+            XCTAssertEqual(
+                ChainLevel.isDeterministicInvalidityForTesting(classified),
+                error == .serializationError,
+                "\(error) is a verdict only when it is this node's own failure"
+            )
+        }
+    }
+
     func testDeterministicInvalidityPartitionsAvailabilityFromVerdict() {
         // The data-availability linchpin: only a COMPLETED deterministic check
         // is a verdict that may exclude. Availability, ordering and capacity
