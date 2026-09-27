@@ -2303,9 +2303,6 @@ public actor ChainState {
         if let input = trusted.block {
             if let existing = hashToBlock[input.blockHash] {
                 guard matchesGraph(existing, input: input),
-                      blockTimestamps[input.blockHash].map({
-                          $0 == input.timestamp
-                      }) ?? true,
                       tipSnapshotsByHash[input.blockHash].map({
                           $0 == input.snapshot
                       }) ?? true else {
