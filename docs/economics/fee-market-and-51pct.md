@@ -57,7 +57,7 @@ chain-specific WASM policy makes it part of that chain's validity rules.
 | Parameter | Value |
 |---|---:|
 | Target block time `T` | `3,600` seconds |
-| Retarget window | `120` blocks, about 5 days |
+| Half-life | `120` blocks, about 5 days |
 | Per-block target clamp | none (the schedule is absolute) |
 
 A block's target is `parent.nextTarget` or voluntarily harder, never easier.

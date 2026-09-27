@@ -35,6 +35,73 @@ not automatically inherit all Nexus hashpower or Nexus canonicity.
 | `maxStateGrowth` | `3,000,000` bytes | Per block |
 | `maxNumberOfTransactionsPerBlock` | `5,000` | Per block |
 
+There is no per-retarget clamp and no minimum-target floor: the schedule is
+absolute. A chain directory is positional path data, not a `ChainSpec` field.
+
+## Emission
+
+The public block subsidy is
+
+```text
+rewardAtBlock(height)
+    = initialReward >> ((height + premine) / halvingInterval)
+```
+
+`premine` advances public mining along the same reward curve. For Nexus, the
+first public halving is therefore
+
+```text
+876,600 - 175,320 = 701,280 blocks
+```
+
+or about 80 years at the target cadence. Later halvings remain 876,600 blocks
+apart. Integer shifts eventually reduce the reward to zero; there is no tail
+emission.
+
+The implementation returns zero instead of trapping if `height + premine`
+overflows or the shift reaches 64 bits.
+
+## Premine
+
+Because the Nexus premine is shorter than one halving interval, every premined
+block uses the initial reward:
+
+```text
+premineAmount
+    = 175,320 * 1,048,576
+    = 183,836,344,320
+```
+
+The recipient and exact genesis transaction are fixed by
+`NexusGenesis.swift`. Generic genesis validation permits total credits up to the
+configured `premineAmount`; it does not infer a recipient.
+
+## Supply
+
+The geometric closed-form limit is
+
+```text
+2 * halvingInterval * initialReward
+    = 1,838,363,443,200
+```
+
+The exact integer-terminated schedule is
+
+```text
+halvingInterval * (2^21 - 1)
+    = 1,838,362,566,600
+```
+
+The premine is exactly 10% of the closed-form limit and approximately 10% of the
+exact integer-terminated supply. The small difference is the finite tail removed
+by integer halving.
+
+## Cadence And Fees
+
+Nexus retargets every block by an **absolute schedule (ASERT)** measured from
+the height-1 anchor of the block's own branch, not by a window over recent
+intervals. A block's target is its parent's `nextTarget` or voluntarily harder,
+never easier — there is no minimum-target floor and no recovery exception.
 
 The schedule holds difficulty steady at exactly one-hour spacing, and moves one
 doubling per half-life of accumulated drift, where the half-life is

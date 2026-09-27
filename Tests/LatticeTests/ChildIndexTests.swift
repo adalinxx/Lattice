@@ -50,7 +50,23 @@ final class ChildIndexTests: XCTestCase {
         XCTAssertNil(ChildIndex(data: try encoded(["B", "A"])), "unsorted")
         XCTAssertNil(ChildIndex(data: try encoded(["A", "A"])), "repeated")
         XCTAssertNil(ChildIndex(data: try encoded([""])), "unnamed")
+        XCTAssertNil(ChildIndex(data: try encoded(["Pay/ments"])), "not a directory atom")
+        XCTAssertNil(ChildIndex(data: try encoded(["Zahlung\u{FC}"])), "outside the key grammar")
         XCTAssertNotNil(ChildIndex(data: try encoded([])), "an empty index is an index")
+    }
+
+    /// The encoder refuses what the decoder would refuse, so a builder can
+    /// never mint a block whose index no node reads.
+    func testEncodingRefusesWhatDecodingWould() throws {
+        let a = try VolumeImpl<Block>(node: makeGenesisBlock(spec: spec(), nonce: 1))
+        XCTAssertThrowsError(try HeaderImpl(node: ChildIndex(entries: ["": a])))
+        XCTAssertThrowsError(try HeaderImpl(node: ChildIndex(entries: ["Pay/ments": a])))
+        XCTAssertThrowsError(try BlockBuilder.buildChildIndex(["bad key": makeGenesisBlock(spec: spec(), nonce: 1)]))
+        var tooMany: [String: VolumeImpl<Block>] = [:]
+        for index in 0...ChildIndex.maximumEntries { tooMany["d\(index)"] = a }
+        XCTAssertThrowsError(try HeaderImpl(node: ChildIndex(entries: tooMany)))
+        tooMany.removeValue(forKey: "d0")
+        XCTAssertNoThrow(try HeaderImpl(node: ChildIndex(entries: tooMany)))
     }
 
     /// A proof of one child is the root block, the index, and the child: three
