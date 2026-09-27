@@ -35,10 +35,10 @@ final class ConsensusForkChoiceBucketATests: XCTestCase {
     }
 
     func testStrictlyHeavierFullyAvailableBranchWins() async {
-        let chain = makeChain(blocks: forkDag(), mainChainHashes: forkMainSet)
+        let chain = makeChain(blocks: forkDag(), canonicalHashes: forkMainSet)
         _ = await chain.reevaluateForkChoice()
 
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, "F5")
     }
 

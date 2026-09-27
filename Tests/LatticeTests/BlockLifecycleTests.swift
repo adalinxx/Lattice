@@ -457,7 +457,7 @@ final class BlockMintingTests: XCTestCase {
 
         let height = await chain.getHighestBlockHeight()
         XCTAssertEqual(height, 5)
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, try! VolumeImpl<Block>(node: prev).rawCID)
     }
 
@@ -939,7 +939,7 @@ final class BlockLifecycleTests: XCTestCase {
             mainPrev = block
         }
 
-        let mainTip = await chain.getMainChainTip()
+        let mainTip = await chain.canonicalTip
         XCTAssertEqual(mainTip, try! VolumeImpl<Block>(node: mainPrev).rawCID)
 
         var forkPrev = genesis
@@ -954,7 +954,7 @@ final class BlockLifecycleTests: XCTestCase {
             forkPrev = block
         }
 
-        let newTip = await chain.getMainChainTip()
+        let newTip = await chain.canonicalTip
         let forkTipHash = try! VolumeImpl<Block>(node: forkPrev).rawCID
         XCTAssertEqual(newTip, forkTipHash, "Longer fork should become main chain")
     }

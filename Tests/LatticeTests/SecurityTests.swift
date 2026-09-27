@@ -858,14 +858,14 @@ final class ConsensusStressTests: XCTestCase {
         let chain = ChainState.fromGenesis(block: blocks[0])
         await submitChain(chain, blocks: blocks)
 
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         let highest = await chain.getHighestBlockHeight()
         XCTAssertEqual(highest, 99)
 
-        let tipOnMain = await chain.isOnMainChain(hash: tip)
+        let tipOnMain = await chain.isCanonical(hash: tip)
         XCTAssertTrue(tipOnMain)
 
-        let genesisOnMain = await chain.isOnMainChain(hash: header(blocks[0]).rawCID)
+        let genesisOnMain = await chain.isCanonical(hash: header(blocks[0]).rawCID)
         XCTAssertTrue(genesisOnMain)
     }
 
@@ -889,7 +889,7 @@ final class ConsensusStressTests: XCTestCase {
             guard let best else { return cid }
             return forkChoicePrefersBlock(cid, over: best) ? cid : best
         }
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, expected, "Equal-work bases should converge on the stable CID tie-break")
     }
 
@@ -908,16 +908,16 @@ final class ConsensusStressTests: XCTestCase {
             let _ = await chain.submitTestBlock(blockHeader: header(b), block: b)
         }
 
-        let newTip = await chain.getMainChainTip()
+        let newTip = await chain.canonicalTip
         XCTAssertEqual(newTip, header(forkBlocks.last!).rawCID)
 
         for i in 0...5 {
-            let onMain = await chain.isOnMainChain(hash: header(blocks[i]).rawCID)
+            let onMain = await chain.isCanonical(hash: header(blocks[i]).rawCID)
             XCTAssertTrue(onMain, "Common ancestor block \(i) must survive deep reorg")
         }
 
         for i in 6..<20 {
-            let onMain = await chain.isOnMainChain(hash: header(blocks[i]).rawCID)
+            let onMain = await chain.isCanonical(hash: header(blocks[i]).rawCID)
             XCTAssertFalse(onMain, "Replaced block \(i) must be off main chain")
         }
     }
@@ -945,7 +945,7 @@ final class ConsensusStressTests: XCTestCase {
         let r4 = await chain.submitTestBlock(blockHeader: header(blocks[4]), block: blocks[4])
         XCTAssertTrue(r4.addedBlock)
 
-        let tipHash = await chain.getMainChainTip()
+        let tipHash = await chain.canonicalTip
         let tipIndex = await chain.getHighestBlockHeight()
         XCTAssertEqual(tipIndex, 4)
         XCTAssertEqual(tipHash, header(blocks[4]).rawCID)
@@ -1062,7 +1062,7 @@ final class BugRegressionTests: XCTestCase {
         let chain = ChainState.fromGenesis(block: blocks[0])
         await submitChain(chain, blocks: blocks)
 
-        let tipBefore = await chain.getMainChainTip()
+        let tipBefore = await chain.canonicalTip
         XCTAssertEqual(tipBefore, header(blocks[4]).rawCID)
 
         var forkBlocks: [Block] = [blocks[2]]
@@ -1072,7 +1072,7 @@ final class BugRegressionTests: XCTestCase {
             let _ = await chain.submitTestBlock(blockHeader: header(b), block: b)
         }
 
-        let tipAfter = await chain.getMainChainTip()
+        let tipAfter = await chain.canonicalTip
         XCTAssertEqual(tipAfter, header(forkBlocks.last!).rawCID,
             "Cache must be invalidated so the longer fork wins")
     }

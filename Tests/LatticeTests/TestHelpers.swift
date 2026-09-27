@@ -530,7 +530,7 @@ func assertMainChainIndexMatchesPath(
     line: UInt = #line
 ) async {
     let blocks = await chain.hashToBlock
-    let index = await chain.mainChainBlockAtIndex
+    let index = await chain.canonicalHashByHeight
     var expected: [UInt64: String] = [:]
     for hash in expectedPath {
         guard let height = blocks[hash]?.blockHeight else { continue }

@@ -128,13 +128,13 @@ final class ForkChoiceOracleTests: XCTestCase {
         XCTAssertTrue(oracle.conflicts.isEmpty, "\(event): a grind was offered a second location", file: file, line: line)
         let view = oracle.view()
         let projection = try XCTUnwrap(view.canonicalProjection(), "\(event): no selectable root", file: file, line: line)
-        let liveTip = await chain.getMainChainTip()
+        let liveTip = await chain.canonicalTip
         XCTAssertEqual(liveTip, projection.tip, "\(event): tip", file: file, line: line)
 
         var livePath: [String] = []
         let tipHeight = await chain.getHighestBlockHeight()
         for height in 0...tipHeight {
-            let hash = await chain.getMainChainBlockHash(atIndex: height)
+            let hash = await chain.canonicalBlockHash(atHeight: height)
             livePath.append(try XCTUnwrap(
                 hash, "\(event): canonical index has a hole at height \(height)", file: file, line: line
             ))
@@ -230,7 +230,7 @@ final class ForkChoiceOracleTests: XCTestCase {
             let subtree = await chain.subtreeWeight(forHash: cid(name))
             XCTAssertEqual(subtree?.toHexString(), view.trueCumWork(of: cid(name)).hex, name)
         }
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, cid("a"))
         let contains = await chain.contains(blockHash: cid("c"))
         XCTAssertFalse(contains)

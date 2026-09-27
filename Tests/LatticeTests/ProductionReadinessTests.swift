@@ -48,8 +48,8 @@ final class GenesisCeremonyTests: XCTestCase {
         XCTAssertEqual(result1.blockHash, result2.blockHash,
             "Same genesis config must produce identical genesis block")
 
-        let tip1 = await result1.chainState.getMainChainTip()
-        let tip2 = await result2.chainState.getMainChainTip()
+        let tip1 = await result1.chainState.canonicalTip
+        let tip2 = await result2.chainState.canonicalTip
         XCTAssertEqual(tip1, tip2)
     }
 
@@ -115,7 +115,7 @@ final class GenesisCeremonyTests: XCTestCase {
         let contains = await result.chainState.contains(blockHash: result.blockHash)
         XCTAssertTrue(contains)
 
-        let onMain = await result.chainState.isOnMainChain(hash: result.blockHash)
+        let onMain = await result.chainState.isCanonical(hash: result.blockHash)
         XCTAssertTrue(onMain)
 
         let block1 = try await buildAndStoreBlock(
@@ -179,7 +179,7 @@ final class BlockReceptionTests: XCTestCase {
         )
         XCTAssertTrue(submitResult.extendsMainChain)
 
-        let tip = await result.chainState.getMainChainTip()
+        let tip = await result.chainState.canonicalTip
         XCTAssertEqual(tip, header.rawCID)
     }
 }
@@ -220,10 +220,10 @@ final class GenesisToBlockE2ETests: XCTestCase {
         let height = await genesis.chainState.getHighestBlockHeight()
         XCTAssertEqual(height, 10)
 
-        let tipHash = await genesis.chainState.getMainChainTip()
+        let tipHash = await genesis.chainState.canonicalTip
         XCTAssertEqual(tipHash, try! VolumeImpl<Block>(node: prev).rawCID)
 
-        let genesisOnMain = await genesis.chainState.isOnMainChain(hash: genesis.blockHash)
+        let genesisOnMain = await genesis.chainState.isCanonical(hash: genesis.blockHash)
         XCTAssertTrue(genesisOnMain)
     }
 
@@ -252,8 +252,8 @@ final class GenesisToBlockE2ETests: XCTestCase {
         )
         XCTAssertTrue(resultOnB.extendsMainChain, "Node B accepts block mined by Node A")
 
-        let tipA = await nodeA.chainState.getMainChainTip()
-        let tipB = await nodeB.chainState.getMainChainTip()
+        let tipA = await nodeA.chainState.canonicalTip
+        let tipB = await nodeB.chainState.canonicalTip
         XCTAssertEqual(tipA, tipB, "Both nodes must agree on chain tip")
     }
 
@@ -288,7 +288,7 @@ final class GenesisToBlockE2ETests: XCTestCase {
             blockHeader: try! VolumeImpl(node: blockB1), block: blockB1
         )
 
-        let tipB_before = await nodeB.chainState.getMainChainTip()
+        let tipB_before = await nodeB.chainState.canonicalTip
         XCTAssertEqual(tipB_before, try! VolumeImpl<Block>(node: blockB1).rawCID)
 
         let resultA1onB = await nodeB.chainState.submitTestBlock(
@@ -303,8 +303,8 @@ final class GenesisToBlockE2ETests: XCTestCase {
             "Node B should reorg when A wins the stable tie or becomes strictly heavier"
         )
 
-        let tipA = await nodeA.chainState.getMainChainTip()
-        let tipB = await nodeB.chainState.getMainChainTip()
+        let tipA = await nodeA.chainState.canonicalTip
+        let tipB = await nodeB.chainState.canonicalTip
         XCTAssertEqual(tipA, tipB, "Both nodes must converge on same tip after reorg")
     }
 }

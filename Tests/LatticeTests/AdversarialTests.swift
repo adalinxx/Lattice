@@ -675,7 +675,7 @@ final class ConsensusResilienceTests: XCTestCase {
             )
             shortPrev = b
         }
-        let shortTip = await chain.getMainChainTip()
+        let shortTip = await chain.canonicalTip
 
         var longPrev = genesis
         for i in 1...5 {
@@ -688,7 +688,7 @@ final class ConsensusResilienceTests: XCTestCase {
             )
             longPrev = b
         }
-        let longTip = await chain.getMainChainTip()
+        let longTip = await chain.canonicalTip
 
         XCTAssertNotEqual(shortTip, longTip)
         XCTAssertEqual(longTip, try! VolumeImpl<Block>(node: longPrev).rawCID)

@@ -438,7 +438,7 @@ extension ChainState {
     /// Exact total proof-of-work from genesis to the current chain tip.
     public func getTipCumulativeWork() -> WorkSum {
         materializeLocalWorkCachesIfNeeded()
-        return graph.cumulativeWork(of: chainTip) ?? .zero
+        return graph.cumulativeWork(of: canonicalTip) ?? .zero
     }
 
     /// Exact genesis-relative cumulative work at a specific block, or nil if the

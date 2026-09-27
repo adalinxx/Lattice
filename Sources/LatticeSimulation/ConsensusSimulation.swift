@@ -151,7 +151,7 @@ public enum LatticeConsensusSimulator {
                 currentMain.formUnion(commit.mainChainBlocksAdded.keys)
             }
 
-            let tip = await chain.getMainChainTip()
+            let tip = await chain.canonicalTip
             let snapshot = await chain.forkChoiceSnapshot(startingAt: candidateRoot)
             events.append(event(
                 idx,
@@ -191,7 +191,7 @@ public enum LatticeConsensusSimulator {
         let candidate = await chain.forkChoiceSnapshot(startingAt: "F1")
         let main = await chain.forkChoiceSnapshot(startingAt: "M1")
         let reorg = await chain.reevaluateForkChoice()
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
 
         return ConsensusSimTrace(
             scenario: "equal-work-tie-stable-base",
@@ -310,8 +310,8 @@ public enum LatticeConsensusSimulator {
             .blockHash ?? blocks[0].blockHash
         do {
             return try ChainState(
-                chainTip: tip,
-                mainChainHashes: main,
+                canonicalTip: tip,
+                canonicalHashes: main,
                 indexToBlockHash: index,
                 hashToBlock: byHash
             )

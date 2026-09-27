@@ -33,13 +33,13 @@ final class GhostReorgEdgeCaseTests: XCTestCase {
 
         let chain = makeChain(
             blocks: [g, m1, m2, m3, f1, f2a, f2b, f3a],
-            mainChainHashes: Set(["G", "M1", "M2", "M3"])
+            canonicalHashes: Set(["G", "M1", "M2", "M3"])
         )
         // subtreeWeight(F1) = {F1,F2a,F2b,F3a} = 4 > subtreeWeight(M1) = {M1,M2,M3} = 3.
         let reorg = await chain.reevaluateForkChoice()
         XCTAssertNotNil(reorg, "fork's branching subtree (4) outweighs main's single path (3)")
         // GHOST descent picks the heaviest leaf under F1 — the F2a→F3a branch.
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, "F3a", "descent rides the heavier branch to its leaf")
     }
 
@@ -51,10 +51,10 @@ final class GhostReorgEdgeCaseTests: XCTestCase {
         let f1 = makeBlockMeta(hash: "F1", previousHash: "G",  height: 1, childHashes: ["F2"])
         let f2 = makeBlockMeta(hash: "F2", previousHash: "F1", height: 2)
 
-        let chain = makeChain(blocks: [g, m1, m2, f1, f2], mainChainHashes: Set(["G", "M1", "M2"]))
+        let chain = makeChain(blocks: [g, m1, m2, f1, f2], canonicalHashes: Set(["G", "M1", "M2"]))
         let reorg = await chain.reevaluateForkChoice()
         XCTAssertNotNil(reorg, "equal work and target choose the smaller segment-base hash")
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, "F2")
     }
 
@@ -68,14 +68,14 @@ final class GhostReorgEdgeCaseTests: XCTestCase {
         let f2 = makeBlockMeta(hash: "F2", previousHash: "F1", height: 2, childHashes: ["F3"])
         let f3 = makeBlockMeta(hash: "F3", previousHash: "F2", height: 3)
 
-        let chain = makeChain(blocks: [g, m1, m2, f1, f2, f3], mainChainHashes: Set(["G", "M1", "M2"]))
+        let chain = makeChain(blocks: [g, m1, m2, f1, f2, f3], canonicalHashes: Set(["G", "M1", "M2"]))
         let reorg = await chain.reevaluateForkChoice()
         XCTAssertNotNil(reorg)
         XCTAssertEqual(reorg?.mainChainBlocksRemoved, Set(["M1", "M2"]), "entire old suffix removed")
         XCTAssertEqual(Set(reorg!.mainChainBlocksAdded.keys), Set(["F1", "F2", "F3"]), "winning path installed")
-        let tip = await chain.getMainChainTip(); XCTAssertEqual(tip, "F3")
+        let tip = await chain.canonicalTip; XCTAssertEqual(tip, "F3")
         // Old main blocks are no longer on the main chain.
-        let m1OnMain = await chain.isOnMainChain(hash: "M1")
+        let m1OnMain = await chain.isCanonical(hash: "M1")
         XCTAssertFalse(m1OnMain)
     }
 
@@ -97,7 +97,7 @@ final class GhostReorgEdgeCaseTests: XCTestCase {
             _ = await chain.submitTestBlock(blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
         }
         let cid = { (blk: Block) in try! VolumeImpl<Block>(node: blk).rawCID }
-        let tipBefore = await chain.getMainChainTip()
+        let tipBefore = await chain.canonicalTip
         XCTAssertEqual(tipBefore, cid(b))
 
         // Heavier fork G→X→Y→Z (3 blocks), delivered Z, Y, X (children before parents).
@@ -108,7 +108,7 @@ final class GhostReorgEdgeCaseTests: XCTestCase {
             _ = await chain.submitTestBlock(blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
         }
         // Once X (the fork base) is delivered, the fork subtree (3) > main (2) ⇒ reorg.
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, cid(z), "out-of-order heavier fork reorgs once complete")
     }
 }
@@ -134,7 +134,7 @@ final class ReorgBookkeepingTests: XCTestCase {
         // C0 extends genesis and becomes the tip.
         let c0 = try await buildAndStoreBlock(previous: genesis, timestamp: base + 1000, target: diff, nonce: 1, fetcher: fetcher)
         _ = await chain.submitTestBlock(blockHeader: try! VolumeImpl<Block>(node: c0), block: c0)
-        let tipAfterC0 = await chain.getMainChainTip()
+        let tipAfterC0 = await chain.canonicalTip
         XCTAssertEqual(tipAfterC0, cid(c0))
 
         // C1 extends C0; G extends C1. Deliver G FIRST (out of order, before C1) so it
@@ -145,7 +145,7 @@ final class ReorgBookkeepingTests: XCTestCase {
 
         let result = await chain.submitTestBlock(blockHeader: try! VolumeImpl<Block>(node: c1), block: c1)
         XCTAssertTrue(result.extendsMainChain, "C1's parent is the tip, so this extends the main chain")
-        let finalTip = await chain.getMainChainTip()
+        let finalTip = await chain.canonicalTip
         XCTAssertEqual(finalTip, cid(gg), "the tip advances past the out-of-order grandchild")
         let added = result.commit?.mainChainBlocksAdded
         XCTAssertNotNil(added, "tip-extend that advances past out-of-order descendants must emit a commit")

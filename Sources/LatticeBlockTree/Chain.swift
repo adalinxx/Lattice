@@ -364,15 +364,15 @@ public actor ChainState {
     var reservedImportRevisions: UInt64
 
     // Restore validates this invariant; optional access keeps query paths fail-closed.
-    var highestBlockHeight: UInt64 { graph.height(of: chainTip) ?? 0 }
+    var highestBlockHeight: UInt64 { graph.height(of: canonicalTip) ?? 0 }
 
     /// Every held block's public read view, keyed by hash. Test-facing and
     /// O(N) — assembled on read; production reads `graph`.
     var hashToBlock: [String: BlockMeta] { graph.metas }
 
     package init(
-        chainTip: String,
-        mainChainHashes: Set<String>,
+        canonicalTip: String,
+        canonicalHashes: Set<String>,
         indexToBlockHash: [UInt64: Set<String>],
         hashToBlock: [String: BlockMeta],
         tipSnapshot: TipBlockSnapshot? = nil,
@@ -435,8 +435,8 @@ public actor ChainState {
         // `markValidated` one at a time, but a graph restored wholesale needs
         // it computed once, downward from every genesis it holds.
         self.frontier = try ExecutionFrontier(
-            chainTip: chainTip,
-            mainChainHashes: mainChainHashes,
+            canonicalTip: canonicalTip,
+            canonicalHashes: canonicalHashes,
             tipSnapshot: tipSnapshot,
             snapshots: tipSnapshotsByHash,
             validated: validatedBlocks,
@@ -478,8 +478,8 @@ public actor ChainState {
             cumulativeWork: WorkSum(contribution.work)
         )
         return try! ChainState(
-            chainTip: blockHash,
-            mainChainHashes: Set([blockHash]),
+            canonicalTip: blockHash,
+            canonicalHashes: Set([blockHash]),
             indexToBlockHash: [0: Set([blockHash])],
             hashToBlock: [blockHash: meta],
             tipSnapshot: Self.snapshot(for: block),
@@ -509,8 +509,8 @@ public actor ChainState {
             childCommitments: input.childCommitments
         )
         return try ChainState(
-            chainTip: input.blockHash,
-            mainChainHashes: [input.blockHash],
+            canonicalTip: input.blockHash,
+            canonicalHashes: [input.blockHash],
             indexToBlockHash: [0: [input.blockHash]],
             hashToBlock: [input.blockHash: meta],
             tipSnapshot: input.snapshot,
@@ -807,7 +807,7 @@ public actor ChainState {
     ) -> SubmissionResult {
         let blockHash = input.blockHash
         let isRoot = input.parentBlockHash == nil
-        let oldTip = chainTip
+        let oldTip = canonicalTip
 
         if contribution.work == .zero || (isRoot && input.blockHeight != 0) {
             return .discarded()
@@ -845,12 +845,12 @@ public actor ChainState {
             canonicalChange = projectCanonicalChain(monotoneIncreaseAt: blockHash)
         }
         let extendsMainChain = input.parentBlockHash == oldTip
-            && mainChainHashes.contains(blockHash)
+            && canonicalHashes.contains(blockHash)
         return SubmissionResult(
             addedBlock: true,
             addedContribution: result.addedContribution,
             extendsMainChain: extendsMainChain,
-            commit: (canonicalChange ?? ChainCommit(tipHash: chainTip))
+            commit: (canonicalChange ?? ChainCommit(tipHash: canonicalTip))
                 .atRevision(mutationGeneration)
         )
     }
@@ -1018,7 +1018,7 @@ public actor ChainState {
             addedBlock: false,
             addedContribution: true,
             extendsMainChain: false,
-            commit: (canonicalChange ?? ChainCommit(tipHash: chainTip))
+            commit: (canonicalChange ?? ChainCommit(tipHash: canonicalTip))
                 .atRevision(mutationGeneration)
         )
     }
@@ -1163,7 +1163,7 @@ public actor ChainState {
         // rebuilt. Selection moves only if the excluded block was on the
         // canonical path; otherwise the descent never reached it and every
         // decision stands.
-        let wasCanonical = mainChainHashes.contains(blockHash)
+        let wasCanonical = canonicalHashes.contains(blockHash)
         mutationGeneration += 1
         let canonicalChange = (deferProjectionForReplay || !wasCanonical)
             ? nil
@@ -1175,7 +1175,7 @@ public actor ChainState {
             addedBlock: false,
             addedContribution: false,
             extendsMainChain: false,
-            commit: (canonicalChange ?? ChainCommit(tipHash: chainTip))
+            commit: (canonicalChange ?? ChainCommit(tipHash: canonicalTip))
                 .atRevision(mutationGeneration)
         )
     }
@@ -1229,7 +1229,7 @@ public actor ChainState {
     private func hydrateMetadata(from input: ConsensusBlockInput) {
         indexStateTransition(input.snapshot, blockHash: input.blockHash)
         // The index above just recorded `input.snapshot` for this block.
-        if chainTip == input.blockHash {
+        if canonicalTip == input.blockHash {
             frontier.refreshTipSnapshot()
         }
         if let commitments = input.childCommitments {

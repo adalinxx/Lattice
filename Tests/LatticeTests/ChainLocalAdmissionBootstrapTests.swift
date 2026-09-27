@@ -118,7 +118,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
                 mainChainBlocksAdded: [header.rawCID: 0]
             )
         )
-        let childTip = await child.chain.getMainChainTip()
+        let childTip = await child.chain.canonicalTip
         XCTAssertEqual(childTip, header.rawCID)
 
         let nonGenesis = try await AdmissionFixture.makeChild(
@@ -194,12 +194,12 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         XCTAssertFalse(result.stateDiff.created.isEmpty)
         XCTAssertNotNil(result.materializedPostState)
         let rootChain = await result.level.chain
-        let rootTip = await rootChain.getMainChainTip()
+        let rootTip = await rootChain.canonicalTip
         XCTAssertEqual(rootTip, header.rawCID)
         let batches = await recorder.recordedBatches()
         XCTAssertEqual(batches.count, 1)
         let restored = try await ChainState.restore(replaying: batches)
-        let restoredTip = await restored.getMainChainTip()
+        let restoredTip = await restored.canonicalTip
         let restoredRevision = await restored.currentRevision()
         let liveRevision = await rootChain.currentRevision()
         XCTAssertEqual(restoredTip, rootTip)
@@ -252,7 +252,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             validationContext: raised,
             validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
             stage: testAdmissionStage)
-        let tip = await result.level.chain.getMainChainTip()
+        let tip = await result.level.chain.canonicalTip
         XCTAssertEqual(tip, header.rawCID)
     }
 
@@ -283,7 +283,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
         )
-        let rootTip = await result.level.chain.getMainChainTip()
+        let rootTip = await result.level.chain.canonicalTip
         XCTAssertEqual(rootTip, header.rawCID)
         XCTAssertEqual(
             result.commit,

@@ -793,7 +793,7 @@ final class ReorgBalanceTests: XCTestCase {
             blockHeader: try! VolumeImpl<Block>(node: mainBlock1), block: mainBlock1
         )
 
-        let mainTip = await chain.getMainChainTip()
+        let mainTip = await chain.canonicalTip
         XCTAssertEqual(mainTip, try! VolumeImpl<Block>(node: mainBlock1).rawCID)
 
         // Fork: 3 empty blocks from genesis (longer chain, triggers reorg)
@@ -809,7 +809,7 @@ final class ReorgBalanceTests: XCTestCase {
             forkPrev = b
         }
 
-        let newTip = await chain.getMainChainTip()
+        let newTip = await chain.canonicalTip
         XCTAssertEqual(newTip, try! VolumeImpl<Block>(node: forkPrev).rawCID)
         XCTAssertNotEqual(newTip, mainTip, "Reorg should have switched main chain")
 
@@ -1162,7 +1162,7 @@ final class ConcurrentBlockTests: XCTestCase {
         // Chain should be consistent: exactly one tip at height 1
         let height = await chain.getHighestBlockHeight()
         XCTAssertEqual(height, 1)
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertNotNil(tip)
     }
 }

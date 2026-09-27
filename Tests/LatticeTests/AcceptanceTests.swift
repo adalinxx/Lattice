@@ -41,7 +41,7 @@ final class FullPipelineAcceptanceTests: XCTestCase {
         )
         XCTAssertTrue(result.extendsMainChain)
 
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, header.rawCID)
     }
 

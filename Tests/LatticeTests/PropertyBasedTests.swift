@@ -180,11 +180,11 @@ final class ForkChoicePropertyTests: XCTestCase {
                     blocks.append(makeBlockMeta(hash: "F\(i)", previousHash: i == 1 ? "G" : "F\(i-1)", height: UInt64(i), childHashes: children))
                 }
 
-                let chain = makeChain(blocks: blocks, mainChainHashes: Set(["G"] + (1...mainLen).map { "M\($0)" }))
+                let chain = makeChain(blocks: blocks, canonicalHashes: Set(["G"] + (1...mainLen).map { "M\($0)" }))
                 let _ = await chain.reevaluateForkChoice()
 
-                let tip = await chain.getMainChainTip()
-                let onMain = await chain.isOnMainChain(hash: tip)
+                let tip = await chain.canonicalTip
+                let onMain = await chain.isCanonical(hash: tip)
                 XCTAssertTrue(onMain, "Tip must be on main chain after reorg (mainLen=\(mainLen), forkLen=\(forkLen))")
             }
         }
@@ -197,10 +197,10 @@ final class ForkChoicePropertyTests: XCTestCase {
         let b1 = makeBlockMeta(hash: "B1", previousHash: "G", height: 1, childHashes: ["B2"])
         let b2 = makeBlockMeta(hash: "B2", previousHash: "B1", height: 2)
 
-        let chain = makeChain(blocks: [g, a1, b1, b2], mainChainHashes: Set(["G", "A1"]))
+        let chain = makeChain(blocks: [g, a1, b1, b2], canonicalHashes: Set(["G", "A1"]))
         let _ = await chain.reevaluateForkChoice()
 
-        let gOnMain = await chain.isOnMainChain(hash: "G")
+        let gOnMain = await chain.isCanonical(hash: "G")
         XCTAssertTrue(gOnMain, "Genesis must always remain on main chain")
     }
 
@@ -213,7 +213,7 @@ final class ForkChoicePropertyTests: XCTestCase {
         let b2 = makeBlockMeta(hash: "B2", previousHash: "B1", height: 2, childHashes: ["B3"])
         let b3 = makeBlockMeta(hash: "B3", previousHash: "B2", height: 3)
 
-        let chain = makeChain(blocks: [g, a1, a2, b1, b2, b3], mainChainHashes: Set(["G", "A1", "A2"]))
+        let chain = makeChain(blocks: [g, a1, a2, b1, b2, b3], canonicalHashes: Set(["G", "A1", "A2"]))
         let reorg = await chain.reevaluateForkChoice()
 
         XCTAssertNotNil(reorg)

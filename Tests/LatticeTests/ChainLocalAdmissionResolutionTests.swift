@@ -274,9 +274,9 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
                 return XCTFail("fixture block must be accepted, got \(result)")
             }
         }
-        let tip = await level.chain.getMainChainTip()
+        let tip = await level.chain.canonicalTip
         XCTAssertEqual(tip, try BlockHeader(node: mainTwo).rawCID)
-        let sideOnMain = await level.chain.getMainChainBlockHash(atIndex: 1)
+        let sideOnMain = await level.chain.canonicalBlockHash(atHeight: 1)
         XCTAssertNotEqual(sideOnMain, sideOneHash)
 
         // A fetcher that cannot serve any ancestor beyond the parent still

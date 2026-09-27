@@ -592,7 +592,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         ])
         let beforeReorg = await chain.hasStateContinuity(from: empty, to: sa)
         XCTAssertTrue(beforeReorg, "the fixture must be attestable before the reorg")
-        let tipBefore = await chain.getMainChainTip()
+        let tipBefore = await chain.canonicalTip
         XCTAssertEqual(tipBefore, a)
 
         // A heavier sibling branch takes the tip. `a` is now off-canonical —
@@ -603,7 +603,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         _ = try await chain.applyStaged(
             weightedBatch(c, parent: b, height: 2, from: sb, to: sc, n: 4, work: 8)
         )
-        let tipAfter = await chain.getMainChainTip()
+        let tipAfter = await chain.canonicalTip
         XCTAssertEqual(tipAfter, c, "the heavier branch must take the tip")
 
         let afterReorg = await chain.hasStateContinuity(from: empty, to: sa)
