@@ -1,5 +1,11 @@
 import XCTest
 @testable import Lattice
+@testable import LatticePrimitives
+@testable import LatticePoW
+@testable import LatticeValidation
+@testable import LatticeProofs
+@testable import LatticeBlockTree
+@testable import LatticeImport
 
 /// The invariants `ForkChoice.descend` stands on now that it has no fallback.
 ///

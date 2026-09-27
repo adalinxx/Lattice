@@ -2,6 +2,12 @@ import XCTest
 import UInt256
 import cashew
 @testable import Lattice
+@testable import LatticePrimitives
+@testable import LatticePoW
+@testable import LatticeValidation
+@testable import LatticeProofs
+@testable import LatticeBlockTree
+@testable import LatticeImport
 
 /// Credited work across chain depths.
 ///

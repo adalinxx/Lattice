@@ -1,6 +1,12 @@
 import XCTest
 import UInt256
 @testable import Lattice
+@testable import LatticePrimitives
+@testable import LatticePoW
+@testable import LatticeValidation
+@testable import LatticeProofs
+@testable import LatticeBlockTree
+@testable import LatticeImport
 
 /// Parent-fork completeness for attributed run work (§9.10).
 ///
