@@ -31,7 +31,7 @@ parent-weight provider.
 ## Adversarial model
 
 The same run regenerates the checked-in adversarial report
-(`docs/consensus/tre-134-adversarial-report.md` and its `.json`), and
+(`docs/consensus/adversarial-report.md` and its `.json`), and
 `ConsensusSimulatorTests` fails if the committed files differ from what the
 seed produces. Every scenario drives the real chain-local `ChainState` fork
 choice: greatest true cumulative work first, then the smaller canonical CID of
