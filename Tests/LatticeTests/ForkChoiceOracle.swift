@@ -100,6 +100,30 @@ struct ForkChoiceOracle {
 
     init() {}
 
+    /// The oracle over the blocks a chain HOLDS, read from `hashToBlock`
+    /// instead of rebuilt from fact batches, so a differential test can ask
+    /// the spec what the live projection must be at any moment. A block's
+    /// observations are the contributions it holds; §9.1's one location per
+    /// grind is the chain's own invariant (`hasUniqueWorkLocations`) and is
+    /// checked here so a conflict is never what makes the two agree.
+    init(blocks: [String: BlockMeta], excluded: Set<String>) {
+        for (hash, meta) in blocks {
+            self.blocks[hash] = OracleBlock(
+                hash: hash,
+                parent: meta.parentBlockHash,
+                height: meta.blockHeight,
+                observations: meta.workContributions.mapValues(\.work)
+            )
+            for grind in meta.workContributions.keys {
+                precondition(
+                    locationByGrind.updateValue(hash, forKey: grind) == nil,
+                    "a grind held at two blocks: \(grind)"
+                )
+            }
+        }
+        self.excluded = excluded
+    }
+
     // MARK: Model construction from durable facts
 
     /// Record one batch's facts. Order-independent by construction: blocks are
@@ -232,6 +256,30 @@ struct ForkChoiceOracleView {
         return total(measure)
     }
 
+    /// `trueCumWork` of every block at once, in one pass from the leaves up.
+    /// With one location per grind (§9.1, enforced by `observe` and by the
+    /// `hashToBlock` initializer) the union over a subtree has no duplicate to
+    /// collapse, so it is the plain sum of each member's own measure. Checked
+    /// block by block against `trueCumWork` in `ForkChoiceOracleTests`; the
+    /// differential suites project through this so each of their per-event
+    /// checks stays linear in the graph.
+    func subtreeTotals() -> [String: OracleWork] {
+        var totals: [String: OracleWork] = [:]
+        // A child is exactly one height above its parent, so deepest-first
+        // settles every child before the parent that sums it.
+        for block in blocks.values.sorted(by: { $0.height > $1.height }) {
+            var total = OracleWork.zero
+            for (grind, work) in block.observations {
+                total = total + OracleWork(strongest[grind] ?? work)
+            }
+            for child in children(of: block.hash) {
+                total = total + (totals[child] ?? .zero)
+            }
+            totals[block.hash] = total
+        }
+        return totals
+    }
+
     /// `prefix(B)`: the same union along the ancestor line, root through `hash`.
     func cumulativeWork(of hash: String) -> OracleWork {
         var measure: [String: UInt256] = [:]
@@ -256,11 +304,12 @@ struct ForkChoiceOracleView {
     }
 
     /// Heaviest `trueCumWork`; equal work prefers the lexicographically smaller
-    /// canonical CID bytes.
-    func preferred(among candidates: [String]) -> String? {
+    /// canonical CID bytes. `totals`, when given, are `subtreeTotals()` read
+    /// instead of walking each candidate's subtree again.
+    func preferred(among candidates: [String], totals: [String: OracleWork]? = nil) -> String? {
         var best: (hash: String, work: OracleWork, bytes: [UInt8])?
         for candidate in candidates {
-            let work = trueCumWork(of: candidate)
+            let work = totals.map { $0[candidate] ?? .zero } ?? trueCumWork(of: candidate)
             let bytes = Self.canonicalBytes(candidate)
             guard let current = best else {
                 best = (candidate, work, bytes)
@@ -276,15 +325,16 @@ struct ForkChoiceOracleView {
     /// The canonical projection: the preferred selectable root, then the
     /// preferred selectable child at every step until none remains. Nil when
     /// no root is selectable (§9.9: an excluded root is never stepped into).
-    func canonicalProjection() -> (tip: String, path: [String])? {
+    /// `totals` as in `preferred(among:totals:)`.
+    func canonicalProjection(totals: [String: OracleWork]? = nil) -> (tip: String, path: [String])? {
         let roots = blocks.values
             .filter { $0.parent == nil && $0.height == 0 && !excluded.contains($0.hash) }
             .map(\.hash)
-        guard var current = preferred(among: roots) else { return nil }
+        guard var current = preferred(among: roots, totals: totals) else { return nil }
         var path = [current]
         while true {
             let selectable = children(of: current).filter { !excluded.contains($0) }
-            guard let next = preferred(among: selectable) else { return (current, path) }
+            guard let next = preferred(among: selectable, totals: totals) else { return (current, path) }
             current = next
             path.append(next)
         }

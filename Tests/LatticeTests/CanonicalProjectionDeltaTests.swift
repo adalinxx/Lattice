@@ -115,16 +115,16 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
             // independent slow walk over the same graph.
             let blocks = await run.chain.hashToBlock
             let reference = try XCTUnwrap(
-                ChainState.referenceCanonicalProjection(in: blocks),
+                ForkChoiceOracle(blocks: blocks, excluded: []).view().canonicalProjection(),
                 "length \(length)"
             )
             let tip = await run.chain.getMainChainTip()
             let mainChain = await run.chain.mainChainHashes
             XCTAssertEqual(tip, run.tip, "length \(length): tip")
-            XCTAssertEqual(tip, reference.chainTip, "length \(length): reference tip")
+            XCTAssertEqual(tip, reference.tip, "length \(length): reference tip")
             XCTAssertEqual(
                 mainChain,
-                reference.mainChainHashes,
+                Set(reference.path),
                 "length \(length): reference path"
             )
             blockVisits[length] = run.blockVisits
@@ -590,12 +590,12 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
 
         let blocks = await chain.hashToBlock
         let reference = try XCTUnwrap(
-            ChainState.referenceCanonicalProjection(in: blocks)
+            ForkChoiceOracle(blocks: blocks, excluded: []).view().canonicalProjection()
         )
         let tip = await chain.getMainChainTip()
         let path = await chain.mainChainHashes
-        XCTAssertEqual(tip, reference.chainTip)
-        XCTAssertEqual(path, reference.mainChainHashes)
+        XCTAssertEqual(tip, reference.tip)
+        XCTAssertEqual(path, Set(reference.path))
         XCTAssertEqual(tip, a.hash, "the relocated work must not have moved the tip")
     }
 }

@@ -325,9 +325,9 @@ private func assertSegmentTailReferenceParity(
     line: UInt = #line
 ) async {
     let blocks = await chain.hashToBlock
-    guard let reference = ChainState.referenceCanonicalProjection(
-        in: blocks
-    ) else {
+    guard let reference = ForkChoiceOracle(blocks: blocks, excluded: [])
+        .view().canonicalProjection()
+    else {
         XCTFail("reference projection missing", file: file, line: line)
         return
     }
@@ -335,19 +335,19 @@ private func assertSegmentTailReferenceParity(
     let mainChain = await chain.mainChainHashes
     XCTAssertEqual(
         tip,
-        reference.chainTip,
+        reference.tip,
         file: file,
         line: line
     )
     XCTAssertEqual(
         mainChain,
-        reference.mainChainHashes,
+        Set(reference.path),
         file: file,
         line: line
     )
     await assertMainChainIndexMatchesPath(
         chain,
-        expectedPath: reference.mainChainHashes,
+        expectedPath: Set(reference.path),
         "by-height index",
         file: file,
         line: line

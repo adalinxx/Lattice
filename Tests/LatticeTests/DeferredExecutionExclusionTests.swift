@@ -119,17 +119,16 @@ final class DeferredExecutionExclusionTests: XCTestCase {
 
         let blocks = await chain.hashToBlock
         let excluded = await chain.excludedRootsForTesting
-        guard let expected = ChainState.referenceCanonicalProjection(
-            in: blocks,
-            excluding: excluded
-        ) else {
+        guard let expected = ForkChoiceOracle(blocks: blocks, excluded: excluded)
+            .view().canonicalProjection()
+        else {
             return XCTFail("reference oracle produced no projection")
         }
         let liveTip = await chain.getMainChainTip()
         let livePath = await chain.mainChainHashes
-        XCTAssertEqual(liveTip, expected.chainTip)
-        XCTAssertEqual(livePath, expected.mainChainHashes)
-        XCTAssertEqual(expected.chainTip, l[1].hash)
+        XCTAssertEqual(liveTip, expected.tip)
+        XCTAssertEqual(livePath, Set(expected.path))
+        XCTAssertEqual(expected.tip, l[1].hash)
     }
 
     /// Exclusion survives restore: replaying all durable facts (including the
@@ -204,11 +203,10 @@ final class DeferredExecutionExclusionTests: XCTestCase {
 
         // Matches the reference oracle over the same exclusion.
         let blocks = await chain.hashToBlock
-        let expected = ChainState.referenceCanonicalProjection(
-            in: blocks, excluding: roots
-        )
-        XCTAssertEqual(tip, expected?.chainTip)
-        XCTAssertEqual(path, expected?.mainChainHashes)
+        let expected = ForkChoiceOracle(blocks: blocks, excluded: roots)
+            .view().canonicalProjection()
+        XCTAssertEqual(tip, expected?.tip)
+        XCTAssertEqual(path, expected.map { Set($0.path) })
     }
 
     /// Complexity regression (the DoS the audit confirmed): with an exclusion
@@ -408,11 +406,10 @@ final class DeferredExecutionExclusionTests: XCTestCase {
         // The live projection agrees with the reference oracle.
         let blocks = await chain.hashToBlock
         let closure = await chain.excludedRootsForTesting
-        let expected = ChainState.referenceCanonicalProjection(
-            in: blocks, excluding: closure
-        )
-        XCTAssertEqual(tip, expected?.chainTip)
-        XCTAssertEqual(path, expected?.mainChainHashes)
+        let expected = ForkChoiceOracle(blocks: blocks, excluded: closure)
+            .view().canonicalProjection()
+        XCTAssertEqual(tip, expected?.tip)
+        XCTAssertEqual(path, expected.map { Set($0.path) })
     }
 
 }
