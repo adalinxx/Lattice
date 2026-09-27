@@ -568,14 +568,8 @@ public actor ChainState {
     var mainChainHashes: Set<String>
     var indexToBlockHash: [UInt64: Set<String>]
     var hashToBlock: [String: BlockMeta]
-    var workByGrind: [String: WorkContributionRecord]
-    /// Derived GHOST weights, as one Euler range per routed block — every routed
-    /// block, not only those where a choice can be made. That was true while
-    /// weights were stored per segment base; a range structure answers for any
-    /// block at the same cost, and fork choice reads it only at forks.
-    /// Per-block facts remain the source of truth because scalar weights cannot
-    /// preserve grind identity.
-    var subtreeWorkIndex: EulerWorkIndex
+    /// GHOST weights, grind locations and excluded roots (ForkChoice.swift).
+    var forkChoice: ForkChoice
     /// Run work per child directory per committing block (§9.10): the sum of
     /// credited work — grinds and attributed runs alike — over CONNECTED
     /// blocks whose nearest committer into that directory is the key.
@@ -599,9 +593,6 @@ public actor ChainState {
     /// PER projection, which is what live-sync admission actually pays.
     var canonicalProjectionBlockVisitCount: UInt64
     var canonicalProjectionSegmentVisitCount: UInt64
-    var segmentWorkUpdateCellCount: UInt64
-    var segmentGraftCount: UInt64
-    var segmentGraftBlockVisitCount: UInt64
     var stateContinuityBlockVisitCount: UInt64
     /// Run-bucket updates. Each connected block costs one per directory it
     /// has a nearest committer for, so this is O(#directories) per block —
@@ -611,20 +602,6 @@ public actor ChainState {
     /// Diagnostic prefix/subtree totals are derived local views. They are not
     /// fork-choice inputs and are rebuilt only when an API exposes them.
     var localWorkCachesDirty: Bool
-
-    /// Roots of proven-invalid subtrees (deferred-execution validated tier: a
-    /// block whose execution completed and FAILED). Rebuilt on recovery from the
-    /// durable `.exclusion` facts. Insert-only.
-    ///
-    /// Work weighs; validity selects (§9.9). An excluded block's work — and its
-    /// descendants' — stays in every ancestor's weight exactly as any other
-    /// work does: proof-of-work is a physical fact and invalidity is a judgment
-    /// about state. What exclusion changes is SELECTION: the canonical descent
-    /// never steps into an excluded root, so nothing below one is ever the tip
-    /// or attested (§5.3). No weight is ever removed, so no index is ever
-    /// rebuilt, and a descendant of an excluded root needs no bookkeeping at
-    /// all — the descent cannot reach it.
-    var excludedRoots: Set<String> = []
 
     var mainChainBlockAtIndex: [UInt64: String]
     /// Generation at which the canonical projection was last brought current
@@ -716,16 +693,12 @@ public actor ChainState {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
         self.hashToBlock = hashToBlock
-        self.workByGrind = [:]
-        self.subtreeWorkIndex = .empty
+        self.forkChoice = ForkChoice()
 #if DEBUG
         self.fullCanonicalProjectionCount = 0
         self.truncatedCanonicalProjectionCount = 0
         self.canonicalProjectionBlockVisitCount = 0
         self.canonicalProjectionSegmentVisitCount = 0
-        self.segmentWorkUpdateCellCount = 0
-        self.segmentGraftCount = 0
-        self.segmentGraftBlockVisitCount = 0
         self.stateContinuityBlockVisitCount = 0
         self.runAttributionUpdateCount = 0
 #endif
@@ -779,11 +752,7 @@ public actor ChainState {
         guard Self.hasUniqueWorkLocations(in: self.hashToBlock) else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
-        self.workByGrind = Self.workIndex(in: self.hashToBlock)
-        self.subtreeWorkIndex = Self.buildSubtreeWorkIndex(
-            in: self.hashToBlock,
-            workByGrind: &self.workByGrind
-        )
+        self.forkChoice = ForkChoice.build(from: self.hashToBlock)
         for hash in mainChainHashes {
             guard let height = self.hashToBlock[hash]?.blockHeight,
                   self.mainChainBlockAtIndex[height] == nil else {
@@ -807,7 +776,7 @@ public actor ChainState {
         self.anchoredBlocks = Self.anchoredFrontier(
             in: self.hashToBlock,
             validated: self.validatedBlocks,
-            excluded: self.excludedRoots
+            excluded: self.forkChoice.excludedRoots
         )
     }
 
@@ -1292,23 +1261,17 @@ public actor ChainState {
     )? {
         let roots = Array(indexToBlockHash[0] ?? []).filter {
             hashToBlock[$0]?.parentBlockHash == nil
-                && !excludedRoots.contains($0)
         }
-        guard let root = Self.preferred(among: roots, workIndex: subtreeWorkIndex)
+        guard let root = forkChoice.selectableRoot(among: roots)
         else { return nil }
-        let descent = Self.blockGhostDescent(
-            from: root,
-            in: hashToBlock,
-            workIndex: subtreeWorkIndex,
-            excluding: excludedRoots
-        )
+        let descent = forkChoice.descend(from: root, in: hashToBlock)
         return (descent.tipHash, descent.blocks)
     }
 
     /// Test-only view of the excluded roots so a differential test can drive
     /// the reference oracle with the same unselectable set.
     var excludedRootsForTesting: Set<String> {
-        excludedRoots
+        forkChoice.excludedRoots
     }
 #endif
 
@@ -1373,7 +1336,7 @@ public actor ChainState {
             return .discarded()
         }
 
-        guard acceptsLocation(of: contribution.id, at: blockHash) else {
+        guard forkChoice.acceptsLocation(of: contribution.id, at: blockHash) else {
             return .discarded()
         }
 
@@ -1501,12 +1464,12 @@ public actor ChainState {
         // moment its component grafts.
         // Nothing to settle while no directory is served: skip the walk, which
         // on a graft would otherwise be a third pass over the component.
-        if !servedDirectories.isEmpty, subtreeWorkIndex.contains(blockHash) {
+        if !servedDirectories.isEmpty, forkChoice.isRouted(blockHash) {
             connectForRunAttribution(rootedAt: blockHash)
         }
 
         for contribution in contributions {
-            applyForkChoiceContribution(contribution, to: blockHash)
+            forkChoice.applyContribution(contribution, at: blockHash)
         }
 
         return SubmissionResult(
@@ -1544,7 +1507,7 @@ public actor ChainState {
         attributedRun: AttributedRunIdentity? = nil
     ) -> SubmissionResult {
         guard hashToBlock[blockHash] != nil,
-              acceptsLocation(of: contribution.id, at: blockHash) else {
+              forkChoice.acceptsLocation(of: contribution.id, at: blockHash) else {
             return .discarded()
         }
         if let existing = workContribution(id: contribution.id, at: blockHash),
@@ -1557,7 +1520,7 @@ public actor ChainState {
         // A strengthening raises this block's own work, so its run (§9.10)
         // rises by exactly that delta — once the block is connected. An
         // orphan's work is credited in full at the moment it connects.
-        if subtreeWorkIndex.contains(blockHash),
+        if forkChoice.isRouted(blockHash),
            let workAfter = hashToBlock[blockHash]?.work,
            let delta = workAfter.subtracting(workBefore),
            let nearest = hashToBlock[blockHash]?.nearestCommitter {
@@ -1566,7 +1529,7 @@ public actor ChainState {
         // A stronger observation on an excluded block weighs like any other: it
         // raises every ancestor, and the descent still never steps into the
         // excluded root, so no invalid block is resurrected by piling on work.
-        applyForkChoiceContribution(contribution, to: blockHash)
+        forkChoice.applyContribution(contribution, at: blockHash)
         mutationGeneration += 1
 
         // A contribution only reaches here when it is strictly stronger than what
@@ -1605,7 +1568,7 @@ public actor ChainState {
             .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
             .map(\.blockHash)
         while let hash = stack.popLast() {
-            guard subtreeWorkIndex.contains(hash), let meta = hashToBlock[hash] else { continue }
+            guard forkChoice.isRouted(hash), let meta = hashToBlock[hash] else { continue }
             settleRuns(of: hash, directories: [directory])
             stack.append(contentsOf: meta.childHashes)
         }
@@ -1675,7 +1638,7 @@ public actor ChainState {
         directory: String
     ) -> ParentRunReport? {
         guard let hash = CIDIdentity.canonicalString(blockHash),
-              subtreeWorkIndex.contains(hash),
+              forkChoice.isRouted(hash),
               let meta = hashToBlock[hash],
               let childBlock = meta.childCommitments?[directory],
               let run = runWork[directory]?[hash] else { return nil }
@@ -1742,7 +1705,7 @@ public actor ChainState {
               ).contributionID else {
             return .notCommitterOfChild
         }
-        guard acceptsLocation(of: attributedID, at: hash) else { return .locationConflict }
+        guard forkChoice.acceptsLocation(of: attributedID, at: hash) else { return .locationConflict }
         guard let derived = report.runWork.subtracting(report.ownWork) else {
             return .malformedReport
         }
@@ -1890,7 +1853,7 @@ public actor ChainState {
             // A proven-invalid block extends nothing: its subtree left fork
             // choice, and the states it declared are not states this chain
             // stands behind.
-            guard parentAnchored, !excludedRoots.contains(hash) else { continue }
+            guard parentAnchored, !forkChoice.excludedRoots.contains(hash) else { continue }
             anchoredBlocks.insert(hash)
             pending.append(contentsOf: meta.childHashes)
         }
@@ -1945,7 +1908,7 @@ public actor ChainState {
             throw ChainStateRestoreError.missingBlockFact
         }
         // Idempotent: a duplicate exclusion adds nothing and cannot reorg.
-        if excludedRoots.contains(blockHash) { return nil }
+        if forkChoice.excludedRoots.contains(blockHash) { return nil }
         guard hasUnreservedMutationCapacity else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
@@ -1963,7 +1926,7 @@ public actor ChainState {
                 ? ChainStateRestoreError.missingBlockFact
                 : ChainStateRestoreError.corruptConsensusGraph
         }
-        excludedRoots.insert(blockHash)
+        forkChoice.exclude(blockHash)
         // The excluded subtree may have been anchored before it was proven
         // invalid, and a chain does not stand behind states it has proven it
         // never legitimately produced: un-anchor it, and nothing else.
@@ -2064,7 +2027,7 @@ public actor ChainState {
     private func adoptChildCommitments(_ commitments: [String: String], at hash: String) {
         guard let meta = hashToBlock[hash], meta.childCommitments == nil else { return }
         hashToBlock[hash]?.adoptChildCommitments(commitments)
-        guard subtreeWorkIndex.contains(hash) else { return }
+        guard forkChoice.isRouted(hash) else { return }
         for directory in servedDirectories where commitments[directory] != nil {
             servedDirectories.remove(directory)
             runWork[directory] = nil
@@ -2121,7 +2084,7 @@ public actor ChainState {
         guard let parentHash = input.parentBlockHash else {
             return input.blockHeight == 0
         }
-        return subtreeWorkIndex.contains(parentHash)
+        return forkChoice.isRouted(parentHash)
     }
 
     func addToBlockIndex(hash: String, blockHeight: UInt64) {
@@ -2166,23 +2129,17 @@ public actor ChainState {
 
         // Whole-chain fallback. Weights are pure work, so ONE projection path
         // serves the exclusion-free and exclusion-present cases alike;
-        // `excluding` is empty in the common case (zero cost) and otherwise
+        // the excluded set is empty in the common case (zero cost) and otherwise
         // only steers the descent past excluded roots — no parallel path.
         let roots = Array(indexToBlockHash[0] ?? []).filter {
             hashToBlock[$0]?.parentBlockHash == nil
-                && !excludedRoots.contains($0)
         }
-        guard let root = Self.preferred(among: roots, workIndex: subtreeWorkIndex)
+        guard let root = forkChoice.selectableRoot(among: roots)
         else { return nil }
 #if DEBUG
         fullCanonicalProjectionCount += 1
 #endif
-        let descent = Self.blockGhostDescent(
-            from: root,
-            in: hashToBlock,
-            workIndex: subtreeWorkIndex,
-            excluding: excludedRoots
-        )
+        let descent = forkChoice.descend(from: root, in: hashToBlock)
 #if DEBUG
         // Descent steps ARE blocks now: with no quotient there is no hop to
         // take, so this column and the block column converge by construction.
@@ -2270,7 +2227,7 @@ public actor ChainState {
         // fork-choice edge — a routed parent always routes its child, so an
         // unrouted block's parent is unrouted or absent and no routed block's
         // visible children changed either. Nothing can have moved.
-        guard subtreeWorkIndex.contains(mutatedAt) else {
+        guard forkChoice.isRouted(mutatedAt) else {
             return TruncatedProjectionOutcome(commit: nil)
         }
         // The increase landed inside the subtree that already wins at every one
@@ -2285,6 +2242,7 @@ public actor ChainState {
         else { return nil }
         let (suffixHeight, overflow) = divergenceHeight.addingReportingOverflow(1)
         guard !overflow else { return nil }
+        let excludedRoots = forkChoice.excludedRoots
         let children = excludedRoots.isEmpty
             ? (hashToBlock[divergence]?.childHashes ?? [])
             : (hashToBlock[divergence]?.childHashes ?? []).filter {
@@ -2299,11 +2257,11 @@ public actor ChainState {
         // whole-chain projection per such block.
         guard !children.isEmpty else { return TruncatedProjectionOutcome(commit: nil) }
         // One GHOST step, taken exactly as the descent takes it: a lone child is
-        // followed WITHOUT a weight lookup, matching `blockGhostDescent`, so a
+        // followed WITHOUT a weight lookup, matching `ForkChoice.descend`, so a
         // single-child step cannot depend on a weight comparison at all.
         let chosen = children.count == 1
             ? children[0]
-            : Self.preferred(among: children, workIndex: subtreeWorkIndex)
+            : forkChoice.preferred(among: children)
         guard let chosen else { return nil }
         // The COMMON admission on a merged-mining child is a losing sibling, and
         // it must cost nothing. This point is the deepest canonical ancestor of
@@ -2328,12 +2286,7 @@ public actor ChainState {
         // The suffix begins at a block taken straight from the divergence
         // point's own children, so the boundary below it holds by construction
         // rather than by assumption.
-        let descent = Self.blockGhostDescent(
-            from: chosen,
-            in: hashToBlock,
-            workIndex: subtreeWorkIndex,
-            excluding: excludedRoots
-        )
+        let descent = forkChoice.descend(from: chosen, in: hashToBlock)
 #if DEBUG
         canonicalProjectionSegmentVisitCount += UInt64(descent.blocks.count)
         canonicalProjectionBlockVisitCount += UInt64(descent.blocks.count)

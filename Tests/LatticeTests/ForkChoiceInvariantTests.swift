@@ -1,7 +1,7 @@
 import XCTest
 @testable import Lattice
 
-/// The invariants `blockGhostDescent` stands on now that it has no fallback.
+/// The invariants `ForkChoice.descend` stands on now that it has no fallback.
 ///
 /// The descent fails closed in exactly two cases: a block visited twice (a
 /// cycle in `childHashes`) or a fork at which no non-excluded child is routed.
