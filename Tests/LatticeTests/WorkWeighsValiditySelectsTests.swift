@@ -112,8 +112,8 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
         // The differential reference agrees with the definition too.
         let live = await chain.hashToBlock
         let roots = await chain.excludedRootsForTesting
-        let reference = ChainState.referenceCanonicalProjection(in: live, excluding: roots)
-        XCTAssertEqual(reference?.chainTip, h(expected.tip), "\(label): reference oracle", file: file, line: line)
+        let reference = ForkChoiceOracle(blocks: live, excluded: roots).view().canonicalProjection()
+        XCTAssertEqual(reference?.tip, h(expected.tip), "\(label): reference oracle", file: file, line: line)
     }
 
     /// Build live in `order` (exclusions interleaved once their block exists),
