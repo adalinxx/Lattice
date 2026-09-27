@@ -139,7 +139,7 @@ extension LatticeConsensusSimulator {
             // Build the real topology: G -> M1..M_honest (honest main) and
             //                          G -> A1..A_attacker (attacker private branch).
             // work=1/block ⇒ cumulative work == block count. Greater work wins; equal
-            // work falls through to independently ordered segment-base hashes.
+            // work falls through to the independently ordered child-block CIDs.
             let attackerPrefix = rng.bernoulli(0.5) ? "A" : "Z"
             var blocks: [ConsensusSimBlockSpec] = [ConsensusSimBlockSpec(hash: "G", height: 0)]
             var honestMain: [String] = ["G"]
@@ -268,7 +268,7 @@ extension LatticeConsensusSimulator {
     /// awards a block to one honest branch; the attacker must spend one of its own
     /// (seeded Bernoulli(`fraction`)) blocks on the *other* branch to restore the tie.
     /// We release every block into the REAL fork choice and read the balance duration and
-    /// survival straight off the resulting trace. Stable segment-base preference chooses
+    /// survival straight off the resulting trace. The smaller-child-CID tie-break chooses
     /// one branch at equality; the attack sustains equal competing work rather than making
     /// nodes with the same DAG disagree about which branch is canonical.
     static func balancingPoint(seed: UInt64, fraction: Double, horizon: Int, trials: Int) async -> BalancingPoint {
@@ -323,7 +323,7 @@ extension LatticeConsensusSimulator {
 
             // Drive the REAL fork choice over the produced topology and derive the outcome
             // from the resulting canonical main chain. At equal work every node selects the
-            // same segment base; when one branch becomes heavier, true cumulative work wins.
+            // same child block; when one branch becomes heavier, true cumulative work wins.
             let initialMain = ["G", "L1"].filter { h in blocks.contains { $0.hash == h } }
             let spec = ConsensusSimScenarioSpec(
                 scenario: "balancing-f\(Int(fraction * 100))",
@@ -391,15 +391,16 @@ extension LatticeConsensusSimulator {
         out += "checked-in artifact). `swift run LatticeSim --adversarial --seed \(r.seed)` renders the "
         out += "same report to stdout.\n\n"
         out += "Economic security of no-finality consensus as a function of the attacker's "
-        out += "share `f` of this chain's admitted root-grind contributions. Exact path proofs, "
+        out += "share `f` of this chain's imported root-grind contributions. Exact path proofs, "
         out += "the setup-wide root-work floor, and per-chain target classification happen before "
         out += "these scenarios. All scenarios drive the real chain-local `ChainState` fork choice: "
-        out += "true cumulative work first, then canonical segment-base CID bytes. Parent canonicity and sibling state are not inputs.\n\n"
+        out += "true cumulative work first, then the lexicographically smaller canonical CID of the "
+        out += "competing child blocks (spec §9.4). Parent canonicity and sibling state are not inputs.\n\n"
 
         out += "## (a) Deep reorg — achievable reorg depth vs f\n\n"
         out += "Honest segment depth: \(r.honestSegmentDepth) blocks (work=1 each), \(r.deepReorg.first?.trials ?? 0) "
         out += "seeded race trials per f. The attacker privately races the honest segment and publishes; "
-        out += "greater true cumulative work wins, while equal work uses the stable segment-base tie-break.\n\n"
+        out += "greater true cumulative work wins, while equal work uses the smaller-CID tie-break.\n\n"
         out += "| f | honest depth | mean reorg depth | max reorg depth | reorg probability |\n"
         out += "|---|---|---|---|---|\n"
         for p in r.deepReorg {
@@ -412,7 +413,7 @@ extension LatticeConsensusSimulator {
         out += "## (b) Selfish mining — revenue share vs f\n\n"
         out += "Eyal–Sirer closed-form revenue evaluated at the tie-break advantage γ the node's own "
         out += "fork choice realises. The matched-tie (\"0′\") race is driven through the REAL fork choice. "
-        out += "With equal targets and independent block hashes, either miner's segment base wins half the "
+        out += "With equal targets and independent block hashes, either miner's block wins half the "
         out += "ties, so the network measures γ = 1/2. `gain = share − f` becomes positive above f = 1/4.\n\n"
         out += "| f | revenue share | gain (share − f) | profitable |\n"
         out += "|---|---|---|---|\n"
@@ -435,11 +436,11 @@ extension LatticeConsensusSimulator {
         out += "full-horizon survival scales as f^horizon while each sustained round burns one attacker "
         out += "block. This is a cost/probability curve, not a separate 50% threshold.\n\n"
 
-        out += "## Feeds: 51%-attack-cost / security-budget model C5)\n\n"
+        out += "## Security-budget thresholds\n\n"
         // Deep reorg safety and selfish-mining profitability have distinct thresholds.
         // Balancing contributes a horizon-dependent cost/probability curve, not another
         // fixed threshold.
-        out += "Two distinct thresholds fall out of the curves and must be fed to C5 separately — "
+        out += "Two distinct thresholds fall out of the curves and must be priced separately — "
         out += "conflating them silently over-states the security budget:\n\n"
         out += "- **Majority threshold (deep-reorg safety): f > 50%.** Out-working a "
         out += "`\(r.honestSegmentDepth)`-deep honest segment becomes likely above majority.\n"
@@ -450,10 +451,10 @@ extension LatticeConsensusSimulator {
         out += "analytic Eyal–Sirer crossing R(f, γ=1/2) = f at the γ = 1/2 the fork choice measures — well "
         out += "below majority — so a rational attacker has a revenue incentive to deviate at the classic "
         out += "threshold long before it can reorg or stall the chain.\n"
-        out += "\nC5 must price the security budget against the **lower** of the two — the selfish-mining "
+        out += "\nA security budget must be priced against the **lower** of the two — the selfish-mining "
         out += "economic threshold — not the 50% majority point. The budget is the honest root-grind "
         out += "cost required to keep an attacker below that fraction of this chain's verified work "
-        out += "stream; another chain's canonical history cannot change work already admitted here.\n"
+        out += "stream; another chain's canonical history cannot change work already imported here.\n"
         return out
     }
 }

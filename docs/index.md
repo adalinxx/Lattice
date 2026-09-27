@@ -12,7 +12,7 @@ decides what content to acquire and retain.
 
 1. [README](../README.md) - build the library and learn the model in one minute.
 2. [Architecture](foundational-architecture.md) - process boundaries, ownership,
-   admission, recovery, and retention.
+   import, recovery, and pruning.
 3. [Work and fork choice](consensus-fork-choice.md) - how verified grinds become
    chain-local weight.
 4. [Cross-chain transfers](cross-chain.md) - a worked parent-child exchange.
@@ -60,6 +60,5 @@ structures and their ownership boundaries.
 ## Reference
 
 - [Consensus simulator](consensus-simulator.md)
-- [Adversarial consensus report](consensus/tre-134-adversarial-report.md)
 - [Nexus tokenomics](economics/nexus-tokenomics.md)
 - [Fee policy and majority-reorg model](economics/fee-market-and-51pct.md)

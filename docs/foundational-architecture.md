@@ -40,9 +40,9 @@ The content graph may recurse to arbitrary depth. A Lattice runtime never does.
 6. **State is not ancestry.** `parentState` commits the carrier's `prevState`; it
    is not a parent-block backlink.
 7. **The node owns operations.** Acquisition, process authentication, durability,
-   retention, pinning, routing, and projections are node policy.
+   pruning, pinning, routing, and projections are node policy.
 8. **Durability precedes visibility.** The staged immutable batch is the record
-   applied by both live admission and recovery.
+   applied by both live import and recovery.
 
 ## Runtime Boundary
 
@@ -124,7 +124,7 @@ The proof-derived contribution becomes ordinary same-chain work only after the
 terminal child is accepted and connected. See
 [work and fork choice](consensus-fork-choice.md) for the exact model.
 
-## Admission And Recovery
+## Import And Recovery
 
 Every external candidate follows one boundary:
 
@@ -144,7 +144,7 @@ its facts became visible. An existing runtime reserves one
 commit revision before staging so another actor mutation cannot consume the last
 available revision while the batch is becoming durable.
 
-Live admission does not reacquire or rebuild a candidate after staging. Recovery
+Live import does not reacquire or rebuild a candidate after staging. Recovery
 replays already-authenticated staged batches through the same reducer. Replaying
 an identical batch is a no-op; conflicting immutable metadata fails closed.
 Root and child bootstrap expose no runtime until the genesis batch has been
@@ -163,7 +163,7 @@ the carrier or an exact child path when its availability policy calls for it.
 | Component | Owns |
 |---|---|
 | Lattice | Validation, deterministic state transitions, accepted graph, proof-derived work algebra, fork choice, parent-state reachability, `ChainCommit` |
-| lattice-node | Acquisition, process authentication and supervision, atomic fact durability, retention, pin counts, projections, RPC |
+| lattice-node | Acquisition, process authentication and supervision, atomic fact durability, pruning, pin counts, projections, RPC |
 | cashew | Generic content-addressed structures and matching targeted resolve/store traversal |
 | VolumeBroker | Complete selected Volumes, node-selected pinning, and eviction |
 | Ivy | Transport, discovery, authenticated sessions, and delivery attribution |
@@ -179,7 +179,7 @@ merely referenced by CID. Operators choose acquisition, transport, and
 retention ceilings locally; exceeding one means that node declines or retries
 through another strategy, not that the content is objectively invalid.
 
-## Retention
+## Pruning
 
 Lattice retains the complete accepted consensus graph and verified local grind
 coverage. It does not prune consensus inputs according to a node storage budget.
@@ -200,8 +200,8 @@ A change preserves the architecture only if all of these remain true:
 4. Non-genesis parent-state movement is reflexive or transitively forward
    through the immediate parent's connected accepted graph.
 5. Fork choice compares effective `trueCumWork`, then same-chain child block CID.
-6. External ingress uses one admission boundary; recovery replays durable facts.
+6. External ingress uses one import boundary; recovery replays durable facts.
 7. Durable facts precede visible mutation.
-9. Lattice retains consensus inputs; the node owns payload retention.
+9. Lattice retains consensus inputs; the node owns payload pruning.
 10. Cross-chain interfaces carry proofs and exact parent facts, never trusted
     work totals or canonical-tip commands.

@@ -26,7 +26,7 @@ Fork choice asks one local question:
 > Which competing same-chain subtree contains the greatest total quantity of
 > uniquely located grinds?
 
-Parent canonicity, carrier validity, arrival order, and segment-tip target are
+Parent canonicity, carrier validity, arrival order, and tip target are
 not inputs.
 
 ## From A Root To A Candidate
@@ -40,8 +40,8 @@ Work verification:
 2. verifies the sparse path and requires its terminal CID to equal `CID(C)`;
 3. verifies every vertical `child.parentState == carrier.prevState` binding
    — a structural check on the committed path, NOT an anchor: a carrier need
-   not be admitted, connected, valid or canonical, so both sides may be chosen
-   by one party. A block's `parentState` is anchored by admission instead
+   not be imported, connected, valid or canonical, so both sides may be chosen
+   by one party. A block's `parentState` is anchored by import instead
    (spec §5.3 step 6, at every height including block 1);
 4. checks the same hash against the terminal target; and
 5. derives the target-derived quantity of the ROOT-MOST block on the committed
@@ -117,12 +117,10 @@ Canonicity is an output of this descent, never a filter on work. Consequently a
 grind on a connected noncanonical branch remains eligible, and moving only a
 canonical pointer cannot change any weight.
 
-The implementation compresses maximal unary runs into segments. A newly
-accepted work location updates only the segment containing it and the ancestor
-fork segments that can compare it. The common tip-extension case has one such
-segment, so it does not scan chain history. Cost grows with fork depth, not
-linear-chain height. The immutable block graph and unique grind locations remain
-the source of truth; segment weights are rebuildable caches.
+Subtree totals are kept so that new work never walks its ancestors, at cost
+logarithmic in graph size, not proportional to height; GHOST reads weights only
+at forks. The immutable block graph and unique grind locations remain the source
+of truth; the totals are a rebuildable cache.
 
 ## Connectivity And Recovery
 
@@ -133,4 +131,4 @@ predecessor attaches.
 
 Persistence records the accepted graph, proof-derived work locations, and
 authenticated parent-state facts. Recovery replays the same immutable facts and
-rebuilds segment caches. A persisted canonical tip is only a cache.
+rebuilds the work index. A persisted canonical tip is only a cache.

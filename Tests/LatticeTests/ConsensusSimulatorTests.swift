@@ -75,7 +75,7 @@ final class ConsensusSimulatorTests: XCTestCase {
         )
     }
 
-    /// The committed `docs/consensus/tre-134-adversarial-report.{md,json}` artifacts must
+    /// The committed `docs/consensus/adversarial-report.{md,json}` artifacts must
     /// be byte-for-byte reproducible from `--seed 42`. Regenerate the report in-memory and
     /// byte-compare both committed files so a drift between the code and the checked-in
     /// report (or a regeneration with a different seed) fails CI.
@@ -87,17 +87,17 @@ final class ConsensusSimulatorTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let docsDir = repoRoot.appendingPathComponent("docs/consensus")
-        let committedJSON = try Data(contentsOf: docsDir.appendingPathComponent("tre-134-adversarial-report.json"))
-        let committedMD = try Data(contentsOf: docsDir.appendingPathComponent("tre-134-adversarial-report.md"))
+        let committedJSON = try Data(contentsOf: docsDir.appendingPathComponent("adversarial-report.json"))
+        let committedMD = try Data(contentsOf: docsDir.appendingPathComponent("adversarial-report.md"))
 
         let report = await LatticeConsensusSimulator.runAdversarialReport(seed: 42)
         let regeneratedJSON = try LatticeConsensusSimulator.encodeAdversarialJSON(report)
         let regeneratedMD = Data(LatticeConsensusSimulator.renderAdversarialMarkdown(report).utf8)
 
         XCTAssertEqual(regeneratedJSON, committedJSON,
-            "docs/consensus/tre-134-adversarial-report.json is out of date; regenerate with `swift run LatticeSim --seed 42`")
+            "docs/consensus/adversarial-report.json is out of date; regenerate with `swift run LatticeSim --seed 42`")
         XCTAssertEqual(regeneratedMD, committedMD,
-            "docs/consensus/tre-134-adversarial-report.md is out of date; regenerate with `swift run LatticeSim --seed 42`")
+            "docs/consensus/adversarial-report.md is out of date; regenerate with `swift run LatticeSim --seed 42`")
     }
 
     func testDeepReorgProbabilityGrowsWithHashrateAndIsNegligibleBelowMajority() async throws {
@@ -214,7 +214,7 @@ final class ConsensusSimulatorTests: XCTestCase {
         XCTAssertTrue(md.contains("(a) Deep reorg"))
         XCTAssertTrue(md.contains("(b) Selfish mining"))
         XCTAssertTrue(md.contains("(c) Balancing attack"))
-        XCTAssertTrue(md.contains(" C5"))
+        XCTAssertTrue(md.contains("## Security-budget thresholds"))
     }
 
     func testDiscreteEventScenarioHonorsConfiguredTopologyLatencyAndWork() async throws {

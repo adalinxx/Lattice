@@ -15,8 +15,8 @@ struct LatticeSimCLI {
                 if let outDir = outputDir(args) {
                     let fm = FileManager.default
                     try fm.createDirectory(atPath: outDir, withIntermediateDirectories: true)
-                    try json.write(to: URL(fileURLWithPath: outDir + "/tre-134-adversarial-report.json"))
-                    try Data(markdown.utf8).write(to: URL(fileURLWithPath: outDir + "/tre-134-adversarial-report.md"))
+                    try json.write(to: URL(fileURLWithPath: outDir + "/adversarial-report.json"))
+                    try Data(markdown.utf8).write(to: URL(fileURLWithPath: outDir + "/adversarial-report.md"))
                 } else {
                     FileHandle.standardOutput.write(Data(markdown.utf8))
                 }
@@ -30,9 +30,9 @@ struct LatticeSimCLI {
             let fm = FileManager.default
             try fm.createDirectory(atPath: reportDir, withIntermediateDirectories: true)
             try LatticeConsensusSimulator.encodeAdversarialJSON(report)
-                .write(to: URL(fileURLWithPath: reportDir + "/tre-134-adversarial-report.json"))
+                .write(to: URL(fileURLWithPath: reportDir + "/adversarial-report.json"))
             try Data(LatticeConsensusSimulator.renderAdversarialMarkdown(report).utf8)
-                .write(to: URL(fileURLWithPath: reportDir + "/tre-134-adversarial-report.md"))
+                .write(to: URL(fileURLWithPath: reportDir + "/adversarial-report.md"))
 
             let traces = await LatticeConsensusSimulator.runDefaultScenarios(seed: seed)
             let data = try LatticeConsensusSimulator.encodeJSON(traces)

@@ -106,7 +106,7 @@ CID tie-break. Those inputs must be modeled separately.
 ## Not A Complete Security Threshold
 
 Majority reorg safety is not the same as the earliest profitable deviation.
-The deterministic [adversarial report](../consensus/tre-134-adversarial-report.md)
+The deterministic [adversarial model](../consensus-simulator.md#adversarial-model)
 also models selfish mining and balancing attacks; in its assumptions, the
 selfish-mining profitability threshold is lower than the majority threshold.
 Security-budget analysis must state which attack and assumptions it prices.
