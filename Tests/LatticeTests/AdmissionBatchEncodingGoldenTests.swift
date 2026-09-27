@@ -9,7 +9,7 @@ import UInt256
 @testable import LatticeBlockTree
 @testable import LatticeImport
 
-/// The durable on-disk shape of `ChainAdmissionBatch`: a fixed set of batches
+/// The durable on-disk shape of `BlockImportBatch`: a fixed set of batches
 /// encoded to JSON bytes, pinned as hex. Recovery replays these bytes from a
 /// node's fact log, so a refactor that renames a coding key, reorders an enum
 /// payload, or changes a value's presentation would strand every existing log.
@@ -87,12 +87,12 @@ final class AdmissionBatchEncodingGoldenTests: XCTestCase {
     }
 
     /// One batch of every durable shape the reducer accepts.
-    private func fixedBatches() throws -> [(name: String, batch: ChainAdmissionBatch)] {
+    private func fixedBatches() throws -> [(name: String, batch: BlockImportBatch)] {
         let block = cid("block")
-        let identity = AttributedRunIdentity(committerBlockHash: cid("committer"), directory: "Child")
+        let identity = AttributedRunIdentity(carrierBlockHash: cid("committer"), directory: "Child")
         let identityID = try XCTUnwrap(identity.contributionID, "attributed-run identity has no CID")
         return [
-            ("blockWithWorkAndValidation", ChainAdmissionBatch(facts: [
+            ("blockWithWorkAndValidation", BlockImportBatch(facts: [
                 .block(ChainBlockFact(
                     blockHash: block,
                     parentBlockHash: cid("parent"),
@@ -116,7 +116,7 @@ final class AdmissionBatchEncodingGoldenTests: XCTestCase {
                 )),
                 .validation(ChainValidationFact(blockHash: block)),
             ])),
-            ("genesisWithoutCommitments", ChainAdmissionBatch(facts: [
+            ("genesisWithoutCommitments", BlockImportBatch(facts: [
                 .block(ChainBlockFact(
                     blockHash: cid("genesis"),
                     parentBlockHash: nil,
@@ -134,17 +134,17 @@ final class AdmissionBatchEncodingGoldenTests: XCTestCase {
                     contribution: VerifiedWorkContribution(id: cid("genesis"), work: UInt256(1))
                 )),
             ])),
-            ("attributedRun", ChainAdmissionBatch(facts: [
+            ("attributedRun", BlockImportBatch(facts: [
                 .work(ChainWorkFact(
                     blockHash: block,
                     contribution: VerifiedWorkContribution(id: identityID, work: UInt256(42)),
                     attributedRun: identity
                 )),
             ])),
-            ("exclusion", ChainAdmissionBatch(facts: [
+            ("exclusion", BlockImportBatch(facts: [
                 .exclusion(ChainExclusionFact(blockHash: block)),
             ])),
-            ("validation", ChainAdmissionBatch.validation(blockHash: block)),
+            ("validation", BlockImportBatch.validation(blockHash: block)),
         ]
     }
 
@@ -176,7 +176,7 @@ final class AdmissionBatchEncodingGoldenTests: XCTestCase {
         XCTAssertEqual(Set(golden.entries.map(\.name)), Set(fixtures.keys))
         for entry in golden.entries {
             let bytes = try XCTUnwrap(Data(hex: entry.hex), "\(entry.name): golden hex is malformed")
-            let decoded = try JSONDecoder().decode(ChainAdmissionBatch.self, from: bytes)
+            let decoded = try JSONDecoder().decode(BlockImportBatch.self, from: bytes)
             XCTAssertEqual(decoded, fixtures[entry.name], "\(entry.name): decoded batch")
             XCTAssertEqual(try Self.encoder().encode(decoded), bytes, "\(entry.name): re-encoded bytes")
         }

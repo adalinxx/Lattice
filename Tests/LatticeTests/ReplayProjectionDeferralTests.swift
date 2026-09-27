@@ -35,8 +35,8 @@ final class ReplayProjectionDeferralTests: XCTestCase {
         )
     }
 
-    private static func admission(_ n: Node) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [
+    private static func admission(_ n: Node) -> BlockImportBatch {
+        BlockImportBatch(facts: [
             .block(ChainBlockFact(
                 blockHash: n.hash,
                 parentBlockHash: n.parent,
@@ -59,8 +59,8 @@ final class ReplayProjectionDeferralTests: XCTestCase {
         ])
     }
 
-    private static func extraWork(_ n: Node, grind: String, work: UInt64) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [
+    private static func extraWork(_ n: Node, grind: String, work: UInt64) -> BlockImportBatch {
+        BlockImportBatch(facts: [
             .work(ChainWorkFact(
                 blockHash: n.hash,
                 contribution: VerifiedWorkContribution(
@@ -75,7 +75,7 @@ final class ReplayProjectionDeferralTests: XCTestCase {
     /// (duplicate-height side block) at every third height plus extra carrier
     /// work batches — the shape that defeats the append fast path. Static so
     /// the independent oracle (`ForkChoiceOracleTests`) checks the same graph.
-    static func bushyBatches() -> (batches: [ChainAdmissionBatch], root: Node) {
+    static func bushyBatches() -> (batches: [BlockImportBatch], root: Node) {
         let root = node("root", parent: nil, height: 0)
         var batches = [admission(root)]
         var previous = root
@@ -117,18 +117,18 @@ final class ReplayProjectionDeferralTests: XCTestCase {
 
         // Consensus state must be identical — tip, membership, and the whole
         // by-height index.
-        let incrementalTip = await incremental.getMainChainTip()
-        let restoredTip = await restored.getMainChainTip()
+        let incrementalTip = await incremental.canonicalTip
+        let restoredTip = await restored.canonicalTip
         XCTAssertEqual(restoredTip, incrementalTip)
-        let incrementalMain = await incremental.mainChainHashes
-        let restoredMain = await restored.mainChainHashes
+        let incrementalMain = await incremental.canonicalHashes
+        let restoredMain = await restored.canonicalHashes
         XCTAssertEqual(restoredMain, incrementalMain)
         let height = await restored.getHighestBlockHeight()
         XCTAssertEqual(height, 30)
         XCTAssertNotEqual(root.hash, restoredTip)
         for h in 0...30 {
-            let a = await incremental.getMainChainBlockHash(atIndex: UInt64(h))
-            let b = await restored.getMainChainBlockHash(atIndex: UInt64(h))
+            let a = await incremental.canonicalBlockHash(atHeight: UInt64(h))
+            let b = await restored.canonicalBlockHash(atHeight: UInt64(h))
             XCTAssertNotNil(a, "height \(h) must be indexed")
             XCTAssertEqual(a, b, "height \(h) diverged between replay and incremental")
         }
@@ -154,7 +154,7 @@ final class ReplayProjectionDeferralTests: XCTestCase {
         // outweigh the height-30 canonical tip via the height-30 side fork's
         // ancestor at height 27 (side-27 exists; give it decisive work).
         let sideTip = testCID("replay-defer:side-27")
-        _ = try await chain.applyStaged(ChainAdmissionBatch(facts: [
+        _ = try await chain.applyStaged(BlockImportBatch(facts: [
             .work(ChainWorkFact(
                 blockHash: sideTip,
                 contribution: VerifiedWorkContribution(
@@ -163,7 +163,7 @@ final class ReplayProjectionDeferralTests: XCTestCase {
                 )
             )),
         ]))
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, sideTip, "a decisive weight mutation must still promote")
         // And immediately after that projection, re-evaluation is free again.
         await chain.resetFullCanonicalProjectionCount()

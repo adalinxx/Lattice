@@ -139,7 +139,7 @@ final class BlockSubmissionE2ETests: XCTestCase {
         let chain = ChainState.fromGenesis(block: genesis)
 
         let genesisHash = blockHeader(genesis).rawCID
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, genesisHash)
 
         let block1 = makeBlock(previous: genesis, height: 1, timestamp: 2000)
@@ -149,10 +149,10 @@ final class BlockSubmissionE2ETests: XCTestCase {
             block: block1
         )
         XCTAssertTrue(result1.addedBlock)
-        XCTAssertTrue(result1.extendsMainChain)
+        XCTAssertTrue(result1.extendsCanonical)
         XCTAssertTrue(result1.commit?.canonicalChanged == true)
 
-        let newTip = await chain.getMainChainTip()
+        let newTip = await chain.canonicalTip
         XCTAssertEqual(newTip, header1.rawCID)
         let highest = await chain.getHighestBlockHeight()
         XCTAssertEqual(highest, 1)
@@ -171,14 +171,14 @@ final class BlockSubmissionE2ETests: XCTestCase {
                 block: block
             )
             XCTAssertTrue(result.addedBlock, "Block \(i) should be added")
-            XCTAssertTrue(result.extendsMainChain, "Block \(i) should extend main chain")
+            XCTAssertTrue(result.extendsCanonical, "Block \(i) should extend main chain")
             prev = block
         }
 
         let highest = await chain.getHighestBlockHeight()
         XCTAssertEqual(highest, 5)
 
-        let tipHash = await chain.getMainChainTip()
+        let tipHash = await chain.canonicalTip
         XCTAssertEqual(tipHash, blockHeader(prev).rawCID)
     }
 
@@ -230,7 +230,7 @@ final class BlockSubmissionE2ETests: XCTestCase {
         XCTAssertFalse(promoted.addedBlock)
         XCTAssertTrue(promoted.addedContribution)
         XCTAssertTrue(promoted.commit?.canonicalChanged == true)
-        let promotedTip = await chain.getMainChainTip()
+        let promotedTip = await chain.canonicalTip
         XCTAssertEqual(promotedTip, b1Header.rawCID)
 
         let acceptedWork = await chain.getConsensusBlock(hash: b1Header.rawCID)?.work
@@ -271,7 +271,7 @@ final class ForkReorgE2ETests: XCTestCase {
         let _ = await chain.submitTestBlock(blockHeader: blockHeader(a1), block: a1)
         let _ = await chain.submitTestBlock(blockHeader: blockHeader(a2), block: a2)
 
-        let tipAfterA = await chain.getMainChainTip()
+        let tipAfterA = await chain.canonicalTip
         XCTAssertEqual(tipAfterA, blockHeader(a2).rawCID)
 
         let b1 = makeBlock(previous: genesis, height: 1, timestamp: 2000, nonce: 2)
@@ -284,16 +284,16 @@ final class ForkReorgE2ETests: XCTestCase {
 
         XCTAssertTrue(resultB3.commit?.canonicalChanged == true, "Longer B fork should trigger reorg")
 
-        let tipAfterB = await chain.getMainChainTip()
+        let tipAfterB = await chain.canonicalTip
         XCTAssertEqual(tipAfterB, blockHeader(b3).rawCID)
 
-        let a2OnMain = await chain.isOnMainChain(hash: blockHeader(a2).rawCID)
+        let a2OnMain = await chain.isCanonical(hash: blockHeader(a2).rawCID)
         XCTAssertFalse(a2OnMain, "A2 should be off main chain after reorg")
 
-        let b3OnMain = await chain.isOnMainChain(hash: blockHeader(b3).rawCID)
+        let b3OnMain = await chain.isCanonical(hash: blockHeader(b3).rawCID)
         XCTAssertTrue(b3OnMain, "B3 should be on main chain after reorg")
 
-        let genesisOnMain = await chain.isOnMainChain(hash: blockHeader(genesis).rawCID)
+        let genesisOnMain = await chain.isCanonical(hash: blockHeader(genesis).rawCID)
         XCTAssertTrue(genesisOnMain, "Genesis should survive reorg")
     }
 
@@ -318,7 +318,7 @@ final class ForkReorgE2ETests: XCTestCase {
             over: blockHeader(a1).rawCID
         )
         XCTAssertEqual(resultB2.commit?.canonicalChanged == true, bWins)
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, blockHeader(bWins ? b2 : a2).rawCID)
     }
 }
@@ -333,7 +333,7 @@ final class FromGenesisE2ETests: XCTestCase {
         let chain = ChainState.fromGenesis(block: genesis)
         let genesisHash = blockHeader(genesis).rawCID
 
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, genesisHash)
 
         let highest = await chain.getHighestBlockHeight()
@@ -342,7 +342,7 @@ final class FromGenesisE2ETests: XCTestCase {
         let contains = await chain.contains(blockHash: genesisHash)
         XCTAssertTrue(contains)
 
-        let onMain = await chain.isOnMainChain(hash: genesisHash)
+        let onMain = await chain.isCanonical(hash: genesisHash)
         XCTAssertTrue(onMain)
 
         let block = await chain.getConsensusBlock(hash: genesisHash)
@@ -356,8 +356,8 @@ final class FromGenesisE2ETests: XCTestCase {
         let chain1 = ChainState.fromGenesis(block: genesis)
         let chain2 = ChainState.fromGenesis(block: genesis)
 
-        let tip1 = await chain1.getMainChainTip()
-        let tip2 = await chain2.getMainChainTip()
+        let tip1 = await chain1.canonicalTip
+        let tip2 = await chain2.canonicalTip
         XCTAssertEqual(tip1, tip2, "Same genesis should produce same chain tip")
     }
 }
@@ -372,7 +372,7 @@ final class ChainLevelE2ETests: XCTestCase {
         let chain = ChainState.fromGenesis(block: genesis)
         let level = ChainLevel(testChain: chain)
 
-        let tip = await level.chain.getMainChainTip()
+        let tip = await level.chain.canonicalTip
         XCTAssertEqual(tip, blockHeader(genesis).rawCID)
     }
 
@@ -448,7 +448,7 @@ final class FullPipelineSmokeTests: XCTestCase {
                 blockHeader: blockHeader(block),
                 block: block
             )
-            XCTAssertTrue(result.extendsMainChain, "Block \(i) should extend")
+            XCTAssertTrue(result.extendsCanonical, "Block \(i) should extend")
             mainChainBlocks.append(block)
         }
 
@@ -473,20 +473,20 @@ final class FullPipelineSmokeTests: XCTestCase {
             forkBlocks.append(block)
         }
 
-        let tipAfterFork = await chain.getMainChainTip()
+        let tipAfterFork = await chain.canonicalTip
         XCTAssertEqual(tipAfterFork, blockHeader(forkBlocks.last!).rawCID, "Fork should be new tip")
         let highestAfterFork = await chain.getHighestBlockHeight()
         XCTAssertEqual(highestAfterFork, 15)
 
         for i in 6...10 {
             let oldHash = blockHeader(mainChainBlocks[i]).rawCID
-            let onMain = await chain.isOnMainChain(hash: oldHash)
+            let onMain = await chain.isCanonical(hash: oldHash)
             XCTAssertFalse(onMain, "Old main chain block \(i) should be off main chain")
         }
 
         for i in 0...5 {
             let commonHash = blockHeader(mainChainBlocks[i]).rawCID
-            let onMain = await chain.isOnMainChain(hash: commonHash)
+            let onMain = await chain.isCanonical(hash: commonHash)
             XCTAssertTrue(onMain, "Common ancestor block \(i) should remain on main chain")
         }
     }

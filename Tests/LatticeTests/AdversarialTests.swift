@@ -675,7 +675,7 @@ final class ConsensusResilienceTests: XCTestCase {
             )
             shortPrev = b
         }
-        let shortTip = await chain.getMainChainTip()
+        let shortTip = await chain.canonicalTip
 
         var longPrev = genesis
         for i in 1...5 {
@@ -688,7 +688,7 @@ final class ConsensusResilienceTests: XCTestCase {
             )
             longPrev = b
         }
-        let longTip = await chain.getMainChainTip()
+        let longTip = await chain.canonicalTip
 
         XCTAssertNotEqual(shortTip, longTip)
         XCTAssertEqual(longTip, try! VolumeImpl<Block>(node: longPrev).rawCID)
@@ -716,12 +716,12 @@ final class ConsensusResilienceTests: XCTestCase {
         let result2 = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block2), block: block2
         )
-        XCTAssertFalse(result2.extendsMainChain, "Block 2 submitted before block 1 should not extend")
+        XCTAssertFalse(result2.extendsCanonical, "Block 2 submitted before block 1 should not extend")
 
         let result1 = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block1), block: block1
         )
-        XCTAssertTrue(result1.extendsMainChain)
+        XCTAssertTrue(result1.extendsCanonical)
     }
 
     func testDuplicateBlockSubmissionIgnored() async throws {
@@ -741,12 +741,12 @@ final class ConsensusResilienceTests: XCTestCase {
         let result1 = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block1), block: block1
         )
-        XCTAssertTrue(result1.extendsMainChain)
+        XCTAssertTrue(result1.extendsCanonical)
 
         let result2 = await chain.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block1), block: block1
         )
-        XCTAssertFalse(result2.extendsMainChain, "Duplicate should not extend")
+        XCTAssertFalse(result2.extendsCanonical, "Duplicate should not extend")
 
         let height = await chain.getHighestBlockHeight()
         XCTAssertEqual(height, 1)

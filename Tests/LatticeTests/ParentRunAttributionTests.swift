@@ -61,7 +61,7 @@ final class ParentRunAttributionTests: XCTestCase {
     private func batch(
         _ hash: String, parent: String?, height: UInt64, work: UInt64,
         commits: [String: String] = [:], recorded: Bool = true
-    ) -> ChainAdmissionBatch {
+    ) -> BlockImportBatch {
         let fact = ChainBlockFact(
             blockHash: h(hash), parentBlockHash: parent.map(h), blockHeight: height,
             postStateCID: testCID("post:\(hash)"),
@@ -72,7 +72,7 @@ final class ParentRunAttributionTests: XCTestCase {
             stateDiff: .empty,
             childCommitments: recorded ? commits : nil
         )
-        return ChainAdmissionBatch(facts: [
+        return BlockImportBatch(facts: [
             .block(fact),
             .work(ChainWorkFact(
                 blockHash: h(hash),
@@ -201,6 +201,74 @@ final class ParentRunAttributionTests: XCTestCase {
             XCTAssertNil(rx, label)
             XCTAssertNil(rq, label)
         }
+    }
+
+    /// `nearestCarrier(of:directory:)` is the per-block pointer run attribution
+    /// settles: each block names the nearest block at or above it that commits
+    /// into the directory, and the blocks naming a carrier are exactly that
+    /// carrier's run. Unserved directories and unconnected blocks answer nil.
+    func testNearestCarrierIsTheBlocksRunCarrier() async throws {
+        //        g
+        //        |
+        //       p1  (commits c1 into d, b1 into e)
+        //      /  \
+        //    p2    x        p2 commits c2 into d
+        //    |
+        //    q
+        let e = "Markets"
+        let work: [String: UInt64] = ["g": 1, "p1": 5, "p2": 3, "x": 11, "q": 7]
+        let byInit = makeChain(blocks: [
+            meta("g", parent: nil, height: 0, children: ["p1"], work: 1),
+            meta("p1", parent: "g", height: 1, children: ["p2", "x"], work: 5,
+                 commits: [d: testCID("c1"), e: testCID("b1")]),
+            meta("p2", parent: "p1", height: 2, children: ["q"], work: 3, commits: [d: testCID("c2")]),
+            meta("x", parent: "p1", height: 2, work: 11),
+            meta("q", parent: "p2", height: 3, work: 7),
+        ])
+        await byInit.serveRuns(for: d)
+        let byReplay = try await ChainState.restore(replaying: [batch("g", parent: nil, height: 0, work: 1)])
+        await byReplay.serveRuns(for: d)
+        _ = try await byReplay.replay(batch("p1", parent: "g", height: 1, work: 5,
+                                            commits: [d: testCID("c1"), e: testCID("b1")]))
+        _ = try await byReplay.replay(batch("p2", parent: "p1", height: 2, work: 3, commits: [d: testCID("c2")]))
+        _ = try await byReplay.replay(batch("x", parent: "p1", height: 2, work: 11))
+        _ = try await byReplay.replay(batch("q", parent: "p2", height: 3, work: 7))
+
+        let expected: [String: String?] = ["g": nil, "p1": "p1", "p2": "p2", "x": "p1", "q": "p2"]
+        for (label, chain) in [("init", byInit), ("replay", byReplay)] {
+            var runOf: [String: WorkSum] = [:]
+            for (block, carrier) in expected {
+                let actual = await chain.nearestCarrier(of: h(block), directory: d)
+                XCTAssertEqual(actual, carrier.map(h), "\(label): carrier of \(block)")
+                if let carrier {
+                    runOf[carrier] = (runOf[carrier] ?? .zero) + sum(work[block]!)
+                }
+                let unserved = await chain.nearestCarrier(of: h(block), directory: e)
+                XCTAssertNil(unserved, "\(label): \(block) in an unserved directory, though p1 commits into it")
+            }
+            // The blocks naming a carrier are exactly the run it serves.
+            for (carrier, total) in runOf {
+                let served = await run(chain, at: carrier)
+                XCTAssertEqual(served, total, "\(label): \(carrier)'s run is the blocks naming it")
+            }
+            let unknown = await chain.nearestCarrier(of: h("nope"), directory: d)
+            XCTAssertNil(unknown, "\(label): unknown block")
+        }
+
+        // An orphan has no carrier until it connects; then it inherits one.
+        _ = try await byReplay.replay(batch("r2", parent: "r1", height: 5, work: 2))
+        let orphaned = await byReplay.nearestCarrier(of: h("r2"), directory: d)
+        XCTAssertNil(orphaned, "an unconnected block has no carrier yet")
+        _ = try await byReplay.replay(batch("r1", parent: "q", height: 4, work: 2))
+        let connected = await byReplay.nearestCarrier(of: h("r2"), directory: d)
+        XCTAssertEqual(connected, h("p2"), "connecting through q inherits p2")
+
+        // Serving a directory late settles the same pointers.
+        await byReplay.serveRuns(for: e)
+        let lateP2 = await byReplay.nearestCarrier(of: h("p2"), directory: e)
+        let lateG = await byReplay.nearestCarrier(of: h("g"), directory: e)
+        XCTAssertEqual(lateP2, h("p1"), "p2 commits nothing into e, so p1 carries it")
+        XCTAssertNil(lateG)
     }
 
     func testDirectoriesAreIndependentPartitions() async throws {
@@ -415,15 +483,15 @@ final class ParentRunAttributionTests: XCTestCase {
     func testExclusionNeitherRevokesNorBlocksRunCredit() async throws {
         let chain = try await linearByReplay()
         let before = await run(chain, at: "p1")
-        _ = try await chain.replay(ChainAdmissionBatch(facts: [
+        _ = try await chain.replay(BlockImportBatch(facts: [
             .exclusion(ChainExclusionFact(blockHash: h("p2"))),
         ]))
         // Fixture guard: the exclusion really took p2 out of THIS chain's
         // selection (work weighs, validity selects — §9.9), or the invariant
         // below is not being exercised.
-        let path = await chain.mainChainHashes
+        let path = await chain.canonicalHashes
         XCTAssertFalse(path.contains(h("p2")), "p2 must be unselectable")
-        let tip = await chain.chainTip
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, h("p1"), "the descent stops above the excluded block")
         let afterExclusion = await run(chain, at: "p1")
         XCTAssertEqual(afterExclusion, before, "a run is never revoked by exclusion")
@@ -449,7 +517,7 @@ final class ParentRunAttributionTests: XCTestCase {
             batch("p2", parent: "p1", height: 2, work: 3, commits: [d: testCID("c2")]),
             batch("x", parent: "p1", height: 2, work: 11),
             batch("q", parent: "p2", height: 3, work: 7),
-            ChainAdmissionBatch(facts: [.work(ChainWorkFact(
+            BlockImportBatch(facts: [.work(ChainWorkFact(
                 blockHash: h("x"),
                 contribution: VerifiedWorkContribution(id: grind("x"), work: UInt256(20))
             ))]),
@@ -476,7 +544,7 @@ final class ParentRunAttributionTests: XCTestCase {
     // MARK: - The child's side: mint
 
     private func attributed(_ chain: ChainState, committer: String = "p1") async -> UInt256? {
-        let id = AttributedRunIdentity(committerBlockHash: h(committer), directory: d).contributionID!
+        let id = AttributedRunIdentity(carrierBlockHash: h(committer), directory: d).contributionID!
         return await chain.workContribution(id: id, at: h("c"))?.work
     }
 
@@ -546,11 +614,11 @@ final class ParentRunAttributionTests: XCTestCase {
     func testMintRefusalsAreTypedAndMutateNothing() async throws {
         let child = childChain(existing: UInt256(5))
         let unknownGrind = await strengthen(child, report(sum(9), own: sum(5), grinds: [grind("zz")]))
-        XCTAssertEqual(unknownGrind, .notCommitterOfChild, "none of the committer's grinds is held at c")
+        XCTAssertEqual(unknownGrind, .notCarrierOfChild, "none of the committer's grinds is held at c")
         let unknownBlock = await strengthen(child, child: "nope", report(sum(9), own: sum(5), child: "nope"))
-        XCTAssertEqual(unknownBlock, .notCommitterOfChild, "unknown child block")
+        XCTAssertEqual(unknownBlock, .notCarrierOfChild, "unknown child block")
         let otherChild = await strengthen(child, report(sum(9), own: sum(5), child: "c2"))
-        XCTAssertEqual(otherChild, .notCommitterOfChild, "the report names a different child block than the one being credited")
+        XCTAssertEqual(otherChild, .notCarrierOfChild, "the report names a different child block than the one being credited")
         let wrongDirectory = await strengthen(child, report(sum(9), own: sum(5), directory: "Markets"))
         XCTAssertEqual(wrongDirectory, .wrongDirectory, "a report for another directory is never applied here")
         let malformed = await strengthen(child, report(sum(4), own: sum(5)))
@@ -620,7 +688,7 @@ final class ParentRunAttributionTests: XCTestCase {
 
     func testStaleStrengtheningIsANoOpNotACorruption() async throws {
         let child = childChain(existing: UInt256(5))
-        func mint(_ run: UInt64) async -> ChainAdmissionBatch? {
+        func mint(_ run: UInt64) async -> BlockImportBatch? {
             if case .strengthened(let b) = await strengthen(child, report(sum(run), own: sum(5))
             ) { return b }
             return nil
@@ -645,8 +713,8 @@ final class ParentRunAttributionTests: XCTestCase {
             meta("cg", parent: nil, height: 0, children: ["a", "b"], work: 1),
             childMeta("a", parent: "cg", height: 1, grind: grind("pa"), work: UInt256(5)),
             childMeta("b", parent: "cg", height: 1, grind: grind("pb"), work: UInt256(5)),
-        ], mainChainHashes: [h("cg"), h("a")])
-        let tipBefore = await child.chainTip
+        ], canonicalHashes: [h("cg"), h("a")])
+        let tipBefore = await child.canonicalTip
         XCTAssertEqual(tipBefore, h("a"))
         // b's carrier gathered 40 of descendant parent work; a's gathered 0.
         let outcome = await strengthen(
@@ -655,7 +723,7 @@ final class ParentRunAttributionTests: XCTestCase {
         guard case .strengthened(let batch) = outcome else { return XCTFail("must strengthen: \(outcome)") }
         let commit = try await child.replay(batch)
         XCTAssertEqual(commit?.tipHash, h("b"))
-        let tipAfter = await child.chainTip
+        let tipAfter = await child.canonicalTip
         XCTAssertEqual(tipAfter, h("b"), "parent work behind b's carrier moved the child's fork choice")
         let wa = await child.subtreeWeight(forHash: h("a"))
         let wb = await child.subtreeWeight(forHash: h("b"))
@@ -743,15 +811,15 @@ final class ParentRunAttributionTests: XCTestCase {
     /// marked, stronger one reclassifies it — in full, and without a halt.
     func testUnmarkedAttributedFactIsReclassifiedByAMarkedOne() async throws {
         let a = try await linearByReplay()
-        let identity = AttributedRunIdentity(committerBlockHash: h("n"), directory: "A")
+        let identity = AttributedRunIdentity(carrierBlockHash: h("n"), directory: "A")
         let id = identity.contributionID!
-        _ = try await a.replay(ChainAdmissionBatch(facts: [.work(ChainWorkFact(
+        _ = try await a.replay(BlockImportBatch(facts: [.work(ChainWorkFact(
             blockHash: h("p1"), contribution: VerifiedWorkContribution(id: id, work: UInt256(100))
         ))]))
         let unmarked = await a.parentRunReport(at: h("p1"), directory: d)
         XCTAssertEqual(unmarked?.ownWork, sum(5, 100), "unmarked: counted as a grind")
         XCTAssertEqual(unmarked?.grinds, [grind("p1"), id])
-        _ = try await a.replay(ChainAdmissionBatch(facts: [.work(ChainWorkFact(
+        _ = try await a.replay(BlockImportBatch(facts: [.work(ChainWorkFact(
             blockHash: h("p1"), contribution: VerifiedWorkContribution(id: id, work: UInt256(200)),
             attributedRun: identity
         ))]))
@@ -772,7 +840,7 @@ final class ParentRunAttributionTests: XCTestCase {
         let encoded = try JSONEncoder().encode(grindFact)
         XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains("attributedRun"))
         XCTAssertEqual(try JSONDecoder().decode(ChainWorkFact.self, from: encoded), grindFact)
-        let identity = AttributedRunIdentity(committerBlockHash: h("n"), directory: "A")
+        let identity = AttributedRunIdentity(carrierBlockHash: h("n"), directory: "A")
         let attributedFact = ChainWorkFact(
             blockHash: h("p1"),
             contribution: VerifiedWorkContribution(id: identity.contributionID!, work: UInt256(100)),
@@ -784,7 +852,7 @@ final class ParentRunAttributionTests: XCTestCase {
         XCTAssertEqual(roundTripped, attributedFact)
 
         let a = try await linearByReplay()
-        let mislabeled = ChainAdmissionBatch(facts: [.work(ChainWorkFact(
+        let mislabeled = BlockImportBatch(facts: [.work(ChainWorkFact(
             blockHash: h("p1"),
             contribution: VerifiedWorkContribution(id: grind("p1"), work: UInt256(50)),
             attributedRun: identity
@@ -794,7 +862,7 @@ final class ParentRunAttributionTests: XCTestCase {
             XCTFail("a marker naming another contribution is corrupt")
         } catch ChainStateRestoreError.corruptConsensusGraph {}
         let p4 = batch("p4", parent: "p3", height: 4, work: 2)
-        let blockWithMarker = ChainAdmissionBatch(facts: p4.facts.map { fact in
+        let blockWithMarker = BlockImportBatch(facts: p4.facts.map { fact in
             guard case .work(let work) = fact else { return fact }
             return .work(ChainWorkFact(
                 blockHash: work.blockHash,

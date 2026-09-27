@@ -28,7 +28,7 @@ private struct UnknownFailingAdmissionFetcher: Fetcher {
 private struct ResolutionCase {
     let name: String
     let fetcher: any Fetcher
-    let expectedFailure: ChainAdmissionFailure
+    let expectedFailure: BlockImportError
 }
 
 final class ChainLocalAdmissionResolutionTests: XCTestCase {
@@ -248,7 +248,7 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
         guard case .accepted = eager else {
             return XCTFail("eager admission must accept, got \(eager)")
         }
-        let weighed = try await level.admit(second, mode: .weighed, fetcher: fetcher)
+        let weighed = try await level.admit(second, mode: .header, fetcher: fetcher)
         guard case .accepted = weighed else {
             return XCTFail("weighed admission must accept, got \(weighed)")
         }
@@ -274,9 +274,9 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
                 return XCTFail("fixture block must be accepted, got \(result)")
             }
         }
-        let tip = await level.chain.getMainChainTip()
+        let tip = await level.chain.canonicalTip
         XCTAssertEqual(tip, try BlockHeader(node: mainTwo).rawCID)
-        let sideOnMain = await level.chain.getMainChainBlockHash(atIndex: 1)
+        let sideOnMain = await level.chain.canonicalBlockHash(atHeight: 1)
         XCTAssertNotEqual(sideOnMain, sideOneHash)
 
         // A fetcher that cannot serve any ancestor beyond the parent still
@@ -284,7 +284,7 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
         let noAncestors = DenyingFetcher(backing: full, denied: [genesisHash])
         let result = try await level.admit(
             sideTwo,
-            mode: .weighed,
+            mode: .header,
             fetcher: noAncestors,
             storer: full
         )
@@ -306,6 +306,6 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
 
         let result = try await AdmissionFixture.makeLevel(genesis: genesis).admit(future, fetcher: fetcher)
 
-        XCTAssertEqual(result.failure, .notYetAdmissible)
+        XCTAssertEqual(result.failure, .notYetValid)
     }
 }

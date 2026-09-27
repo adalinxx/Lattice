@@ -33,7 +33,7 @@ final class FinalityFloorTests: XCTestCase {
 
         return makeChain(
             blocks: [g, a1, a2, a3, a4, b2, b3, b4, b5],
-            mainChainHashes: Set(["G", "A1", "A2", "A3", "A4"])
+            canonicalHashes: Set(["G", "A1", "A2", "A3", "A4"])
         )
     }
 
@@ -42,7 +42,7 @@ final class FinalityFloorTests: XCTestCase {
         let chain = forkedChain()
         let reorg = await chain.reevaluateForkChoice()
         XCTAssertNotNil(reorg, "heavier fork reorgs — there is no finality floor")
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, "B5", "tip moves to the heavier fork")
     }
 
@@ -54,11 +54,11 @@ final class FinalityFloorTests: XCTestCase {
         let chain = forkedChain()
         let reorg = await chain.reevaluateForkChoice()
         XCTAssertNotNil(reorg, "deep but strictly-heavier fork must NOT be refused for being too deep")
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, "B5")
         // The whole old suffix is gone; the heavier fork is now canonical.
         for (idx, hash) in [(0, "G"), (1, "A1"), (2, "B2"), (3, "B3"), (4, "B4"), (5, "B5")] {
-            let onMain = await chain.getMainChainBlockHash(atIndex: UInt64(idx))
+            let onMain = await chain.canonicalBlockHash(atHeight: UInt64(idx))
             XCTAssertEqual(onMain, hash, "main chain index \(idx) follows the heavier fork")
         }
     }
@@ -74,11 +74,11 @@ final class FinalityFloorTests: XCTestCase {
 
         let chain = makeChain(
             blocks: [g, a1, a2, a3, b2],
-            mainChainHashes: Set(["G", "A1", "A2", "A3"])
+            canonicalHashes: Set(["G", "A1", "A2", "A3"])
         )
         let reorg = await chain.reevaluateForkChoice()
         XCTAssertNil(reorg, "lighter fork must be rejected (heaviest-chain only)")
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, "A3", "tip stays on the heavier original chain")
     }
 

@@ -319,7 +319,7 @@ final class SelfishMiningTests: XCTestCase {
             honestPrev = b
         }
 
-        let honestTip = await chain.getMainChainTip()
+        let honestTip = await chain.canonicalTip
         XCTAssertEqual(honestTip, try! VolumeImpl<Block>(node: honestPrev).rawCID)
 
         // Selfish miner withholds 3 blocks (same length), publishes all at once
@@ -348,7 +348,7 @@ final class SelfishMiningTests: XCTestCase {
             selfishBaseHash,
             over: honestBaseHash
         )
-        let finalTip = await chain.getMainChainTip()
+        let finalTip = await chain.canonicalTip
         XCTAssertEqual(finalTip, selfishWins ? selfishTip : honestTip)
     }
 
@@ -387,7 +387,7 @@ final class SelfishMiningTests: XCTestCase {
             selfishPrev = b
         }
 
-        let finalTip = await chain.getMainChainTip()
+        let finalTip = await chain.canonicalTip
         XCTAssertEqual(finalTip, try! VolumeImpl<Block>(node: selfishPrev).rawCID, "Longer chain wins regardless of timing")
     }
 }

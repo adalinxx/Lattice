@@ -21,13 +21,13 @@ extension ChainLevel {
     /// names only what its scenario changes.
     func admit(
         _ header: BlockHeader,
-        mode: AdmissionMode = .eager,
+        mode: ImportMode = .full,
         fetcher: any Fetcher & VolumeStorer,
         materialized: (any VolumeStorer)? = nil,
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
-        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void = testAdmissionStage
-    ) async throws -> ChainLocalBlockResult {
+        stage: @Sendable (BlockImportStagingContext) async throws -> Void = testAdmissionStage
+    ) async throws -> BlockImportResult {
         try await admit(
             header,
             mode: mode,
@@ -44,15 +44,15 @@ extension ChainLevel {
     /// validation-content store is named explicitly.
     func admit(
         _ header: BlockHeader,
-        mode: AdmissionMode = .eager,
+        mode: ImportMode = .full,
         fetcher: any Fetcher,
         storer: any VolumeStorer,
         materialized: (any VolumeStorer)? = nil,
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
-        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void = testAdmissionStage
-    ) async throws -> ChainLocalBlockResult {
-        try await admitBlockHeaderChainLocal(
+        stage: @Sendable (BlockImportStagingContext) async throws -> Void = testAdmissionStage
+    ) async throws -> BlockImportResult {
+        try await importBlock(
             header,
             fetcher: fetcher,
             childPackage: childPackage,
@@ -68,13 +68,13 @@ extension ChainLevel {
     /// for a block held inline.
     func admit(
         _ block: Block,
-        mode: AdmissionMode = .eager,
+        mode: ImportMode = .full,
         fetcher: any Fetcher & VolumeStorer,
         materialized: (any VolumeStorer)? = nil,
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
-        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void = testAdmissionStage
-    ) async throws -> ChainLocalBlockResult {
+        stage: @Sendable (BlockImportStagingContext) async throws -> Void = testAdmissionStage
+    ) async throws -> BlockImportResult {
         try await admit(
             try BlockHeader(node: block),
             mode: mode,
@@ -90,14 +90,14 @@ extension ChainLevel {
     /// for a block held inline.
     func admit(
         _ block: Block,
-        mode: AdmissionMode = .eager,
+        mode: ImportMode = .full,
         fetcher: any Fetcher,
         storer: any VolumeStorer,
         materialized: (any VolumeStorer)? = nil,
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
-        stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void = testAdmissionStage
-    ) async throws -> ChainLocalBlockResult {
+        stage: @Sendable (BlockImportStagingContext) async throws -> Void = testAdmissionStage
+    ) async throws -> BlockImportResult {
         try await admit(
             try BlockHeader(node: block),
             mode: mode,
@@ -154,14 +154,14 @@ actor RecordingAdmissionStorer: Storer, VolumeStorer {
 }
 
 actor AdmissionStageRecorder {
-    private var batches: [ChainAdmissionBatch] = []
-    private var contexts: [ChainAdmissionStagingContext] = []
+    private var batches: [BlockImportBatch] = []
+    private var contexts: [BlockImportStagingContext] = []
 
-    func stage(_ batch: ChainAdmissionBatch) {
+    func stage(_ batch: BlockImportBatch) {
         batches.append(batch)
     }
 
-    func stage(_ context: ChainAdmissionStagingContext) {
+    func stage(_ context: BlockImportStagingContext) {
         contexts.append(context)
         batches.append(context.batch)
     }
@@ -179,8 +179,8 @@ actor AdmissionStageRecorder {
         }
     }
 
-    func recordedBatches() -> [ChainAdmissionBatch] { batches }
-    func recordedContexts() -> [ChainAdmissionStagingContext] { contexts }
+    func recordedBatches() -> [BlockImportBatch] { batches }
+    func recordedContexts() -> [BlockImportStagingContext] { contexts }
 }
 
 /// The admission fixtures: an always-hit target, chain-local genesis/child
@@ -229,7 +229,7 @@ enum AdmissionFixture {
     static func makeLevel(
         genesis: Block,
         revision: UInt64
-    ) async throws -> (level: ChainLevel, seedBatch: ChainAdmissionBatch) {
+    ) async throws -> (level: ChainLevel, seedBatch: BlockImportBatch) {
         let seedBatch = try testAdmissionBatch(for: genesis)
         return (
             ChainLevel(testChain: try await ChainState.restore(

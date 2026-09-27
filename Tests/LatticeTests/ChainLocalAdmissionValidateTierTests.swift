@@ -13,7 +13,7 @@ import WAT
 
 final class ChainLocalAdmissionValidateTierTests: XCTestCase {
     func testValidateTierExecutesLikeEagerAndMaterializesState() async throws {
-        // Validated tier (deferred execution): `.validate` executes a block and
+        // Validated tier (deferred execution): `.execution` executes a block and
         // records the validity verdict. On a valid block it does exactly what
         // eager does — runs the transition, materializes the post-state, emits
         // the block fact carrying the real `stateDiff` — the durable "validated"
@@ -46,7 +46,7 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
         let validateLevel = AdmissionFixture.makeLevel(genesis: validateGenesis)
         let validated = try await validateLevel.admit(
             candidate,
-            mode: .validate,
+            mode: .execution,
             fetcher: validateFetcher
         )
 
@@ -95,7 +95,7 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
         // (empty) trie would enumerate.
         let recordedMap = ["Alpha": testCID("recorded-alpha")]
         let seed = try testAdmissionBatch(for: candidate)
-        let facts: [ChainAdmissionFact] = seed.facts.map { fact in
+        let facts: [ChainFact] = seed.facts.map { fact in
             guard case .block(let b) = fact else { return fact }
             return .block(ChainBlockFact(
                 blockHash: b.blockHash, parentBlockHash: b.parentBlockHash, blockHeight: b.blockHeight,
@@ -104,13 +104,13 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
                 stateDiff: b.stateDiff, childCommitments: recordedMap
             ))
         }
-        _ = try await level.chain.replay(ChainAdmissionBatch(facts: facts))
+        _ = try await level.chain.replay(BlockImportBatch(facts: facts))
         let recordedBefore = await level.chain.recordedChildCommitments(of: candidateHash)
         XCTAssertEqual(recordedBefore, recordedMap)
         let executedBefore = await level.chain.hasExecutedAncestry(blockHash: candidateHash)
         XCTAssertFalse(executedBefore, "possessed, not yet executed")
 
-        let validated = try await level.admit(candidate, mode: .validate, fetcher: fetcher)
+        let validated = try await level.admit(candidate, mode: .execution, fetcher: fetcher)
         guard case .duplicate = validated else {
             return XCTFail("validating a possessed block is a promotion, got \(validated)")
         }
@@ -134,7 +134,7 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
         let stagedCounter = StageCounter()
         let result = try await level.admit(
             genesis,
-            mode: .validate,
+            mode: .execution,
             fetcher: fetcher,
             stage: { _ in await stagedCounter.bump() }
         )
@@ -142,11 +142,11 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
         guard case .rejected(let failure, _, _) = result else {
             return XCTFail("a root exclusion with nothing to stand on must be parked, got \(result)")
         }
-        XCTAssertEqual(failure, .notYetAdmissible, "a non-verdict, retried — never a written fact")
+        XCTAssertEqual(failure, .notYetValid, "a non-verdict, retried — never a written fact")
         XCTAssertEqual(staged, 0, "nothing is made durable")
         let roots = await level.chain.excludedRootsForTesting
         XCTAssertTrue(roots.isEmpty)
-        let tip = await level.chain.getMainChainTip()
+        let tip = await level.chain.canonicalTip
         XCTAssertEqual(tip, genesisHash, "the only root stays selectable")
     }
 }

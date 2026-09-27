@@ -91,12 +91,12 @@ final class CrashRecoveryTests: XCTestCase {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(batches)
-        let decoded = try JSONDecoder().decode([ChainAdmissionBatch].self, from: data)
+        let decoded = try JSONDecoder().decode([BlockImportBatch].self, from: data)
 
         let chain2 = try await ChainState.restore(replaying: decoded)
 
-        let tip2 = await chain2.getMainChainTip()
-        let tip1 = await chain1.getMainChainTip()
+        let tip2 = await chain2.canonicalTip
+        let tip1 = await chain1.canonicalTip
         XCTAssertEqual(tip2, tip1)
 
         let height2 = await chain2.getHighestBlockHeight()
@@ -109,7 +109,7 @@ final class CrashRecoveryTests: XCTestCase {
         let result = await chain2.submitTestBlock(
             blockHeader: try! VolumeImpl<Block>(node: block6), block: block6
         )
-        XCTAssertTrue(result.extendsMainChain)
+        XCTAssertTrue(result.extendsCanonical)
 
         let finalHeight = await chain2.getHighestBlockHeight()
         XCTAssertEqual(finalHeight, 6)
@@ -173,8 +173,8 @@ final class TwoNodeConvergenceTests: XCTestCase {
             )
         }
 
-        let tipA = await nodeA.getMainChainTip()
-        let tipB = await nodeB.getMainChainTip()
+        let tipA = await nodeA.canonicalTip
+        let tipB = await nodeB.canonicalTip
         XCTAssertEqual(tipA, tipB, "Both nodes should converge to same tip")
 
         let heightA = await nodeA.getHighestBlockHeight()
@@ -215,8 +215,8 @@ final class TwoNodeConvergenceTests: XCTestCase {
             )
         }
 
-        let tipA = await nodeA.getMainChainTip()
-        let tipB = await nodeB.getMainChainTip()
+        let tipA = await nodeA.canonicalTip
+        let tipB = await nodeB.canonicalTip
         XCTAssertNotEqual(tipA, tipB, "Nodes diverge initially")
 
         // Node B receives all of fork A (longer) and should converge
@@ -226,7 +226,7 @@ final class TwoNodeConvergenceTests: XCTestCase {
             )
         }
 
-        let finalTipB = await nodeB.getMainChainTip()
+        let finalTipB = await nodeB.canonicalTip
         XCTAssertEqual(finalTipB, tipA, "Node B should converge to longer chain")
     }
 }

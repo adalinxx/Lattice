@@ -27,7 +27,7 @@ private func store(_ block: Block, in store: DemoStore) async throws {
     try await VolumeImpl<Block>(node: block).storeBlock(storer: store)
 }
 
-private func canonicalized(_ result: ChainLocalBlockResult) -> Bool {
+private func canonicalized(_ result: BlockImportResult) -> Bool {
     result.commit?.canonicalChanged == true
 }
 
@@ -84,7 +84,7 @@ Task {
             fetcher: fetcher
         )
         let header = try VolumeImpl<Block>(node: block)
-        let result = try await level.admitBlockHeaderChainLocal(
+        let result = try await level.importBlock(
             header,
             fetcher: fetcher,
             validationContentStorer: fetcher,
@@ -95,7 +95,7 @@ Task {
         prev = block
     }
 
-    let tip = await chain.getMainChainTip()
+    let tip = await chain.canonicalTip
     let highest = await chain.getHighestBlockHeight()
     print()
     print("Chain state:")
@@ -115,7 +115,7 @@ Task {
             fetcher: fetcher
         )
         let header = try VolumeImpl<Block>(node: block)
-        let result = try await level.admitBlockHeaderChainLocal(
+        let result = try await level.importBlock(
             header,
             fetcher: fetcher,
             validationContentStorer: fetcher,
@@ -126,7 +126,7 @@ Task {
         forkPrev = block
     }
 
-    let newTip = await chain.getMainChainTip()
+    let newTip = await chain.canonicalTip
     let newHighest = await chain.getHighestBlockHeight()
     print()
     print("After fork:")

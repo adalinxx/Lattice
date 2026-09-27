@@ -106,8 +106,8 @@ final class ParentForkAttributionTests: XCTestCase {
 
     // MARK: - Mechanism (what the node does)
 
-    private func parentBatch(_ b: ParentBlock, height: UInt64) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [
+    private func parentBatch(_ b: ParentBlock, height: UInt64) -> BlockImportBatch {
+        BlockImportBatch(facts: [
             .block(ChainBlockFact(
                 blockHash: h(b.name), parentBlockHash: b.parent.map(h), blockHeight: height,
                 postStateCID: testCID("post:\(b.name)"), prevStateCID: testCID("prev:\(b.name)"),
@@ -275,7 +275,7 @@ final class ParentForkAttributionTests: XCTestCase {
         XCTAssertEqual(oracle(s)["c1"], sum(2), "p2 and q are in p2's run, which names the competitor")
         XCTAssertEqual(oracle(s)["c1b"], sum(42))
         let built = try await run(s, order: Array(s.parent.indices))
-        let tip = await built.child.chainTip
+        let tip = await built.child.canonicalTip
         XCTAssertEqual(tip, h("c1b"), "the branch with the parent work behind it wins the child's fork choice")
     }
 
@@ -315,7 +315,7 @@ final class ParentForkAttributionTests: XCTestCase {
             ChildBlock(name: "c1", parent: "cg", price: 2),
         ])
         let built = try await run(s, order: Array(s.parent.indices))
-        let parentTip = await built.parent.chainTip
+        let parentTip = await built.parent.canonicalTip
         XCTAssertEqual(parentTip, h("w3"), "fixture: the committer's branch must be the losing one")
         try await assertMatchesOracle(s, "losing branch")
         XCTAssertEqual(oracle(s)["c1"], sum(4))
@@ -468,8 +468,8 @@ final class ParentForkAttributionTests: XCTestCase {
         // Child facts: block batches (carrier grind at the child's price) and
         // the attributed work-only batches, exactly as the node persists them.
         let parent = try await run(s, order: Array(s.parent.indices)).parent
-        func childBatch(_ name: String, parentName: String?, height: UInt64, grindID: String, price: UInt64) -> ChainAdmissionBatch {
-            ChainAdmissionBatch(facts: [
+        func childBatch(_ name: String, parentName: String?, height: UInt64, grindID: String, price: UInt64) -> BlockImportBatch {
+            BlockImportBatch(facts: [
                 .block(ChainBlockFact(
                     blockHash: h(name), parentBlockHash: parentName.map(h), blockHeight: height,
                     postStateCID: testCID("cpost:\(name)"), prevStateCID: testCID("cprev:\(name)"),
@@ -483,7 +483,7 @@ final class ParentForkAttributionTests: XCTestCase {
             childBatch("cg", parentName: nil, height: 0, grindID: grind("cg"), price: 1),
             childBatch("c1", parentName: "cg", height: 1, grindID: grind("p1"), price: 2),
             childBatch("c2", parentName: "c1", height: 2, grindID: grind("p2"), price: 2),
-            ChainAdmissionBatch(facts: [.work(ChainWorkFact(
+            BlockImportBatch(facts: [.work(ChainWorkFact(
                 blockHash: h("c2"), contribution: VerifiedWorkContribution(id: grind("x1"), work: UInt256(2))
             ))]),
         ]

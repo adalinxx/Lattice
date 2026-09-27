@@ -412,7 +412,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
         guard case .accepted(let childBootstrap) = childBootstrapResult else {
             return XCTFail("same-carrier deployment must bootstrap the child")
         }
-        let childTip = await childBootstrap.level.chain.getMainChainTip()
+        let childTip = await childBootstrap.level.chain.canonicalTip
         XCTAssertEqual(childTip, childHeader.rawCID)
     }
 

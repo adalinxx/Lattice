@@ -11,13 +11,13 @@ import UInt256
 import cashew
 
 private actor StagingContextRecorder {
-    private var contexts: [ChainAdmissionStagingContext] = []
+    private var contexts: [BlockImportStagingContext] = []
 
-    func append(_ context: ChainAdmissionStagingContext) {
+    func append(_ context: BlockImportStagingContext) {
         contexts.append(context)
     }
 
-    func snapshot() -> [ChainAdmissionStagingContext] {
+    func snapshot() -> [BlockImportStagingContext] {
         contexts
     }
 }

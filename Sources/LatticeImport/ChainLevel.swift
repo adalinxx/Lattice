@@ -8,7 +8,7 @@ import LatticeBlockTree
 public actor ChainLevel {
     public let chain: ChainState
     public nonisolated let context: ChainRuntimeContext
-    let admissionIdentity = UUID()
+    let importIdentity = UUID()
 
     public init(chain: ChainState, context: ChainRuntimeContext) {
         self.chain = chain

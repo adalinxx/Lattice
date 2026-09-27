@@ -56,8 +56,8 @@ final class ChildRootForestTests: XCTestCase {
 
         let firstResult = await submitChildForestBlock(second, to: firstIncumbent)
         let secondResult = await submitChildForestBlock(first, to: secondIncumbent)
-        let firstTip = await firstIncumbent.getMainChainTip()
-        let secondTip = await secondIncumbent.getMainChainTip()
+        let firstTip = await firstIncumbent.canonicalTip
+        let secondTip = await secondIncumbent.canonicalTip
         let firstContainsSecond = await firstIncumbent.contains(blockHash: secondHash)
         let secondContainsFirst = await secondIncumbent.contains(blockHash: firstHash)
 
@@ -99,8 +99,8 @@ final class ChildRootForestTests: XCTestCase {
         _ = await submitChildForestBlock(easier, to: easierFirst)
         _ = await submitChildForestBlock(harder, to: easierFirst)
 
-        let harderFirstTip = await harderFirst.getMainChainTip()
-        let easierFirstTip = await easierFirst.getMainChainTip()
+        let harderFirstTip = await harderFirst.canonicalTip
+        let easierFirstTip = await easierFirst.canonicalTip
         let restoredHarderFirst = try await ChainState.restore(replaying: [
             testAdmissionBatch(for: genesis),
             testAdmissionBatch(for: harder),
@@ -111,8 +111,8 @@ final class ChildRootForestTests: XCTestCase {
             testAdmissionBatch(for: easier),
             testAdmissionBatch(for: harder),
         ])
-        let restoredHarderFirstTip = await restoredHarderFirst.getMainChainTip()
-        let restoredEasierFirstTip = await restoredEasierFirst.getMainChainTip()
+        let restoredHarderFirstTip = await restoredHarderFirst.canonicalTip
+        let restoredEasierFirstTip = await restoredEasierFirst.canonicalTip
         XCTAssertEqual(harderFirstTip, expectedTip)
         XCTAssertEqual(easierFirstTip, expectedTip)
         XCTAssertEqual(restoredHarderFirstTip, expectedTip)
@@ -149,8 +149,8 @@ final class ChildRootForestTests: XCTestCase {
         _ = await submitChildForestBlock(second, to: secondOrder)
         _ = await submitChildForestBlock(first, to: secondOrder)
 
-        let firstTip = await firstOrder.getMainChainTip()
-        let secondTip = await secondOrder.getMainChainTip()
+        let firstTip = await firstOrder.canonicalTip
+        let secondTip = await secondOrder.canonicalTip
         XCTAssertEqual(firstTip, expectedTip)
         XCTAssertEqual(secondTip, expectedTip)
     }
@@ -202,7 +202,7 @@ final class ChildRootForestTests: XCTestCase {
         let expectedTip = preferredBaseHash == childForestHash(firstBase)
             ? childForestHash(firstLeaf)
             : childForestHash(secondLeaf)
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, expectedTip)
     }
 
@@ -233,8 +233,8 @@ final class ChildRootForestTests: XCTestCase {
         _ = await submitChildForestBlock(greaterWork, to: easierFirst)
 
         let expectedTip = childForestHash(greaterWork)
-        let greaterFirstTip = await greaterFirst.getMainChainTip()
-        let easierFirstTip = await easierFirst.getMainChainTip()
+        let greaterFirstTip = await greaterFirst.canonicalTip
+        let easierFirstTip = await easierFirst.canonicalTip
         XCTAssertEqual(greaterFirstTip, expectedTip)
         XCTAssertEqual(easierFirstTip, expectedTip)
     }
@@ -267,8 +267,8 @@ final class ChildRootForestTests: XCTestCase {
         )
         _ = await submitChildForestBlock(sideRoot, to: childFirst)
 
-        let parentFirstTip = await parentFirst.getMainChainTip()
-        let childFirstTip = await childFirst.getMainChainTip()
+        let parentFirstTip = await parentFirst.canonicalTip
+        let childFirstTip = await childFirst.canonicalTip
         XCTAssertEqual(parentFirstTip, expectedTip)
         XCTAssertEqual(childFirstTip, expectedTip)
     }
@@ -289,7 +289,7 @@ final class ChildRootForestTests: XCTestCase {
         _ = await submitChildForestBlock(sideRoot, to: chain)
 
         let snapshot = await chain.tipSnapshot
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, childForestHash(child))
         XCTAssertEqual(snapshot?.tipHeight, child.height)
         XCTAssertEqual(snapshot?.postStateCID, child.postState.rawCID)
@@ -309,7 +309,7 @@ final class ChildRootForestTests: XCTestCase {
         let chain = ChainState.fromGenesis(block: incumbentRoot)
         _ = await submitChildForestBlock(sideRoot, to: chain)
         _ = await submitChildForestBlock(sideChild, to: chain)
-        let canonicalTip = await chain.getMainChainTip()
+        let canonicalTip = await chain.canonicalTip
 
         let restored = try await ChainState.restore(replaying: [
             testAdmissionBatch(for: incumbentRoot),
@@ -317,7 +317,7 @@ final class ChildRootForestTests: XCTestCase {
             testAdmissionBatch(for: sideChild),
         ])
 
-        let restoredTip = await restored.getMainChainTip()
+        let restoredTip = await restored.canonicalTip
         let containsIncumbent = await restored.contains(blockHash: childForestHash(incumbentRoot))
         let containsSideRoot = await restored.contains(blockHash: childForestHash(sideRoot))
         let containsSideChild = await restored.contains(blockHash: childForestHash(sideChild))

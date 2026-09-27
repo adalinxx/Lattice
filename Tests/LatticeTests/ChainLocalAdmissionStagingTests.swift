@@ -69,7 +69,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
         let candidate = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
         let level = AdmissionFixture.makeLevel(genesis: genesis)
-        let beforeTip = await level.chain.getMainChainTip()
+        let beforeTip = await level.chain.canonicalTip
         let candidateHash = try BlockHeader(node: candidate).rawCID
 
         do {
@@ -99,7 +99,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             XCTFail("node durability failure must abort admission")
         } catch ChainLocalTestError.stageFailure {}
 
-        let afterTip = await level.chain.getMainChainTip()
+        let afterTip = await level.chain.canonicalTip
         let containsCandidate = await level.chain.contains(blockHash: candidateHash)
         XCTAssertEqual(afterTip, beforeTip)
         XCTAssertFalse(containsCandidate)
@@ -289,7 +289,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         XCTAssertEqual(orphanContext.parentGenesisLinks.count, 1)
 
         _ = try await level.admit(missingParent, fetcher: fetcher)
-        let replay = try await level.preflightBlockHeaderChainLocal(
+        let replay = try await level.preflightBlockImport(
             orphanHeader,
             fetcher: fetcher,
             validationContentStorer: fetcher
@@ -361,9 +361,9 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         // lighter incumbent tip.
         let stranded = ChainLevel(testChain: makeChain(
             blocks: metas,
-            mainChainHashes: [genesisCID, incumbentCID]
+            canonicalHashes: [genesisCID, incumbentCID]
         ))
-        let strandedTip = await stranded.chain.getMainChainTip()
+        let strandedTip = await stranded.chain.canonicalTip
         XCTAssertEqual(
             strandedTip, incumbentCID,
             "the stranded projection must start on the lighter fork"
@@ -372,7 +372,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         // Re-admit the heaviest tip. It is already known with equal work, so it is
         // classified a duplicate. The seam re-runs fork choice and surfaces the
         // promotion. Pre-fix this returned `.duplicate` with a nil commit.
-        let replay = try await stranded.preflightBlockHeaderChainLocal(
+        let replay = try await stranded.preflightBlockImport(
             try BlockHeader(node: heavier2),
             fetcher: fetcher,
             validationContentStorer: fetcher
@@ -387,7 +387,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         )
         XCTAssertTrue(commit.canonicalChanged)
         XCTAssertEqual(commit.tipHash, heavier2CID)
-        let finalTip = await stranded.chain.getMainChainTip()
+        let finalTip = await stranded.chain.canonicalTip
         XCTAssertEqual(finalTip, heavier2CID)
     }
 
@@ -425,9 +425,9 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             try BlockHeader(node: forkWinsTie ? fork2 : fork3).rawCID
         )
         XCTAssertTrue(commit.canonicalChanged)
-        XCTAssertEqual(Set(commit.mainChainBlocksAdded.keys), forkHashes)
-        XCTAssertEqual(commit.mainChainBlocksRemoved, mainHashes)
-        let finalTip = await level.chain.getMainChainTip()
+        XCTAssertEqual(Set(commit.canonicalBlocksAdded.keys), forkHashes)
+        XCTAssertEqual(commit.canonicalBlocksRemoved, mainHashes)
+        let finalTip = await level.chain.canonicalTip
         XCTAssertEqual(finalTip, try BlockHeader(node: fork3).rawCID)
     }
 
@@ -531,8 +531,8 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             replaying: [fixture.seedBatch] + batches,
             revisionFloor: .max
         )
-        let restoredTip = await restored.getMainChainTip()
-        let liveTip = await fixture.level.chain.getMainChainTip()
+        let restoredTip = await restored.canonicalTip
+        let liveTip = await fixture.level.chain.canonicalTip
         let restoredRevision = await restored.currentRevision()
         let liveRevision = await fixture.level.chain.currentRevision()
         XCTAssertEqual(restoredTip, liveTip)
@@ -628,7 +628,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let recorder = AdmissionStageRecorder()
         let header = try BlockHeader(node: candidate)
 
-        let result = try await level.preflightBlockHeaderChainLocal(
+        let result = try await level.preflightBlockImport(
             header,
             fetcher: source,
             validationContentStorer: validationCache
@@ -664,7 +664,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let otherLevel = AdmissionFixture.makeLevel(genesis: genesis)
         let header = try BlockHeader(node: candidate)
 
-        let result = try await level.preflightBlockHeaderChainLocal(
+        let result = try await level.preflightBlockImport(
             header,
             fetcher: fetcher,
             validationContentStorer: fetcher
@@ -684,7 +684,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             XCTFail("a token must not commit on a different level")
         } catch {
             XCTAssertEqual(
-                error as? ChainAdmissionPreflightError,
+                error as? BlockImportPreflightError,
                 .invalidToken
             )
         }
@@ -709,7 +709,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             XCTFail("a token must not commit twice")
         } catch {
             XCTAssertEqual(
-                error as? ChainAdmissionPreflightError,
+                error as? BlockImportPreflightError,
                 .invalidToken
             )
         }
@@ -734,7 +734,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let firstHeader = try BlockHeader(node: first)
         let siblingHeader = try BlockHeader(node: sibling)
 
-        let preflightResult = try await level.preflightBlockHeaderChainLocal(
+        let preflightResult = try await level.preflightBlockImport(
             firstHeader,
             fetcher: fetcher,
             validationContentStorer: fetcher
@@ -781,7 +781,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let predecessorHeader = try BlockHeader(node: predecessor)
         let descendantHeader = try BlockHeader(node: descendant)
 
-        let preflightResult = try await level.preflightBlockHeaderChainLocal(
+        let preflightResult = try await level.preflightBlockImport(
             descendantHeader,
             fetcher: fetcher,
             validationContentStorer: fetcher
@@ -835,7 +835,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             stage: { context in await recorder.stage(context) }
         )
         let source = DenyingFetcher(backing: backing)
-        let preflight = try await level.preflightBlockHeaderChainLocal(
+        let preflight = try await level.preflightBlockImport(
             orphanHeader,
             fetcher: source,
             validationContentStorer: backing
@@ -870,7 +870,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             XCTFail("a duplicate token must not resolve twice")
         } catch {
             XCTAssertEqual(
-                error as? ChainAdmissionPreflightError,
+                error as? BlockImportPreflightError,
                 .invalidToken
             )
         }
@@ -904,14 +904,14 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let recorder = AdmissionStageRecorder()
         let firstHeader = try BlockHeader(node: first)
         let siblingHeader = try BlockHeader(node: sibling)
-        async let firstResult: ChainLocalBlockResult = level.admit(
+        async let firstResult: BlockImportResult = level.admit(
             firstHeader,
             fetcher: fetcher,
             storer: barrier,
             validationContext: validationContext,
             stage: { record in await recorder.stage(record) }
         )
-        async let siblingResult: ChainLocalBlockResult = level.admit(
+        async let siblingResult: BlockImportResult = level.admit(
             siblingHeader,
             fetcher: fetcher,
             storer: barrier,

@@ -237,16 +237,16 @@ final class ForkChoiceFuzzTests: XCTestCase {
             }
 
             let mainHashes = Set((1..<chainLength).map { "main_\($0)" } + ["G"])
-            let chain = makeChain(blocks: blocks, mainChainHashes: mainHashes)
+            let chain = makeChain(blocks: blocks, canonicalHashes: mainHashes)
 
-            let chainTip = await chain.getMainChainTip()
-            let tipOnMain = await chain.isOnMainChain(hash: chainTip)
+            let canonicalTip = await chain.canonicalTip
+            let tipOnMain = await chain.isCanonical(hash: canonicalTip)
             XCTAssertTrue(tipOnMain, "Chain tip must be on main chain")
 
-            let tipBlock = await chain.getConsensusBlock(hash: chainTip)
+            let tipBlock = await chain.getConsensusBlock(hash: canonicalTip)
             XCTAssertNotNil(tipBlock, "Chain tip must exist in block map")
 
-            let genesisOnMain = await chain.isOnMainChain(hash: "G")
+            let genesisOnMain = await chain.isCanonical(hash: "G")
             XCTAssertTrue(genesisOnMain, "Genesis must always be on main chain")
         }
     }
@@ -276,14 +276,14 @@ final class ForkChoiceFuzzTests: XCTestCase {
             }
 
             let mainHashes = Set(["G"] + (1...mainLen).map { "M\($0)" })
-            let chain = makeChain(blocks: blocks, mainChainHashes: mainHashes)
+            let chain = makeChain(blocks: blocks, canonicalHashes: mainHashes)
             let forkTipHash = "F\(forkLen)"
 
             let reorg = await chain.reevaluateForkChoice()
 
             XCTAssertNotNil(reorg, "Longer fork should trigger reorg")
 
-            let newTip = await chain.getMainChainTip()
+            let newTip = await chain.canonicalTip
             XCTAssertEqual(newTip, forkTipHash)
 
             var current = newTip

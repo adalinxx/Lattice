@@ -14,7 +14,7 @@ import cashew
 
 // MARK: - The observable
 
-/// Everything one `admitBlockHeaderChainLocal` call observably produced, with
+/// Everything one `importBlock` call observably produced, with
 /// every content id rendered by fixture name so the file reads as a decision
 /// table. The `fixtures` map pins the names to their hashes.
 struct AdmissionDecisionGolden: Codable, Equatable {
@@ -302,13 +302,13 @@ private struct AdmissionFixtures {
     }
 
     /// The stable classification the golden records for a failure.
-    func classify(_ failure: ChainAdmissionFailure) -> (kind: String, path: [String]?, cids: [String]?) {
+    func classify(_ failure: BlockImportError) -> (kind: String, path: [String]?, cids: [String]?) {
         switch failure {
         case .unavailableEvidence: return ("unavailableEvidence", nil, nil)
         case .providerMalformedEvidence: return ("providerMalformedEvidence", nil, nil)
         case .protocolInvalid: return ("protocolInvalid", nil, nil)
         case .localVerificationFailure: return ("localVerificationFailure", nil, nil)
-        case .notYetAdmissible: return ("notYetAdmissible", nil, nil)
+        case .notYetValid: return ("notYetAdmissible", nil, nil)
         case .notAcceptedAtCurrentChain: return ("notAcceptedAtCurrentChain", nil, nil)
         case .revisionExhausted: return ("revisionExhausted", nil, nil)
         case .crossChainEvidenceRequired(let requirement):
@@ -342,7 +342,7 @@ private struct AdmissionScenario {
         /// Resolve against the boundary-only fetcher.
         var bodyless: Bool = false
         /// Overrides the sweep mode for sequence scenarios.
-        var mode: AdmissionMode? = nil
+        var mode: ImportMode? = nil
     }
 
     let name: String
@@ -381,24 +381,24 @@ private struct AdmissionScenario {
         AdmissionScenario(
             name: "weighedThenValidateWithoutBody", genesis: "genesis",
             steps: [
-                Step(candidate: "valid", bodyless: true, mode: .weighed),
-                Step(candidate: "valid", bodyless: true, mode: .validate),
+                Step(candidate: "valid", bodyless: true, mode: .header),
+                Step(candidate: "valid", bodyless: true, mode: .execution),
             ],
             sequence: true
         ),
         AdmissionScenario(
             name: "weighedThenValidate", genesis: "genesis",
-            steps: [Step(candidate: "valid", mode: .weighed), Step(candidate: "valid", mode: .validate)],
+            steps: [Step(candidate: "valid", mode: .header), Step(candidate: "valid", mode: .execution)],
             sequence: true
         ),
         AdmissionScenario(
             name: "weighedThenValidateForged", genesis: "genesis",
-            steps: [Step(candidate: "forgedPostState", mode: .weighed), Step(candidate: "forgedPostState", mode: .validate)],
+            steps: [Step(candidate: "forgedPostState", mode: .header), Step(candidate: "forgedPostState", mode: .execution)],
             sequence: true
         ),
         AdmissionScenario(
             name: "weighedThenExtend", genesis: "genesis",
-            steps: [Step(candidate: "valid", mode: .weighed), Step(candidate: "grandchild", mode: .weighed)],
+            steps: [Step(candidate: "valid", mode: .header), Step(candidate: "grandchild", mode: .header)],
             sequence: true
         ),
     ]
@@ -415,9 +415,9 @@ private struct MissingCIDFetcher: Fetcher {
 }
 
 private actor StagingRecorder {
-    private(set) var contexts: [ChainAdmissionStagingContext] = []
+    private(set) var contexts: [BlockImportStagingContext] = []
 
-    func record(_ context: ChainAdmissionStagingContext) {
+    func record(_ context: BlockImportStagingContext) {
         contexts.append(context)
     }
 }
@@ -425,28 +425,28 @@ private actor StagingRecorder {
 // MARK: - Tests
 
 /// Pins the admission decision table: for every fixture block and every
-/// `AdmissionMode`, the result case, failure, predecessor requirement, carrier
+/// `ImportMode`, the result case, failure, predecessor requirement, carrier
 /// link, materialization, emitted commit, and the exact staged fact batch.
 final class AdmissionDecisionGoldenTests: XCTestCase {
     static let goldenName = "admission-decisions.json"
 
-    private func modeName(_ mode: AdmissionMode) -> String {
+    private func modeName(_ mode: ImportMode) -> String {
         switch mode {
-        case .eager: "eager"
-        case .weighed: "weighed"
-        case .validate: "validate"
+        case .full: "eager"
+        case .header: "weighed"
+        case .execution: "validate"
         }
     }
 
     private func run(
         _ scenario: AdmissionScenario,
-        sweep: AdmissionMode?,
+        sweep: ImportMode?,
         fixtures: AdmissionFixtures
     ) async throws -> [AdmissionDecisionGolden.Step] {
         let level = try fixtures.level(genesis: scenario.genesis, path: scenario.path)
         var steps: [AdmissionDecisionGolden.Step] = []
         for (index, step) in scenario.steps.enumerated() {
-            let mode = step.mode ?? sweep ?? .eager
+            let mode = step.mode ?? sweep ?? .full
             let block = try XCTUnwrap(fixtures.blocks[step.candidate])
             let header = try BlockHeader(node: block)
             let recorder = StagingRecorder()
@@ -460,7 +460,7 @@ final class AdmissionDecisionGoldenTests: XCTestCase {
             } else {
                 fetcher = fixtures.fetcher
             }
-            let result = try await level.admitBlockHeaderChainLocal(
+            let result = try await level.importBlock(
                 header,
                 fetcher: fetcher,
                 childPackage: step.package ? fixtures.packages[step.candidate] : nil,
@@ -520,8 +520,8 @@ final class AdmissionDecisionGoldenTests: XCTestCase {
                 materializedPostState: result.materializedPostState != nil,
                 commitTip: result.commit.map { fixtures.name($0.tipHash) },
                 commitRevision: result.commit?.revision,
-                commitAdded: result.commit.map { $0.mainChainBlocksAdded.keys.map(fixtures.name).sorted() } ?? [],
-                commitRemoved: result.commit.map { $0.mainChainBlocksRemoved.map(fixtures.name).sorted() } ?? [],
+                commitAdded: result.commit.map { $0.canonicalBlocksAdded.keys.map(fixtures.name).sorted() } ?? [],
+                commitRemoved: result.commit.map { $0.canonicalBlocksRemoved.map(fixtures.name).sorted() } ?? [],
                 staged: staged,
                 possessedAfter: possessed,
                 executedAfter: executed,
@@ -538,7 +538,7 @@ final class AdmissionDecisionGoldenTests: XCTestCase {
             if scenario.sequence {
                 steps += try await run(scenario, sweep: nil, fixtures: fixtures)
             } else {
-                for mode in [AdmissionMode.eager, .weighed, .validate] {
+                for mode in [ImportMode.full, .header, .execution] {
                     steps += try await run(scenario, sweep: mode, fixtures: fixtures)
                 }
             }

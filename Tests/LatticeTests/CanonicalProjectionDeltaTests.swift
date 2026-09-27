@@ -36,8 +36,8 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         )
     }
 
-    private func admission(_ n: Node) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [
+    private func admission(_ n: Node) -> BlockImportBatch {
+        BlockImportBatch(facts: [
             .block(ChainBlockFact(
                 blockHash: n.hash,
                 parentBlockHash: n.parent,
@@ -124,8 +124,8 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
                 ForkChoiceOracle(blocks: blocks, excluded: []).view().canonicalProjection(),
                 "length \(length)"
             )
-            let tip = await run.chain.getMainChainTip()
-            let mainChain = await run.chain.mainChainHashes
+            let tip = await run.chain.canonicalTip
+            let mainChain = await run.chain.canonicalHashes
             XCTAssertEqual(tip, run.tip, "length \(length): tip")
             XCTAssertEqual(tip, reference.tip, "length \(length): reference tip")
             XCTAssertEqual(
@@ -255,7 +255,7 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         let blocks = await chain.canonicalProjectionBlockVisitCount - blocksBefore
         let segments = await chain.canonicalProjectionSegmentVisitCount
             - segmentsBefore
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
 
         XCTAssertGreaterThan(siblings, 40, "the shape must cover real depth")
         XCTAssertEqual(tip, previous.hash, "a losing sibling must not move the tip")
@@ -323,7 +323,7 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
             _ = try await chain.applyStaged(admission(block))
             branchTip = block
         }
-        let tipAfterBranch = await chain.getMainChainTip()
+        let tipAfterBranch = await chain.canonicalTip
         XCTAssertEqual(
             tipAfterBranch,
             previous.hash,
@@ -345,7 +345,7 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         let segments = await chain.canonicalProjectionSegmentVisitCount
             - segmentsBefore
 
-        let finalTip = await chain.getMainChainTip()
+        let finalTip = await chain.canonicalTip
         XCTAssertEqual(
             finalTip,
             previous.hash,
@@ -495,7 +495,7 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
             let after = await chain.segmentWorkUpdateCellCount
             cells[length] = after - before
 
-            let tip = await chain.getMainChainTip()
+            let tip = await chain.canonicalTip
             XCTAssertEqual(tip, winner.hash, "length \(length): the reorg must happen")
         }
 
@@ -526,7 +526,7 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
                 work: 1
             )
             _ = try await chain.applyStaged(admission(doomed))
-            _ = try? await chain.applyStaged(ChainAdmissionBatch(facts: [
+            _ = try? await chain.applyStaged(BlockImportBatch(facts: [
                 .exclusion(ChainExclusionFact(blockHash: doomed.hash)),
             ]))
 
@@ -569,7 +569,7 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         _ = try await chain.applyStaged(admission(b))
 
         let shared = testCID("projection-delta:shared-grind")
-        let first = try await chain.applyStaged(ChainAdmissionBatch(facts: [
+        let first = try await chain.applyStaged(BlockImportBatch(facts: [
             .work(ChainWorkFact(
                 blockHash: a.hash,
                 contribution: VerifiedWorkContribution(id: shared, work: UInt256(9))
@@ -580,7 +580,7 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         // The same identity, stronger, at a different block: if this were
         // admitted the same work would be counted in two subtrees at once.
         do {
-            _ = try await chain.applyStaged(ChainAdmissionBatch(facts: [
+            _ = try await chain.applyStaged(BlockImportBatch(facts: [
                 .work(ChainWorkFact(
                     blockHash: b.hash,
                     contribution: VerifiedWorkContribution(
@@ -598,8 +598,8 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         let reference = try XCTUnwrap(
             ForkChoiceOracle(blocks: blocks, excluded: []).view().canonicalProjection()
         )
-        let tip = await chain.getMainChainTip()
-        let path = await chain.mainChainHashes
+        let tip = await chain.canonicalTip
+        let path = await chain.canonicalHashes
         XCTAssertEqual(tip, reference.tip)
         XCTAssertEqual(path, Set(reference.path))
         XCTAssertEqual(tip, a.hash, "the relocated work must not have moved the tip")

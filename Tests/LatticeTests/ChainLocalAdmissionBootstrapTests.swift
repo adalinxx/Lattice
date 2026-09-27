@@ -115,10 +115,10 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             bootstrap.commit,
             ChainCommit(
                 tipHash: header.rawCID,
-                mainChainBlocksAdded: [header.rawCID: 0]
+                canonicalBlocksAdded: [header.rawCID: 0]
             )
         )
-        let childTip = await child.chain.getMainChainTip()
+        let childTip = await child.chain.canonicalTip
         XCTAssertEqual(childTip, header.rawCID)
 
         let nonGenesis = try await AdmissionFixture.makeChild(
@@ -138,7 +138,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
                 stage: testAdmissionStage
             )
             XCTFail("a non-genesis block cannot create a child runtime")
-        } catch let failure as ChainAdmissionFailure {
+        } catch let failure as BlockImportError {
             XCTAssertEqual(failure, .protocolInvalid)
         }
     }
@@ -194,12 +194,12 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         XCTAssertFalse(result.stateDiff.created.isEmpty)
         XCTAssertNotNil(result.materializedPostState)
         let rootChain = await result.level.chain
-        let rootTip = await rootChain.getMainChainTip()
+        let rootTip = await rootChain.canonicalTip
         XCTAssertEqual(rootTip, header.rawCID)
         let batches = await recorder.recordedBatches()
         XCTAssertEqual(batches.count, 1)
         let restored = try await ChainState.restore(replaying: batches)
-        let restoredTip = await restored.getMainChainTip()
+        let restoredTip = await restored.canonicalTip
         let restoredRevision = await restored.currentRevision()
         let liveRevision = await rootChain.currentRevision()
         XCTAssertEqual(restoredTip, rootTip)
@@ -239,7 +239,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
                 validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
                 stage: testAdmissionStage)
             XCTFail("oversized policy must fail admission on the limited node")
-        } catch let failure as ChainAdmissionFailure {
+        } catch let failure as BlockImportError {
             XCTAssertEqual(failure, .unavailableEvidence)
         }
 
@@ -252,7 +252,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             validationContext: raised,
             validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
             stage: testAdmissionStage)
-        let tip = await result.level.chain.getMainChainTip()
+        let tip = await result.level.chain.canonicalTip
         XCTAssertEqual(tip, header.rawCID)
     }
 
@@ -283,13 +283,13 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
         )
-        let rootTip = await result.level.chain.getMainChainTip()
+        let rootTip = await result.level.chain.canonicalTip
         XCTAssertEqual(rootTip, header.rawCID)
         XCTAssertEqual(
             result.commit,
             ChainCommit(
                 tipHash: header.rawCID,
-                mainChainBlocksAdded: [header.rawCID: 0]
+                canonicalBlocksAdded: [header.rawCID: 0]
             )
         )
     }
@@ -491,7 +491,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
                 stage: { batch in await recorder.stage(batch) }
             )
             XCTFail("genesis must seed its first successor with its own target")
-        } catch let failure as ChainAdmissionFailure {
+        } catch let failure as BlockImportError {
             XCTAssertEqual(failure, .protocolInvalid)
         }
         let storeCalls = await durable.storeCallCount()
@@ -523,7 +523,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
                 stage: { batch in await recorder.stage(batch) }
             )
             XCTFail("a target miss cannot bootstrap the root")
-        } catch let failure as ChainAdmissionFailure {
+        } catch let failure as BlockImportError {
             XCTAssertEqual(failure, .notAcceptedAtCurrentChain)
         }
         let targetMissStoreCalls = await durable.storeCallCount()
