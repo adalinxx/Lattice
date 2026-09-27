@@ -173,16 +173,6 @@ struct WorkMeasure: Sendable, Equatable {
         workByGrind
     }
 
-    func normalized(using strongestWork: [String: UInt256]) -> WorkMeasure {
-        var result = self
-        for id in workByGrind.keys {
-            if let strongest = strongestWork[id] {
-                result.workByGrind[id] = strongest
-            }
-        }
-        return result
-    }
-
     @discardableResult
     mutating func insert(_ contribution: VerifiedWorkContribution) -> Bool {
         let id = CIDIdentity.canonicalString(contribution.id) ?? contribution.id
