@@ -24,7 +24,7 @@ final class PremineUncappedTests: XCTestCase {
             targetBlockTime: 10_000,
             initialReward: initialReward,
             halvingInterval: halvingInterval,
-            retargetWindow: 5
+            halfLife: 5
         )
     }
 
@@ -81,7 +81,7 @@ final class PremineUncappedTests: XCTestCase {
             targetBlockTime: 10_000,
             initialReward: 1024,
             halvingInterval: UInt64.max / 2,
-            retargetWindow: 5
+            halfLife: 5
         )
 
         XCTAssertEqual(s.premineAmount(), UInt64.max)
@@ -96,7 +96,7 @@ final class PremineUncappedTests: XCTestCase {
             targetBlockTime: 10_000,
             initialReward: 1024,
             halvingInterval: UInt64.max / 2,
-            retargetWindow: 5
+            halfLife: 5
         )
 
         XCTAssertEqual(s.totalRewards(upToBlock: UInt64.max), UInt64.max)

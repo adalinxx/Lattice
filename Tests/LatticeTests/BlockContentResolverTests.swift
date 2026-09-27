@@ -416,6 +416,7 @@ final class BlockContentResolverTests: XCTestCase {
             targetBlockTime: 1_000,
             initialReward: 1,
             halvingInterval: 1_000,
+            halfLife: 10,
             wasmPolicies: Array(repeating: policy, count: 1_000)
         )
         let withLargeSpec = base.set(properties: [
@@ -532,6 +533,7 @@ private func testSpec(
         targetBlockTime: 1_000,
         initialReward: 1,
         halvingInterval: 1_000,
+        halfLife: 10,
         wasmPolicies: wasmPolicies
     )
 }
@@ -544,7 +546,8 @@ private func sizeSpec(maxBlockSize: Int) -> ChainSpec {
         premine: 0,
         targetBlockTime: 1_000,
         initialReward: 1,
-        halvingInterval: 1_000
+        halvingInterval: 1_000,
+        halfLife: 10
     )
 }
 

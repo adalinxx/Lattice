@@ -30,7 +30,7 @@ final class ChildChainDifficultyIndependenceTests: XCTestCase {
             targetBlockTime: target,
             initialReward: 1024,
             halvingInterval: 10_000,
-            retargetWindow: window
+            halfLife: window
         )
     }
 

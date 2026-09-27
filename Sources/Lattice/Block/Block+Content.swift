@@ -39,13 +39,14 @@ public extension Block {
     }
 
     /// Exact content needed to validate these transactions. The child index is
-    /// listed without resolving its independently stored child block Volumes.
+    /// one node, fetched without resolving its independently stored child
+    /// block Volumes.
     static func validationPaths(
         transactionBodies: [TransactionBody]
     ) -> [[String]: ResolutionStrategy] {
         var paths = contentResolutionPaths
         paths[[PREV_STATE_PROPERTY]] = .targeted
-        paths[[CHILDREN_PROPERTY, ""]] = .list
+        paths[[CHILDREN_PROPERTY]] = .targeted
 
         func setPrevStatePath(_ path: [String]) {
             paths[[PREV_STATE_PROPERTY] + path] = .targeted
@@ -103,7 +104,7 @@ public extension Block {
         let resolved = try await VolumeImpl<Block>(node: self).resolve(
             paths: [
                 [TRANSACTIONS_PROPERTY]: .recursive,
-                [CHILDREN_PROPERTY, ""]: .list,
+                [CHILDREN_PROPERTY]: .targeted,
             ],
             fetcher: fetcher
         )
@@ -127,21 +128,22 @@ public extension VolumeImpl where NodeType == Block {
     }
 
     /// Store ONLY this block's own Volume boundary: the root node plus its
-    /// in-boundary transaction and child commitment tries. The transaction bodies,
+    /// in-boundary transaction trie and child index. The transaction bodies,
     /// chain spec, prev/parent/post state, parent block, child blocks, and WASM
     /// policy modules are all independent nested Volumes and are deliberately
     /// excluded — none is resolved or stored. This is the tier-2 possession a
     /// weighed (not-yet-executed) block needs: it is servable and locally present
     /// for fork choice, but its body is deferred until the block is validated.
     ///
-    /// The tries are resolved `.list` (structure only, leaf Volumes left
-    /// unresolved) so no transaction-body / child-block Volume is fetched, then
-    /// the single block boundary Volume is stored.
+    /// The transaction trie is resolved `.list` (structure only, leaf Volumes
+    /// left unresolved) and the child index as its one node, so no
+    /// transaction-body / child-block Volume is fetched, then the single block
+    /// boundary Volume is stored.
     func storeBlockBoundary(fetcher: any Fetcher, storer: any VolumeStorer) async throws {
         let content = try await resolve(
             paths: [
                 [TRANSACTIONS_PROPERTY, ""]: .list,
-                [CHILDREN_PROPERTY, ""]: .list,
+                [CHILDREN_PROPERTY]: .targeted,
             ],
             fetcher: fetcher
         )

@@ -18,16 +18,11 @@ public struct ChainSpec: Scalar {
     public let targetBlockTime: UInt64
     public let initialReward: UInt64
     public let halvingInterval: UInt64
-    public let retargetWindow: UInt64
+    /// The difficulty schedule's half-life, in blocks: drift of one half-life
+    /// of block time away from schedule moves the target by one doubling.
+    /// The chain's own committed responsiveness; there is no protocol default.
+    public let halfLife: UInt64
     public let wasmPolicies: [WasmPolicyRef]
-    /// Per-retarget difficulty clamp: a single retarget may move the target at
-    /// most this many × in either direction. This is the chain's own committed
-    /// manipulation-resistance vs. adaptation-speed choice (tighter = harder to
-    /// grind timestamps, slower to track real hashrate); `nil` — the default —
-    /// commits none, and the windowed retarget applies its proportional
-    /// correction unclamped. There is no protocol-imposed default: a clamp
-    /// exists only when the chain commits one and lives with the consequences.
-    public let maxTargetChange: UInt8?
     enum CodingKeys: String, CodingKey {
         case maxNumberOfTransactionsPerBlock
         case maxStateGrowth
@@ -36,9 +31,8 @@ public struct ChainSpec: Scalar {
         case targetBlockTime
         case initialReward
         case halvingInterval
-        case retargetWindow
+        case halfLife
         case wasmPolicies
-        case maxTargetChange
     }
 
     enum LegacyCodingKeys: String, CodingKey {
@@ -54,9 +48,8 @@ public struct ChainSpec: Scalar {
         targetBlockTime: UInt64,
         initialReward: UInt64,
         halvingInterval: UInt64,
-        retargetWindow: UInt64 = 10,
-        wasmPolicies: [WasmPolicyRef] = [],
-        maxTargetChange: UInt8? = nil
+        halfLife: UInt64,
+        wasmPolicies: [WasmPolicyRef] = []
     ) {
         self.maxNumberOfTransactionsPerBlock = maxNumberOfTransactionsPerBlock
         self.maxStateGrowth = maxStateGrowth
@@ -65,9 +58,8 @@ public struct ChainSpec: Scalar {
         self.targetBlockTime = targetBlockTime
         self.initialReward = initialReward
         self.halvingInterval = halvingInterval
-        self.retargetWindow = retargetWindow
+        self.halfLife = halfLife
         self.wasmPolicies = wasmPolicies
-        self.maxTargetChange = maxTargetChange
     }
 
     public init(from decoder: Decoder) throws {
@@ -80,7 +72,7 @@ public struct ChainSpec: Scalar {
         targetBlockTime = try container.decode(UInt64.self, forKey: .targetBlockTime)
         initialReward = try container.decode(UInt64.self, forKey: .initialReward)
         halvingInterval = try container.decode(UInt64.self, forKey: .halvingInterval)
-        retargetWindow = try container.decodeIfPresent(UInt64.self, forKey: .retargetWindow) ?? 10
+        halfLife = try container.decode(UInt64.self, forKey: .halfLife)
         if legacyContainer.contains(.transactionFilters) || legacyContainer.contains(.actionFilters) {
             throw DecodingError.dataCorruptedError(
                 forKey: legacyContainer.contains(.transactionFilters) ? .transactionFilters : .actionFilters,
@@ -89,7 +81,6 @@ public struct ChainSpec: Scalar {
             )
         }
         wasmPolicies = try container.decodeIfPresent([WasmPolicyRef].self, forKey: .wasmPolicies) ?? []
-        maxTargetChange = try container.decodeIfPresent(UInt8.self, forKey: .maxTargetChange)
     }
 }
 
@@ -215,8 +206,7 @@ public extension ChainSpec {
                targetBlockTime > 0 &&
                initialReward > 0 &&
                halvingInterval > 0 &&
-               maxTargetChange.map { $0 > 0 } ?? true &&
-               retargetWindow > 0
+               halfLife > 0
     }
 }
 
@@ -253,7 +243,7 @@ public extension ChainSpec {
     /// direction.
     ///
     /// **There is no window, and that is the point.** A windowed average carries
-    /// the last `retargetWindow` intervals as state, so a stretch of unusual
+    /// its last intervals as state, so a stretch of unusual
     /// block times keeps steering difficulty long after it has passed, and a
     /// window perturbed at one end oscillates as it drains. This reads only the
     /// anchor and the present block, so it has nothing to drain: a disturbance
@@ -377,13 +367,10 @@ public extension ChainSpec {
         return scaled == .zero ? UInt256(1) : scaled
     }
 
-    /// The half-life is not a new committed field on purpose: adding one would
-    /// change this spec's CID, and a chain's genesis commits that CID, so the
-    /// chain would lose its identity to a difficulty tweak. `retargetWindow`
-    /// already states how much history informs difficulty, which is exactly the
-    /// quantity a half-life expresses, so it is reused rather than duplicated.
+    /// The committed half-life in block time; saturating, since both factors
+    /// are the chain's own unbounded choices.
     func halfLifeMilliseconds() -> Int64 {
-        let product = retargetWindow.multipliedReportingOverflow(by: targetBlockTime)
+        let product = halfLife.multipliedReportingOverflow(by: targetBlockTime)
         guard !product.overflow else { return Int64.max }
         return Int64(clamping: product.partialValue)
     }
@@ -400,89 +387,6 @@ public extension ChainSpec {
     private static let asertCubicB: UInt64 = 971_821_376
     private static let asertCubicC: UInt64 = 5_127
     private static let asertCubicRounding: UInt64 = 1 << 47
-
-    private func calculatePairTarget(previousTarget: UInt256, actualTime: UInt64) -> UInt256 {
-        // Zero elapsed time is rejected at block validation (strictly increasing
-        // timestamps), so this is unreachable in consensus; keep the target
-        // unchanged for the degenerate direct-call case.
-        guard actualTime > 0 else { return previousTarget }
-        let actual = UInt256(actualTime)
-        let target = UInt256(targetBlockTime)
-        return multiplyDividingSaturating(previousTarget, by: actual, over: target)
-    }
-
-    func calculatePairTarget(previousTarget: UInt256, actualTime: Int64) -> UInt256 {
-        guard actualTime > 0 else { return previousTarget }
-        return calculatePairTarget(previousTarget: previousTarget, actualTime: UInt64(actualTime))
-    }
-
-    func calculateMinimumTarget(previousTarget: UInt256, blockTimestamp: Int64, previousTimestamp: Int64) -> UInt256 {
-        calculatePairTarget(
-            previousTarget: previousTarget,
-            actualTime: elapsedMilliseconds(later: blockTimestamp, earlier: previousTimestamp)
-        )
-    }
-
-    func calculateWindowedTarget(previousTarget: UInt256, ancestorTimestamps: [Int64]) -> UInt256 {
-        let availableIntervals = max(0, ancestorTimestamps.count - 1)
-        let intervalCount = retargetWindow < UInt64(availableIntervals)
-            ? Int(retargetWindow)
-            : availableIntervals
-        guard intervalCount > 0 else {
-            // No retarget interval can be computed (0 or 1 timestamp): keep the
-            // previous difficulty unchanged.
-            return previousTarget
-        }
-
-        var weightedActual = UInt256.zero
-        var weightSum = UInt256.zero
-        for index in 0..<intervalCount {
-            let solveTime = elapsedMilliseconds(
-                later: ancestorTimestamps[index],
-                earlier: ancestorTimestamps[index + 1]
-            )
-            let weight = UInt256(UInt64(intervalCount - index))
-            let solve = UInt256(solveTime)
-            let weightedSolve = solve > UInt256.max / weight ? UInt256.max : solve * weight
-            weightedActual = weightedActual > UInt256.max - weightedSolve ? UInt256.max : weightedActual + weightedSolve
-            weightSum = weightSum > UInt256.max - weight ? UInt256.max : weightSum + weight
-        }
-        // Zero total solve time is unreachable in consensus (strictly
-        // increasing timestamps make every interval at least 1 ms); keep the
-        // previous difficulty unchanged for the degenerate direct-call case
-        // rather than proposing an impossible zero target — mirroring the
-        // `calculatePairTarget` guard, and independent of any clamp.
-        guard weightedActual > UInt256.zero else { return previousTarget }
-        let target = UInt256(targetBlockTime)
-        let weightedTarget = target > UInt256.max / weightSum
-            ? UInt256.max
-            : target * weightSum
-        // Integer floor of the representation, not a policy bound: a
-        // proportional correction that rounds to zero would propose target 0,
-        // which rejects every hash and bricks the chain. The smallest
-        // representable difficulty is 1.
-        let adjusted = max(
-            UInt256(1),
-            multiplyDividingSaturating(previousTarget, by: weightedActual, over: weightedTarget)
-        )
-        return clampTargetChange(previousTarget: previousTarget, proposed: adjusted)
-    }
-
-    /// Bound a single retarget step to at most `maxTargetChange`× in either
-    /// direction so a miner cannot grind timestamps to swing difficulty by an
-    /// unbounded factor in one window. The clamp exists only when the chain
-    /// COMMITS a `maxTargetChange` — there is no protocol default; an
-    /// uncommitted spec retargets with the unclamped proportional correction.
-    /// Applied at the single retarget choke point so the block builder and
-    /// admission validator agree on the clamped value. This clamp is the only
-    /// bound: there is no absolute target floor.
-    private func clampTargetChange(previousTarget: UInt256, proposed: UInt256) -> UInt256 {
-        guard let committed = maxTargetChange, committed > 0 else { return proposed }
-        let factor = UInt256(UInt64(committed))
-        let upperBound = previousTarget > UInt256.max / factor ? UInt256.max : previousTarget * factor
-        let lowerBound = previousTarget / factor
-        return min(max(proposed, lowerBound), upperBound)
-    }
 
     func validateTransactionCount(_ transactionCount: UInt64) -> Bool {
         return transactionCount <= maxNumberOfTransactionsPerBlock

@@ -16,7 +16,7 @@ private func lifecycleSpec(_ dir: String = "Nexus") -> ChainSpec {
         premine: 1000,
         targetBlockTime: 1_000,
         initialReward: 1024, halvingInterval: 10_000,
-        retargetWindow: 5
+        halfLife: 5
     )
 }
 
@@ -28,7 +28,7 @@ private func noPremine(_ dir: String = "Nexus") -> ChainSpec {
         premine: 0,
         targetBlockTime: 1_000,
         initialReward: 1024, halvingInterval: 10_000,
-        retargetWindow: 5
+        halfLife: 5
     )
 }
 

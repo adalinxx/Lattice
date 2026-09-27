@@ -19,7 +19,7 @@ final class AsertDifficultyTests: XCTestCase {
             targetBlockTime: targetBlockTime,
             initialReward: 1024,
             halvingInterval: 10_000,
-            retargetWindow: window
+            halfLife: window
         )
     }
 
@@ -48,8 +48,8 @@ final class AsertDifficultyTests: XCTestCase {
     }
 
     /// Ahead of schedule hardens, behind eases, and one half-life is one
-    /// doubling in each direction. The half-life is `retargetWindow` blocks, so
-    /// this also pins that the window field is being read as a half-life.
+    /// doubling in each direction. The half-life is `halfLife` blocks of
+    /// block time.
     func testOneHalfLifeIsOneDoublingInEitherDirection() {
         let s = spec(window: 120)
         let anchorTarget = UInt256(1) << 215

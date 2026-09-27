@@ -89,13 +89,14 @@ func storeBuiltBlock(
 ) async throws -> Block {
     let header = try BlockHeader(node: block)
     try await header.store(paths: Block.contentResolutionPaths, storer: fetcher)
-    if let children = block.children.node {
-        var childPaths = ArrayTrie<ResolutionStrategy>()
-        for directory in try children.allKeysAndValues().keys {
-            childPaths.set([CHILDREN_PROPERTY, directory], value: .targeted)
-        }
-        try await header.store(paths: childPaths, storer: fetcher)
+    // The child index is one node of the block's boundary, fetched by every
+    // reader of the block; it is stored even when it commits nothing.
+    var childPaths = ArrayTrie<ResolutionStrategy>()
+    childPaths.set([CHILDREN_PROPERTY], value: .targeted)
+    for directory in block.children.node?.entries.keys ?? [:].keys {
+        childPaths.set([CHILDREN_PROPERTY, directory], value: .targeted)
     }
+    try await header.store(paths: childPaths, storer: fetcher)
     if block.height == 0 {
         try await LatticeState.emptyHeader.storeRecursively(storer: fetcher)
     }

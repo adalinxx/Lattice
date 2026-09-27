@@ -33,12 +33,12 @@ public struct Block: Hashable {
     public let parentState: LatticeStateHeader
     public let prevState: LatticeStateHeader
     public let postState: LatticeStateHeader
-    public let children: HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Block>>>
+    public let children: HeaderImpl<ChildIndex>
     public let height: UInt64
     public let timestamp: Int64
     public let nonce: UInt64
 
-    public init(version: UInt16 = Block.currentVersion, parent: VolumeImpl<Block>?, transactions: HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Transaction>>>, target: UInt256, nextTarget: UInt256, spec: VolumeImpl<ChainSpec>, parentState: LatticeStateHeader, prevState: LatticeStateHeader, postState: LatticeStateHeader, children: HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Block>>>, height: UInt64, timestamp: Int64, nonce: UInt64) {
+    public init(version: UInt16 = Block.currentVersion, parent: VolumeImpl<Block>?, transactions: HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Transaction>>>, target: UInt256, nextTarget: UInt256, spec: VolumeImpl<ChainSpec>, parentState: LatticeStateHeader, prevState: LatticeStateHeader, postState: LatticeStateHeader, children: HeaderImpl<ChildIndex>, height: UInt64, timestamp: Int64, nonce: UInt64) {
         self.version = version
         self.parent = parent
         self.transactions = transactions
@@ -135,7 +135,7 @@ extension Block: Node {
             parentState: properties[PARENT_STATE_PROPERTY] as? LatticeStateHeader ?? parentState,
             prevState: properties[PREV_STATE_PROPERTY] as? LatticeStateHeader ?? prevState,
             postState: properties[POST_STATE_PROPERTY] as? LatticeStateHeader ?? postState,
-            children: properties[CHILDREN_PROPERTY] as? HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Block>>> ?? children,
+            children: properties[CHILDREN_PROPERTY] as? HeaderImpl<ChildIndex> ?? children,
             height: height,
             timestamp: timestamp,
             nonce: nonce

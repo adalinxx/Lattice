@@ -160,7 +160,7 @@ public struct BlockBuilder {
             parentState: parentState.removingNode(),
             prevState: prevState.removingNode(),
             postState: postState,
-            children: try buildChildrenDictionary(children),
+            children: try buildChildIndex(children),
             height: 0,
             timestamp: timestamp,
             nonce: nonce
@@ -282,7 +282,7 @@ public struct BlockBuilder {
             parentState: parentState,
             prevState: prevState.removingNode(),
             postState: postState,
-            children: try buildChildrenDictionary(children),
+            children: try buildChildIndex(children),
             height: height,
             timestamp: timestamp,
             nonce: nonce
@@ -503,20 +503,11 @@ public struct BlockBuilder {
         return try HeaderImpl(node: dict)
     }
 
-    static func buildChildrenDictionary(
+    static func buildChildIndex(
         _ children: [String: Block]
-    ) throws -> HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Block>>> {
-        if children.isEmpty {
-            return try HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Block>>>(
-                node: MerkleDictionaryImpl<VolumeImpl<Block>>()
-            )
-        }
-
-        var dict = MerkleDictionaryImpl<VolumeImpl<Block>>()
-        for (directory, block) in children {
-            let blockHeader = try VolumeImpl<Block>(node: block)
-            dict = try dict.inserting(key: directory, value: blockHeader)
-        }
-        return try HeaderImpl(node: dict)
+    ) throws -> HeaderImpl<ChildIndex> {
+        try HeaderImpl(node: ChildIndex(
+            entries: try children.mapValues { try VolumeImpl<Block>(node: $0) }
+        ))
     }
 }
