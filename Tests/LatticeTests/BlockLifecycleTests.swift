@@ -176,7 +176,7 @@ final class BlockMintingTests: XCTestCase {
             await collector.append(context.batch)
         }
 
-        let first = try await level.admitBlockHeaderChainLocal(
+        let first = try await level.importBlock(
             try BlockHeader(node: block1),
             fetcher: fetcher,
             validationContentStorer: fetcher,
@@ -213,7 +213,7 @@ final class BlockMintingTests: XCTestCase {
         XCTAssertEqual(blockFact.stateDiff, built1.stateDiff)
         XCTAssertEqual(workFact.blockHash, block1Hash)
 
-        let duplicate = try await level.admitBlockHeaderChainLocal(
+        let duplicate = try await level.importBlock(
             try BlockHeader(node: block1),
             fetcher: fetcher,
             validationContentStorer: fetcher,

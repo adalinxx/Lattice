@@ -14,7 +14,7 @@ import cashew
 
 // MARK: - The observable
 
-/// Everything one `admitBlockHeaderChainLocal` call observably produced, with
+/// Everything one `importBlock` call observably produced, with
 /// every content id rendered by fixture name so the file reads as a decision
 /// table. The `fixtures` map pins the names to their hashes.
 struct AdmissionDecisionGolden: Codable, Equatable {
@@ -460,7 +460,7 @@ final class AdmissionDecisionGoldenTests: XCTestCase {
             } else {
                 fetcher = fixtures.fetcher
             }
-            let result = try await level.admitBlockHeaderChainLocal(
+            let result = try await level.importBlock(
                 header,
                 fetcher: fetcher,
                 childPackage: step.package ? fixtures.packages[step.candidate] : nil,

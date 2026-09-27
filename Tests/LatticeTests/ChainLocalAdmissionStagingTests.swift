@@ -289,7 +289,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         XCTAssertEqual(orphanContext.parentGenesisLinks.count, 1)
 
         _ = try await level.admit(missingParent, fetcher: fetcher)
-        let replay = try await level.preflightBlockHeaderChainLocal(
+        let replay = try await level.preflightBlockImport(
             orphanHeader,
             fetcher: fetcher,
             validationContentStorer: fetcher
@@ -372,7 +372,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         // Re-admit the heaviest tip. It is already known with equal work, so it is
         // classified a duplicate. The seam re-runs fork choice and surfaces the
         // promotion. Pre-fix this returned `.duplicate` with a nil commit.
-        let replay = try await stranded.preflightBlockHeaderChainLocal(
+        let replay = try await stranded.preflightBlockImport(
             try BlockHeader(node: heavier2),
             fetcher: fetcher,
             validationContentStorer: fetcher
@@ -628,7 +628,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let recorder = AdmissionStageRecorder()
         let header = try BlockHeader(node: candidate)
 
-        let result = try await level.preflightBlockHeaderChainLocal(
+        let result = try await level.preflightBlockImport(
             header,
             fetcher: source,
             validationContentStorer: validationCache
@@ -664,7 +664,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let otherLevel = AdmissionFixture.makeLevel(genesis: genesis)
         let header = try BlockHeader(node: candidate)
 
-        let result = try await level.preflightBlockHeaderChainLocal(
+        let result = try await level.preflightBlockImport(
             header,
             fetcher: fetcher,
             validationContentStorer: fetcher
@@ -684,7 +684,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             XCTFail("a token must not commit on a different level")
         } catch {
             XCTAssertEqual(
-                error as? ChainAdmissionPreflightError,
+                error as? BlockImportPreflightError,
                 .invalidToken
             )
         }
@@ -709,7 +709,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             XCTFail("a token must not commit twice")
         } catch {
             XCTAssertEqual(
-                error as? ChainAdmissionPreflightError,
+                error as? BlockImportPreflightError,
                 .invalidToken
             )
         }
@@ -734,7 +734,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let firstHeader = try BlockHeader(node: first)
         let siblingHeader = try BlockHeader(node: sibling)
 
-        let preflightResult = try await level.preflightBlockHeaderChainLocal(
+        let preflightResult = try await level.preflightBlockImport(
             firstHeader,
             fetcher: fetcher,
             validationContentStorer: fetcher
@@ -781,7 +781,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let predecessorHeader = try BlockHeader(node: predecessor)
         let descendantHeader = try BlockHeader(node: descendant)
 
-        let preflightResult = try await level.preflightBlockHeaderChainLocal(
+        let preflightResult = try await level.preflightBlockImport(
             descendantHeader,
             fetcher: fetcher,
             validationContentStorer: fetcher
@@ -835,7 +835,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             stage: { context in await recorder.stage(context) }
         )
         let source = DenyingFetcher(backing: backing)
-        let preflight = try await level.preflightBlockHeaderChainLocal(
+        let preflight = try await level.preflightBlockImport(
             orphanHeader,
             fetcher: source,
             validationContentStorer: backing
@@ -870,7 +870,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             XCTFail("a duplicate token must not resolve twice")
         } catch {
             XCTAssertEqual(
-                error as? ChainAdmissionPreflightError,
+                error as? BlockImportPreflightError,
                 .invalidToken
             )
         }
@@ -904,14 +904,14 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let recorder = AdmissionStageRecorder()
         let firstHeader = try BlockHeader(node: first)
         let siblingHeader = try BlockHeader(node: sibling)
-        async let firstResult: ChainLocalBlockResult = level.admit(
+        async let firstResult: BlockImportResult = level.admit(
             firstHeader,
             fetcher: fetcher,
             storer: barrier,
             validationContext: validationContext,
             stage: { record in await recorder.stage(record) }
         )
-        async let siblingResult: ChainLocalBlockResult = level.admit(
+        async let siblingResult: BlockImportResult = level.admit(
             siblingHeader,
             fetcher: fetcher,
             storer: barrier,

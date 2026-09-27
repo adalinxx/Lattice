@@ -50,7 +50,7 @@ public enum GenesisCeremony {
     }
 
     public static func verify(block: Block, config: GenesisConfig) -> Bool {
-        guard block.hasGenesisAdmissionShape() else { return false }
+        guard block.hasGenesisShape() else { return false }
         guard block.timestamp == config.timestamp else { return false }
         guard block.spec.node != nil else { return false }
         guard block.target == UInt256.max else { return false }

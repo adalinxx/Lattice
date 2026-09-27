@@ -69,7 +69,7 @@ public extension Block {
         reportTemporalFailure: Bool = false,
         validationContext: ValidationContext
     ) async throws -> (Bool, StateDiff, LatticeState?) {
-        if !hasGenesisAdmissionShape() { return (false, .empty, nil) }
+        if !hasGenesisShape() { return (false, .empty, nil) }
         if !validationContext.admits(timestamp: timestamp) {
             if reportTemporalFailure { throw BlockValidationError.notYetValid }
             return (false, .empty, nil)
@@ -473,7 +473,7 @@ public extension Block {
     }
 
     /// Header-local rules shared by every path that can accept a genesis.
-    func hasGenesisAdmissionShape() -> Bool {
+    func hasGenesisShape() -> Bool {
         version == Block.currentVersion
             && parent == nil
             && height == 0

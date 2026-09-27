@@ -11,7 +11,7 @@ import UInt256
 import Foundation
 
 /// Equivalence tests for the additive `source:` overloads on Lattice's
-/// block-validation APIs (`validateNexus`, `admitBlockHeaderChainLocal`). Each test runs the same block through the existing
+/// block-validation APIs (`validateNexus`, `importBlock`). Each test runs the same block through the existing
 /// `fetcher:` API and the new `source:` API over the SAME backing CAS, and
 /// asserts the two paths produce identical results. The `source:` path wraps a
 /// batched cashew `ContentSource` in a single `CoalescingFetcher`; these tests
@@ -162,7 +162,7 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         let genesisBlock = try XCTUnwrap(genesis.node)
 
         let levelA = ChainLevel(testChain: ChainState.fromGenesis(block: genesisBlock))
-        let resultViaFetcher = try await levelA.admitBlockHeaderChainLocal(
+        let resultViaFetcher = try await levelA.importBlock(
             blockHeader,
             fetcher: fetcher,
             validationContentStorer: fetcher,
@@ -171,7 +171,7 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         )
 
         let levelB = ChainLevel(testChain: ChainState.fromGenesis(block: genesisBlock))
-        let resultViaSource = try await levelB.admitBlockHeaderChainLocal(
+        let resultViaSource = try await levelB.importBlock(
             blockHeader,
             source: FetcherContentSource(fetcher),
             validationContentStorer: fetcher,

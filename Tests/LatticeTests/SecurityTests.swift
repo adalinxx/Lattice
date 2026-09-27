@@ -1166,7 +1166,7 @@ final class StateRootValidationTests: XCTestCase {
         try await storeBlockToFetcher(minedTampered, fetcher: f)
 
         let level = ChainLevel(testChain: ChainState.fromGenesis(block: g))
-        let result = try await level.admitBlockHeaderChainLocal(
+        let result = try await level.importBlock(
             header(minedTampered),
             fetcher: f,
             validationContentStorer: f,
@@ -1196,7 +1196,7 @@ final class StateRootValidationTests: XCTestCase {
         try await storeBlockToFetcher(validBlock, fetcher: f)
 
         let acceptingLevel = ChainLevel(testChain: ChainState.fromGenesis(block: g))
-        let accepted = try await acceptingLevel.admitBlockHeaderChainLocal(
+        let accepted = try await acceptingLevel.importBlock(
             header(validBlock),
             fetcher: f,
             validationContentStorer: f,
@@ -1225,7 +1225,7 @@ final class StateRootValidationTests: XCTestCase {
         try await storeBlockToFetcher(minedTampered, fetcher: f)
 
         let rejectingLevel = ChainLevel(testChain: ChainState.fromGenesis(block: g))
-        let rejected = try await rejectingLevel.admitBlockHeaderChainLocal(
+        let rejected = try await rejectingLevel.importBlock(
             header(minedTampered),
             fetcher: f,
             validationContentStorer: f,
@@ -1258,7 +1258,7 @@ final class StateRootValidationTests: XCTestCase {
         )
 
         let level = ChainLevel(testChain: ChainState.fromGenesis(block: g))
-        let unavailable = try await level.admitBlockHeaderChainLocal(
+        let unavailable = try await level.importBlock(
             header(block),
             fetcher: incompleteFetcher,
             validationContentStorer: incompleteFetcher,
@@ -1274,7 +1274,7 @@ final class StateRootValidationTests: XCTestCase {
 
         try await VolumeImpl<Block>(node: g).storeBlock(fetcher: producerFetcher, storer: completeFetcher)
         try await VolumeImpl<Block>(node: block).storeBlock(fetcher: producerFetcher, storer: completeFetcher)
-        let accepted = try await level.admitBlockHeaderChainLocal(
+        let accepted = try await level.importBlock(
             header(block),
             fetcher: completeFetcher,
             validationContentStorer: completeFetcher,
@@ -1313,14 +1313,14 @@ final class StateRootValidationTests: XCTestCase {
         try await storeBlockToFetcher(minedTampered, fetcher: f)
 
         let level = ChainLevel(testChain: ChainState.fromGenesis(block: g))
-        let rejected = try await level.admitBlockHeaderChainLocal(
+        let rejected = try await level.importBlock(
             header(minedTampered),
             fetcher: f,
             validationContentStorer: f,
             materializedVolumeStorer: f,
             stage: testAdmissionStage
         )
-        let rejectedAgain = try await level.admitBlockHeaderChainLocal(
+        let rejectedAgain = try await level.importBlock(
             header(minedTampered),
             fetcher: f,
             validationContentStorer: f,
@@ -1388,7 +1388,7 @@ final class StateRootValidationTests: XCTestCase {
             chain: ChainState.fromGenesis(block: childGenesis),
             context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
         )
-        let result = try await childLevel.admitBlockHeaderChainLocal(
+        let result = try await childLevel.importBlock(
             header(minedTamperedChild),
             fetcher: f,
             childPackage: package,
