@@ -1,3 +1,5 @@
+import LatticePoW
+
 /// Exact subtree work as a RANGE over an Euler tour of the routed block tree.
 ///
 /// The structure this replaces stored one subtree total per segment base and

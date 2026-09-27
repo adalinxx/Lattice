@@ -10,7 +10,7 @@ let SPEC_PROPERTY = "spec"
 let PARENT_STATE_PROPERTY = "parentState"
 let PREV_STATE_PROPERTY = "prevState"
 let POST_STATE_PROPERTY = "postState"
-let CHILDREN_PROPERTY = "children"
+package let CHILDREN_PROPERTY = "children"
 
 let BLOCK_PROPERTIES = Set([
     TRANSACTIONS_PROPERTY,

@@ -1,4 +1,5 @@
 import cashew
+import LatticePrimitives
 
 public extension AccountStateHeader {
     /// Aggregate deltas per owner, resolve current balances, apply net changes.

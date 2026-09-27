@@ -1,4 +1,5 @@
 import cashew
+import LatticePrimitives
 
 public extension DepositStateHeader {
     func proveExistenceOfCorrespondingDeposit(withdrawalActions: [WithdrawalAction], fetcher: Fetcher) async throws -> DepositStateHeader {

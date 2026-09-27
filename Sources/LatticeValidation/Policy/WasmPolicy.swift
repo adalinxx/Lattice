@@ -3,6 +3,7 @@ import cashew
 @_spi(Fuzzing)
 import WasmKit
 import WasmParser
+import LatticePrimitives
 
 public struct WasmPolicyContext: Codable, Sendable {
     public static let canonicalEncodingVersion: UInt16 = 1

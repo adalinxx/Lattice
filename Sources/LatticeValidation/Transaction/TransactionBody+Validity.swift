@@ -2,6 +2,8 @@ import cashew
 import CollectionConcurrencyKit
 import Foundation
 import UInt256
+import LatticePrimitives
+import LatticePoW
 
 func addStateDelta(_ value: Int, to total: inout Int) -> Bool {
     let next = total.addingReportingOverflow(value)
@@ -117,7 +119,7 @@ extension TransactionBody {
         return (totalDebits, totalCredits, false, lhs == rhs)
     }
 
-    func withdrawalsAreValid(directory: String, prevState: LatticeState, parentState: LatticeState, fetcher: Fetcher) async throws -> Bool {
+    package func withdrawalsAreValid(directory: String, prevState: LatticeState, parentState: LatticeState, fetcher: Fetcher) async throws -> Bool {
         if withdrawalActions.isEmpty { return true }
         // Both proofs THROW (StateErrors.conflictingActions) on a missing or
         // mismatched deposit/receipt, so awaiting without throwing IS the
@@ -254,7 +256,7 @@ extension TransactionBody {
         return true
     }
 
-    func getStateDelta() throws -> Int {
+    package func getStateDelta() throws -> Int {
         var delta = 0
         func add(_ value: Int) throws {
             guard addStateDelta(value, to: &delta) else {

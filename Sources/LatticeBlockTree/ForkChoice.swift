@@ -1,5 +1,7 @@
 import CID
 import UInt256
+import LatticePrimitives
+import LatticePoW
 
 /// Stable tie-break for equal-work same-chain child blocks. Compare the CID
 /// bytes rather than an encoded presentation string; malformed values remain
@@ -429,7 +431,7 @@ extension ChainState {
     /// distinguish a produced state from a declared one — parent-state
     /// attestation above all — must also test whether the block was validated;
     /// connectivity is not verification.
-    func hasConnectedAncestry(blockHash: String) -> Bool {
+    package func hasConnectedAncestry(blockHash: String) -> Bool {
         forkChoice.isRouted(blockHash)
     }
 
@@ -720,7 +722,7 @@ extension ChainState {
         localWorkCachesDirty = false
     }
 
-    func workContribution(
+    package func workContribution(
         id: String,
         at blockHash: String
     ) -> VerifiedWorkContribution? {

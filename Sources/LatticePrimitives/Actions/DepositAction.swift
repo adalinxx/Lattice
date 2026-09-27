@@ -14,7 +14,7 @@ public struct DepositAction: Codable, Sendable {
         self.amountDeposited = amountDeposited
     }
 
-    func stateDelta() -> Int {
+    package func stateDelta() -> Int {
         return 32 + demander.count
     }
 }

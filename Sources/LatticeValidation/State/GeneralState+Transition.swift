@@ -1,4 +1,5 @@
 import cashew
+import LatticePrimitives
 
 public extension GeneralStateHeader {
     func proveAndUpdateState(allActions: [Action], fetcher: Fetcher) async throws -> (GeneralStateHeader, StateDiff) {

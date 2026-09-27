@@ -1,5 +1,7 @@
 import Foundation
 import UInt256
+import LatticePrimitives
+import LatticeBlockTree
 
 /// Consensus runtime for exactly one chain. Other chains are evidence sources,
 /// never recursively-owned runtimes.

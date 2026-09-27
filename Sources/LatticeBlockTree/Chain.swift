@@ -1,6 +1,8 @@
 import cashew
 import CID
 import UInt256
+import LatticePrimitives
+import LatticePoW
 
 public enum ChainStateRestoreError: Error, Sendable, Equatable {
     case corruptConsensusGraph
@@ -719,7 +721,7 @@ public actor ChainState {
         }
     }
 
-    func sameChainPredecessorRequirement(
+    package func sameChainPredecessorRequirement(
         for descendantCID: String
     ) -> SameChainPredecessorRequirement? {
         graph[descendantCID].flatMap(sameChainPredecessorRequirement(for:))
@@ -1187,18 +1189,18 @@ public actor ChainState {
     /// Reserve one distinct U64 commit revision before the node stages a batch.
     /// Other actor mutations must leave this capacity available until the batch
     /// either fails staging or consumes the reservation synchronously.
-    func reserveAdmissionRevision() -> Bool {
+    package func reserveAdmissionRevision() -> Bool {
         guard hasUnreservedMutationCapacity else { return false }
         reservedAdmissionRevisions += 1
         return true
     }
 
-    func releaseAdmissionRevision() {
+    package func releaseAdmissionRevision() {
         precondition(reservedAdmissionRevisions > 0)
         reservedAdmissionRevisions -= 1
     }
 
-    func applyReservedStaged(
+    package func applyReservedStaged(
         _ batch: ChainAdmissionBatch
     ) throws -> SubmissionResult? {
         guard reservedAdmissionRevisions > 0 else {

@@ -3,7 +3,8 @@ import Crypto
 import cashew
 import UInt256
 import CollectionConcurrencyKit
-
+import LatticePrimitives
+import LatticePoW
 
 /// A validation result whose truth may change only as the supplied wall-clock
 /// context advances. It is deliberately separate from a permanent protocol
@@ -62,7 +63,7 @@ public extension Block {
 
     /// Internal genesis validation result for admission paths that must retain
     /// the verified post-state before exposing a consensus mutation.
-    internal func validateGenesisTransition(
+    package func validateGenesisTransition(
         fetcher: Fetcher,
         chainPath: [String],
         reportTemporalFailure: Bool = false,

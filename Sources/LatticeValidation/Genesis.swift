@@ -1,6 +1,7 @@
 import Foundation
 import cashew
 import UInt256
+import LatticePrimitives
 
 public struct GenesisConfig: Sendable {
     public let spec: ChainSpec

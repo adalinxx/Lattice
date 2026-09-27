@@ -1,6 +1,8 @@
 import Foundation
 import cashew
 import UInt256
+import LatticePrimitives
+import LatticePoW
 
 public enum ChildProofSerializationError: Error, Sendable, Equatable {
     case valueTooLarge

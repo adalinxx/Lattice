@@ -18,33 +18,33 @@ import UInt256
 //     receipt-key injectivity across chains (a `/` would let a withdrawal settle
 //     against the wrong chain's receipt).
 
-func isDeterministicKeyAtom(_ value: String) -> Bool {
+package func isDeterministicKeyAtom(_ value: String) -> Bool {
     let bytes = value.utf8
     return !bytes.isEmpty && bytes.allSatisfy { (0x21...0x7e).contains($0) }
 }
 
-func isValidAccountAtom(_ value: String) -> Bool {
+package func isValidAccountAtom(_ value: String) -> Bool {
     isDeterministicKeyAtom(value) && !value.contains(DIRECTORY_KEY_SEPARATOR)
 }
 
-func isValidDirectoryAtom(_ value: String) -> Bool {
+package func isValidDirectoryAtom(_ value: String) -> Bool {
     isDeterministicKeyAtom(value) && !value.contains(DIRECTORY_KEY_SEPARATOR)
 }
 
-func isValidGeneralAtom(_ value: String) -> Bool {
+package func isValidGeneralAtom(_ value: String) -> Bool {
     isDeterministicKeyAtom(value)
 }
 
-enum ChildProofWireLimits {
+package enum ChildProofWireLimits {
     // Structural serialized field width: a directory is length-prefixed with a
     // UInt16 in the proof wire format, so this is the encoding capacity, not a
     // policy limit on how long a directory may be.
-    static let maximumDirectoryBytes = Int(UInt16.max)
+    package static let maximumDirectoryBytes = Int(UInt16.max)
     // Structural serialized field width: the directory path is length-prefixed
     // with a UInt16 in the proof wire format, so this is the encoding capacity,
     // not a policy limit on how deeply a chain may nest. A node that wants a
     // tighter bound on proof-walk depth enforces it as a local resource choice.
-    static let maximumDepth = Int(UInt16.max)
+    package static let maximumDepth = Int(UInt16.max)
 }
 
 public enum ChainRuntimeContextError: Error, Sendable, Equatable {

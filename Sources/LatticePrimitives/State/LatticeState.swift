@@ -22,6 +22,20 @@ public struct LatticeState: Node {
     public let genesisState: GenesisStateHeader
     public let receiptState: ReceiptStateHeader
 
+    package init(
+        accountState: AccountStateHeader,
+        generalState: GeneralStateHeader,
+        depositState: DepositStateHeader,
+        genesisState: GenesisStateHeader,
+        receiptState: ReceiptStateHeader
+    ) {
+        self.accountState = accountState
+        self.generalState = generalState
+        self.depositState = depositState
+        self.genesisState = genesisState
+        self.receiptState = receiptState
+    }
+
     static let empty = Self(
         // known-valid local node; CID computation cannot fail (no Float/Double fields)
         accountState: try! AccountStateHeader(node: AccountState()),
@@ -37,7 +51,7 @@ public struct LatticeState: Node {
     // known-valid local node; CID computation cannot fail (no Float/Double fields)
     public static let emptyHeader = try! LatticeStateHeader(node: empty)
 
-    static func emptyState() -> Self { empty }
+    package static func emptyState() -> Self { empty }
 
     public func get(property: PathSegment) -> (any cashew.Header)? {
         switch property {
@@ -88,7 +102,7 @@ private func collectMaterializedVolumes(
 }
 
 extension VolumeImpl where NodeType == LatticeState {
-    func storeMaterialized(createdBy diff: StateDiff, storer: any VolumeStorer) async throws {
+    package func storeMaterialized(createdBy diff: StateDiff, storer: any VolumeStorer) async throws {
         var created = Set(diff.created.compactMap { cid, count in
             count > diff.replaced[cid, default: 0] ? cid : nil
         })
