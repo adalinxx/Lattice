@@ -330,7 +330,7 @@ public struct BlockBuilder {
     static func resolveDifficultyAnchor(
         from block: Block,
         fetcher: Fetcher,
-        chain: ChainState? = nil
+        chain: (any DifficultyAnchorSource)? = nil
     ) async throws -> DifficultyAnchor? {
         var current = block
         // Genesis precedes the anchor and has no schedule to measure against.

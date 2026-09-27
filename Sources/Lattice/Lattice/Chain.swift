@@ -1334,3 +1334,5 @@ public actor ChainState {
     }
 
 }
+
+extension ChainState: DifficultyAnchorSource {}
