@@ -85,7 +85,7 @@ struct ExecutionFrontier: Sendable {
         tipSnapshot: TipBlockSnapshot?,
         snapshots: [String: TipBlockSnapshot],
         validated: Set<String>,
-        in blocks: [String: BlockMeta],
+        in blocks: BlockGraph,
         excluded: Set<String>
     ) throws {
         self.chainTip = chainTip
@@ -99,7 +99,7 @@ struct ExecutionFrontier: Sendable {
         self.byTransition = [:]
         self.byPostState = [:]
         for (blockHash, snapshot) in self.snapshots
-        where blocks[blockHash] != nil {
+        where blocks.contains(blockHash) {
             self.byTransition[
                 StateTransition(
                     from: snapshot.prevStateCID,
@@ -116,7 +116,7 @@ struct ExecutionFrontier: Sendable {
         }
         self.mainChainBlockAtIndex = [:]
         for hash in mainChainHashes {
-            guard let height = blocks[hash]?.blockHeight,
+            guard let height = blocks.height(of: hash),
                   self.mainChainBlockAtIndex[height] == nil else {
                 throw ChainStateRestoreError.corruptConsensusGraph
             }
@@ -132,7 +132,7 @@ struct ExecutionFrontier: Sendable {
     /// Blocks reachable from a genesis through an unbroken run of executed
     /// blocks. Computed downward so each block is settled once.
     static func seedAnchored(
-        in hashToBlock: [String: BlockMeta],
+        in graph: BlockGraph,
         validated: Set<String>,
         excluded: Set<String>
     ) -> Set<String> {
@@ -140,15 +140,15 @@ struct ExecutionFrontier: Sendable {
         // Roots keyed on the parent pointer, matching `propagateAnchored` and
         // the weight-index builder: the graph invariant ties it to height 0, and
         // three spellings of one predicate is how they drift apart.
-        var pending = hashToBlock.values
+        var pending = graph.records
             .filter { $0.parentBlockHash == nil && validated.contains($0.blockHash) }
             .map(\.blockHash)
         while let hash = pending.popLast() {
-            guard let meta = hashToBlock[hash],
+            guard graph.contains(hash),
                   validated.contains(hash),
                   !excluded.contains(hash),
                   anchored.insert(hash).inserted else { continue }
-            pending.append(contentsOf: meta.childHashes)
+            pending.append(contentsOf: graph.children(of: hash))
         }
         return anchored
     }
@@ -185,7 +185,7 @@ struct ExecutionFrontier: Sendable {
     mutating func continuityPath(
         from: String,
         to: String,
-        in hashToBlock: [String: BlockMeta]
+        in graph: BlockGraph
     ) -> [String]? {
         // Only a transition on the executed-from-genesis frontier may be
         // attested: executed, every ancestor executed, and not under an
@@ -218,7 +218,7 @@ struct ExecutionFrontier: Sendable {
         var childTowardTarget: [String: String] = [:]
         while let blockHash = pending.popLast() {
             guard visited.insert(blockHash).inserted,
-                  let block = hashToBlock[blockHash],
+                  let block = graph[blockHash],
                   let snapshot = snapshots[blockHash] else {
                 continue
             }
@@ -234,7 +234,7 @@ struct ExecutionFrontier: Sendable {
             }
             guard let parentHash = block.parentBlockHash,
                   isAttestable(parentHash),
-                  let parent = hashToBlock[parentHash],
+                  let parent = graph[parentHash],
                   let parentSnapshot = snapshots[parentHash],
                   parentSnapshot.postStateCID == snapshot.prevStateCID
             else { continue }
@@ -252,11 +252,11 @@ struct ExecutionFrontier: Sendable {
     /// `blockHash`.
     mutating func markValidated(
         _ blockHash: String,
-        in hashToBlock: [String: BlockMeta],
+        in graph: BlockGraph,
         excluded: Set<String>
     ) {
         validated.insert(blockHash)
-        propagateAnchored(from: blockHash, in: hashToBlock, excluded: excluded)
+        propagateAnchored(from: blockHash, in: graph, excluded: excluded)
     }
 
     /// Extend the executed-from-genesis frontier.
@@ -269,12 +269,12 @@ struct ExecutionFrontier: Sendable {
     /// amortized cost per admission is constant.
     private mutating func propagateAnchored(
         from blockHash: String,
-        in hashToBlock: [String: BlockMeta],
+        in graph: BlockGraph,
         excluded: Set<String>
     ) {
         var pending = [blockHash]
         while let hash = pending.popLast() {
-            guard let meta = hashToBlock[hash],
+            guard let meta = graph[hash],
                   !anchored.contains(hash),
                   validated.contains(hash) else { continue }
             let parentAnchored = meta.parentBlockHash.map {
@@ -285,7 +285,7 @@ struct ExecutionFrontier: Sendable {
             // stands behind.
             guard parentAnchored, !excluded.contains(hash) else { continue }
             anchored.insert(hash)
-            pending.append(contentsOf: meta.childHashes)
+            pending.append(contentsOf: graph.children(of: hash))
         }
     }
 
@@ -294,13 +294,13 @@ struct ExecutionFrontier: Sendable {
     /// anchored has no anchored descendants, so the walk stops at once.
     mutating func unanchor(
         subtreeRootedAt rootHash: String,
-        in hashToBlock: [String: BlockMeta]
+        in graph: BlockGraph
     ) {
         var pending = [rootHash]
         while let hash = pending.popLast() {
             guard anchored.remove(hash) != nil,
-                  let meta = hashToBlock[hash] else { continue }
-            pending.append(contentsOf: meta.childHashes)
+                  graph.contains(hash) else { continue }
+            pending.append(contentsOf: graph.children(of: hash))
         }
     }
 
@@ -377,7 +377,7 @@ struct ExecutionFrontier: Sendable {
     /// in it are the roots.
     mutating func project(
         forkChoice: ForkChoice,
-        in hashToBlock: [String: BlockMeta],
+        in graph: BlockGraph,
         heightZero: Set<String>,
         generation: UInt64,
         forceFull: Bool = false,
@@ -389,7 +389,7 @@ struct ExecutionFrontier: Sendable {
         if !forceFull, projectedGeneration != nil, let mutatedAt,
            let outcome = truncatedProjection(
                forkChoice: forkChoice,
-               in: hashToBlock,
+               in: graph,
                monotoneIncreaseAt: mutatedAt
            ) {
             return outcome.commit
@@ -400,14 +400,14 @@ struct ExecutionFrontier: Sendable {
         // the excluded set is empty in the common case (zero cost) and otherwise
         // only steers the descent past excluded roots — no parallel path.
         let roots = Array(heightZero).filter {
-            hashToBlock[$0]?.parentBlockHash == nil
+            graph.parent(of: $0) == nil
         }
         guard let root = forkChoice.selectableRoot(among: roots)
         else { return nil }
 #if DEBUG
         fullCanonicalProjectionCount += 1
 #endif
-        let descent = forkChoice.descend(from: root, in: hashToBlock)
+        let descent = forkChoice.descend(from: root, in: graph)
 #if DEBUG
         // Descent steps ARE blocks now: with no quotient there is no hop to
         // take, so this column and the block column converge by construction.
@@ -428,14 +428,14 @@ struct ExecutionFrontier: Sendable {
         let added = newHashes.subtracting(mainChainHashes).reduce(
             into: [String: UInt64]()
         ) { result, hash in
-            if let height = hashToBlock[hash]?.blockHeight { result[hash] = height }
+            if let height = graph.height(of: hash) { result[hash] = height }
         }
 
         chainTip = newTip
         mainChainHashes = newHashes
         mainChainBlockAtIndex = [:]
         for hash in newHashes {
-            if let height = hashToBlock[hash]?.blockHeight {
+            if let height = graph.height(of: hash) {
                 mainChainBlockAtIndex[height] = hash
             }
         }
@@ -475,13 +475,13 @@ struct ExecutionFrontier: Sendable {
     /// a malformed route that fails closed like every other guard here.
     private func canonicalDivergencePoint(
         from mutatedAt: String,
-        in hashToBlock: [String: BlockMeta]
+        in graph: BlockGraph
     ) -> String? {
         var current = mutatedAt
         while !mainChainHashes.contains(current) {
-            guard let meta = hashToBlock[current],
+            guard let meta = graph[current],
                   let parentHash = meta.parentBlockHash,
-                  let parent = hashToBlock[parentHash],
+                  let parent = graph[parentHash],
                   parent.blockHeight < meta.blockHeight else { return nil }
             current = parentHash
         }
@@ -493,7 +493,7 @@ struct ExecutionFrontier: Sendable {
     /// partial answer.
     private mutating func truncatedProjection(
         forkChoice: ForkChoice,
-        in hashToBlock: [String: BlockMeta],
+        in graph: BlockGraph,
         monotoneIncreaseAt mutatedAt: String
     ) -> TruncatedProjectionOutcome? {
         // A block that never routed into the quotient contributed no work and no
@@ -510,15 +510,15 @@ struct ExecutionFrontier: Sendable {
         guard !mainChainHashes.contains(mutatedAt) else {
             return TruncatedProjectionOutcome(commit: nil)
         }
-        guard let divergence = canonicalDivergencePoint(from: mutatedAt, in: hashToBlock),
-              let divergenceHeight = hashToBlock[divergence]?.blockHeight
+        guard let divergence = canonicalDivergencePoint(from: mutatedAt, in: graph),
+              let divergenceHeight = graph.height(of: divergence)
         else { return nil }
         let (suffixHeight, overflow) = divergenceHeight.addingReportingOverflow(1)
         guard !overflow else { return nil }
         let excludedRoots = forkChoice.excludedRoots
         let children = excludedRoots.isEmpty
-            ? (hashToBlock[divergence]?.childHashes ?? [])
-            : (hashToBlock[divergence]?.childHashes ?? []).filter {
+            ? graph.children(of: divergence)
+            : graph.children(of: divergence).filter {
                 !excludedRoots.contains($0)
             }
         // Every child of the divergence point is unselectable: the mutation
@@ -555,11 +555,11 @@ struct ExecutionFrontier: Sendable {
 #endif
             return TruncatedProjectionOutcome(commit: nil)
         }
-        guard let replaced = canonicalPathAbove(suffixHeight, in: hashToBlock) else { return nil }
+        guard let replaced = canonicalPathAbove(suffixHeight, in: graph) else { return nil }
         // The suffix begins at a block taken straight from the divergence
         // point's own children, so the boundary below it holds by construction
         // rather than by assumption.
-        let descent = forkChoice.descend(from: chosen, in: hashToBlock)
+        let descent = forkChoice.descend(from: chosen, in: graph)
 #if DEBUG
         canonicalProjectionSegmentVisitCount += UInt64(descent.blocks.count)
         canonicalProjectionBlockVisitCount += UInt64(descent.blocks.count)
@@ -569,7 +569,7 @@ struct ExecutionFrontier: Sendable {
             tipHash: descent.tipHash,
             blocks: descent.blocks,
             replacing: replaced,
-            in: hashToBlock
+            in: graph
         ))
     }
 
@@ -578,9 +578,9 @@ struct ExecutionFrontier: Sendable {
     /// re-materializes instead of trusting a partial removal set.
     private func canonicalPathAbove(
         _ height: UInt64,
-        in hashToBlock: [String: BlockMeta]
+        in graph: BlockGraph
     ) -> Set<String>? {
-        guard let tipHeight = hashToBlock[chainTip]?.blockHeight else {
+        guard let tipHeight = graph.height(of: chainTip) else {
             return nil
         }
         var replaced = Set<String>()
@@ -600,7 +600,7 @@ struct ExecutionFrontier: Sendable {
         tipHash: String,
         blocks: Set<String>,
         replacing replaced: Set<String>,
-        in hashToBlock: [String: BlockMeta]
+        in graph: BlockGraph
     ) -> ChainCommit? {
         // Both differences are unconditional, so they are correct whether or
         // not the replaced and suffix block sets overlap.
@@ -608,7 +608,7 @@ struct ExecutionFrontier: Sendable {
         let added = blocks.subtracting(replaced).reduce(
             into: [String: UInt64]()
         ) { result, hash in
-            if let height = hashToBlock[hash]?.blockHeight { result[hash] = height }
+            if let height = graph.height(of: hash) { result[hash] = height }
         }
         guard tipHash != chainTip || !removed.isEmpty || !added.isEmpty else {
             return nil
@@ -618,7 +618,7 @@ struct ExecutionFrontier: Sendable {
         mainChainHashes.subtract(removed)
         mainChainHashes.formUnion(added.keys)
         for hash in removed {
-            guard let height = hashToBlock[hash]?.blockHeight,
+            guard let height = graph.height(of: hash),
                   mainChainBlockAtIndex[height] == hash else { continue }
             mainChainBlockAtIndex.removeValue(forKey: height)
         }
@@ -710,7 +710,7 @@ extension ChainState {
         }
         guard let root = forkChoice.selectableRoot(among: roots)
         else { return nil }
-        let descent = forkChoice.descend(from: root, in: graph.blocksByHash)
+        let descent = forkChoice.descend(from: root, in: graph)
         return (descent.tipHash, descent.blocks)
     }
 #endif
@@ -723,7 +723,7 @@ extension ChainState {
     ) -> ChainCommit? {
         frontier.project(
             forkChoice: forkChoice,
-            in: graph.blocksByHash,
+            in: graph,
             heightZero: indexToBlockHash[0] ?? [],
             generation: mutationGeneration,
             forceFull: forceFull,
@@ -783,7 +783,7 @@ extension ChainState {
             return nil
         }
         if from == to { return [] }
-        return frontier.continuityPath(from: from, to: to, in: graph.blocksByHash)
+        return frontier.continuityPath(from: from, to: to, in: graph)
     }
 
     /// Record that a possessed block's transition was executed.
@@ -791,7 +791,7 @@ extension ChainState {
         guard graph.contains(blockHash) else { return }
         frontier.markValidated(
             blockHash,
-            in: graph.blocksByHash,
+            in: graph,
             excluded: forkChoice.excludedRoots
         )
     }
@@ -808,7 +808,7 @@ extension ChainState {
     }
 
     func unanchor(subtreeRootedAt rootHash: String) {
-        frontier.unanchor(subtreeRootedAt: rootHash, in: graph.blocksByHash)
+        frontier.unanchor(subtreeRootedAt: rootHash, in: graph)
     }
 
     func indexStateTransition(

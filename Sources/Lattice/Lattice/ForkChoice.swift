@@ -94,9 +94,12 @@ struct ForkChoice: Sendable {
 
     /// Recovery's linear builder: locations from the blocks' own work facts,
     /// then the weights as one Euler tour of the routed graph.
-    static func build(from blocks: [String: BlockMeta]) -> ForkChoice {
+    static func build(from blocks: BlockGraph) -> ForkChoice {
         var forkChoice = ForkChoice()
-        forkChoice.locations = locations(in: blocks)
+        forkChoice.locations = locations(
+            of: blocks.records.lazy.map(\.blockHash),
+            in: blocks
+        )
         forkChoice.weights = buildWeights(
             in: blocks,
             workByGrind: &forkChoice.locations
@@ -104,8 +107,11 @@ struct ForkChoice: Sendable {
         return forkChoice
     }
 
+    /// Each grind's location and strongest observation among the blocks
+    /// `hashes` of `blocks`.
     static func locations(
-        in blocks: [String: BlockMeta]
+        of hashes: some Sequence<String>,
+        in blocks: BlockGraph
     ) -> [String: WorkContributionRecord] {
         var result: [String: WorkContributionRecord] = [:]
         func observe(_ contribution: VerifiedWorkContribution, at hash: String) {
@@ -119,8 +125,9 @@ struct ForkChoice: Sendable {
             result[contribution.id] = record
         }
 
-        for (hash, meta) in blocks {
-            for contribution in meta.workContributions.values {
+        for hash in hashes {
+            guard let work = blocks.work(of: hash) else { continue }
+            for contribution in work.contributions.values {
                 observe(contribution, at: hash)
             }
         }
@@ -190,7 +197,7 @@ struct ForkChoice: Sendable {
     /// into one.
     func descend(
         from startHash: String,
-        in blocksByHash: [String: BlockMeta]
+        in graph: BlockGraph
     ) -> Descent {
         var currentHash = startHash
         var blocks = Set<String>()
@@ -199,7 +206,7 @@ struct ForkChoice: Sendable {
                 blocks.insert(currentHash).inserted,
                 "cycle in child edges at \(currentHash)"
             )
-            let all = blocksByHash[currentHash]?.childHashes ?? []
+            let all = graph.children(of: currentHash)
             let children = excludedRoots.isEmpty
                 ? all
                 : all.filter { !excludedRoots.contains($0) }
@@ -328,7 +335,7 @@ struct ForkChoice: Sendable {
     /// under either order, and the sum over a range does not depend on the order
     /// within it, which is the only thing fork choice reads.
     private static func buildWeights(
-        in blocks: [String: BlockMeta],
+        in blocks: BlockGraph,
         workByGrind: inout [String: WorkContributionRecord]
     ) -> EulerWorkIndex {
         // Routed-ness was a lookup into the quotient; it is now exactly what it
@@ -337,14 +344,14 @@ struct ForkChoice: Sendable {
         // here rather than kept in a second structure that has to be maintained
         // in step with this one.
         var routedBlocks = Set<String>()
-        var reachable = blocks.values
+        var reachable = blocks.records
             .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
             .map(\.blockHash)
         while let hash = reachable.popLast() {
             guard routedBlocks.insert(hash).inserted,
-                  let block = blocks[hash] else { continue }
-            reachable.append(contentsOf: block.childHashes.filter {
-                blocks[$0] != nil
+                  blocks.contains(hash) else { continue }
+            reachable.append(contentsOf: blocks.children(of: hash).filter {
+                blocks.contains($0)
             })
         }
 
@@ -364,13 +371,13 @@ struct ForkChoice: Sendable {
         // Iterative because a chain is as deep as it is long, and recursion
         // here would be bounded by the stack.
         func routedChildren(_ hash: String) -> [String] {
-            (blocks[hash]?.childHashes ?? [])
+            blocks.children(of: hash)
                 .filter { routedBlocks.contains($0) }
                 .sorted()
         }
         var events: [EulerWorkIndex.Event] = []
         events.reserveCapacity(routedBlocks.count * 2)
-        let roots = blocks.values
+        let roots = blocks.records
             .filter {
                 $0.parentBlockHash == nil
                     && $0.blockHeight == 0
@@ -620,13 +627,10 @@ extension ChainState {
         }
         guard !componentHashes.isEmpty else { return false }
 
-        var componentBlocks: [String: BlockMeta] = [:]
-        componentBlocks.reserveCapacity(componentHashes.count)
         for hash in componentHashes {
-            guard let block = graph.meta(of: hash) else { return false }
-            componentBlocks[hash] = block
+            guard graph.contains(hash) else { return false }
         }
-        var componentWorkByGrind = ForkChoice.locations(in: componentBlocks)
+        var componentWorkByGrind = ForkChoice.locations(of: componentHashes, in: graph)
         // Direct work per block, which is all the Euler tour carries. No subtree
         // total is computed for the component and none is added to any ancestor:
         // splicing its elements inside the parent's range makes every enclosing
@@ -661,7 +665,7 @@ extension ChainState {
         var events: [EulerWorkIndex.Event] = []
         events.reserveCapacity(componentHashes.count * 2)
         func componentChildren(_ hash: String) -> [String] {
-            (componentBlocks[hash]?.childHashes ?? [])
+            graph.children(of: hash)
                 .filter { componentHashes.contains($0) }
                 .sorted()
         }
@@ -740,7 +744,7 @@ extension ChainState {
         // Weights are pure work; the descent only steers past excluded roots,
         // which are never stepped into. No-op when nothing is excluded — the
         // steady-state path is unchanged.
-        let descent = forkChoice.descend(from: startHash, in: graph.blocksByHash)
+        let descent = forkChoice.descend(from: startHash, in: graph)
         return (weight, descent.tipHash, descent.blocks)
     }
 }
