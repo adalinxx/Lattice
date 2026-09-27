@@ -826,8 +826,9 @@ private enum ChainLocalAdmission {
         // Required content, like the rest of the boundary: an unavailable trie
         // must not degrade to "commits nothing", which would route parent work
         // to an older committer and let availability decide a
-        // consensus-visible number.
-
+        // consensus-visible number; every commitments failure below is a
+        // rejection, never an empty commitment set.
+        //
         // Validated tier: the block was already weighed (its work is verified
         // above and durable). Execute it now and record a validity verdict,
         // bypassing the weighed/known/duplicate short-circuits that assume a
@@ -866,7 +867,8 @@ private enum ChainLocalAdmission {
                     )
                 } catch {
                     // Carrier link intentionally not relayed here
-                    // (pre-existing quirk); see follow-up.
+                    // (pre-existing quirk, kept so admission decisions stay byte-identical;
+                    // refactor wave-2 follow-up F2: a known duplicate whose genesis-link enumeration fails drops the carrier link).
                     return .result(rejection(
                         classifyValidationFailure(error),
                         sameChainPredecessor: carrier.sameChainPredecessor
@@ -926,7 +928,8 @@ private enum ChainLocalAdmission {
         if case .weighed = mode {
             guard block.parent != nil else {
                 // Carrier link intentionally not relayed here
-                // (pre-existing quirk); see follow-up.
+                // (pre-existing quirk, kept so admission decisions stay byte-identical;
+                // refactor wave-2 follow-up F1: a rival genesis in eager/weighed mode drops the carrier link the validate tier keeps).
                 return .result(rejection(.protocolInvalid))
             }
             if let failure = await validateHeaderLinkage(
@@ -961,7 +964,8 @@ private enum ChainLocalAdmission {
         if block.parent == nil {
             guard !context.isRoot, block.height == 0 else {
                 // Carrier link intentionally not relayed here
-                // (pre-existing quirk); see follow-up.
+                // (pre-existing quirk, kept so admission decisions stay byte-identical;
+                // refactor wave-2 follow-up F1: a rival genesis in eager/weighed mode drops the carrier link the validate tier keeps).
                 return .result(rejection(.protocolInvalid))
             }
         }
