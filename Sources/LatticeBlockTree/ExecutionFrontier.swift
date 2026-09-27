@@ -16,9 +16,9 @@ struct StateTransition: Hashable {
 struct ExecutionFrontier: Sendable {
     // MARK: Canonical projection (the selection result)
 
-    private(set) var chainTip: String
-    private(set) var mainChainHashes: Set<String>
-    private(set) var mainChainBlockAtIndex: [UInt64: String]
+    private(set) var canonicalTip: String
+    private(set) var canonicalHashes: Set<String>
+    private(set) var canonicalHashByHeight: [UInt64: String]
     private(set) var tipSnapshot: TipBlockSnapshot?
     /// Generation at which the canonical projection was last brought current
     /// BY AN ACTUAL PROJECTION. Every graph/weight mutation flows through
@@ -81,20 +81,20 @@ struct ExecutionFrontier: Sendable {
     /// Build from a restored graph: the snapshot index over the blocks held,
     /// the by-height canonical index, and the anchored frontier seeded once.
     init(
-        chainTip: String,
-        mainChainHashes: Set<String>,
+        canonicalTip: String,
+        canonicalHashes: Set<String>,
         tipSnapshot: TipBlockSnapshot?,
         snapshots: [String: TipBlockSnapshot],
         validated: Set<String>,
         in blocks: BlockGraph,
         excluded: Set<String>
     ) throws {
-        self.chainTip = chainTip
-        self.mainChainHashes = mainChainHashes
+        self.canonicalTip = canonicalTip
+        self.canonicalHashes = canonicalHashes
         self.tipSnapshot = tipSnapshot
         self.snapshots = snapshots
         if let tipSnapshot {
-            self.snapshots[chainTip] = tipSnapshot
+            self.snapshots[canonicalTip] = tipSnapshot
         }
         self.validated = validated
         self.byTransition = [:]
@@ -115,13 +115,13 @@ struct ExecutionFrontier: Sendable {
                 ].insert(blockHash)
             }
         }
-        self.mainChainBlockAtIndex = [:]
-        for hash in mainChainHashes {
+        self.canonicalHashByHeight = [:]
+        for hash in canonicalHashes {
             guard let height = blocks.height(of: hash),
-                  self.mainChainBlockAtIndex[height] == nil else {
+                  self.canonicalHashByHeight[height] == nil else {
                 throw ChainStateRestoreError.corruptConsensusGraph
             }
-            self.mainChainBlockAtIndex[height] = hash
+            self.canonicalHashByHeight[height] = hash
         }
         self.anchored = Self.seedAnchored(
             in: blocks,
@@ -343,7 +343,7 @@ struct ExecutionFrontier: Sendable {
 
     /// Re-read the tip's snapshot after the tip or its snapshot changed.
     mutating func refreshTipSnapshot() {
-        tipSnapshot = snapshots[chainTip]
+        tipSnapshot = snapshots[canonicalTip]
     }
 
     /// A bump that carries no graph mutation keeps the projection exact.
@@ -418,26 +418,26 @@ struct ExecutionFrontier: Sendable {
         canonicalProjectionBlockVisitCount += UInt64(descent.blocks.count)
 #endif
         let projection = (
-            chainTip: descent.tipHash,
-            mainChainHashes: descent.blocks
+            canonicalTip: descent.tipHash,
+            canonicalHashes: descent.blocks
         )
-        let newHashes = projection.mainChainHashes
-        let newTip = projection.chainTip
-        guard newTip != chainTip || newHashes != mainChainHashes else { return nil }
+        let newHashes = projection.canonicalHashes
+        let newTip = projection.canonicalTip
+        guard newTip != canonicalTip || newHashes != canonicalHashes else { return nil }
 
-        let removed = mainChainHashes.subtracting(newHashes)
-        let added = newHashes.subtracting(mainChainHashes).reduce(
+        let removed = canonicalHashes.subtracting(newHashes)
+        let added = newHashes.subtracting(canonicalHashes).reduce(
             into: [String: UInt64]()
         ) { result, hash in
             if let height = graph.height(of: hash) { result[hash] = height }
         }
 
-        chainTip = newTip
-        mainChainHashes = newHashes
-        mainChainBlockAtIndex = [:]
+        canonicalTip = newTip
+        canonicalHashes = newHashes
+        canonicalHashByHeight = [:]
         for hash in newHashes {
             if let height = graph.height(of: hash) {
-                mainChainBlockAtIndex[height] = hash
+                canonicalHashByHeight[height] = hash
             }
         }
         tipSnapshot = snapshots[newTip]
@@ -479,7 +479,7 @@ struct ExecutionFrontier: Sendable {
         in graph: BlockGraph
     ) -> String? {
         var current = mutatedAt
-        while !mainChainHashes.contains(current) {
+        while !canonicalHashes.contains(current) {
             guard let meta = graph[current],
                   let parentHash = meta.parentBlockHash,
                   let parent = graph[parentHash],
@@ -508,7 +508,7 @@ struct ExecutionFrontier: Sendable {
         // of its ancestors, so every canonical decision is reinforced and none
         // flips. This is the ordinary "stronger observation on a canonical
         // block" event, and it is now O(1) instead of a walk from the root.
-        guard !mainChainHashes.contains(mutatedAt) else {
+        guard !canonicalHashes.contains(mutatedAt) else {
             return TruncatedProjectionOutcome(commit: nil)
         }
         guard let divergence = canonicalDivergencePoint(from: mutatedAt, in: graph),
@@ -550,7 +550,7 @@ struct ExecutionFrontier: Sendable {
         // re-materialize everything from the fork point to the tip only to
         // conclude nothing moved, which is worse than the whole-chain early-out
         // this change removes.
-        if mainChainHashes.contains(chosen) {
+        if canonicalHashes.contains(chosen) {
 #if DEBUG
             truncatedCanonicalProjectionCount += 1
 #endif
@@ -581,13 +581,13 @@ struct ExecutionFrontier: Sendable {
         _ height: UInt64,
         in graph: BlockGraph
     ) -> Set<String>? {
-        guard let tipHeight = graph.height(of: chainTip) else {
+        guard let tipHeight = graph.height(of: canonicalTip) else {
             return nil
         }
         var replaced = Set<String>()
         var current = height
         while current <= tipHeight {
-            guard let hash = mainChainBlockAtIndex[current] else { return nil }
+            guard let hash = canonicalHashByHeight[current] else { return nil }
             replaced.insert(hash)
             current += 1
         }
@@ -611,20 +611,20 @@ struct ExecutionFrontier: Sendable {
         ) { result, hash in
             if let height = graph.height(of: hash) { result[hash] = height }
         }
-        guard tipHash != chainTip || !removed.isEmpty || !added.isEmpty else {
+        guard tipHash != canonicalTip || !removed.isEmpty || !added.isEmpty else {
             return nil
         }
 
-        chainTip = tipHash
-        mainChainHashes.subtract(removed)
-        mainChainHashes.formUnion(added.keys)
+        canonicalTip = tipHash
+        canonicalHashes.subtract(removed)
+        canonicalHashes.formUnion(added.keys)
         for hash in removed {
             guard let height = graph.height(of: hash),
-                  mainChainBlockAtIndex[height] == hash else { continue }
-            mainChainBlockAtIndex.removeValue(forKey: height)
+                  canonicalHashByHeight[height] == hash else { continue }
+            canonicalHashByHeight.removeValue(forKey: height)
         }
         for (hash, height) in added {
-            mainChainBlockAtIndex[height] = hash
+            canonicalHashByHeight[height] = hash
         }
         tipSnapshot = snapshots[tipHash]
         return ChainCommit(
@@ -639,9 +639,9 @@ extension ChainState {
     // Forwarders onto `frontier`, kept so callers and tests read the actor
     // exactly as before.
 
-    var chainTip: String { frontier.chainTip }
-    var mainChainHashes: Set<String> { frontier.mainChainHashes }
-    var mainChainBlockAtIndex: [UInt64: String] { frontier.mainChainBlockAtIndex }
+    public var canonicalTip: String { frontier.canonicalTip }
+    var canonicalHashes: Set<String> { frontier.canonicalHashes }
+    var canonicalHashByHeight: [UInt64: String] { frontier.canonicalHashByHeight }
     public var tipSnapshot: TipBlockSnapshot? { frontier.tipSnapshot }
 
 #if DEBUG
@@ -666,28 +666,24 @@ extension ChainState {
         // stays exact for the new generation.
         mutationGeneration += 1
         frontier.noteProjected(at: mutationGeneration)
-        return (canonicalChange ?? ChainCommit(tipHash: chainTip))
+        return (canonicalChange ?? ChainCommit(tipHash: canonicalTip))
             .atRevision(mutationGeneration)
-    }
-
-    public func getMainChainTip() -> String {
-        chainTip
     }
 
     /// One coherent canonical context for transaction preflight. Keeping the
     /// tip and its snapshot in one actor read lets callers reject a result if
     /// the canonical tip changes while content is being resolved.
     package func transactionPreflightTip() -> (cid: String, snapshot: TipBlockSnapshot?) {
-        (chainTip, tipSnapshot)
+        (canonicalTip, tipSnapshot)
     }
 
-    public func isOnMainChain(hash: String) -> Bool {
+    public func isCanonical(hash: String) -> Bool {
         guard let height = graph.height(of: hash) else { return false }
-        return mainChainBlockAtIndex[height] == hash
+        return canonicalHashByHeight[height] == hash
     }
 
-    public func getMainChainBlockHash(atIndex index: UInt64) -> String? {
-        mainChainBlockAtIndex[index]
+    public func canonicalBlockHash(atHeight height: UInt64) -> String? {
+        canonicalHashByHeight[height]
     }
 
 #if DEBUG
@@ -703,8 +699,8 @@ extension ChainState {
     /// this at every step, and when it does not, this says which half is at
     /// fault — something comparing only against the reference oracle cannot.
     func debugFullCanonicalProjection() -> (
-        chainTip: String,
-        mainChainHashes: Set<String>
+        canonicalTip: String,
+        canonicalHashes: Set<String>
     )? {
         let roots = Array(indexToBlockHash[0] ?? []).filter {
             graph.parent(of: $0) == nil

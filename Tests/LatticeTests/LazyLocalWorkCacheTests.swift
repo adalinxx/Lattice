@@ -42,7 +42,7 @@ final class LazyLocalWorkCacheTests: XCTestCase {
                 parentHash: $0 == 0 ? nil : hashes[$0 - 1]
             )
         })
-        let restoredTip = await restored.getMainChainTip()
+        let restoredTip = await restored.canonicalTip
         let restoredRootWork = await restored.subtreeWeight(forHash: rootHash)
         let restoredTipWork = await restored.getCumulativeWork(forHash: tipHash)
         let blocksAfterReplay = await chain.hashToBlock

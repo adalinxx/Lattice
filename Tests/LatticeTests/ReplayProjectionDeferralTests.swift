@@ -117,18 +117,18 @@ final class ReplayProjectionDeferralTests: XCTestCase {
 
         // Consensus state must be identical — tip, membership, and the whole
         // by-height index.
-        let incrementalTip = await incremental.getMainChainTip()
-        let restoredTip = await restored.getMainChainTip()
+        let incrementalTip = await incremental.canonicalTip
+        let restoredTip = await restored.canonicalTip
         XCTAssertEqual(restoredTip, incrementalTip)
-        let incrementalMain = await incremental.mainChainHashes
-        let restoredMain = await restored.mainChainHashes
+        let incrementalMain = await incremental.canonicalHashes
+        let restoredMain = await restored.canonicalHashes
         XCTAssertEqual(restoredMain, incrementalMain)
         let height = await restored.getHighestBlockHeight()
         XCTAssertEqual(height, 30)
         XCTAssertNotEqual(root.hash, restoredTip)
         for h in 0...30 {
-            let a = await incremental.getMainChainBlockHash(atIndex: UInt64(h))
-            let b = await restored.getMainChainBlockHash(atIndex: UInt64(h))
+            let a = await incremental.canonicalBlockHash(atHeight: UInt64(h))
+            let b = await restored.canonicalBlockHash(atHeight: UInt64(h))
             XCTAssertNotNil(a, "height \(h) must be indexed")
             XCTAssertEqual(a, b, "height \(h) diverged between replay and incremental")
         }
@@ -163,7 +163,7 @@ final class ReplayProjectionDeferralTests: XCTestCase {
                 )
             )),
         ]))
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, sideTip, "a decisive weight mutation must still promote")
         // And immediately after that projection, re-evaluation is free again.
         await chain.resetFullCanonicalProjectionCount()

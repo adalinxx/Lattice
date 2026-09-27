@@ -146,7 +146,7 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
         XCTAssertEqual(staged, 0, "nothing is made durable")
         let roots = await level.chain.excludedRootsForTesting
         XCTAssertTrue(roots.isEmpty)
-        let tip = await level.chain.getMainChainTip()
+        let tip = await level.chain.canonicalTip
         XCTAssertEqual(tip, genesisHash, "the only root stays selectable")
     }
 }

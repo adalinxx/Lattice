@@ -198,7 +198,7 @@ final class BlockBuilderSubmissionTests: XCTestCase {
             ts += 1_000
         }
 
-        let tipBefore = await chain.getMainChainTip()
+        let tipBefore = await chain.canonicalTip
         let heightBefore = await chain.getHighestBlockHeight()
         XCTAssertEqual(heightBefore, 3)
 
@@ -217,7 +217,7 @@ final class BlockBuilderSubmissionTests: XCTestCase {
         }
 
         XCTAssertTrue(sawReorg, "Longer fork should trigger reorg")
-        let tipAfter = await chain.getMainChainTip()
+        let tipAfter = await chain.canonicalTip
         XCTAssertNotEqual(tipBefore, tipAfter)
         let heightAfter = await chain.getHighestBlockHeight()
         XCTAssertEqual(heightAfter, 5)
@@ -531,7 +531,7 @@ final class OutOfOrderSubmissionTests: XCTestCase {
             block: block1
         )
 
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         let remainingRequirements = await chain.unresolvedSameChainPredecessors()
         XCTAssertEqual(tip, try! VolumeImpl<Block>(node: block2).rawCID)
         XCTAssertTrue(remainingRequirements.isEmpty)

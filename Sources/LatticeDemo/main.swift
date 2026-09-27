@@ -95,7 +95,7 @@ Task {
         prev = block
     }
 
-    let tip = await chain.getMainChainTip()
+    let tip = await chain.canonicalTip
     let highest = await chain.getHighestBlockHeight()
     print()
     print("Chain state:")
@@ -126,7 +126,7 @@ Task {
         forkPrev = block
     }
 
-    let newTip = await chain.getMainChainTip()
+    let newTip = await chain.canonicalTip
     let newHighest = await chain.getHighestBlockHeight()
     print()
     print("After fork:")

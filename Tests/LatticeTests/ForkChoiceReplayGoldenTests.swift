@@ -419,7 +419,7 @@ struct ForkChoiceGolden: Codable, Equatable {
             let subtree = try XCTUnwrap(subtreeValue)
             let cumulativeValue = await chain.getCumulativeWork(forHash: block.hash)
             let cumulative = try XCTUnwrap(cumulativeValue)
-            let canonical = await chain.isOnMainChain(hash: block.hash)
+            let canonical = await chain.isCanonical(hash: block.hash)
             let executed = await chain.hasExecutedAncestry(blockHash: block.hash)
             let anchor = await chain.difficultyAnchor(forBlockHash: block.hash)
             records.append(BlockRecord(
@@ -439,7 +439,7 @@ struct ForkChoiceGolden: Codable, Equatable {
         let tipHeight = await chain.getHighestBlockHeight()
         var canonical: [String] = []
         for height in 0...tipHeight {
-            let hash = await chain.getMainChainBlockHash(atIndex: height)
+            let hash = await chain.canonicalBlockHash(atHeight: height)
             canonical.append(try XCTUnwrap(
                 hash.map(name), "canonical index has a hole at \(height)"
             ))
@@ -463,7 +463,7 @@ struct ForkChoiceGolden: Codable, Equatable {
             ))
         }
 
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         let excluded = await chain.excludedRootsForTesting
         return ForkChoiceGolden(
             seed: graph.seed,
@@ -634,7 +634,7 @@ final class ForkChoiceReplayGoldenTests: XCTestCase {
             }
             if !removed.isEmpty { reorgCommits += 1 }
             if position % 25 == 0 || event.kind == .exclusion {
-                let tip = await chain.getMainChainTip()
+                let tip = await chain.canonicalTip
                 let tipHeight = await chain.getHighestBlockHeight()
                 checkpoints.append(ForkChoiceTraceGolden.Checkpoint(
                     event: event.index,

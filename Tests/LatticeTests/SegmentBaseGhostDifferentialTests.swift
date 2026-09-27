@@ -595,7 +595,7 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
             await assertTruncationEquivalent(chain, "canonical at \(index)")
         }
 
-        let tip = await chain.getMainChainTip()
+        let tip = await chain.canonicalTip
         XCTAssertEqual(
             tip,
             main[depth - 1].hash,
@@ -863,8 +863,8 @@ private func assertMatchesReference(
         return
     }
     let expectedPath = Set(expected.path)
-    let liveTip = await chain.getMainChainTip()
-    let livePath = await chain.mainChainHashes
+    let liveTip = await chain.canonicalTip
+    let livePath = await chain.canonicalHashes
     XCTAssertEqual(liveTip, expected.tip, "seed \(seed), \(event): tip", file: file, line: line)
     XCTAssertEqual(livePath, expectedPath, "seed \(seed), \(event): path", file: file, line: line)
     await assertMainChainIndexMatchesPath(
@@ -895,15 +895,15 @@ private func assertTruncationEquivalent(
     line: UInt = #line
 ) async {
     guard let full = await chain.debugFullCanonicalProjection() else { return }
-    let liveTip = await chain.getMainChainTip()
-    let livePath = await chain.mainChainHashes
+    let liveTip = await chain.canonicalTip
+    let livePath = await chain.canonicalHashes
     XCTAssertEqual(
-        liveTip, full.chainTip,
+        liveTip, full.canonicalTip,
         "\(message): truncated tip vs whole-chain tip over the same index",
         file: file, line: line
     )
     XCTAssertEqual(
-        livePath, full.mainChainHashes,
+        livePath, full.canonicalHashes,
         "\(message): truncated path vs whole-chain path over the same index",
         file: file, line: line
     )
@@ -927,8 +927,8 @@ private func assertMatchesReferenceWithExclusions(
     await assertRoutedClosedUnderChildren(chain, "seed \(seed), \(event)", file: file, line: line)
     let blocks = await chain.hashToBlock
     let closure = await chain.excludedRootsForTesting
-    let liveTip = await chain.getMainChainTip()
-    let livePath = await chain.mainChainHashes
+    let liveTip = await chain.canonicalTip
+    let livePath = await chain.canonicalHashes
     guard let expected = ForkChoiceOracle(blocks: blocks, excluded: closure)
         .view().canonicalProjection()
     else {

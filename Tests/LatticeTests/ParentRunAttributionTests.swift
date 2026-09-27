@@ -421,9 +421,9 @@ final class ParentRunAttributionTests: XCTestCase {
         // Fixture guard: the exclusion really took p2 out of THIS chain's
         // selection (work weighs, validity selects — §9.9), or the invariant
         // below is not being exercised.
-        let path = await chain.mainChainHashes
+        let path = await chain.canonicalHashes
         XCTAssertFalse(path.contains(h("p2")), "p2 must be unselectable")
-        let tip = await chain.chainTip
+        let tip = await chain.canonicalTip
         XCTAssertEqual(tip, h("p1"), "the descent stops above the excluded block")
         let afterExclusion = await run(chain, at: "p1")
         XCTAssertEqual(afterExclusion, before, "a run is never revoked by exclusion")
@@ -645,8 +645,8 @@ final class ParentRunAttributionTests: XCTestCase {
             meta("cg", parent: nil, height: 0, children: ["a", "b"], work: 1),
             childMeta("a", parent: "cg", height: 1, grind: grind("pa"), work: UInt256(5)),
             childMeta("b", parent: "cg", height: 1, grind: grind("pb"), work: UInt256(5)),
-        ], mainChainHashes: [h("cg"), h("a")])
-        let tipBefore = await child.chainTip
+        ], canonicalHashes: [h("cg"), h("a")])
+        let tipBefore = await child.canonicalTip
         XCTAssertEqual(tipBefore, h("a"))
         // b's carrier gathered 40 of descendant parent work; a's gathered 0.
         let outcome = await strengthen(
@@ -655,7 +655,7 @@ final class ParentRunAttributionTests: XCTestCase {
         guard case .strengthened(let batch) = outcome else { return XCTFail("must strengthen: \(outcome)") }
         let commit = try await child.replay(batch)
         XCTAssertEqual(commit?.tipHash, h("b"))
-        let tipAfter = await child.chainTip
+        let tipAfter = await child.canonicalTip
         XCTAssertEqual(tipAfter, h("b"), "parent work behind b's carrier moved the child's fork choice")
         let wa = await child.subtreeWeight(forHash: h("a"))
         let wb = await child.subtreeWeight(forHash: h("b"))

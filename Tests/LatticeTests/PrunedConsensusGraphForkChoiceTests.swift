@@ -84,8 +84,8 @@ final class ConsensusGraphRecoveryTests: XCTestCase {
         ])
         let originalRootWork = await chain.subtreeWeight(forHash: genesisHash)
         let restoredRootWork = await restored.subtreeWeight(forHash: genesisHash)
-        let originalTip = await chain.getMainChainTip()
-        let restoredTip = await restored.getMainChainTip()
+        let originalTip = await chain.canonicalTip
+        let restoredTip = await restored.canonicalTip
 
         let restoredRevision = await restored.currentRevision()
         XCTAssertEqual(restoredRevision, revision)

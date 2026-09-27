@@ -40,8 +40,8 @@ final class FactReplayRecoveryTests: XCTestCase {
         let reverse = try await ChainState.restore(replaying: Array(batches.reversed()))
         let heavyCID = try BlockHeader(node: heavy).rawCID
 
-        let forwardTip = await forward.getMainChainTip()
-        let reverseTip = await reverse.getMainChainTip()
+        let forwardTip = await forward.canonicalTip
+        let reverseTip = await reverse.canonicalTip
         let forwardWork = await forward.getTipCumulativeWork()
         let reverseWork = await reverse.getTipCumulativeWork()
         XCTAssertEqual(forwardTip, heavyCID)
@@ -73,7 +73,7 @@ final class FactReplayRecoveryTests: XCTestCase {
             replaying: decoded + Array(decoded.reversed())
         )
 
-        let restoredTip = await restored.getMainChainTip()
+        let restoredTip = await restored.canonicalTip
         let revision = await restored.currentRevision()
         XCTAssertEqual(restoredTip, try BlockHeader(node: block).rawCID)
         XCTAssertEqual(revision, 1)

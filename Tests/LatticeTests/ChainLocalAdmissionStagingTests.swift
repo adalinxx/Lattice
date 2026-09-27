@@ -69,7 +69,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
         let candidate = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
         let level = AdmissionFixture.makeLevel(genesis: genesis)
-        let beforeTip = await level.chain.getMainChainTip()
+        let beforeTip = await level.chain.canonicalTip
         let candidateHash = try BlockHeader(node: candidate).rawCID
 
         do {
@@ -99,7 +99,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             XCTFail("node durability failure must abort admission")
         } catch ChainLocalTestError.stageFailure {}
 
-        let afterTip = await level.chain.getMainChainTip()
+        let afterTip = await level.chain.canonicalTip
         let containsCandidate = await level.chain.contains(blockHash: candidateHash)
         XCTAssertEqual(afterTip, beforeTip)
         XCTAssertFalse(containsCandidate)
@@ -361,9 +361,9 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         // lighter incumbent tip.
         let stranded = ChainLevel(testChain: makeChain(
             blocks: metas,
-            mainChainHashes: [genesisCID, incumbentCID]
+            canonicalHashes: [genesisCID, incumbentCID]
         ))
-        let strandedTip = await stranded.chain.getMainChainTip()
+        let strandedTip = await stranded.chain.canonicalTip
         XCTAssertEqual(
             strandedTip, incumbentCID,
             "the stranded projection must start on the lighter fork"
@@ -387,7 +387,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         )
         XCTAssertTrue(commit.canonicalChanged)
         XCTAssertEqual(commit.tipHash, heavier2CID)
-        let finalTip = await stranded.chain.getMainChainTip()
+        let finalTip = await stranded.chain.canonicalTip
         XCTAssertEqual(finalTip, heavier2CID)
     }
 
@@ -427,7 +427,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         XCTAssertTrue(commit.canonicalChanged)
         XCTAssertEqual(Set(commit.mainChainBlocksAdded.keys), forkHashes)
         XCTAssertEqual(commit.mainChainBlocksRemoved, mainHashes)
-        let finalTip = await level.chain.getMainChainTip()
+        let finalTip = await level.chain.canonicalTip
         XCTAssertEqual(finalTip, try BlockHeader(node: fork3).rawCID)
     }
 
@@ -531,8 +531,8 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             replaying: [fixture.seedBatch] + batches,
             revisionFloor: .max
         )
-        let restoredTip = await restored.getMainChainTip()
-        let liveTip = await fixture.level.chain.getMainChainTip()
+        let restoredTip = await restored.canonicalTip
+        let liveTip = await fixture.level.chain.canonicalTip
         let restoredRevision = await restored.currentRevision()
         let liveRevision = await fixture.level.chain.currentRevision()
         XCTAssertEqual(restoredTip, liveTip)
