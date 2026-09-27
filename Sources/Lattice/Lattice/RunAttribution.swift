@@ -4,8 +4,7 @@ import UInt256
 
 // Parent-attributed run work (§9.10): what a parent serves its children
 // about committing blocks, and how a child derives a strengthening from
-// it. Moved out of Chain.swift as-is; the stored fields still live on the
-// actor until `RunAttribution` becomes a value.
+// it.
 
 /// What a parent serves a child about one of its blocks that commits into a
 /// child directory (§9.10): the RUN work at that block, the credited work of
@@ -115,7 +114,136 @@ public enum ParentReportStrengthening: Sendable, Equatable {
     case notStronger(existing: WorkSum, derived: WorkSum)
 }
 
+/// Parent-attributed run work (§9.10) as a value: the served directories,
+/// one accumulator per run, and each settled block's nearest committer per
+/// served directory. It stores no parent or child edge — its two walks take
+/// the block graph as a parameter — so a run is exactly one accumulator cell
+/// plus a per-block pointer inherited from the parent, never a second
+/// representation of the tree.
+struct RunAttribution: Sendable {
+    /// The child directories this node serves run reports for — the child
+    /// chains it hosts. Operator choice, so the per-block run cost is bounded
+    /// by what this node asked for, not by what any block commits into.
+    private(set) var served: Set<String> = []
+    /// Run work per child directory per committing block (§9.10): the sum of
+    /// credited work — grinds and attributed runs alike — over CONNECTED
+    /// blocks whose nearest committer into that directory is the key.
+    /// Insert-only, independent of exclusion, and maintained by the one
+    /// reducer live admission and replay both use.
+    /// Served to children; never a fork-choice input on THIS chain.
+    private(set) var runWork: [String: [String: WorkSum]] = [:]
+    /// Block → directory → the nearest block at or above that block, by
+    /// parent pointer, that commits into that directory — the block itself
+    /// where it commits. Held only for the directories this node SERVES runs
+    /// for (the child chains it hosts — an operator choice), so it costs
+    /// O(#served) per block, never O(#directories ever committed); inherited
+    /// from the parent like `difficultyAnchor`, and absent until the block is
+    /// connected.
+    private(set) var nearestCommitter: [String: [String: String]] = [:]
+#if DEBUG
+    /// Run-bucket updates. Each connected block costs one per directory it
+    /// has a nearest committer for, so this is O(#directories) per block —
+    /// asserted by ratio, never by stopwatch.
+    private(set) var updateCount: UInt64 = 0
+#endif
+
+    /// Start serving `directory`: settle every connected block's nearest
+    /// committer and run for that one directory, parent before child, over
+    /// the UNFILTERED graph. Idempotent.
+    mutating func serve(
+        _ directory: String,
+        in hashToBlock: [String: BlockMeta],
+        isRouted: (String) -> Bool
+    ) {
+        guard served.insert(directory).inserted else { return }
+        var stack = hashToBlock.values
+            .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
+            .map(\.blockHash)
+        while let hash = stack.popLast() {
+            guard isRouted(hash), let meta = hashToBlock[hash] else { continue }
+            settle(hash, in: hashToBlock, directories: [directory])
+            stack.append(contentsOf: meta.childHashes)
+        }
+    }
+
+    /// Settle a block that just routed and every descendant that routed with
+    /// it: its nearest committers and runs for every served directory, parent
+    /// before child. Nothing below a just-routed block can have been settled
+    /// before — a block never routes under an unrouted parent — so the walk
+    /// needs no record of what it has settled. Unfiltered on purpose: an
+    /// excluded descendant is still connected and still credited.
+    mutating func connect(
+        rootedAt rootHash: String,
+        in hashToBlock: [String: BlockMeta]
+    ) {
+        var stack = [rootHash]
+        var visited = Set<String>()
+        while let hash = stack.popLast() {
+            guard let meta = hashToBlock[hash], visited.insert(hash).inserted else { continue }
+            settle(hash, in: hashToBlock, directories: served)
+            stack.append(contentsOf: meta.childHashes)
+        }
+    }
+
+    /// The one per-block step of run attribution, for a connected block whose
+    /// parent is already settled: for each directory, the nearest committer is
+    /// this block if it commits there, else the parent's; the block's credited
+    /// work — grinds and attributed runs alike — is credited to that run.
+    /// Used both by live connection (every served directory) and by
+    /// `serve` (one directory over the whole graph), so a run has exactly one
+    /// definition.
+    private mutating func settle(
+        _ hash: String,
+        in hashToBlock: [String: BlockMeta],
+        directories: Set<String>
+    ) {
+        guard let meta = hashToBlock[hash] else { return }
+        let inherited = meta.parentBlockHash
+            .flatMap { nearestCommitter[$0] } ?? [:]
+        var nearest = nearestCommitter[hash] ?? [:]
+        var credited: [String: String] = [:]
+        for directory in directories {
+            let committer = meta.childCommitments?[directory] != nil ? hash : inherited[directory]
+            guard let committer else { continue }
+            nearest[directory] = committer
+            credited[directory] = committer
+        }
+        nearestCommitter[hash] = nearest
+        credit(meta.work, nearest: credited)
+    }
+
+    /// A connected block's own work rose by `delta`: its runs rise by exactly
+    /// that much.
+    mutating func credit(_ delta: WorkSum, at hash: String) {
+        credit(delta, nearest: nearestCommitter[hash] ?? [:])
+    }
+
+    private mutating func credit(_ work: WorkSum, nearest: [String: String]) {
+        for (directory, committer) in nearest {
+            let current = runWork[directory]?[committer] ?? .zero
+            runWork[directory, default: [:]][committer] = current + work
+#if DEBUG
+            updateCount &+= 1
+#endif
+        }
+    }
+
+    /// Stop serving `directory` and drop everything settled for it, so
+    /// `serve` can re-settle it from scratch.
+    mutating func forget(directory: String) {
+        served.remove(directory)
+        runWork[directory] = nil
+        for block in nearestCommitter.keys {
+            nearestCommitter[block]?[directory] = nil
+        }
+    }
+}
+
 extension ChainState {
+#if DEBUG
+    var runAttributionUpdateCount: UInt64 { runs.updateCount }
+#endif
+
     /// Start serving run reports for `directory` — the node hosts a child
     /// chain there. Settles every connected block's nearest committer and run
     /// for that one directory, parent before child, over the UNFILTERED graph:
@@ -127,64 +255,11 @@ extension ChainState {
     /// directory it hosts after every restart, and it runs synchronously on
     /// the actor — one whole-graph walk per directory.
     public func serveRuns(for directory: String) {
-        guard servedDirectories.insert(directory).inserted else { return }
-        var stack = hashToBlock.values
-            .filter { $0.parentBlockHash == nil && $0.blockHeight == 0 }
-            .map(\.blockHash)
-        while let hash = stack.popLast() {
-            guard forkChoice.isRouted(hash), let meta = hashToBlock[hash] else { continue }
-            settleRuns(of: hash, directories: [directory])
-            stack.append(contentsOf: meta.childHashes)
-        }
+        runs.serve(directory, in: hashToBlock, isRouted: { forkChoice.isRouted($0) })
     }
 
-    /// Settle a block that just routed and every descendant that routed with
-    /// it: its nearest committers and runs for every served directory, parent
-    /// before child. Nothing below a just-routed block can have been settled
-    /// before — a block never routes under an unrouted parent — so the walk
-    /// needs no record of what it has settled. Unfiltered on purpose: an
-    /// excluded descendant is still connected and still credited.
     func connectForRunAttribution(rootedAt rootHash: String) {
-        var stack = [rootHash]
-        var visited = Set<String>()
-        while let hash = stack.popLast() {
-            guard let meta = hashToBlock[hash], visited.insert(hash).inserted else { continue }
-            settleRuns(of: hash, directories: servedDirectories)
-            stack.append(contentsOf: meta.childHashes)
-        }
-    }
-
-    /// The one per-block step of run attribution, for a connected block whose
-    /// parent is already settled: for each directory, the nearest committer is
-    /// this block if it commits there, else the parent's; the block's credited
-    /// work — grinds and attributed runs alike — is credited to that run.
-    /// Used both by live connection (every served directory) and by
-    /// `serveRuns(for:)` (one directory over the whole graph), so a run has
-    /// exactly one definition.
-    func settleRuns(of hash: String, directories: Set<String>) {
-        guard let meta = hashToBlock[hash] else { return }
-        let inherited = meta.parentBlockHash
-            .flatMap { hashToBlock[$0]?.nearestCommitter } ?? [:]
-        var nearest = meta.nearestCommitter
-        var credited: [String: String] = [:]
-        for directory in directories {
-            let committer = meta.childCommitments?[directory] != nil ? hash : inherited[directory]
-            guard let committer else { continue }
-            nearest[directory] = committer
-            credited[directory] = committer
-        }
-        hashToBlock[hash]?.adoptNearestCommitter(nearest)
-        creditRun(meta.work, nearest: credited)
-    }
-
-    func creditRun(_ work: WorkSum, nearest: [String: String]) {
-        for (directory, committer) in nearest {
-            let current = runWork[directory]?[committer] ?? .zero
-            runWork[directory, default: [:]][committer] = current + work
-#if DEBUG
-            runAttributionUpdateCount &+= 1
-#endif
-        }
+        runs.connect(rootedAt: rootHash, in: hashToBlock)
     }
 
     /// The run report a parent serves for one of its committing blocks. Nil
@@ -205,7 +280,7 @@ extension ChainState {
               forkChoice.isRouted(hash),
               let meta = hashToBlock[hash],
               let childBlock = meta.childCommitments?[directory],
-              let run = runWork[directory]?[hash] else { return nil }
+              let run = runs.runWork[directory]?[hash] else { return nil }
         return ParentRunReport(
             blockHash: hash,
             directory: directory,

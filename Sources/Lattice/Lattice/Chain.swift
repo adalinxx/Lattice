@@ -94,13 +94,6 @@ public struct BlockMeta: Sendable {
     /// is not "commits nothing": replay tolerates it, and a later fact for the
     /// same block supplies the real map (`adoptChildCommitments`).
     public private(set) var childCommitments: [String: String]?
-    /// Directory → the nearest block at or above this one, by parent pointer,
-    /// that commits into that directory — this block itself where it commits.
-    /// Held only for the directories this node SERVES runs for (the child
-    /// chains it hosts — an operator choice), so it costs O(#served) per
-    /// block, never O(#directories ever committed); inherited from the parent
-    /// like `difficultyAnchor`, and empty until the block is connected.
-    public private(set) var nearestCommitter: [String: String]
 
     /// Backward cumulative proof-of-work prefix measure from genesis through
     /// this block. Each physical grind has one block location in this chain.
@@ -123,8 +116,7 @@ public struct BlockMeta: Sendable {
         cumulativeWork: WorkSum = .zero,
         subtreeWeight: WorkSum? = nil,
         difficultyAnchor: DifficultyAnchor? = nil,
-        childCommitments: [String: String]? = nil,
-        nearestCommitter: [String: String] = [:]
+        childCommitments: [String: String]? = nil
     ) {
         let contributions = Dictionary(
             workContributions.map { ($0.id, $0) },
@@ -143,19 +135,9 @@ public struct BlockMeta: Sendable {
         self.subtreeWeight = subtreeWeight ?? work
         self.difficultyAnchor = difficultyAnchor
         self.childCommitments = childCommitments
-        self.nearestCommitter = nearestCommitter
         // Attributed runs arrive as work-only facts after the block; a block is
         // built with its grinds alone.
         self.attributedRuns = []
-    }
-
-    /// Settle the nearest committers once the block is connected.
-    mutating func adoptNearestCommitter(_ nearest: [String: String]) {
-        nearestCommitter = nearest
-    }
-
-    mutating func forgetNearestCommitter(for directory: String) {
-        nearestCommitter[directory] = nil
     }
 
     /// Fill commitments a pre-field fact left unrecorded. Write-once, like the
@@ -458,23 +440,9 @@ public actor ChainState {
     /// The canonical projection, the executed-from-genesis frontier and the
     /// state-transition index (ExecutionFrontier.swift).
     var frontier: ExecutionFrontier
-    /// Run work per child directory per committing block (§9.10): the sum of
-    /// credited work — grinds and attributed runs alike — over CONNECTED
-    /// blocks whose nearest committer into that directory is the key.
-    /// Insert-only, independent of exclusion, and maintained by the one
-    /// reducer live admission and replay both use.
-    /// Served to children; never a fork-choice input on THIS chain.
-    var runWork: [String: [String: WorkSum]]
-    /// The child directories this node serves run reports for — the child
-    /// chains it hosts. Operator choice, so the per-block run cost is bounded
-    /// by what this node asked for, not by what any block commits into.
-    var servedDirectories: Set<String>
-#if DEBUG
-    /// Run-bucket updates. Each connected block costs one per directory it
-    /// has a nearest committer for, so this is O(#directories) per block —
-    /// asserted by ratio, never by stopwatch.
-    var runAttributionUpdateCount: UInt64
-#endif
+    /// Parent-attributed run work (§9.10) for the served child directories
+    /// (RunAttribution.swift).
+    var runs: RunAttribution
     /// Diagnostic prefix/subtree totals are derived local views. They are not
     /// fork-choice inputs and are rebuilt only when an API exposes them.
     var localWorkCachesDirty: Bool
@@ -528,9 +496,6 @@ public actor ChainState {
         }
         self.hashToBlock = hashToBlock
         self.forkChoice = ForkChoice()
-#if DEBUG
-        self.runAttributionUpdateCount = 0
-#endif
         self.localWorkCachesDirty = true
         var allByHeight = indexToBlockHash
         for meta in hashToBlock.values {
@@ -572,12 +537,7 @@ public actor ChainState {
         // time, through the same per-block step live admission uses — one
         // algorithm, not a rebuild twin. Connectivity IS the weight index:
         // every connected block routes, excluded or not (§9.9).
-        self.runWork = [:]
-        self.servedDirectories = []
-        // Nearest committers are settled by `serveRuns`, never supplied.
-        guard hashToBlock.values.allSatisfy({ $0.nearestCommitter.isEmpty }) else {
-            throw ChainStateRestoreError.corruptConsensusGraph
-        }
+        self.runs = RunAttribution()
     }
 
     package static func fromGenesis(
@@ -1070,7 +1030,7 @@ public actor ChainState {
         // moment its component grafts.
         // Nothing to settle while no directory is served: skip the walk, which
         // on a graft would otherwise be a third pass over the component.
-        if !servedDirectories.isEmpty, forkChoice.isRouted(blockHash) {
+        if !runs.served.isEmpty, forkChoice.isRouted(blockHash) {
             connectForRunAttribution(rootedAt: blockHash)
         }
 
@@ -1128,9 +1088,8 @@ public actor ChainState {
         // orphan's work is credited in full at the moment it connects.
         if forkChoice.isRouted(blockHash),
            let workAfter = hashToBlock[blockHash]?.work,
-           let delta = workAfter.subtracting(workBefore),
-           let nearest = hashToBlock[blockHash]?.nearestCommitter {
-            creditRun(delta, nearest: nearest)
+           let delta = workAfter.subtracting(workBefore) {
+            runs.credit(delta, at: blockHash)
         }
         // A stronger observation on an excluded block weighs like any other: it
         // raises every ancestor, and the descent still never steps into the
@@ -1378,12 +1337,8 @@ public actor ChainState {
         guard let meta = hashToBlock[hash], meta.childCommitments == nil else { return }
         hashToBlock[hash]?.adoptChildCommitments(commitments)
         guard forkChoice.isRouted(hash) else { return }
-        for directory in servedDirectories where commitments[directory] != nil {
-            servedDirectories.remove(directory)
-            runWork[directory] = nil
-            for block in hashToBlock.keys {
-                hashToBlock[block]?.forgetNearestCommitter(for: directory)
-            }
+        for directory in runs.served where commitments[directory] != nil {
+            runs.forget(directory: directory)
             serveRuns(for: directory)
         }
     }
