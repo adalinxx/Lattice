@@ -27,16 +27,5 @@ public struct Action: Codable, Sendable {
         if key.isEmpty { return false }
         return oldValue != nil || newValue != nil
     }
-    
-    public func totalSize() throws -> Int {
-        guard let dataSize = toData()?.count else { throw ValidationErrors.serializationError }
-        return dataSize
-    }
-    
-    public func toData() -> Data? {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        return try? encoder.encode(self)
-    }
 
 }

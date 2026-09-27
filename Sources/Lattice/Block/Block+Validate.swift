@@ -209,22 +209,6 @@ public extension Block {
         return (true, diff, materializedPostState)
     }
 
-    func collectAncestorTimestamps(
-        parent: Block,
-        count: UInt64,
-        fetcher: Fetcher
-    ) async throws -> [Int64]? {
-        var timestamps: [Int64] = [parent.timestamp]
-        var current = parent
-        for _ in 1..<count {
-            guard let parentRef = current.parent else { break }
-            guard let prev = try await parentRef.resolve(fetcher: fetcher).node else { return nil }
-            timestamps.append(prev.timestamp)
-            current = prev
-        }
-        return timestamps
-    }
-
     func validateTimestampAndNextTarget(
         spec: ChainSpec,
         parent: Block,

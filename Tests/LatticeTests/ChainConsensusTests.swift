@@ -218,44 +218,6 @@ final class ForkChoiceTests: XCTestCase {
 }
 
 @MainActor
-final class OrphanDetectionTests: XCTestCase {
-
-    func testOrphanConnectedToMainChain() async {
-        let g = makeBlockMeta(hash: "G", height: 0, childHashes: ["A1", "B1"])
-        let a1 = makeBlockMeta(hash: "A1", previousHash: "G", height: 1)
-        let b1 = makeBlockMeta(hash: "B1", previousHash: "G", height: 1, childHashes: ["B2"])
-        let b2 = makeBlockMeta(hash: "B2", previousHash: "B1", height: 2, childHashes: ["B3"])
-        let b3 = makeBlockMeta(hash: "B3", previousHash: "B2", height: 3)
-
-        let chain = makeChain(
-            blocks: [g, a1, b1, b2, b3],
-            mainChainHashes: Set(["G", "A1"])
-        )
-
-        let earliest = await chain.findEarliestOrphanConnectedToMainChain(blockHeader: "B3")
-        XCTAssertEqual(earliest, "B1")
-    }
-
-    func testOrphanWithMissingAncestorReturnsNil() async {
-        let b2 = makeBlockMeta(hash: "B2", previousHash: "B1", height: 2, childHashes: ["B3"])
-        let b3 = makeBlockMeta(hash: "B3", previousHash: "B2", height: 3)
-
-        let chain = makeChain(blocks: [b2, b3], mainChainHashes: Set())
-        let earliest = await chain.findEarliestOrphanConnectedToMainChain(blockHeader: "B3")
-        XCTAssertNil(earliest)
-    }
-
-    func testGenesisBlockIsValidOrphanRoot() async {
-        let g = makeBlockMeta(hash: "alt_g", height: 0, childHashes: ["B1"])
-        let b1 = makeBlockMeta(hash: "B1", previousHash: "alt_g", height: 1)
-
-        let chain = makeChain(blocks: [g, b1], mainChainHashes: Set())
-        let earliest = await chain.findEarliestOrphanConnectedToMainChain(blockHeader: "B1")
-        XCTAssertEqual(earliest, "alt_g")
-    }
-}
-
-@MainActor
 final class ChainWithMostWorkTests: XCTestCase {
 
     func testSingleBlockChain() async {

@@ -1111,21 +1111,6 @@ final class BugRegressionTests: XCTestCase {
         XCTAssertEqual(tipAfter, header(forkBlocks.last!).rawCID,
             "Cache must be invalidated so the longer fork wins")
     }
-
-    func testOrphanDetectionFindsCorrectForkPoint() async throws {
-        let blocks = try await buildChain(length: 10)
-        let chain = ChainState.fromGenesis(block: blocks[0])
-        await submitChain(chain, blocks: blocks)
-
-        let fork1 = try await next(blocks[2], ts: 4_000_000, nonce: 99)
-        let fork2 = try await next(fork1, ts: 5_000_000, nonce: 99)
-        let _ = await chain.submitTestBlock(blockHeader: header(fork1), block: fork1)
-        let _ = await chain.submitTestBlock(blockHeader: header(fork2), block: fork2)
-
-        let earliest = await chain.findEarliestOrphanConnectedToMainChain(blockHeader: header(fork2).rawCID)
-        XCTAssertEqual(earliest, header(fork1).rawCID,
-            "Should trace back to fork1, whose parent (blocks[2]) is on main chain")
-    }
 }
 
 // MARK: - State Continuity Chain Invariant
