@@ -1,6 +1,12 @@
 import XCTest
 import UInt256
 @testable import Lattice
+@testable import LatticePrimitives
+@testable import LatticePoW
+@testable import LatticeValidation
+@testable import LatticeProofs
+@testable import LatticeBlockTree
+@testable import LatticeImport
 
 /// `workForTarget`, `workForHash` and `calculateAsertTarget` over a fixed
 /// table of inputs, results pinned as hex. These are consensus arithmetic:

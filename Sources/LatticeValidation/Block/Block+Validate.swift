@@ -1,0 +1,580 @@
+import Foundation
+import Crypto
+import cashew
+import UInt256
+import CollectionConcurrencyKit
+import LatticePrimitives
+import LatticePoW
+
+/// A validation result whose truth may change only as the supplied wall-clock
+/// context advances. It is deliberately separate from a permanent protocol
+/// violation and from unavailable evidence.
+public enum BlockValidationError: Error, Sendable, Equatable {
+    case notYetAdmissible
+}
+
+public struct ValidationContext: Sendable, Equatable {
+    public let nowMilliseconds: Int64
+    /// Node-local WASM policy resource guard, carried alongside the clock because
+    /// both are node-local admission parameters an operator may tune — never
+    /// consensus rules. Exceeding these bounds yields a local/unavailable failure,
+    /// so nodes with different limits never fork on the same block.
+    public let wasmResourceLimits: WasmPolicyResourceLimits
+
+    public init(
+        nowMilliseconds: Int64,
+        wasmResourceLimits: WasmPolicyResourceLimits = .default
+    ) {
+        self.nowMilliseconds = nowMilliseconds
+        self.wasmResourceLimits = wasmResourceLimits
+    }
+
+    public static var current: ValidationContext {
+        ValidationContext(nowMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000))
+    }
+
+    func admits(timestamp: Int64) -> Bool {
+        // A node will not accept a block from its own future. This references
+        // only the node's own clock — there is no protocol-imposed drift
+        // constant — and it is retriable (see `notYetAdmissible`): a block from a
+        // slightly-fast miner is deferred until real time reaches its timestamp,
+        // never permanently rejected, so honest blocks are never lost and the
+        // valid-block set never forks on clock skew. An operator who wants slack
+        // constructs the context with a shifted `nowMilliseconds`.
+        timestamp <= nowMilliseconds
+    }
+}
+
+public extension Block {
+    func validateGenesis(
+        fetcher: Fetcher,
+        chainPath: [String],
+        reportTemporalFailure: Bool = false,
+        validationContext: ValidationContext = .current
+    ) async throws -> (Bool, StateDiff) {
+        let transition = try await validateGenesisTransition(
+            fetcher: fetcher,
+            chainPath: chainPath,
+            reportTemporalFailure: reportTemporalFailure,
+            validationContext: validationContext
+        )
+        return (transition.0, transition.1)
+    }
+
+    /// Internal genesis validation result for admission paths that must retain
+    /// the verified post-state before exposing a consensus mutation.
+    package func validateGenesisTransition(
+        fetcher: Fetcher,
+        chainPath: [String],
+        reportTemporalFailure: Bool = false,
+        validationContext: ValidationContext
+    ) async throws -> (Bool, StateDiff, LatticeState?) {
+        if !hasGenesisAdmissionShape() { return (false, .empty, nil) }
+        if !validationContext.admits(timestamp: timestamp) {
+            if reportTemporalFailure { throw BlockValidationError.notYetAdmissible }
+            return (false, .empty, nil)
+        }
+        guard let transactionBodies = try await resolveTransactionBodies(fetcher: fetcher, validator: { tx in
+            try await tx.validateTransactionForGenesis(fetcher: fetcher)
+        }) else { return (false, .empty, nil) }
+        guard let specNode = try await spec.resolve(fetcher: fetcher).node else { return (false, .empty, nil) }
+        guard specNode.isValid else { return (false, .empty, nil) }
+        guard chainPath.first == DEFAULT_ROOT_DIRECTORY else {
+            return (false, .empty, nil)
+        }
+        if !validateChainPaths(transactionBodies: transactionBodies, expectedPath: chainPath) {
+            return (false, .empty, nil)
+        }
+        if !(try await TransactionBody.validateConfiguredPolicyModules(
+            spec: specNode,
+            fetcher: fetcher,
+            resourceLimits: validationContext.wasmResourceLimits
+        )) {
+            return (false, .empty, nil)
+        }
+        if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: chainPath, fetcher: fetcher, resourceLimits: validationContext.wasmResourceLimits)) { return (false, .empty, nil) }
+        if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
+        if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
+        if try await !validateBlockSize(spec: specNode, fetcher: fetcher) {
+            return (false, .empty, nil)
+        }
+        let allAccountActions = transactionBodies.flatMap { $0.accountActions }
+        // R4: the per-transaction gate above (validateTransactionForGenesis)
+        // rejects any genesis transaction carrying deposit, withdrawal, or
+        // receipt actions, so those lists are provably empty for every body
+        // that reaches this point — pass empty literals instead of collecting.
+        assert(transactionBodies.allSatisfy { $0.depositActions.isEmpty && $0.withdrawalActions.isEmpty && $0.receiptActions.isEmpty })
+        if try !validateBalanceChangesForGenesis(spec: specNode, allAccountActions: allAccountActions) { return (false, .empty, nil) }
+        if !validateGenesisTransactions(transactionBodies: transactionBodies) { return (false, .empty, nil) }
+        let (postStateValid, diff, materializedPostState) = try await validatePostState(transactionBodies: transactionBodies, allAccountActions: allAccountActions, allActions: transactionBodies.flatMap { $0.actions }, allDepositActions: [], allGenesisActions: transactionBodies.flatMap { $0.genesisActions }, allReceiptActions: [], allWithdrawalActions: [], fetcher: fetcher)
+        if !postStateValid { return (false, .empty, nil) }
+        return (true, diff, materializedPostState)
+    }
+
+    func validateTimestampAndNextTarget(
+        spec: ChainSpec,
+        parent: Block,
+        fetcher: Fetcher,
+        chain: (any DifficultyAnchorSource)? = nil,
+        reportTemporalFailure: Bool = false,
+        validationContext: ValidationContext
+    ) async throws -> Bool {
+        // No ancestor-timestamp walk: the schedule is a function of one anchor
+        // and this block, so validating a target no longer requires reading a
+        // window of ancestors. That walk was the dominant cost of
+        // building a mining template — 120 sequential block resolutions per
+        // request, redone every round for a list that changes by one entry per
+        // block.
+        let (_, heightOverflow) = parent.height.addingReportingOverflow(1)
+        guard !heightOverflow else { return false }
+        if !validationContext.admits(timestamp: timestamp) {
+            if reportTemporalFailure { throw BlockValidationError.notYetAdmissible }
+            return false
+        }
+        if !validateTimestamp(
+            parent: parent,
+            validationContext: validationContext
+        ) { return false }
+        // Resolve the schedule's origin: the height-1 ancestor of this block.
+        // Chain state carries it, inherited at admission in O(1); without a
+        // chain to ask, fall back to the SAME walk the builder uses, so the two
+        // can never disagree about which block anchors the schedule.
+        let anchor: DifficultyAnchor?
+        if parent.height == 0 {
+            // This block is height 1: it anchors itself, and its own committed
+            // target is where the schedule begins.
+            anchor = DifficultyAnchor(
+                blockHeight: 1, timestamp: timestamp, target: target
+            )
+        } else if let chain, let parentHash = self.parent?.rawCID,
+                  let carried = await chain.difficultyAnchor(forBlockHash: parentHash) {
+            anchor = carried
+        } else {
+            // Hand the chain down: the walk consults it at every step, so a
+            // parent that is not admitted yet costs a hop or two rather than a
+            // descent to height 1.
+            anchor = try await BlockBuilder.resolveDifficultyAnchor(
+                from: parent, fetcher: fetcher, chain: chain
+            )
+        }
+        guard let anchor else { return false }
+        if !validateNextTarget(
+            spec: spec, parent: parent, difficultyAnchor: anchor
+        ) { return false }
+        return true
+    }
+
+    /// `source:` overload of ``validateNexus(fetcher:chain:chainPath:reportTemporalFailure:)``.
+    /// Wraps the batched cashew ``ContentSource`` in a single
+    /// ``CoalescingFetcher`` and delegates to the `fetcher:` version unchanged,
+    /// so validation is byte-identical to the per-CID path. Threading one
+    /// coalescer through the whole call collapses each concurrent wave of
+    /// content fetches (transaction bodies, ancestor walk, state resolution)
+    /// into batched requests without altering the validation logic.
+    func validateNexus(
+        source: any ContentSource,
+        chain: (any DifficultyAnchorSource)? = nil,
+        chainPath: [String]? = nil,
+        reportTemporalFailure: Bool = false,
+        validationContext: ValidationContext = .current
+    ) async throws -> (Bool, StateDiff, LatticeState?) {
+        try await validateNexus(
+            fetcher: CoalescingFetcher(source),
+            chain: chain,
+            chainPath: chainPath,
+            reportTemporalFailure: reportTemporalFailure,
+            validationContext: validationContext
+        )
+    }
+
+    /// Header linkage: the structural rules a non-genesis block must satisfy
+    /// against its parent before anything is executed — version, parent
+    /// resolution, spec continuity, `prevState == parent.postState`, and
+    /// height. Returns the resolved parent and spec, or nil when a rule fails.
+    /// With `validateTimestampAndNextTarget` this is the whole header-linkage
+    /// rule set (`validateHeaderLinkage` composes the two); `validateNexus`
+    /// runs the same pieces before it touches a transaction body.
+    func resolveHeaderLinkage(
+        fetcher: Fetcher
+    ) async throws -> (parent: Block, spec: ChainSpec)? {
+        if version != Block.currentVersion { return nil }
+        async let parentFuture = parent?.resolve(fetcher: fetcher)
+        async let specFuture = spec.resolve(fetcher: fetcher)
+        guard let previousBlockNode = try await parentFuture?.node else { return nil }
+        if !validateSpec(parent: previousBlockNode) { return nil }
+        if !validateState(parent: previousBlockNode) { return nil }
+        if !validateHeight(parent: previousBlockNode) { return nil }
+
+        guard let specNode = try await specFuture.node else { return nil }
+        return (previousBlockNode, specNode)
+    }
+
+    /// The complete header-linkage check — `resolveHeaderLinkage` plus the
+    /// timestamp and target schedule — and nothing else. This is what
+    /// "structurally verify" means for a block that is possessed but not yet
+    /// executed: exactly the checks `validateNexus` makes before execution.
+    func validateHeaderLinkage(
+        fetcher: Fetcher,
+        chain: (any DifficultyAnchorSource)? = nil,
+        reportTemporalFailure: Bool = false,
+        validationContext: ValidationContext
+    ) async throws -> Bool {
+        guard let linkage = try await resolveHeaderLinkage(fetcher: fetcher) else {
+            return false
+        }
+        return try await validateTimestampAndNextTarget(
+            spec: linkage.spec,
+            parent: linkage.parent,
+            fetcher: fetcher,
+            chain: chain,
+            reportTemporalFailure: reportTemporalFailure,
+            validationContext: validationContext
+        )
+    }
+
+    /// Validate block structure: parent linkage, spec, height, timestamp,
+    /// target, transaction signatures, balance changes, and genesis
+    /// transactions, and post-state root. Returns the state diff and the
+    /// materialized post-state produced by the validated transition.
+    func validateNexus(
+        fetcher: Fetcher,
+        chain: (any DifficultyAnchorSource)? = nil,
+        chainPath: [String]? = nil,
+        reportTemporalFailure: Bool = false,
+        validationContext: ValidationContext = .current
+    ) async throws -> (Bool, StateDiff, LatticeState?) {
+        let expectedChainPath = chainPath ?? [DEFAULT_ROOT_DIRECTORY]
+        guard expectedChainPath.first == DEFAULT_ROOT_DIRECTORY else {
+            return (false, .empty, nil)
+        }
+        guard let (previousBlockNode, specNode) = try await resolveHeaderLinkage(
+            fetcher: fetcher
+        ) else { return (false, .empty, nil) }
+
+        // Start transaction body resolution concurrently
+        // with the ancestor-timestamp walk. The transaction CAS fetches and the
+        // ancestor CAS walk are completely independent — overlapping them eliminates
+        // one sequential wait from the block validation critical path.
+        let txResolveFetcher = fetcher
+        async let txBodiesFuture: [TransactionBody]? = {
+            let validator: @Sendable (Transaction) async throws -> Bool = { tx in
+                try await tx.validateTransactionForNexus(fetcher: txResolveFetcher)
+            }
+            return try await resolveTransactionBodies(fetcher: txResolveFetcher, validator: validator)
+        }()
+
+        if !(try await validateTimestampAndNextTarget(
+            spec: specNode,
+            parent: previousBlockNode,
+            fetcher: fetcher,
+            chain: chain,
+            reportTemporalFailure: reportTemporalFailure,
+            validationContext: validationContext
+        )) { return (false, .empty, nil) }
+
+        guard let transactionBodies = try await txBodiesFuture else { return (false, .empty, nil) }
+
+        // Directory is positional (the anchor context / chainPath), not in the
+        // spec; nil chainPath ⇒ root.
+        if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, fetcher: fetcher, resourceLimits: validationContext.wasmResourceLimits)) { return (false, .empty, nil) }
+        if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
+        if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
+        if try await !validateBlockSize(spec: specNode, fetcher: fetcher) {
+            return (false, .empty, nil)
+        }
+        if !validateChainPaths(transactionBodies: transactionBodies, expectedPath: expectedChainPath) { return (false, .empty, nil) }
+        if !validateNoDepositsOrWithdrawalsOnRoot(transactionBodies: transactionBodies, expectedPath: expectedChainPath) { return (false, .empty, nil) }
+
+        if try await !validateWithdrawals(
+            transactionBodies: transactionBodies,
+            fetcher: fetcher,
+            chainPath: expectedChainPath
+        ) { return (false, .empty, nil) }
+
+        let allAccountActions = transactionBodies.flatMap { $0.accountActions }
+        let allDepositActions = transactionBodies.flatMap { $0.depositActions }
+        let allWithdrawalActions = transactionBodies.flatMap { $0.withdrawalActions }
+        let allReceiptActions = transactionBodies.flatMap { $0.receiptActions }
+        if try !validateBalanceChanges(
+            spec: specNode,
+            allDepositActions: allDepositActions,
+            allWithdrawalActions: allWithdrawalActions,
+            allAccountActions: allAccountActions
+        ) { return (false, .empty, nil) }
+        if !validateGenesisTransactions(transactionBodies: transactionBodies) { return (false, .empty, nil) }
+
+        let (postStateValid, diff, materializedPostState) = try await validatePostState(transactionBodies: transactionBodies, allAccountActions: allAccountActions, allActions: transactionBodies.flatMap { $0.actions }, allDepositActions: allDepositActions, allGenesisActions: transactionBodies.flatMap { $0.genesisActions }, allReceiptActions: allReceiptActions, allWithdrawalActions: allWithdrawalActions, fetcher: fetcher)
+        if !postStateValid { return (false, .empty, nil) }
+        return (true, diff, materializedPostState)
+    }
+
+    /// Preflight the state-dependent withdrawal rule used by full validation.
+    /// Mining uses this to omit transactions that cannot settle against the
+    /// exact entering parent state without repeating unrelated block checks.
+    func validateWithdrawals(
+        fetcher: Fetcher,
+        chainPath: [String]
+    ) async throws -> Bool {
+        guard chainPath.first == DEFAULT_ROOT_DIRECTORY,
+              let transactionBodies = try await resolveTransactionBodies(
+                fetcher: fetcher,
+                validator: { transaction in
+                    try await transaction.validateTransactionForNexus(fetcher: fetcher)
+                }
+              ) else { return false }
+        return try await validateWithdrawals(
+            transactionBodies: transactionBodies,
+            fetcher: fetcher,
+            chainPath: chainPath
+        )
+    }
+
+    private func validateWithdrawals(
+        transactionBodies: [TransactionBody],
+        fetcher: Fetcher,
+        chainPath: [String]
+    ) async throws -> Bool {
+        let withdrawalBodies = transactionBodies.filter {
+            !$0.withdrawalActions.isEmpty
+        }
+        guard !withdrawalBodies.isEmpty else { return true }
+        guard chainPath.count > 1 else { return false }
+        guard let directory = chainPath.last,
+              TransactionBody.withdrawalsHaveUniqueReceiptKeys(
+                bodies: withdrawalBodies,
+                directory: directory
+              ) else { return false }
+
+        async let prevStateFuture = prevState.resolve(fetcher: fetcher)
+        async let parentStateFuture = parentState.resolve(fetcher: fetcher)
+        let (resolvedPrevState, resolvedParentState) = try await (
+            prevStateFuture,
+            parentStateFuture
+        )
+        guard let prevStateNode = resolvedPrevState.node,
+              let parentStateNode = resolvedParentState.node else { return false }
+        return try await !withdrawalBodies.concurrentMap {
+            try await $0.withdrawalsAreValid(
+                directory: directory,
+                prevState: prevStateNode,
+                parentState: parentStateNode,
+                fetcher: fetcher
+            )
+        }.contains(false)
+    }
+
+
+    func validatePostState(transactionBodies: [TransactionBody], fetcher: Fetcher) async throws -> (Bool, StateDiff, LatticeState?) {
+        // Collect each action family in one pass.
+        var allAccountActions: [AccountAction] = []
+        var allActions: [Action] = []
+        var allDepositActions: [DepositAction] = []
+        var allGenesisActions: [GenesisAction] = []
+        var allReceiptActions: [ReceiptAction] = []
+        var allWithdrawalActions: [WithdrawalAction] = []
+        for body in transactionBodies {
+            allAccountActions.append(contentsOf: body.accountActions)
+            allActions.append(contentsOf: body.actions)
+            allDepositActions.append(contentsOf: body.depositActions)
+            allGenesisActions.append(contentsOf: body.genesisActions)
+            allReceiptActions.append(contentsOf: body.receiptActions)
+            allWithdrawalActions.append(contentsOf: body.withdrawalActions)
+        }
+        return try await validatePostState(transactionBodies: transactionBodies, allAccountActions: allAccountActions, allActions: allActions, allDepositActions: allDepositActions, allGenesisActions: allGenesisActions, allReceiptActions: allReceiptActions, allWithdrawalActions: allWithdrawalActions, fetcher: fetcher)
+    }
+
+    func validatePostState(transactionBodies: [TransactionBody], allAccountActions: [AccountAction], allActions: [Action], allDepositActions: [DepositAction], allGenesisActions: [GenesisAction], allReceiptActions: [ReceiptAction], allWithdrawalActions: [WithdrawalAction], fetcher: Fetcher) async throws -> (Bool, StateDiff, LatticeState?) {
+        guard let prevStateNode = try await prevState.resolve(fetcher: fetcher).node else {
+            return (false, .empty, nil)
+        }
+        let (updatedState, diff) = try await prevStateNode.proveAndUpdateState(allAccountActions: allAccountActions, allActions: allActions, allDepositActions: allDepositActions, allGenesisActions: allGenesisActions, allReceiptActions: allReceiptActions, allWithdrawalActions: allWithdrawalActions, transactionBodies: transactionBodies, fetcher: fetcher)
+        // Compare the expected postState CID (computed from prev state + TXs) against the
+        // block's declared postState CID. Avoids a CAS fetch for the new postState — the
+        // new state nodes are computed inline and may not yet be stored to DiskBroker.
+        let expectedPostStateCID = try LatticeStateHeader(node: updatedState).rawCID
+        let postStateValid = expectedPostStateCID == postState.rawCID
+        return (postStateValid, diff, postStateValid ? updatedState : nil)
+    }
+
+    func validateBalanceChanges(spec: ChainSpec, allDepositActions: [DepositAction], allWithdrawalActions: [WithdrawalAction], allAccountActions: [AccountAction]) throws -> Bool {
+        let reward = spec.rewardAtBlock(height)
+        let totalDeposited = allDepositActions.reduce(WorkSum.zero) {
+            $0 + UInt256($1.amountDeposited)
+        }
+        let totalWithdrawn = allWithdrawalActions.reduce(WorkSum.zero) {
+            $0 + UInt256($1.amountWithdrawn)
+        }
+        // Fees are not independent income: transaction validation requires
+        // sender debits to include the fee, so block validation only gives
+        // miners credit for fees when those debits are present in the same
+        // action set.
+        // totalCredits <= totalDebits + totalWithdrawn + reward - totalDeposited
+        var totalCredits = WorkSum.zero
+        var totalDebits = WorkSum.zero
+        for action in allAccountActions {
+            guard action.verify() else { return false }
+            if action.isCredit { totalCredits = totalCredits + UInt256(action.absoluteAmount) }
+            if action.isDebit { totalDebits = totalDebits + UInt256(action.absoluteAmount) }
+        }
+        let grossAvailable = totalDebits + UInt256(reward) + totalWithdrawn
+        guard let available = grossAvailable.subtracting(totalDeposited) else { return false }
+        return totalCredits <= available
+    }
+
+    func validateBalanceChangesForGenesis(spec: ChainSpec, allAccountActions: [AccountAction]) throws -> Bool {
+        let premineAmount = spec.premineAmount()
+        var totalCredits = WorkSum.zero
+        for action in allAccountActions {
+            guard action.verify() else { return false }
+            if action.isCredit { totalCredits = totalCredits + UInt256(action.absoluteAmount) }
+        }
+        return totalCredits <= WorkSum(UInt256(premineAmount))
+    }
+
+    func validateSpec(parent: Block) -> Bool {
+        return parent.spec.rawCID == spec.rawCID
+    }
+
+    /// Pure and synchronous on purpose: the caller does the I/O of resolving
+    /// the anchor, and this decides. Keeping the decision free of lookups is
+    /// what lets a test put the builder's anchor and the validator's anchor
+    /// side by side and assert they produce the same target.
+    func validateNextTarget(
+        spec: ChainSpec,
+        parent: Block,
+        difficultyAnchor: DifficultyAnchor
+    ) -> Bool {
+        // A block's target need not equal the scheduled `parent.nextTarget` — it
+        // may be that or voluntarily HARDER (a smaller target = more work), never
+        // easier. A larger (easier) target is rejected. Mining harder only adds
+        // weight at proportional cost and cannot lower difficulty: `nextTarget` is
+        // recomputed below from the anchor rather than from this block's target,
+        // so overachieving buys weight without bending the schedule.
+        if target > parent.nextTarget { return false }
+        let (parentDepth, overflow) = parent.height.addingReportingOverflow(1)
+        guard !overflow else { return false }
+        let expected = spec.calculateAsertTarget(
+            anchorTarget: difficultyAnchor.target,
+            anchorTimestamp: difficultyAnchor.timestamp,
+            anchorHeight: difficultyAnchor.blockHeight,
+            blockTimestamp: timestamp,
+            blockHeight: parentDepth
+        )
+        return nextTarget == expected
+    }
+
+    func validateState(parent: Block) -> Bool {
+        return parent.postState.rawCID == prevState.rawCID
+    }
+
+    func validateHeight(parent: Block) -> Bool {
+        let (expected, overflow) = parent.height.addingReportingOverflow(1)
+        return !overflow && expected == height
+    }
+
+    /// Header-local rules shared by every path that can accept a genesis.
+    func hasGenesisAdmissionShape() -> Bool {
+        version == Block.currentVersion
+            && parent == nil
+            && height == 0
+            && prevState.rawCID == LatticeState.emptyHeader.rawCID
+            // A genesis is self-contained: it commits to no parent state. A child
+            // is anchored by its parent RECORDING the genesis CID (a plain
+            // GenesisAction), never by binding the genesis to a carrier's
+            // prevState. Cross-chain flows begin at block 1. (Root genesis and the
+            // block builder already use emptyHeader here.)
+            && parentState.rawCID == LatticeState.emptyHeader.rawCID
+            && nextTarget == target
+    }
+
+    /// Consensus timestamp rules:
+    ///   (1) timestamp strictly greater than the previous block — the sole
+    ///       agreed-state rule; applied to every block it makes timestamps
+    ///       strictly increasing along the chain, which subsumes Bitcoin's
+    ///       MedianTimePast lower bound (a would-be predating block already
+    ///       fails (1), so an MTP median check can never reject anything (1)
+    ///       accepts — it was redundant and is gone).
+    ///   (2) timestamp ≤ now — a node will not build on a block from its own
+    ///       future. This is node-local, retriable admission (`notYetAdmissible`),
+    ///       not agreed state: it references the node's clock, defers rather than
+    ///       rejects, and closes the far-future lock-out that (1) alone would
+    ///       allow. No protocol-imposed drift constant.
+    /// No lower bound against wall-clock: old blocks must still validate for cold
+    /// sync, so only the future side is gated.
+    func validateTimestamp(
+        parent: Block,
+        validationContext: ValidationContext = .current
+    ) -> Bool {
+        if parent.timestamp >= timestamp { return false }
+        if !validationContext.admits(timestamp: timestamp) { return false }
+        return true
+    }
+
+    func validateStateDeltaSize(spec: ChainSpec, transactionBodies: [TransactionBody]) throws -> Bool {
+        var delta = 0
+        for body in transactionBodies {
+            guard addStateDelta(try body.getStateDelta(), to: &delta) else {
+                return false
+            }
+        }
+        return delta <= spec.maxStateGrowth
+    }
+
+    func validateMaxTransactionCount(spec: ChainSpec, transactionBodies: [TransactionBody]) -> Bool {
+        return transactionBodies.count <= spec.maxNumberOfTransactionsPerBlock
+    }
+
+    func validateBlockSize(
+        spec: ChainSpec,
+        fetcher: any Fetcher
+    ) async throws -> Bool {
+        do {
+            return try await logicalContentByteSize(fetcher: fetcher)
+                <= spec.maxBlockSize
+        } catch is BlockContentSizeError {
+            return false
+        }
+    }
+
+    /// Deposits and withdrawals are cross-chain constructs: a deposit
+    /// escrows value for withdrawal on the PARENT chain, and a withdrawal
+    /// requires a receipt in the parent chain's state. The root chain
+    /// (chainPath length 1) has no parent, so a deposit there burns value with
+    /// no withdrawal path and a withdrawal there has no receipt to settle
+    /// against. Consensus rejects both so a producer cannot place them directly
+    /// in a root-chain block.
+    func validateNoDepositsOrWithdrawalsOnRoot(transactionBodies: [TransactionBody], expectedPath: [String]) -> Bool {
+        guard expectedPath.count == 1 else { return true }
+        for body in transactionBodies {
+            if !body.depositActions.isEmpty { return false }
+            if !body.withdrawalActions.isEmpty { return false }
+        }
+        return true
+    }
+
+    func validateChainPaths(transactionBodies: [TransactionBody], expectedPath: [String]) -> Bool {
+        for body in transactionBodies {
+            // Empty chainPath is rejected: it would allow a single signed transaction
+            // to be included in any chain simultaneously, enabling cross-chain double-spend.
+            if body.chainPath.isEmpty { return false }
+            if body.chainPath != expectedPath { return false }
+        }
+        return true
+    }
+
+    func resolveTransactionBodies(fetcher: Fetcher, validator: @escaping @Sendable (Transaction) async throws -> Bool) async throws -> [TransactionBody]? {
+        guard let transactionsNode = try await transactions.resolveRecursive(fetcher: fetcher).node else { return nil }
+        let txHeaders = try transactionsNode.allKeysAndValues().values
+        if txHeaders.contains(where: { $0.node == nil }) { throw ValidationErrors.transactionNotResolved }
+        let txs = txHeaders.map { $0.node! }
+        if try await txs.concurrentMap({ try await validator($0) }).contains(false) { return nil }
+        let transactionBodiesMaybe = txs.map { $0.body.node }
+        if transactionBodiesMaybe.contains(where: { $0 == nil }) { throw ValidationErrors.transactionNotResolved }
+        return transactionBodiesMaybe.map { $0! }
+    }
+
+    func validateGenesisTransactions(transactionBodies: [TransactionBody]) -> Bool {
+        return !transactionBodies.contains { !$0.genesisActionsAreValid() }
+    }
+
+}

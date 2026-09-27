@@ -1,6 +1,12 @@
 import XCTest
 import UInt256
 @testable import Lattice
+@testable import LatticePrimitives
+@testable import LatticePoW
+@testable import LatticeValidation
+@testable import LatticeProofs
+@testable import LatticeBlockTree
+@testable import LatticeImport
 
 /// The invalidity-exclusion seam of deferred execution — work weighs, validity
 /// selects (§9.9): a proven-invalid subtree keeps weighing for its ancestors

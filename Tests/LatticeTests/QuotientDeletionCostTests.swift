@@ -1,6 +1,12 @@
 import XCTest
 import UInt256
 @testable import Lattice
+@testable import LatticePrimitives
+@testable import LatticePoW
+@testable import LatticeValidation
+@testable import LatticeProofs
+@testable import LatticeBlockTree
+@testable import LatticeImport
 
 /// The shape the segment quotient was BUILT for: a long fork-free run, where
 /// one segment spans the whole chain and a hop replaces a per-block walk.
