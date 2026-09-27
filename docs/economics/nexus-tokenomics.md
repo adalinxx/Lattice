@@ -2,9 +2,9 @@
 
 This non-normative note summarizes the configured economics of Nexus, Lattice's
 single outermost chain. The concrete configuration lives in
-[`NexusGenesis.swift`](https://github.com/adalinxx/lattice-node/blob/2.0.0/Sources/LatticeNode/Architecture/NexusGenesis.swift).
+[`NexusGenesis.swift`](https://github.com/adalinxx/lattice-node/blob/17418de557f2ab3c39d3ef5b5d99528f0a16c68c/Sources/LatticeNode/Architecture/NexusGenesis.swift).
 Lattice interprets it using
-[`ChainSpec.swift`](../../Sources/Lattice/Block/ChainSpec.swift) and the generic
+[`ChainSpec.swift`](../../Sources/LatticePrimitives/Block/ChainSpec.swift) and the generic
 [economic rules](../spec.md#10-economic-model).
 
 Do not copy a premine recipient, timestamp, or genesis CID from this page. Those
@@ -123,6 +123,6 @@ explicit payer debit and construct an author credit as fee policy. See
 | Fact | Canonical home |
 |---|---|
 | Nexus parameters and genesis identity | `lattice-node/Sources/LatticeNode/Architecture/NexusGenesis.swift` |
-| Reward and premine arithmetic | `Sources/Lattice/Block/ChainSpec.swift` |
+| Reward and premine arithmetic | `Sources/LatticePrimitives/Block/ChainSpec.swift` |
 | Generic consensus rules | [Protocol specification](../spec.md) |
-| Adversarial fork-choice model | [TRE-134 report](../consensus/tre-134-adversarial-report.md) |
+| Adversarial fork-choice model | [Consensus simulator](../consensus-simulator.md#adversarial-model) |

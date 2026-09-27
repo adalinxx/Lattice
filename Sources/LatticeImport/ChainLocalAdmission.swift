@@ -32,9 +32,10 @@ public enum BlockImportError: Error, Sendable, Equatable {
 ///   already weighed. On success emit the block fact carrying the materialized
 ///   post-state — the durable "validated" marker that upgrades the weighed
 ///   claim. On a COMPLETED deterministic invalidity (`postState` mismatch or a
-///   committed validity rule) emit an `.exclusion` fact removing the subtree
-///   from fork choice. An availability failure is not a verdict: it is a
-///   retryable rejection that excludes nothing.
+///   committed validity rule) emit an `.exclusion` fact: the subtree keeps
+///   its weight, and the fork-choice descent never steps into it. An
+///   availability failure is not a verdict: it is a retryable rejection that
+///   excludes nothing.
 public enum ImportMode: Sendable {
     case full
     case header
