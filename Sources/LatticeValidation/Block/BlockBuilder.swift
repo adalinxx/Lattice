@@ -316,14 +316,18 @@ public struct BlockBuilder {
     /// Walk to the height-1 ancestor, which is the block the difficulty
     /// schedule is measured from.
     ///
-    /// ONE implementation, called by both the builder and the validator on
-    /// purpose. The anchor decides every target, so a builder and a validator
-    /// that resolved it differently would disagree about whether a block is
-    /// valid, which is a chain split rather than a bug in one of them.
+    /// ONE implementation, called by both the builder and the chain-less
+    /// validator on purpose. The anchor decides every target, so a builder and
+    /// a validator that resolved it differently would disagree about whether a
+    /// block is valid, which is a chain split rather than a bug in one of them.
     ///
-    /// This is the fallback: callers holding chain state take the inherited
-    /// anchor instead and never walk. Both must produce the same answer, which
-    /// they do because both are the same pure function of the block's ancestry.
+    /// Only for callers without chain state: a validator holding a chain takes
+    /// the inherited anchor from the graph and never walks. Both produce the
+    /// same answer, because both are the same pure function of a valid
+    /// ancestry. Every hop must be a valid link — height exactly one below and
+    /// the same spec — or there is no anchor (nil): an ancestry that breaks
+    /// either rule is invalid, and following its links would let a forger
+    /// steer the walk.
     /// Throws rather than returning nil when an ancestor cannot be FETCHED.
     /// That distinction is the whole point: a block whose ancestry we merely
     /// cannot reach yet is unavailable evidence and must stay retriable, while
@@ -331,41 +335,30 @@ public struct BlockBuilder {
     /// permanently reject a perfectly valid block for a transient fetch failure.
     static func resolveDifficultyAnchor(
         from block: Block,
-        fetcher: Fetcher,
-        chain: (any DifficultyAnchorSource)? = nil
+        fetcher: Fetcher
     ) async throws -> DifficultyAnchor? {
         var current = block
         // Genesis precedes the anchor and has no schedule to measure against.
         guard current.height > 0 else { return nil }
         while current.height > 1 {
             guard let parentRef = current.parent else { return nil }
-            // The anchor is INHERITED, so any ancestor's anchor is also this
-            // block's. Ask the graph at every step rather than only about the
-            // immediate parent: while a chain is syncing, the parent is
-            // routinely not admitted yet even though its own parent is, and
-            // abandoning the graph after a single miss turns an O(1) lookup
-            // into a walk to height 1 -- once per block, resolving every
-            // ancestor through the fetcher. That cost grows with chain depth
-            // and stalled a live network at ~1,800 blocks.
-            if let chain,
-               let carried = await chain.difficultyAnchor(
-                forBlockHash: parentRef.rawCID
-               ) {
-                return carried
-            }
             // Prefer a node already carried in memory over fetching it, as the
             // spec lookup above this does. A caller assembling blocks without
             // backing storage still has the whole ancestry attached, and a walk
             // that insisted on the fetcher would fail on chains that are
             // perfectly well formed.
+            let next: Block
             if let attached = parentRef.node {
-                current = attached
+                next = attached
             } else {
                 guard let resolved = try await parentRef.resolve(fetcher: fetcher).node else {
                     return nil
                 }
-                current = resolved
+                next = resolved
             }
+            guard next.height == current.height - 1,
+                  next.spec.rawCID == current.spec.rawCID else { return nil }
+            current = next
         }
         guard current.height == 1 else { return nil }
         return DifficultyAnchor(

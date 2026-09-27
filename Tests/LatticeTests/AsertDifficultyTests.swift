@@ -213,6 +213,52 @@ final class AsertDifficultyTests: XCTestCase {
         XCTAssertNil(anchor)
     }
 
+    /// The chain-less walk follows only valid links: each hop exactly one
+    /// height below and on the same spec. A block claiming height 3 over a
+    /// height-1 parent (or switching spec) has no valid ancestry, so it has no
+    /// anchor -- the walk must not skip ahead to whatever height-1 block the
+    /// forged links land on.
+    func testAnchorWalkRejectsAHeightSkipOrASpecChange() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await buildAndStoreGenesis(
+            spec: spec(targetBlockTime: 1_000), timestamp: 1_000,
+            target: UInt256(1) << 240, fetcher: fetcher
+        )
+        let blockOne = try await buildAndStoreBlock(
+            previous: genesis, timestamp: 2_000, fetcher: fetcher
+        )
+        let blockTwo = try await buildAndStoreBlock(
+            previous: blockOne, timestamp: 3_000, fetcher: fetcher
+        )
+        func variant(height: UInt64, spec: VolumeImpl<ChainSpec>) -> Block {
+            Block(
+                version: blockTwo.version, parent: blockTwo.parent,
+                transactions: blockTwo.transactions, target: blockTwo.target,
+                nextTarget: blockTwo.nextTarget, spec: spec,
+                parentState: blockTwo.parentState, prevState: blockTwo.prevState,
+                postState: blockTwo.postState, children: blockTwo.children,
+                height: height, timestamp: blockTwo.timestamp, nonce: blockTwo.nonce
+            )
+        }
+
+        let control = try await BlockBuilder.resolveDifficultyAnchor(
+            from: variant(height: 2, spec: blockTwo.spec), fetcher: fetcher
+        )
+        XCTAssertEqual(control?.timestamp, blockOne.timestamp, "the unaltered link anchors at block one")
+
+        let skipped = try await BlockBuilder.resolveDifficultyAnchor(
+            from: variant(height: 3, spec: blockTwo.spec), fetcher: fetcher
+        )
+        XCTAssertNil(skipped, "a height-3 block over a height-1 parent has no anchor")
+
+        let otherSpec = try VolumeImpl<ChainSpec>(node: spec(targetBlockTime: 2_000))
+        XCTAssertNotEqual(otherSpec.rawCID, blockTwo.spec.rawCID)
+        let respecced = try await BlockBuilder.resolveDifficultyAnchor(
+            from: variant(height: 2, spec: otherSpec), fetcher: fetcher
+        )
+        XCTAssertNil(respecced, "a hop that changes spec has no anchor")
+    }
+
     /// The property that matters most: the builder and the validator must
     /// derive the same target for the same block. Disagreement here is not a
     /// bug in one of them, it is a chain split.
@@ -400,21 +446,19 @@ final class AsertDifficultyTests: XCTestCase {
         )
     }
 
-    /// The anchor walk must stop at the first ancestor the GRAPH already
-    /// knows, not descend to height 1.
+    /// Validation against a chain must take the anchor from the GRAPH, not
+    /// descend to height 1.
     ///
-    /// The anchor is inherited, so any ancestor's anchor is this block's. The
-    /// validator only reached for chain state when the immediate parent was
-    /// admitted; while a chain syncs, the parent routinely is not, even though
-    /// its own parent is. Abandoning the graph after one miss turned an O(1)
-    /// lookup into a walk to height 1 -- per block, resolving every ancestor
-    /// through the fetcher. Cost grew with depth and stalled a live network at
-    /// ~1,800 blocks, with every node asleep on I/O.
+    /// The anchor is inherited, so the grandparent's anchor is this block's.
+    /// While a chain syncs, the parent is routinely not admitted even though
+    /// its own parent is. A validator that walked the ancestry through the
+    /// fetcher instead turned an O(1) lookup into a descent to height 1 -- per
+    /// block. Cost grew with depth and stalled a live network at ~1,800
+    /// blocks, with every node asleep on I/O.
     ///
     /// Counting fetches is the assertion: the depth of the walk IS the defect,
-    /// so a test that only checked the returned anchor would have passed
-    /// throughout.
-    func testAnchorWalkStopsAtTheFirstAncestorTheChainKnows() async throws {
+    /// so a test that only checked the verdict would have passed throughout.
+    func testValidationAnchorsFromAGrandparentTheChainKnows() async throws {
         let fetcher = CountingFetcher()
         let chainSpec = spec(targetBlockTime: 1_000)
         let genesis = try await buildAndStoreGenesis(
@@ -434,30 +478,26 @@ final class AsertDifficultyTests: XCTestCase {
             blocks.append(block)
             previous = block
         }
-        // Admit everything EXCEPT the last block, so the deepest block's own
-        // parent is absent from the graph while its grandparent is present --
-        // exactly the shape sync produces.
-        for block in blocks.dropLast() {
+        // Admit everything EXCEPT the last two blocks, so the deepest block's
+        // own parent is absent from the graph while its grandparent is present
+        // -- exactly the shape sync produces.
+        for block in blocks.dropLast(2) {
             let header = try VolumeImpl<Block>(node: block)
             _ = await chain.submitTestBlock(blockHeader: header, block: block)
         }
 
         let tip = blocks[blocks.count - 1]
         await fetcher.resetCount()
-        let anchor = try await BlockBuilder.resolveDifficultyAnchor(
-            from: tip, fetcher: fetcher, chain: chain
+        let linked = try await tip.validateHeaderLinkage(
+            fetcher: fetcher, chain: chain, validationContext: .current
         )
         let fetches = await fetcher.count()
 
-        XCTAssertEqual(anchor?.blockHeight, 1, "the anchor is still height 1")
-        XCTAssertEqual(
-            anchor?.timestamp, blocks[0].timestamp,
-            "and is still block one's, whichever route found it"
-        )
+        XCTAssertTrue(linked, "the grandparent's inherited anchor validates the tip")
         XCTAssertLessThan(
             fetches, 5,
-            "the walk must stop at the first known ancestor, not descend to height 1 "
-                + "(took \(fetches) fetches at depth \(tip.height))"
+            "validation must stop at the grandparent, not descend to height 1 "
+                + "(took \(fetches) fetches at depth \(blocks.count))"
         )
     }
 
