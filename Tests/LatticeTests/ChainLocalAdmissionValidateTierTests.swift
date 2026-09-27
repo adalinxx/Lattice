@@ -142,7 +142,7 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
         guard case .rejected(let failure, _, _) = result else {
             return XCTFail("a root exclusion with nothing to stand on must be parked, got \(result)")
         }
-        XCTAssertEqual(failure, .notYetAdmissible, "a non-verdict, retried — never a written fact")
+        XCTAssertEqual(failure, .notYetValid, "a non-verdict, retried — never a written fact")
         XCTAssertEqual(staged, 0, "nothing is made durable")
         let roots = await level.chain.excludedRootsForTesting
         XCTAssertTrue(roots.isEmpty)

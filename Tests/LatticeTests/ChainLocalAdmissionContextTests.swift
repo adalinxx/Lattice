@@ -88,7 +88,7 @@ final class ChainLocalAdmissionContextTests: XCTestCase {
             .serializationError,
         ]
         for error in cases {
-            let expected: ChainAdmissionFailure = error == .serializationError
+            let expected: BlockImportError = error == .serializationError
                 ? .localVerificationFailure
                 : .unavailableEvidence
             let classified = ChainLevel.classifyValidationFailureForTesting(error)
@@ -106,7 +106,7 @@ final class ChainLocalAdmissionContextTests: XCTestCase {
         // is a verdict that may exclude. Availability, ordering and capacity
         // failures are transient and must never record an exclusion.
         for failure in [
-            ChainAdmissionFailure.protocolInvalid,
+            BlockImportError.protocolInvalid,
             .localVerificationFailure,
         ] {
             XCTAssertTrue(
@@ -115,10 +115,10 @@ final class ChainLocalAdmissionContextTests: XCTestCase {
             )
         }
         for failure in [
-            ChainAdmissionFailure.unavailableEvidence,
+            BlockImportError.unavailableEvidence,
             .providerMalformedEvidence,
             .crossChainEvidenceRequired(.childProof(chainPath: [], childCID: "x")),
-            .notYetAdmissible,
+            .notYetValid,
             .notAcceptedAtCurrentChain,
             .revisionExhausted,
         ] {

@@ -343,7 +343,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         let level = AdmissionFixture.makeLevel(genesis: genesis)
         let result = try await level.admit(header, mode: .weighed, fetcher: fetcher)
 
-        XCTAssertEqual(result.failure, .notYetAdmissible)
+        XCTAssertEqual(result.failure, .notYetValid)
         let inserted = await level.chain.contains(blockHash: header.rawCID)
         XCTAssertFalse(inserted)
     }
