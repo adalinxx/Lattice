@@ -213,7 +213,7 @@ public extension Block {
         spec: ChainSpec,
         parent: Block,
         fetcher: Fetcher,
-        chain: ChainState? = nil,
+        chain: (any DifficultyAnchorSource)? = nil,
         reportTemporalFailure: Bool = false,
         validationContext: ValidationContext
     ) async throws -> Bool {
@@ -271,7 +271,7 @@ public extension Block {
     /// into batched requests without altering the validation logic.
     func validateNexus(
         source: any ContentSource,
-        chain: ChainState? = nil,
+        chain: (any DifficultyAnchorSource)? = nil,
         chainPath: [String]? = nil,
         reportTemporalFailure: Bool = false,
         validationContext: ValidationContext = .current
@@ -313,7 +313,7 @@ public extension Block {
     /// executed: exactly the checks `validateNexus` makes before execution.
     func validateHeaderLinkage(
         fetcher: Fetcher,
-        chain: ChainState? = nil,
+        chain: (any DifficultyAnchorSource)? = nil,
         reportTemporalFailure: Bool = false,
         validationContext: ValidationContext
     ) async throws -> Bool {
@@ -336,7 +336,7 @@ public extension Block {
     /// materialized post-state produced by the validated transition.
     func validateNexus(
         fetcher: Fetcher,
-        chain: ChainState? = nil,
+        chain: (any DifficultyAnchorSource)? = nil,
         chainPath: [String]? = nil,
         reportTemporalFailure: Bool = false,
         validationContext: ValidationContext = .current
