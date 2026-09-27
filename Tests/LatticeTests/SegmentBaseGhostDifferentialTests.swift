@@ -809,8 +809,8 @@ private func workAdmission(
 /// emitted commit delta.
 private func referencePath(_ chain: ChainState) async -> Set<String> {
     let blocks = await chain.hashToBlock
-    return ChainState.referenceCanonicalProjection(in: blocks)?.mainChainHashes
-        ?? []
+    return ForkChoiceOracle(blocks: blocks, excluded: []).view().canonicalProjection()
+        .map { Set($0.path) } ?? []
 }
 
 /// A commit must report exactly the blocks that joined and left the canonical
@@ -849,19 +849,20 @@ private func assertMatchesReference(
     line: UInt = #line
 ) async {
     let blocks = await chain.hashToBlock
-    guard let expected = ChainState.referenceCanonicalProjection(
-        in: blocks
-    ) else {
+    guard let expected = ForkChoiceOracle(blocks: blocks, excluded: [])
+        .view().canonicalProjection()
+    else {
         XCTFail("seed \(seed), \(event): reference has no canonical projection", file: file, line: line)
         return
     }
+    let expectedPath = Set(expected.path)
     let liveTip = await chain.getMainChainTip()
     let livePath = await chain.mainChainHashes
-    XCTAssertEqual(liveTip, expected.chainTip, "seed \(seed), \(event): tip", file: file, line: line)
-    XCTAssertEqual(livePath, expected.mainChainHashes, "seed \(seed), \(event): path", file: file, line: line)
+    XCTAssertEqual(liveTip, expected.tip, "seed \(seed), \(event): tip", file: file, line: line)
+    XCTAssertEqual(livePath, expectedPath, "seed \(seed), \(event): path", file: file, line: line)
     await assertMainChainIndexMatchesPath(
         chain,
-        expectedPath: expected.mainChainHashes,
+        expectedPath: expectedPath,
         "seed \(seed), \(event): by-height index",
         file: file,
         line: line
@@ -920,24 +921,25 @@ private func assertMatchesReferenceWithExclusions(
     let closure = await chain.excludedRootsForTesting
     let liveTip = await chain.getMainChainTip()
     let livePath = await chain.mainChainHashes
-    guard let expected = ChainState.referenceCanonicalProjection(
-        in: blocks, excluding: closure
-    ) else {
+    guard let expected = ForkChoiceOracle(blocks: blocks, excluded: closure)
+        .view().canonicalProjection()
+    else {
         // The only projectionless case here is every root excluded; the live
         // tip must then also be unreachable from a non-excluded root.
         return
     }
+    let expectedPath = Set(expected.path)
     XCTAssertEqual(
-        liveTip, expected.chainTip,
+        liveTip, expected.tip,
         "seed \(seed), \(event): tip", file: file, line: line
     )
     XCTAssertEqual(
-        livePath, expected.mainChainHashes,
+        livePath, expectedPath,
         "seed \(seed), \(event): path", file: file, line: line
     )
     await assertMainChainIndexMatchesPath(
         chain,
-        expectedPath: expected.mainChainHashes,
+        expectedPath: expectedPath,
         "seed \(seed), \(event): by-height index",
         file: file,
         line: line

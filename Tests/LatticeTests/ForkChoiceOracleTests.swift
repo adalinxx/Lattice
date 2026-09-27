@@ -135,11 +135,30 @@ final class ForkChoiceOracleTests: XCTestCase {
         }
         XCTAssertEqual(livePath, projection.path, "\(event): canonical path", file: file, line: line)
 
+        // The model read back from the chain's own block table must be the
+        // model the facts built, and the one-pass totals must be the walked
+        // ones — the differential suites project through both.
+        let held = ForkChoiceOracle(
+            blocks: await chain.hashToBlock, excluded: await chain.excludedRootsForTesting
+        ).view()
+        let heldProjection = try XCTUnwrap(
+            held.canonicalProjection(totals: held.subtreeTotals()),
+            "\(event): no selectable root from hashToBlock", file: file, line: line
+        )
+        XCTAssertEqual(heldProjection.tip, projection.tip, "\(event): tip from hashToBlock", file: file, line: line)
+        XCTAssertEqual(heldProjection.path, projection.path, "\(event): path from hashToBlock", file: file, line: line)
+        let totals = view.subtreeTotals()
+        XCTAssertEqual(totals.count, view.blocks.count, "\(event): one total per block", file: file, line: line)
+
         for hash in view.blocks.keys.sorted() {
             let subtree = await chain.subtreeWeight(forHash: hash)
             XCTAssertEqual(
                 subtree?.toHexString(), view.trueCumWork(of: hash).hex,
                 "\(event): trueCumWork of \(hash)", file: file, line: line
+            )
+            XCTAssertEqual(
+                totals[hash], view.trueCumWork(of: hash),
+                "\(event): subtreeTotals of \(hash)", file: file, line: line
             )
             let prefix = await chain.getCumulativeWork(forHash: hash)
             XCTAssertEqual(
