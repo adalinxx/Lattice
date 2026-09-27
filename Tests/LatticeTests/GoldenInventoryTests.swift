@@ -9,6 +9,7 @@ import XCTest
 final class GoldenInventoryTests: XCTestCase {
     static let inventory: [(testClass: String, golden: String)] = [
         ("ForkChoiceReplayGoldenTests", ForkChoiceReplayGoldenTests.goldenName),
+        ("ForkChoiceReplayGoldenTests", ForkChoiceReplayGoldenTests.traceGoldenName),
         ("AdmissionDecisionGoldenTests", AdmissionDecisionGoldenTests.goldenName),
         ("AdmissionBatchEncodingGoldenTests", AdmissionBatchEncodingGoldenTests.goldenName),
         ("WorkTableGoldenTests", WorkTableGoldenTests.goldenName),

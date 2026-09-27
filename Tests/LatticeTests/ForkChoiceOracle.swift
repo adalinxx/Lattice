@@ -116,6 +116,9 @@ struct ForkChoiceOracle {
     }
 
     mutating func observe(_ grind: String, _ work: UInt256, at blockHash: String) {
+        // §9.1: one grind has exactly one location per chain; a conflicting
+        // location is rejected, never re-homed.
+        if let located = locationByGrind[grind], located != blockHash { return }
         guard var block = blocks[blockHash] else {
             // A work fact for a block whose fact has not arrived yet: keep it
             // pending on a placeholder that the block fact fills in.
@@ -124,11 +127,13 @@ struct ForkChoiceOracle {
             )
             return
         }
+        locationByGrind[grind] = blockHash
         block.observations[grind] = max(block.observations[grind] ?? .zero, work)
         blocks[blockHash] = block
     }
 
     private var pendingObservations: [String: [String: UInt256]] = [:]
+    private var locationByGrind: [String: String] = [:]
 
     /// Fold work that arrived before its block into the block once it exists.
     private mutating func settlePending() {
@@ -140,8 +145,10 @@ struct ForkChoiceOracle {
 
     /// A read-only view with the per-grind quantities and the child index
     /// settled once, so a sweep over every block costs O(n) per block instead
-    /// of rebuilding both for every query.
-    func view() -> ForkChoiceOracleView {
+    /// of rebuilding both for every query. `ignoringExclusions` answers "what
+    /// would be selected on weight alone" — the control that shows whether an
+    /// exclusion was decisive (§9.9).
+    func view(ignoringExclusions: Bool = false) -> ForkChoiceOracleView {
         var strongest: [String: UInt256] = [:]
         var childrenByParent: [String: [String]] = [:]
         for block in blocks.values {
@@ -155,7 +162,7 @@ struct ForkChoiceOracle {
         }
         return ForkChoiceOracleView(
             blocks: blocks,
-            excluded: excluded,
+            excluded: ignoringExclusions ? [] : excluded,
             strongest: strongest,
             childrenByParent: childrenByParent.mapValues { $0.sorted() }
         )
