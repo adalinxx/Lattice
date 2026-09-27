@@ -681,7 +681,7 @@ extension ChainState {
     }
 
     public func isOnMainChain(hash: String) -> Bool {
-        guard let height = hashToBlock[hash]?.blockHeight else { return false }
+        guard let height = graph.height(of: hash) else { return false }
         return mainChainBlockAtIndex[height] == hash
     }
 
@@ -706,11 +706,11 @@ extension ChainState {
         mainChainHashes: Set<String>
     )? {
         let roots = Array(indexToBlockHash[0] ?? []).filter {
-            hashToBlock[$0]?.parentBlockHash == nil
+            graph.parent(of: $0) == nil
         }
         guard let root = forkChoice.selectableRoot(among: roots)
         else { return nil }
-        let descent = forkChoice.descend(from: root, in: hashToBlock)
+        let descent = forkChoice.descend(from: root, in: graph.blocksByHash)
         return (descent.tipHash, descent.blocks)
     }
 #endif
@@ -723,7 +723,7 @@ extension ChainState {
     ) -> ChainCommit? {
         frontier.project(
             forkChoice: forkChoice,
-            in: hashToBlock,
+            in: graph.blocksByHash,
             heightZero: indexToBlockHash[0] ?? [],
             generation: mutationGeneration,
             forceFull: forceFull,
@@ -783,15 +783,15 @@ extension ChainState {
             return nil
         }
         if from == to { return [] }
-        return frontier.continuityPath(from: from, to: to, in: hashToBlock)
+        return frontier.continuityPath(from: from, to: to, in: graph.blocksByHash)
     }
 
     /// Record that a possessed block's transition was executed.
     func markValidated(blockHash: String) {
-        guard hashToBlock[blockHash] != nil else { return }
+        guard graph.contains(blockHash) else { return }
         frontier.markValidated(
             blockHash,
-            in: hashToBlock,
+            in: graph.blocksByHash,
             excluded: forkChoice.excludedRoots
         )
     }
@@ -802,13 +802,13 @@ extension ChainState {
     func hasExecutedRoot(besides blockHash: String) -> Bool {
         (indexToBlockHash[0] ?? []).contains {
             $0 != blockHash
-                && hashToBlock[$0]?.parentBlockHash == nil
+                && graph.parent(of: $0) == nil
                 && frontier.isAnchored($0)
         }
     }
 
     func unanchor(subtreeRootedAt rootHash: String) {
-        frontier.unanchor(subtreeRootedAt: rootHash, in: hashToBlock)
+        frontier.unanchor(subtreeRootedAt: rootHash, in: graph.blocksByHash)
     }
 
     func indexStateTransition(

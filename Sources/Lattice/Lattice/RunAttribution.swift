@@ -255,11 +255,11 @@ extension ChainState {
     /// directory it hosts after every restart, and it runs synchronously on
     /// the actor — one whole-graph walk per directory.
     public func serveRuns(for directory: String) {
-        runs.serve(directory, in: hashToBlock, isRouted: { forkChoice.isRouted($0) })
+        runs.serve(directory, in: graph.blocksByHash, isRouted: { forkChoice.isRouted($0) })
     }
 
     func connectForRunAttribution(rootedAt rootHash: String) {
-        runs.connect(rootedAt: rootHash, in: hashToBlock)
+        runs.connect(rootedAt: rootHash, in: graph.blocksByHash)
     }
 
     /// The run report a parent serves for one of its committing blocks. Nil
@@ -278,16 +278,17 @@ extension ChainState {
     ) -> ParentRunReport? {
         guard let hash = CIDIdentity.canonicalString(blockHash),
               forkChoice.isRouted(hash),
-              let meta = hashToBlock[hash],
+              let meta = graph[hash],
+              let work = graph.work(of: hash),
               let childBlock = meta.childCommitments?[directory],
               let run = runs.runWork[directory]?[hash] else { return nil }
         return ParentRunReport(
             blockHash: hash,
             directory: directory,
             childBlock: childBlock,
-            grinds: meta.grinds,
+            grinds: work.grinds,
             runWork: run,
-            ownWork: meta.grindWork,
+            ownWork: work.grindWork,
             revision: mutationGeneration
         )
     }
@@ -369,6 +370,6 @@ extension ChainState {
     /// The commitments recorded for a possessed block, or nil when the block
     /// is unknown or its fact predates the field (§9.10).
     public func recordedChildCommitments(of blockHash: String) -> [String: String]? {
-        CIDIdentity.canonicalString(blockHash).flatMap { hashToBlock[$0]?.childCommitments }
+        CIDIdentity.canonicalString(blockHash).flatMap { graph[$0]?.childCommitments }
     }
 }

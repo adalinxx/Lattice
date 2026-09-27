@@ -434,7 +434,9 @@ private struct TrustedAdmissionBatch {
 
 public actor ChainState {
     var indexToBlockHash: [UInt64: Set<String>]
-    var hashToBlock: [String: BlockMeta]
+    /// The block tree: records, child edges, work facts, anchors and the
+    /// diagnostic totals (BlockGraph.swift).
+    var graph: BlockGraph
     /// GHOST weights, grind locations and excluded roots (ForkChoice.swift).
     var forkChoice: ForkChoice
     /// The canonical projection, the executed-from-genesis frontier and the
@@ -460,8 +462,11 @@ public actor ChainState {
     var reservedAdmissionRevisions: UInt64
 
     // Restore validates this invariant; optional access keeps query paths fail-closed.
-    var highestBlock: BlockMeta? { hashToBlock[chainTip] }
-    var highestBlockHeight: UInt64 { highestBlock?.blockHeight ?? 0 }
+    var highestBlockHeight: UInt64 { graph.height(of: chainTip) ?? 0 }
+
+    /// Every held block's public read view, keyed by hash. Test-facing:
+    /// production reads `graph`.
+    var hashToBlock: [String: BlockMeta] { graph.blocksByHash }
 
     package init(
         chainTip: String,
@@ -494,7 +499,7 @@ public actor ChainState {
         }) else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
-        self.hashToBlock = hashToBlock
+        self.graph = BlockGraph(hashToBlock)
         self.forkChoice = ForkChoice()
         self.localWorkCachesDirty = true
         var allByHeight = indexToBlockHash
@@ -504,7 +509,7 @@ public actor ChainState {
         self.indexToBlockHash = allByHeight
         self.mutationGeneration = mutationGeneration
         self.reservedAdmissionRevisions = 0
-        for meta in self.hashToBlock.values {
+        for meta in hashToBlock.values {
             let contributions = meta.workContributions.values
             guard !contributions.isEmpty else {
                 throw ChainStateRestoreError.corruptConsensusGraph
@@ -517,10 +522,10 @@ public actor ChainState {
                 throw ChainStateRestoreError.corruptConsensusGraph
             }
         }
-        guard Self.hasUniqueWorkLocations(in: self.hashToBlock) else {
+        guard Self.hasUniqueWorkLocations(in: self.graph) else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
-        self.forkChoice = ForkChoice.build(from: self.hashToBlock)
+        self.forkChoice = ForkChoice.build(from: self.graph.blocksByHash)
         // Seed the executed-from-genesis frontier. Replay hands validations to
         // `markValidated` one at a time, but a graph restored wholesale needs
         // it computed once, downward from every genesis it holds.
@@ -530,7 +535,7 @@ public actor ChainState {
             tipSnapshot: tipSnapshot,
             snapshots: tipSnapshotsByHash,
             validated: validatedBlocks,
-            in: self.hashToBlock,
+            in: self.graph.blocksByHash,
             excluded: self.forkChoice.excludedRoots
         )
         // Runs (§9.10) are settled by `serveRuns(for:)`, one directory at a
@@ -758,7 +763,7 @@ public actor ChainState {
     // MARK: - Queries
 
     public func contains(blockHash: String) -> Bool {
-        hashToBlock[blockHash] != nil
+        graph.contains(blockHash)
     }
 
     public func currentRevision() -> UInt64 {
@@ -770,22 +775,23 @@ public actor ChainState {
     /// Height order makes this linear after the deterministic sort, rather
     /// than walking the same orphan suffix once per descendant.
     public func unresolvedSameChainPredecessors() -> [SameChainPredecessorRequirement] {
-        let ordered = hashToBlock.sorted {
-            if $0.value.blockHeight != $1.value.blockHeight {
-                return $0.value.blockHeight < $1.value.blockHeight
+        let ordered = graph.records.sorted {
+            if $0.blockHeight != $1.blockHeight {
+                return $0.blockHeight < $1.blockHeight
             }
-            return $0.key < $1.key
+            return $0.blockHash < $1.blockHash
         }
         var connected = Set<String>()
         connected.reserveCapacity(ordered.count)
-        for (key, block) in ordered {
+        for block in ordered {
+            let key = block.blockHash
             guard let predecessor = block.parentBlockHash else {
                 if block.blockHeight == 0 {
                     connected.insert(key)
                 }
                 continue
             }
-            guard let parent = hashToBlock[predecessor] else { continue }
+            guard let parent = graph[predecessor] else { continue }
             let (expectedHeight, overflow) = parent.blockHeight
                 .addingReportingOverflow(1)
             if !overflow,
@@ -795,7 +801,7 @@ public actor ChainState {
                 connected.insert(key)
             }
         }
-        return hashToBlock.values.compactMap { block in
+        return graph.records.compactMap { block in
             guard let predecessor = block.parentBlockHash,
                   !connected.contains(predecessor) else { return nil }
             return SameChainPredecessorRequirement(
@@ -813,11 +819,11 @@ public actor ChainState {
     func sameChainPredecessorRequirement(
         for descendantCID: String
     ) -> SameChainPredecessorRequirement? {
-        hashToBlock[descendantCID].flatMap(sameChainPredecessorRequirement(for:))
+        graph[descendantCID].flatMap(sameChainPredecessorRequirement(for:))
     }
 
     private func sameChainPredecessorRequirement(
-        for block: BlockMeta
+        for block: BlockRecord
     ) -> SameChainPredecessorRequirement? {
         guard let parent = block.parentBlockHash,
               !hasConnectedAncestry(blockHash: parent) else { return nil }
@@ -828,9 +834,9 @@ public actor ChainState {
     }
 
     public func getConsensusBlock(hash: String) -> BlockMeta? {
-        guard hashToBlock[hash] != nil else { return nil }
+        guard graph.contains(hash) else { return nil }
         materializeLocalWorkCachesIfNeeded()
-        return hashToBlock[hash]
+        return graph.meta(of: hash)
     }
 
     public func getHighestBlockHeight() -> UInt64 {
@@ -861,8 +867,8 @@ public actor ChainState {
         var unresolved: [String] = []
         var current: String? = hash
         var resolved: DifficultyAnchor?
-        while let step = current, let meta = hashToBlock[step] {
-            if let anchor = meta.difficultyAnchor {
+        while let step = current, let meta = graph[step] {
+            if let anchor = graph.difficultyAnchor(of: step) {
                 resolved = anchor
                 break
             }
@@ -872,7 +878,7 @@ public actor ChainState {
         }
         guard let anchor = resolved else { return nil }
         for step in unresolved {
-            hashToBlock[step]?.adoptDifficultyAnchor(anchor)
+            graph.adoptDifficultyAnchor(anchor, at: step)
         }
         return anchor
     }
@@ -906,7 +912,7 @@ public actor ChainState {
             return .discarded()
         }
 
-        if hashToBlock[blockHash] != nil {
+        if graph.contains(blockHash) {
             return addWorkContribution(contribution, to: blockHash)
         }
 
@@ -979,27 +985,23 @@ public actor ChainState {
                 target: input.snapshot.target
             )
         } else if let parentHash = input.parentBlockHash {
-            anchor = hashToBlock[parentHash]?.difficultyAnchor
+            anchor = graph.difficultyAnchor(of: parentHash)
         } else {
             anchor = nil
         }
-        let meta = BlockMeta(
-            blockHash: blockHash,
-            parentBlockHash: input.parentBlockHash,
-            blockHeight: input.blockHeight,
-            childHashes: childHashes,
-            workContributions: [],
-            cumulativeWork: .zero,
-            subtreeWeight: .zero,
-            difficultyAnchor: anchor,
-            childCommitments: input.childCommitments
+        graph.insert(
+            BlockRecord(
+                blockHash: blockHash,
+                parentBlockHash: input.parentBlockHash,
+                blockHeight: input.blockHeight,
+                childCommitments: input.childCommitments
+            ),
+            children: childHashes,
+            difficultyAnchor: anchor
         )
-
-        hashToBlock[blockHash] = meta
         indexStateTransition(input.snapshot, blockHash: blockHash)
-        if let prevHash = input.parentBlockHash,
-           hashToBlock[prevHash]?.childHashes.contains(blockHash) == false {
-            hashToBlock[prevHash]?.childHashes.append(blockHash)
+        if let prevHash = input.parentBlockHash {
+            graph.appendChild(blockHash, to: prevHash)
         }
         for contribution in contributions {
             // A block arrives with its grinds; attributed runs come later, as
@@ -1046,7 +1048,7 @@ public actor ChainState {
     }
 
     nonisolated private static func hasUniqueWorkLocations(
-        in blocks: [String: BlockMeta]
+        in blocks: BlockGraph
     ) -> Bool {
         var locationByGrind: [String: String] = [:]
         func observe(_ grindID: String, at blockHash: String) -> Bool {
@@ -1056,8 +1058,9 @@ public actor ChainState {
             locationByGrind[grindID] = blockHash
             return true
         }
-        for (blockHash, block) in blocks {
-            for grindID in block.workContributions.keys
+        for block in blocks.records {
+            let blockHash = block.blockHash
+            for grindID in (blocks.work(of: blockHash)?.contributions ?? [:]).keys
             where !observe(grindID, at: blockHash) {
                 return false
             }
@@ -1072,7 +1075,7 @@ public actor ChainState {
         to blockHash: String,
         attributedRun: AttributedRunIdentity? = nil
     ) -> SubmissionResult {
-        guard hashToBlock[blockHash] != nil,
+        guard graph.contains(blockHash),
               forkChoice.acceptsLocation(of: contribution.id, at: blockHash) else {
             return .discarded()
         }
@@ -1081,13 +1084,13 @@ public actor ChainState {
             return .discarded()
         }
         guard hasUnreservedMutationCapacity else { return .discarded() }
-        let workBefore = hashToBlock[blockHash]?.work ?? .zero
+        let workBefore = graph.work(of: blockHash)?.work ?? .zero
         applyLocalContribution(contribution, to: blockHash, attributed: attributedRun != nil)
         // A strengthening raises this block's own work, so its run (§9.10)
         // rises by exactly that delta — once the block is connected. An
         // orphan's work is credited in full at the moment it connects.
         if forkChoice.isRouted(blockHash),
-           let workAfter = hashToBlock[blockHash]?.work,
+           let workAfter = graph.work(of: blockHash)?.work,
            let delta = workAfter.subtracting(workBefore) {
             runs.credit(delta, at: blockHash)
         }
@@ -1126,7 +1129,7 @@ public actor ChainState {
             // A validation for a block this chain does not hold is deferred by
             // the caller's replay loop exactly as a work fact would be, not an
             // error: possession and execution arrive independently.
-            guard hashToBlock[validated] != nil else {
+            guard graph.contains(validated) else {
                 throw ChainStateRestoreError.missingBlockFact
             }
             markValidated(blockHash: validated)
@@ -1147,7 +1150,7 @@ public actor ChainState {
             }
         }
         if let input = trusted.block {
-            if let existing = hashToBlock[input.blockHash] {
+            if let existing = graph[input.blockHash] {
                 guard matchesGraph(existing, input: input),
                       frontier.snapshot(of: input.blockHash).map({
                           $0 == input.snapshot
@@ -1186,7 +1189,7 @@ public actor ChainState {
         }
 
         let blockHash = trusted.workBlockHash
-        guard hashToBlock[blockHash] != nil else {
+        guard graph.contains(blockHash) else {
             throw ChainStateRestoreError.missingBlockFact
         }
         if let existing = workContribution(
@@ -1224,7 +1227,7 @@ public actor ChainState {
     /// a not-yet-connected exclusion defers exactly like a work fact whose block
     /// has not arrived, so replay retries it once the subtree exists.
     private func applyExclusion(blockHash: String) throws -> SubmissionResult? {
-        guard hashToBlock[blockHash] != nil else {
+        guard graph.contains(blockHash) else {
             throw ChainStateRestoreError.missingBlockFact
         }
         // Idempotent: a duplicate exclusion adds nothing and cannot reorg.
@@ -1240,7 +1243,7 @@ public actor ChainState {
         // replayed yet, so the exclusion defers like any fact whose
         // prerequisites are missing — order-independent — and only a live
         // exclusion with nothing to stand on is a corrupt graph.
-        if hashToBlock[blockHash]?.parentBlockHash == nil,
+        if graph.parent(of: blockHash) == nil,
            !hasExecutedRoot(besides: blockHash) {
             throw deferProjectionForReplay
                 ? ChainStateRestoreError.missingBlockFact
@@ -1306,7 +1309,7 @@ public actor ChainState {
         reservedAdmissionRevisions < UInt64.max - mutationGeneration
     }
 
-    private func matchesGraph(_ meta: BlockMeta, input: ConsensusBlockInput) -> Bool {
+    private func matchesGraph(_ meta: BlockRecord, input: ConsensusBlockInput) -> Bool {
         meta.blockHash == input.blockHash
             && meta.parentBlockHash == input.parentBlockHash
             && meta.blockHeight == input.blockHeight
@@ -1334,8 +1337,8 @@ public actor ChainState {
     /// it now commits into, that directory's runs are re-settled from scratch:
     /// O(N), exact, and reachable only at the upgrade boundary.
     private func adoptChildCommitments(_ commitments: [String: String], at hash: String) {
-        guard let meta = hashToBlock[hash], meta.childCommitments == nil else { return }
-        hashToBlock[hash]?.adoptChildCommitments(commitments)
+        guard let meta = graph[hash], meta.childCommitments == nil else { return }
+        graph.adoptChildCommitments(commitments, at: hash)
         guard forkChoice.isRouted(hash) else { return }
         for directory in runs.served where commitments[directory] != nil {
             runs.forget(directory: directory)
@@ -1365,7 +1368,7 @@ public actor ChainState {
     func findChildren(hash: String, blockHeight: UInt64) -> [String] {
         let (childHeight, overflow) = blockHeight.addingReportingOverflow(1)
         guard !overflow, let hashes = indexToBlockHash[childHeight] else { return [] }
-        return hashes.filter { hashToBlock[$0]?.parentBlockHash == hash }
+        return hashes.filter { graph.parent(of: $0) == hash }
     }
 
 }
