@@ -3,7 +3,7 @@ import Lattice
 import WasmParser
 import WAT
 
-/// TRE-127 / TRE-208 — host-determinism golden vectors (shared source of truth).
+/// Host-determinism golden vectors (shared source of truth).
 ///
 /// These goldens pin canonical state-root–relevant bytes (the WasmPolicy
 /// canonical context encoding), the content ids of the policy modules, and the
@@ -12,7 +12,7 @@ import WAT
 /// `lattice-determinism-check` executable). Both the test and the executable
 /// import THIS file, so the pinned constants and the computation cannot drift.
 ///
-/// Reuses the pinned `executionFeatureSet` profile (TRE-127 / Lattice #48) and
+/// Reuses the pinned `executionFeatureSet` profile (Lattice #48) and
 /// the existing `canonicalData()` / CAS (`rawCID`) primitives — no new encoders.
 public enum DeterminismGoldens {
     // MARK: - Pinned goldens
@@ -155,7 +155,7 @@ public enum DeterminismGoldens {
         return Data(try wat2wasm(wat))
     }
 
-    /// TRE-246 — the float-divergence attack module. Computes 0.0/0.0 with
+    /// The float-divergence attack module. Computes 0.0/0.0 with
     /// `f64.div`, reinterprets the NaN to i64, and returns a payload bit. The
     /// WASM spec leaves NaN payload/sign bits implementation-defined, so this
     /// verdict could differ across hosts (macOS/arm64 vs Linux/x86_64). The
@@ -192,7 +192,7 @@ public enum DeterminismGoldens {
         return Data(try wat2wasm(wat))
     }
 
-    /// TRE-254 — bulk-memory stays ALLOWED: a policy that uses `memory.copy`
+    /// Bulk-memory stays ALLOWED: a policy that uses `memory.copy`
     /// to copy the first 4 context bytes and compares them against a direct
     /// load. Deterministic (bounds/trap semantics fully specified) and emitted
     /// by default by LLVM/Rust for wasm32, so the allow-list keeps it. The
@@ -229,7 +229,7 @@ public enum DeterminismGoldens {
         return Data(try wat2wasm(wat))
     }
 
-    /// TRE-254 — atomics must be REJECTED. WasmKit 0.2.x decodes and executes
+    /// Atomics must be REJECTED. WasmKit 0.2.x decodes and executes
     /// atomic opcodes with NO feature gate (the pinned `executionFeatureSet`
     /// does not constrain them), so the opcode allow-list is the only thing
     /// keeping shared-memory semantics out of policies. The golden pins the
@@ -327,7 +327,7 @@ public enum DeterminismGoldens {
             detail: "\(rejectVerdict)"
         ))
 
-        // 4. TRE-246 — float opcodes must be rejected before execution. NaN
+        // 4. Float opcodes must be rejected before execution. NaN
         // payload bits are implementation-defined, so the only host-independent
         // verdict for a float-using policy is a deterministic parse-time error.
         let floatModule = try wasmPolicyFloatNaNFixture()
@@ -348,7 +348,7 @@ public enum DeterminismGoldens {
             detail: "evaluate must throw nondeterministicConstruct"
         ))
 
-        // 5. TRE-254 — opcode allow-list goldens. Bulk memory stays allowed
+        // 5. Opcode allow-list goldens. Bulk memory stays allowed
         // (and must execute identically everywhere); atomics must be rejected
         // before execution (WasmKit decodes them with no feature gate, so the
         // allow-list is the only enforcement).

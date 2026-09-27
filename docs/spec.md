@@ -975,8 +975,8 @@ with greatest effective `trueCumWork` wins. Equal work compares the canonical
 CID bytes of those child blocks; the lexicographically smaller CID wins.
 `nextTarget` is not a comparator. The same rule applies to competing genesis roots, so arrival and
 replay order cannot change fork choice. The deliberate security tradeoff of
-this grindable deterministic tie-break is quantified in the
-[TRE-134 adversarial report](consensus/tre-134-adversarial-report.md).
+this grindable deterministic tie-break is quantified by the
+[consensus simulator's adversarial model](consensus-simulator.md#adversarial-model).
 
 When a branch wins, only this chain's canonical indexes change. The emitted
 canonical delta identifies the new tip and exact added and removed blocks. This

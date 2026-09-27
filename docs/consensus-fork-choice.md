@@ -117,12 +117,14 @@ Canonicity is an output of this descent, never a filter on work. Consequently a
 grind on a connected noncanonical branch remains eligible, and moving only a
 canonical pointer cannot change any weight.
 
-The implementation compresses maximal unary runs into segments. A newly
-accepted work location updates only the segment containing it and the ancestor
-fork segments that can compare it. The common tip-extension case has one such
-segment, so it does not scan chain history. Cost grows with fork depth, not
-linear-chain height. The immutable block graph and unique grind locations remain
-the source of truth; segment weights are rebuildable caches.
+The implementation keeps each routed block's subtree work as a range over an
+Euler tour of the block tree. A subtree total is a difference of prefix sums,
+so no ancestor total is stored and a newly accepted work location updates
+nothing above its insertion point; the balanced sequence tree makes that
+insertion logarithmic, not proportional to chain height. GHOST descends block
+by block and reads weights only at forks. The immutable block graph and unique
+grind locations remain the source of truth; the work index is a rebuildable
+cache.
 
 ## Connectivity And Recovery
 
@@ -133,4 +135,4 @@ predecessor attaches.
 
 Persistence records the accepted graph, proof-derived work locations, and
 authenticated parent-state facts. Recovery replays the same immutable facts and
-rebuilds segment caches. A persisted canonical tip is only a cache.
+rebuilds the work index. A persisted canonical tip is only a cache.
