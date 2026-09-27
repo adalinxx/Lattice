@@ -22,7 +22,7 @@ struct ForkChoiceGoldenEvent {
     let kind: Kind
     /// The block the batch is about, by fixture name (`b<n>`).
     let subject: String
-    let batch: ChainAdmissionBatch
+    let batch: BlockImportBatch
 }
 
 /// A seeded single-chain graph of ~300 blocks: two competing genesis roots,
@@ -204,10 +204,10 @@ struct ForkChoiceGoldenGraph {
         }
 
         // 3. The scripted facts, interleaved with the arrivals.
-        func blockBatch(_ block: Block) -> ChainAdmissionBatch {
+        func blockBatch(_ block: Block) -> BlockImportBatch {
             let work = UInt64(1 + random.nextInt(5))
             strength[block.index] = work
-            return ChainAdmissionBatch(facts: [
+            return BlockImportBatch(facts: [
                 .block(ChainBlockFact(
                     blockHash: block.hash,
                     parentBlockHash: block.parentHash,
@@ -229,7 +229,7 @@ struct ForkChoiceGoldenGraph {
                 )),
             ])
         }
-        func add(_ kind: ForkChoiceGoldenEvent.Kind, _ block: Block, _ batch: ChainAdmissionBatch) {
+        func add(_ kind: ForkChoiceGoldenEvent.Kind, _ block: Block, _ batch: BlockImportBatch) {
             events.append(ForkChoiceGoldenEvent(
                 index: events.count, kind: kind, subject: block.name, batch: batch
             ))
@@ -237,7 +237,7 @@ struct ForkChoiceGoldenGraph {
         }
         func exclude(_ block: Block) {
             excluded.insert(block.index)
-            add(.exclusion, block, ChainAdmissionBatch(facts: [
+            add(.exclusion, block, BlockImportBatch(facts: [
                 .exclusion(ChainExclusionFact(blockHash: block.hash)),
             ]))
         }
@@ -260,7 +260,7 @@ struct ForkChoiceGoldenGraph {
                 // Both roots are executed explicitly so the executed frontier
                 // does not depend on which root seeded the restore.
                 validated.insert(index)
-                add(.validation, block, ChainAdmissionBatch.validation(blockHash: block.hash))
+                add(.validation, block, BlockImportBatch.validation(blockHash: block.hash))
             }
             // A DECISIVE exclusion, planned past each mark: a block ON the
             // canonical selection, so the tip must move and the golden pins a
@@ -288,7 +288,7 @@ struct ForkChoiceGoldenGraph {
                 let roll = random.nextInt(100)
                 if roll < 30 {
                     extraCounter += 1
-                    add(.secondGrind, target, ChainAdmissionBatch(facts: [
+                    add(.secondGrind, target, BlockImportBatch(facts: [
                         .work(ChainWorkFact(
                             blockHash: target.hash,
                             contribution: VerifiedWorkContribution(
@@ -308,7 +308,7 @@ struct ForkChoiceGoldenGraph {
                     guard let identityID = identity.contributionID else {
                         preconditionFailure("attributed-run identity for \(target.name) has no CID")
                     }
-                    add(.attributedRun, target, ChainAdmissionBatch(facts: [
+                    add(.attributedRun, target, BlockImportBatch(facts: [
                         .work(ChainWorkFact(
                             blockHash: target.hash,
                             contribution: VerifiedWorkContribution(
@@ -321,7 +321,7 @@ struct ForkChoiceGoldenGraph {
                 } else if roll < 65 {
                     let stronger = strength[target.index, default: 1] + UInt64(1 + random.nextInt(3))
                     strength[target.index] = stronger
-                    add(.strengthen, target, ChainAdmissionBatch(facts: [
+                    add(.strengthen, target, BlockImportBatch(facts: [
                         .work(ChainWorkFact(
                             blockHash: target.hash,
                             contribution: VerifiedWorkContribution(
@@ -349,7 +349,7 @@ struct ForkChoiceGoldenGraph {
                         ? blocks[frontier[random.nextInt(frontier.count)]]
                         : target
                     validated.insert(chosen.index)
-                    add(.validation, chosen, ChainAdmissionBatch.validation(blockHash: chosen.hash))
+                    add(.validation, chosen, BlockImportBatch.validation(blockHash: chosen.hash))
                 }
             }
         }

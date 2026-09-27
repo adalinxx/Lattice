@@ -38,12 +38,12 @@ final class DeferredExecutionExclusionTests: XCTestCase {
         )
     }
 
-    private func admission(for block: PlannedBlock) -> ChainAdmissionBatch {
+    private func admission(for block: PlannedBlock) -> BlockImportBatch {
         let contribution = VerifiedWorkContribution(
             id: testCID("exclusion-work-\(block.hash)"),
             work: UInt256(block.work)
         )
-        return ChainAdmissionBatch(facts: [
+        return BlockImportBatch(facts: [
             .block(ChainBlockFact(
                 blockHash: block.hash,
                 parentBlockHash: block.parentHash,
@@ -60,8 +60,8 @@ final class DeferredExecutionExclusionTests: XCTestCase {
         ])
     }
 
-    private func exclusion(of block: PlannedBlock) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [
+    private func exclusion(of block: PlannedBlock) -> BlockImportBatch {
+        BlockImportBatch(facts: [
             .exclusion(ChainExclusionFact(blockHash: block.hash)),
         ])
     }
@@ -73,7 +73,7 @@ final class DeferredExecutionExclusionTests: XCTestCase {
         g: PlannedBlock,
         h: [PlannedBlock],
         l: [PlannedBlock],
-        batches: [ChainAdmissionBatch]
+        batches: [BlockImportBatch]
     ) {
         let g = block("g", parent: nil, work: 3)
         let h1 = block("h1", parent: g, work: 5)

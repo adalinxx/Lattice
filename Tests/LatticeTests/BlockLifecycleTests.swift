@@ -40,13 +40,13 @@ private func now() -> Int64 {
 }
 
 private actor AdmissionBatchCollector {
-    private var batches: [ChainAdmissionBatch] = []
+    private var batches: [BlockImportBatch] = []
 
-    func append(_ batch: ChainAdmissionBatch) {
+    func append(_ batch: BlockImportBatch) {
         batches.append(batch)
     }
 
-    func snapshot() -> [ChainAdmissionBatch] {
+    func snapshot() -> [BlockImportBatch] {
         batches
     }
 }
@@ -172,7 +172,7 @@ final class BlockMintingTests: XCTestCase {
         let block1 = try await storeBuiltBlock(built1, in: fetcher)
         let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
         let collector = AdmissionBatchCollector()
-        let stage: @Sendable (ChainAdmissionStagingContext) async throws -> Void = { context in
+        let stage: @Sendable (BlockImportStagingContext) async throws -> Void = { context in
             await collector.append(context.batch)
         }
 

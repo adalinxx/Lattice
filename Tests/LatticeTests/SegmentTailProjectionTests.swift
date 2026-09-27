@@ -301,8 +301,8 @@ private func segmentTailBlock(
     )
 }
 
-private func segmentTailAdmission(_ block: SegmentTailBlock) -> ChainAdmissionBatch {
-    ChainAdmissionBatch(facts: [
+private func segmentTailAdmission(_ block: SegmentTailBlock) -> BlockImportBatch {
+    BlockImportBatch(facts: [
         .block(ChainBlockFact(
             blockHash: block.hash,
             parentBlockHash: block.parent,

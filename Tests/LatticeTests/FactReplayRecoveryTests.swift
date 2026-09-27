@@ -67,7 +67,7 @@ final class FactReplayRecoveryTests: XCTestCase {
             try testAdmissionBatch(for: $0)
         }
         let encoded = try JSONEncoder().encode(batches)
-        let decoded = try JSONDecoder().decode([ChainAdmissionBatch].self, from: encoded)
+        let decoded = try JSONDecoder().decode([BlockImportBatch].self, from: encoded)
 
         let restored = try await ChainState.restore(
             replaying: decoded + Array(decoded.reversed())
@@ -103,7 +103,7 @@ final class FactReplayRecoveryTests: XCTestCase {
         guard case .block(let fact) = blockBatch.facts[0] else {
             return XCTFail("expected block fact")
         }
-        let conflicting = ChainAdmissionBatch(facts: [
+        let conflicting = BlockImportBatch(facts: [
             .block(ChainBlockFact(
                 blockHash: fact.blockHash,
                 parentBlockHash: fact.parentBlockHash,

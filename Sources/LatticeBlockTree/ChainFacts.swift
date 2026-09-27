@@ -148,7 +148,7 @@ public enum ChainFactID: Codable, Hashable, Sendable {
     case validation(String)
 }
 
-public enum ChainAdmissionFact: Codable, Sendable, Equatable {
+public enum ChainFact: Codable, Sendable, Equatable {
     case block(ChainBlockFact)
     case work(ChainWorkFact)
     case exclusion(ChainExclusionFact)
@@ -174,17 +174,17 @@ public enum ChainAdmissionFact: Codable, Sendable, Equatable {
 /// One node-atomic durability unit. New blocks stage their block and first work
 /// observations together; later work or a stronger observation appends another
 /// immutable fact.
-public struct ChainAdmissionBatch: Codable, Sendable, Equatable {
-    public let facts: [ChainAdmissionFact]
+public struct BlockImportBatch: Codable, Sendable, Equatable {
+    public let facts: [ChainFact]
 
-    init(facts: [ChainAdmissionFact]) {
+    init(facts: [ChainFact]) {
         self.facts = facts
     }
 
     /// A batch staged by the import funnel in another module. The initializer
     /// itself stays internal, so general batch construction is not public API.
-    package static func staged(_ facts: [ChainAdmissionFact]) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: facts)
+    package static func staged(_ facts: [ChainFact]) -> BlockImportBatch {
+        BlockImportBatch(facts: facts)
     }
 
     /// The one batch shape a node may author: "this block's transition was
@@ -198,8 +198,8 @@ public struct ChainAdmissionBatch: Codable, Sendable, Equatable {
     /// to make it durable, because the durable batch log is the only recovery
     /// authority and an execution the log forgets is an execution that never
     /// happened.
-    public static func validation(blockHash: String) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [
+    public static func validation(blockHash: String) -> BlockImportBatch {
+        BlockImportBatch(facts: [
             .validation(ChainValidationFact(blockHash: blockHash)),
         ])
     }

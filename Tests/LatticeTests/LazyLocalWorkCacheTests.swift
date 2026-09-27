@@ -76,12 +76,12 @@ private func lazyCacheAdmission(
     index: Int,
     hash: String,
     parentHash: String?
-) -> ChainAdmissionBatch {
+) -> BlockImportBatch {
     let contribution = VerifiedWorkContribution(
         id: testCID("lazy-local-cache-work-\(index)"),
         work: UInt256(index + 1)
     )
-    return ChainAdmissionBatch(facts: [
+    return BlockImportBatch(facts: [
         .block(ChainBlockFact(
             blockHash: hash,
             parentBlockHash: parentHash,

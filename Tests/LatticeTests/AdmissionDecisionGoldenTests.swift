@@ -415,9 +415,9 @@ private struct MissingCIDFetcher: Fetcher {
 }
 
 private actor StagingRecorder {
-    private(set) var contexts: [ChainAdmissionStagingContext] = []
+    private(set) var contexts: [BlockImportStagingContext] = []
 
-    func record(_ context: ChainAdmissionStagingContext) {
+    func record(_ context: BlockImportStagingContext) {
         contexts.append(context)
     }
 }

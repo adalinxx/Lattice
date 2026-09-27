@@ -20,8 +20,8 @@ final class ForkChoiceOracleTests: XCTestCase {
 
     private func block(
         _ name: String, parent: String?, height: UInt64, grind: String? = nil, work: UInt64
-    ) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [
+    ) -> BlockImportBatch {
+        BlockImportBatch(facts: [
             .block(ChainBlockFact(
                 blockHash: cid(name),
                 parentBlockHash: parent.map(cid),
@@ -41,8 +41,8 @@ final class ForkChoiceOracleTests: XCTestCase {
         ])
     }
 
-    private func work(_ name: String, grind: String, work: UInt64) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [
+    private func work(_ name: String, grind: String, work: UInt64) -> BlockImportBatch {
+        BlockImportBatch(facts: [
             .work(ChainWorkFact(
                 blockHash: cid(name),
                 contribution: VerifiedWorkContribution(id: cid(grind), work: UInt256(work))
@@ -50,8 +50,8 @@ final class ForkChoiceOracleTests: XCTestCase {
         ])
     }
 
-    private func exclusion(_ name: String) -> ChainAdmissionBatch {
-        ChainAdmissionBatch(facts: [.exclusion(ChainExclusionFact(blockHash: cid(name)))])
+    private func exclusion(_ name: String) -> BlockImportBatch {
+        BlockImportBatch(facts: [.exclusion(ChainExclusionFact(blockHash: cid(name)))])
     }
 
     // MARK: - The oracle against the spec

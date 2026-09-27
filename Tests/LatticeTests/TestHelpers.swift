@@ -423,18 +423,18 @@ extension ChainState {
     }
 }
 
-func testAdmissionStage(_ context: ChainAdmissionStagingContext) async throws {}
+func testAdmissionStage(_ context: BlockImportStagingContext) async throws {}
 
 func testAdmissionBatch(
     for block: Block,
     contribution: VerifiedWorkContribution? = nil
-) throws -> ChainAdmissionBatch {
+) throws -> BlockImportBatch {
     let header = try BlockHeader(node: block)
     let work = contribution ?? VerifiedWorkContribution(
         id: header.rawCID,
         work: workForTarget(block.target)
     )
-    return ChainAdmissionBatch(facts: [
+    return BlockImportBatch(facts: [
         .block(ChainBlockFact(
             blockHash: header.rawCID,
             parentBlockHash: block.parent?.rawCID,
@@ -455,9 +455,9 @@ func testAdmissionBatch(
     block: Block,
     contribution: VerifiedWorkContribution,
     stateDiff: StateDiff = .empty
-) throws -> ChainAdmissionBatch {
+) throws -> BlockImportBatch {
     let header = try BlockHeader(node: block)
-    return ChainAdmissionBatch(facts: [
+    return BlockImportBatch(facts: [
         .block(ChainBlockFact(
             blockHash: header.rawCID,
             parentBlockHash: block.parent?.rawCID,
@@ -477,8 +477,8 @@ func testAdmissionBatch(
 func testWorkBatch(
     blockHash: String,
     contribution: VerifiedWorkContribution
-) -> ChainAdmissionBatch {
-    ChainAdmissionBatch(facts: [
+) -> BlockImportBatch {
+    BlockImportBatch(facts: [
         .work(ChainWorkFact(blockHash: blockHash, contribution: contribution))
     ])
 }
