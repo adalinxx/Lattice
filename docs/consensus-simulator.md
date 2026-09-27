@@ -25,5 +25,5 @@ accepts a `ConsensusSimScenarioSpec` with block topology, release times
 The simulator does not implement a second fork-choice rule. It constructs
 `BlockMeta` fixtures and records `ChainState.forkChoiceSnapshot(startingAt:)`,
 which wraps the library's real same-chain GHOST decision. Cross-chain proof and
-contribution derivation are tested at admission rather than simulated by a live
+contribution derivation are tested at import rather than simulated by a live
 parent-weight provider.

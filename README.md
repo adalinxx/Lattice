@@ -40,7 +40,7 @@ credits only after proving both the deposit and the parent receipt. No trusted
 bridge is part of consensus.
 
 This repository is the consensus library. Networking, process supervision,
-durability, retention, and RPC belong to node software such as
+durability, pruning, and RPC belong to node software such as
 [`lattice-node`](https://github.com/adalinxx/lattice-node).
 
 ## Mental Model
@@ -105,9 +105,9 @@ Lattice and the node have deliberately different jobs:
 | Protocol and state-transition validation | Acquisition and provider selection |
 | Accepted same-chain graph | Process authentication and supervision |
 | Grind identity and work algebra | Atomic fact durability |
-| Chain-local GHOST and reorganizations | Retention, pinning, projections, and RPC |
+| Chain-local GHOST and reorganizations | Pruning, pinning, projections, and RPC |
 
-Every external candidate enters one admission boundary:
+Every external candidate enters one import boundary (`ChainLevel.importBlock`):
 
 ```text
 acquire
@@ -164,14 +164,17 @@ creates no local consensus fact and does not tell Lattice to retain the carrier.
 ## Project Structure
 
 ```text
-Sources/Lattice/
-|- Lattice/      admission, ChainState, ChainLevel, work, genesis
-|- Block/        block structure, builders, validation, ChainSpec
-|- Transaction/  transaction bodies, signatures, policies
-|- Actions/      account, deposit, receipt, withdrawal, genesis
-|- State/        content-addressed state and Sparse Merkle Trees
-`- Core/         public keys and shared primitives
+Sources/
+|- LatticePrimitives/  blocks, ChildIndex, ChainSpec, transactions, actions, state, CIDs
+|- LatticePoW/         proof-of-work preimage, work, ASERT schedule, WorkSum
+|- LatticeValidation/  block, transaction, state-transition and spec validity, genesis
+|- LatticeProofs/      ChildBlockProof and child validation packages
+|- LatticeBlockTree/   block graph, fork choice, execution frontier, run attribution, ChainState
+|- LatticeImport/      the import funnel, ChainLevel, transaction preflight
+`- Lattice/            umbrella module that re-exports the six above
 ```
+
+`import Lattice` brings in all six modules.
 
 Important dependencies are
 [`cashew`](https://github.com/adalinxx/cashew) for content-addressed structures,
