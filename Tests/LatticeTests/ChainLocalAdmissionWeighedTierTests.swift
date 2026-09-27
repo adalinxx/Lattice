@@ -530,7 +530,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         let predecessorHeader = try BlockHeader(node: predecessor)
         let descendantHeader = try BlockHeader(node: descendant)
 
-        let preflightResult = try await level.preflightBlockHeaderChainLocal(
+        let preflightResult = try await level.preflightBlockImport(
             descendantHeader,
             fetcher: fetcher,
             validationContentStorer: fetcher,

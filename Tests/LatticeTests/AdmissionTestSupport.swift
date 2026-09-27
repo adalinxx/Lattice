@@ -27,7 +27,7 @@ extension ChainLevel {
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
         stage: @Sendable (BlockImportStagingContext) async throws -> Void = testAdmissionStage
-    ) async throws -> ChainLocalBlockResult {
+    ) async throws -> BlockImportResult {
         try await admit(
             header,
             mode: mode,
@@ -51,8 +51,8 @@ extension ChainLevel {
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
         stage: @Sendable (BlockImportStagingContext) async throws -> Void = testAdmissionStage
-    ) async throws -> ChainLocalBlockResult {
-        try await admitBlockHeaderChainLocal(
+    ) async throws -> BlockImportResult {
+        try await importBlock(
             header,
             fetcher: fetcher,
             childPackage: childPackage,
@@ -74,7 +74,7 @@ extension ChainLevel {
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
         stage: @Sendable (BlockImportStagingContext) async throws -> Void = testAdmissionStage
-    ) async throws -> ChainLocalBlockResult {
+    ) async throws -> BlockImportResult {
         try await admit(
             try BlockHeader(node: block),
             mode: mode,
@@ -97,7 +97,7 @@ extension ChainLevel {
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
         stage: @Sendable (BlockImportStagingContext) async throws -> Void = testAdmissionStage
-    ) async throws -> ChainLocalBlockResult {
+    ) async throws -> BlockImportResult {
         try await admit(
             try BlockHeader(node: block),
             mode: mode,

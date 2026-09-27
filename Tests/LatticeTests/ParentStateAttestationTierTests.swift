@@ -14,7 +14,7 @@ import UInt256
 /// by executing its transition.
 ///
 /// The weighed tier records a block's DECLARED `postState` without executing it
-/// — `ChainLocalAdmission` calls it "an unverified claim". A block that never
+/// — `BlockImport` calls it "an unverified claim". A block that never
 /// becomes canonical is never validated, so it is never excluded, and its
 /// unverified claim stays in the graph permanently.
 ///
@@ -150,7 +150,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         _ = try await storeBuiltBlock(forged, in: fetcher)
 
         let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
-        let admitted = try await level.admitBlockHeaderChainLocal(
+        let admitted = try await level.importBlock(
             try BlockHeader(node: forged),
             fetcher: fetcher,
             validationContentStorer: fetcher,
@@ -218,7 +218,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
         let header = try BlockHeader(node: block)
 
-        let weighed = try await level.admitBlockHeaderChainLocal(
+        let weighed = try await level.importBlock(
             header, fetcher: fetcher,
             validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
             mode: .header, stage: testAdmissionStage
@@ -235,7 +235,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         )
 
         // Executing it must promote the block, not throw.
-        let validated = try await level.admitBlockHeaderChainLocal(
+        let validated = try await level.importBlock(
             header, fetcher: fetcher,
             validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
             mode: .execution, stage: testAdmissionStage
@@ -639,7 +639,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
         let header = try BlockHeader(node: block)
 
-        let weighed = try await level.admitBlockHeaderChainLocal(
+        let weighed = try await level.importBlock(
             header, fetcher: fetcher,
             validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
             mode: .header, stage: testAdmissionStage
@@ -649,7 +649,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         }
 
         // Ordinary gossip re-delivery of a header already held.
-        let replay = try await level.preflightBlockHeaderChainLocal(
+        let replay = try await level.preflightBlockImport(
             header, fetcher: fetcher, validationContentStorer: fetcher
         )
         guard case .duplicate(let preflight) = replay else {
@@ -741,7 +741,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         let header = try BlockHeader(node: childBlock)
 
         for nonce: UInt64 in [11, 12] {
-            _ = try await level.admitBlockHeaderChainLocal(
+            _ = try await level.importBlock(
                 header, fetcher: fetcher,
                 childPackage: try await package(nonce: nonce),
                 validationContentStorer: fetcher,
@@ -822,7 +822,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
 
         // Weighed admission does not run the parent-fact checks, so block 1's
         // forged `parentState` is possessed but unproven. That is by design.
-        let weighed = try await level.admitBlockHeaderChainLocal(
+        let weighed = try await level.importBlock(
             try BlockHeader(node: blockOne),
             fetcher: fetcher, childPackage: packageOne,
             validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
@@ -842,7 +842,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
             "the fixture must exercise the equality branch"
         )
 
-        let outcome = try await level.admitBlockHeaderChainLocal(
+        let outcome = try await level.importBlock(
             try BlockHeader(node: blockTwo),
             fetcher: fetcher, childPackage: packageTwo,
             validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
@@ -1051,7 +1051,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
             context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
         )
 
-        let outcome = try await level.admitBlockHeaderChainLocal(
+        let outcome = try await level.importBlock(
             try BlockHeader(node: blockOne),
             fetcher: fetcher,
             childPackage: try await childValidationPackage(
@@ -1125,7 +1125,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         )
 
         let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
-        let admitted = try await level.admitBlockHeaderChainLocal(
+        let admitted = try await level.importBlock(
             try BlockHeader(node: executed),
             fetcher: fetcher,
             validationContentStorer: fetcher,

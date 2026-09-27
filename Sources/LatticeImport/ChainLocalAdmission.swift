@@ -80,7 +80,7 @@ public struct ChainAcceptance: Sendable {
     }
 }
 
-public enum ChainLocalBlockResult: Sendable {
+public enum BlockImportResult: Sendable {
     case accepted(ChainAcceptance)
     case carrier(
         ParentCarrierLink?,
@@ -175,7 +175,7 @@ public enum ChildChainBootstrapResult: Sendable {
     }
 }
 
-fileprivate struct PreparedAdmission: Sendable {
+fileprivate struct PreparedImport: Sendable {
     enum Kind: Sendable {
         /// `validated` records whether the transition was EXECUTED. It is stated
         /// per tier rather than inferred from the materialized state, because a
@@ -335,31 +335,31 @@ fileprivate struct PreparedAdmission: Sendable {
 }
 
 fileprivate enum Preparation {
-    case ready(PreparedAdmission)
+    case ready(PreparedImport)
     case result(
-        ChainLocalBlockResult,
+        BlockImportResult,
         parentGenesisLinks: [ParentGenesisLink] = []
     )
-    case duplicate(PreparedDuplicateAdmissionState)
+    case duplicate(PreparedDuplicateImportState)
 }
 
-public enum ChainAdmissionPreflightError: Error, Sendable, Equatable {
+public enum BlockImportPreflightError: Error, Sendable, Equatable {
     case invalidToken
 }
 
 /// A one-use, level-bound result of remote validation and validation-Volume
 /// storage.
-public actor PreparedChainAdmission {
+public actor PreparedBlockImport {
     /// Commit may add an issuable carrier link if the already-validated
     /// predecessor connected before the durability boundary.
     fileprivate nonisolated let stagingContext: BlockImportStagingContext
 
     private let levelIdentity: UUID
-    private var prepared: PreparedAdmission?
+    private var prepared: PreparedImport?
 
     fileprivate init(
         levelIdentity: UUID,
-        prepared: PreparedAdmission,
+        prepared: PreparedImport,
         stagingContext: BlockImportStagingContext
     ) {
         self.levelIdentity = levelIdentity
@@ -367,14 +367,14 @@ public actor PreparedChainAdmission {
         self.stagingContext = stagingContext
     }
 
-    fileprivate func take(for levelIdentity: UUID) -> PreparedAdmission? {
+    fileprivate func take(for levelIdentity: UUID) -> PreparedImport? {
         guard self.levelIdentity == levelIdentity else { return nil }
         defer { prepared = nil }
         return prepared
     }
 }
 
-fileprivate struct PreparedDuplicateAdmissionState: Sendable {
+fileprivate struct PreparedDuplicateImportState: Sendable {
     let carrierLink: ParentCarrierLink
     let parentGenesisLinks: [ParentGenesisLink]
 }
@@ -383,13 +383,13 @@ fileprivate struct PreparedDuplicateAdmissionState: Sendable {
 /// the node acquired its mutation lease. Resolving it under that lease can add
 /// a carrier link when a predecessor connected in the meantime; it never
 /// stages consensus facts or reacquires remote content.
-public actor PreparedDuplicateAdmission {
+public actor PreparedDuplicateImport {
     private let levelIdentity: UUID
-    private var state: PreparedDuplicateAdmissionState?
+    private var state: PreparedDuplicateImportState?
 
     fileprivate init(
         levelIdentity: UUID,
-        state: PreparedDuplicateAdmissionState
+        state: PreparedDuplicateImportState
     ) {
         self.levelIdentity = levelIdentity
         self.state = state
@@ -397,20 +397,20 @@ public actor PreparedDuplicateAdmission {
 
     fileprivate func take(
         for levelIdentity: UUID
-    ) -> PreparedDuplicateAdmissionState? {
+    ) -> PreparedDuplicateImportState? {
         guard self.levelIdentity == levelIdentity else { return nil }
         defer { state = nil }
         return state
     }
 }
 
-public enum ChainAdmissionPreflightResult: Sendable {
+public enum BlockImportPreflightResult: Sendable {
     case terminal(
-        ChainLocalBlockResult,
+        BlockImportResult,
         parentGenesisLinks: [ParentGenesisLink] = []
     )
-    case duplicate(PreparedDuplicateAdmission)
-    case ready(PreparedChainAdmission)
+    case duplicate(PreparedDuplicateImport)
+    case ready(PreparedBlockImport)
 }
 
 private func parentGenesisLinks(
@@ -445,7 +445,7 @@ private func parentGenesisLinks(
     }
 }
 
-private enum ChainLocalAdmission {
+private enum BlockImport {
     static func verifyChildProof(
         _ package: ChildValidationPackage,
         child: Block,
@@ -466,7 +466,7 @@ private enum ChainLocalAdmission {
     ) async -> BlockImportError? {
         let parentPath = Array(context.path.dropLast())
         if child.parent == nil {
-            guard child.hasGenesisAdmissionShape() else {
+            guard child.hasGenesisShape() else {
                 return .protocolInvalid
             }
             guard package.parentStateContinuityLink == nil,
@@ -684,7 +684,7 @@ private enum ChainLocalAdmission {
                         sameChainPredecessor: carrier.sameChainPredecessor
                     ))
                 }
-                return .duplicate(PreparedDuplicateAdmissionState(
+                return .duplicate(PreparedDuplicateImportState(
                     carrierLink: carrierLink,
                     parentGenesisLinks: genesisLinks
                 ))
@@ -705,7 +705,7 @@ private enum ChainLocalAdmission {
             let executed = await level.chain.hasExecutedAncestry(
                 blockHash: blockHash
             )
-            return .ready(PreparedAdmission(
+            return .ready(PreparedImport(
                 resolvedHeader: resolvedHeader,
                 block: block,
                 fetcher: fetcher,
@@ -756,7 +756,7 @@ private enum ChainLocalAdmission {
             case .failure(let failure):
                 return .result(rejection(failure, carrier: carrier))
             }
-            return .ready(PreparedAdmission(
+            return .ready(PreparedImport(
                 resolvedHeader: resolvedHeader,
                 block: block,
                 fetcher: fetcher,
@@ -798,7 +798,7 @@ private enum ChainLocalAdmission {
             case .failure(let failure):
                 return .result(rejection(failure, carrier: carrier))
             }
-            return .ready(PreparedAdmission(
+            return .ready(PreparedImport(
                 resolvedHeader: resolvedHeader,
                 block: block,
                 fetcher: fetcher,
@@ -852,7 +852,7 @@ private enum ChainLocalAdmission {
             guard mayExclude else {
                 return .result(rejection(.notYetValid, carrier: carrier))
             }
-            return .ready(PreparedAdmission(
+            return .ready(PreparedImport(
                 resolvedHeader: resolvedHeader,
                 block: block,
                 fetcher: fetcher,
@@ -904,7 +904,7 @@ private enum ChainLocalAdmission {
                 case .failure(let failure): return rejected(failure)
                 }
             }
-            return .ready(PreparedAdmission(
+            return .ready(PreparedImport(
                 resolvedHeader: resolvedHeader,
                 block: block,
                 fetcher: fetcher,
@@ -941,7 +941,7 @@ private enum ChainLocalAdmission {
         _ failure: BlockImportError,
         parentCarrierLink: ParentCarrierLink? = nil,
         sameChainPredecessor: SameChainPredecessorRequirement? = nil
-    ) -> ChainLocalBlockResult {
+    ) -> BlockImportResult {
         .rejected(
             failure,
             parentCarrierLink: parentCarrierLink,
@@ -958,7 +958,7 @@ private enum ChainLocalAdmission {
             issuableLink: ParentCarrierLink?,
             sameChainPredecessor: SameChainPredecessorRequirement?
         )
-    ) -> ChainLocalBlockResult {
+    ) -> BlockImportResult {
         rejection(
             failure,
             parentCarrierLink: carrier.relayLink,
@@ -1155,7 +1155,7 @@ private enum ChainLocalAdmission {
         commit: ChainCommit,
         parentCarrierLink: ParentCarrierLink
     ) {
-        let prepared = PreparedAdmission(
+        let prepared = PreparedImport(
             resolvedHeader: resolved.header,
             block: resolved.block,
             fetcher: fetcher,
@@ -1190,10 +1190,10 @@ private enum ChainLocalAdmission {
 
     static func result(
         for submission: SubmissionResult,
-        prepared: PreparedAdmission,
+        prepared: PreparedImport,
         sameChainPredecessor: SameChainPredecessorRequirement?,
         parentCarrierLink: ParentCarrierLink?
-    ) -> ChainLocalBlockResult {
+    ) -> BlockImportResult {
         guard let commit = submission.commit else {
             // Unreachable with a non-nil `submission`, and safe by construction:
             // `applyStaged` returns a non-nil `SubmissionResult` only via
@@ -1315,7 +1315,7 @@ public extension ChainLevel {
     static func isDeterministicInvalidityForTesting(
         _ failure: BlockImportError
     ) -> Bool {
-        ChainLocalAdmission.isDeterministicInvalidity(failure)
+        BlockImport.isDeterministicInvalidity(failure)
     }
 
     /// Test seam for the fail-safe classifier catch-alls: an unrecognized error
@@ -1336,15 +1336,15 @@ public extension ChainLevel {
     /// Verify one candidate and store its immutable validation Volumes without
     /// mutating the accepted graph. The returned token contains the exact
     /// hierarchy facts the node must make durable with the batch.
-    func preflightBlockHeaderChainLocal(
+    func preflightBlockImport(
         _ blockHeader: BlockHeader,
         fetcher: any Fetcher,
         childPackage: ChildValidationPackage? = nil,
         validationContext: ValidationContext = .current,
         validationContentStorer: any VolumeStorer,
         mode: ImportMode = .full
-    ) async throws -> ChainAdmissionPreflightResult {
-        switch await ChainLocalAdmission.prepare(
+    ) async throws -> BlockImportPreflightResult {
+        switch await BlockImport.prepare(
             level: self,
             blockHeader: blockHeader,
             fetcher: fetcher,
@@ -1358,7 +1358,7 @@ public extension ChainLevel {
                 parentGenesisLinks: parentGenesisLinks
             )
         case .duplicate(let duplicate):
-            return .duplicate(PreparedDuplicateAdmission(
+            return .duplicate(PreparedDuplicateImport(
                 levelIdentity: admissionIdentity,
                 state: duplicate
             ))
@@ -1367,7 +1367,7 @@ public extension ChainLevel {
                 to: validationContentStorer
             )
             let stagingContext = try await prepared.stagingContext()
-            return .ready(PreparedChainAdmission(
+            return .ready(PreparedBlockImport(
                 levelIdentity: admissionIdentity,
                 prepared: prepared,
                 stagingContext: stagingContext
@@ -1379,13 +1379,13 @@ public extension ChainLevel {
     /// Accepted ancestry only grows, so this rechecks no remote content and
     /// writes no consensus facts.
     func resolveDuplicatePreflight(
-        _ preflight: PreparedDuplicateAdmission
+        _ preflight: PreparedDuplicateImport
     ) async throws -> (
-        result: ChainLocalBlockResult,
+        result: BlockImportResult,
         parentGenesisLinks: [ParentGenesisLink]
     ) {
         guard let duplicate = await preflight.take(for: admissionIdentity) else {
-            throw ChainAdmissionPreflightError.invalidToken
+            throw BlockImportPreflightError.invalidToken
         }
         // EXECUTED, not merely connected. A weighed block is connected from
         // its header alone, and re-offering a header — ordinary gossip — takes
@@ -1413,18 +1413,18 @@ public extension ChainLevel {
     /// method performs no remote resolution: callers can take their mutation
     /// lease immediately before invoking it.
     func commitPreflight(
-        _ preflight: PreparedChainAdmission,
+        _ preflight: PreparedBlockImport,
         materializedVolumeStorer: any VolumeStorer,
         stage: @Sendable (BlockImportStagingContext) async throws -> Void
-    ) async throws -> ChainLocalBlockResult {
+    ) async throws -> BlockImportResult {
         guard let prepared = await preflight.take(for: admissionIdentity) else {
-            throw ChainAdmissionPreflightError.invalidToken
+            throw BlockImportPreflightError.invalidToken
         }
         try await prepared.storeMaterializedPostState(
             to: materializedVolumeStorer
         )
         guard await chain.reserveAdmissionRevision() else {
-            return ChainLocalAdmission.rejection(
+            return BlockImport.rejection(
                 .revisionExhausted,
                 parentCarrierLink: prepared.carrierLink,
                 sameChainPredecessor: prepared.sameChainPredecessor
@@ -1447,7 +1447,7 @@ public extension ChainLevel {
             }
             guard possessed, standsOnAnotherRoot else {
                 await chain.releaseAdmissionRevision()
-                return ChainLocalAdmission.rejection(
+                return BlockImport.rejection(
                     .notYetValid,
                     parentCarrierLink: prepared.carrierLink,
                     sameChainPredecessor: prepared.sameChainPredecessor
@@ -1491,7 +1491,7 @@ public extension ChainLevel {
                 promotedCommit: promotedCommit
             )
         }
-        return ChainLocalAdmission.result(
+        return BlockImport.result(
             for: submission,
             prepared: prepared,
             sameChainPredecessor: requirement,
@@ -1502,7 +1502,7 @@ public extension ChainLevel {
     /// The node-owned atomic durability boundary. The context contains the
     /// exact hierarchy facts Lattice verified for this admission, so callers do
     /// not need to recreate them after the batch has become durable.
-    func admitBlockHeaderChainLocal(
+    func importBlock(
         _ blockHeader: BlockHeader,
         fetcher: any Fetcher,
         childPackage: ChildValidationPackage? = nil,
@@ -1511,8 +1511,8 @@ public extension ChainLevel {
         materializedVolumeStorer: any VolumeStorer,
         mode: ImportMode = .full,
         stage: @Sendable (BlockImportStagingContext) async throws -> Void
-    ) async throws -> ChainLocalBlockResult {
-        switch try await preflightBlockHeaderChainLocal(
+    ) async throws -> BlockImportResult {
+        switch try await preflightBlockImport(
             blockHeader,
             fetcher: fetcher,
             childPackage: childPackage,
@@ -1533,7 +1533,7 @@ public extension ChainLevel {
         }
     }
 
-    func admitBlockHeaderChainLocal(
+    func importBlock(
         _ blockHeader: BlockHeader,
         source: any ContentSource,
         childPackage: ChildValidationPackage? = nil,
@@ -1542,8 +1542,8 @@ public extension ChainLevel {
         materializedVolumeStorer: any VolumeStorer,
         mode: ImportMode = .full,
         stage: @Sendable (BlockImportStagingContext) async throws -> Void
-    ) async throws -> ChainLocalBlockResult {
-        try await admitBlockHeaderChainLocal(
+    ) async throws -> BlockImportResult {
+        try await importBlock(
             blockHeader,
             fetcher: CoalescingFetcher(source),
             childPackage: childPackage,
@@ -1574,7 +1574,7 @@ public extension ChainLevel {
     ) {
         guard context.isRoot else { throw BlockImportError.protocolInvalid }
         let resolved: (header: BlockHeader, block: Block)
-        switch await ChainLocalAdmission.resolveBlock(genesisHeader, fetcher: fetcher) {
+        switch await BlockImport.resolveBlock(genesisHeader, fetcher: fetcher) {
         case .failure(let failure): throw failure
         case .success(let value): resolved = value
         }
@@ -1589,8 +1589,8 @@ public extension ChainLevel {
         guard resolved.block.validateProofOfWork(nexusHash: rootHash) else {
             throw BlockImportError.notAcceptedAtCurrentChain
         }
-        let transition: ChainLocalAdmission.ExecutedTransition
-        switch await ChainLocalAdmission.executeTransition(
+        let transition: BlockImport.ExecutedTransition
+        switch await BlockImport.executeTransition(
             block: resolved.block,
             blockHash: resolved.header.rawCID,
             fetcher: fetcher,
@@ -1602,7 +1602,7 @@ public extension ChainLevel {
         case .failure(let failure): throw failure
         case .success(let value): transition = value
         }
-        return try await ChainLocalAdmission.finishBootstrap(
+        return try await BlockImport.finishBootstrap(
             context: context,
             resolved: resolved,
             fetcher: fetcher,
@@ -1636,7 +1636,7 @@ public extension ChainLevel {
     ) async throws -> ChildChainBootstrapResult {
         guard !context.isRoot else { throw BlockImportError.protocolInvalid }
         let resolved: (header: BlockHeader, block: Block)
-        switch await ChainLocalAdmission.resolveBlock(genesisHeader, fetcher: fetcher) {
+        switch await BlockImport.resolveBlock(genesisHeader, fetcher: fetcher) {
         case .failure(let failure): throw failure
         case .success(let value): resolved = value
         }
@@ -1657,7 +1657,7 @@ public extension ChainLevel {
         // the ParentGenesisLink derived from its own validated parent state; here
         // we confirm it authorizes exactly this self-contained genesis (empty
         // parentState). This is the sole authorization — there is no carrier proof.
-        guard resolved.block.hasGenesisAdmissionShape(),
+        guard resolved.block.hasGenesisShape(),
               let directory = context.path.last,
               parentGenesisLink == ParentGenesisLink(
                   parentPath: Array(context.path.dropLast()),
@@ -1679,8 +1679,8 @@ public extension ChainLevel {
             id: childCID,
             work: workForTarget(resolved.block.target)
         )
-        let transition: ChainLocalAdmission.ExecutedTransition
-        switch await ChainLocalAdmission.executeTransition(
+        let transition: BlockImport.ExecutedTransition
+        switch await BlockImport.executeTransition(
             block: resolved.block,
             blockHash: childCID,
             fetcher: fetcher,
@@ -1693,7 +1693,7 @@ public extension ChainLevel {
             return .rejected(failure, parentCarrierLink: carrierLink)
         case .success(let value): transition = value
         }
-        let accepted = try await ChainLocalAdmission.finishBootstrap(
+        let accepted = try await BlockImport.finishBootstrap(
             context: context,
             resolved: resolved,
             fetcher: fetcher,
