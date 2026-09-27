@@ -2,7 +2,7 @@
 
 This non-normative note summarizes the configured economics of Nexus, Lattice's
 single outermost chain. The concrete configuration lives in
-[`NexusGenesis.swift`](https://github.com/adalinxx/lattice-node/blob/2.0.1/Sources/LatticeNode/Architecture/NexusGenesis.swift).
+[`NexusGenesis.swift`](https://github.com/adalinxx/lattice-node/blob/17418de557f2ab3c39d3ef5b5d99528f0a16c68c/Sources/LatticeNode/Architecture/NexusGenesis.swift).
 Lattice interprets it using
 [`ChainSpec.swift`](../../Sources/LatticePrimitives/Block/ChainSpec.swift) and the generic
 [economic rules](../spec.md#10-economic-model).
