@@ -621,6 +621,16 @@ extension SeededRNG {
     mutating func randomBool() -> Bool {
         Bool.random(using: &self)
     }
+
+    /// Same shape as `UUID().uuidString`, drawn from the seed.
+    mutating func randomUUIDString() -> String {
+        let high = next(), low = next()
+        let bytes = (0..<8).map { UInt8(truncatingIfNeeded: high >> ($0 * 8)) }
+            + (0..<8).map { UInt8(truncatingIfNeeded: low >> ($0 * 8)) }
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5],
+                           bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11],
+                           bytes[12], bytes[13], bytes[14], bytes[15])).uuidString
+    }
 }
 
 /// The seed a property test draws its inputs from. `LATTICE_TEST_SEED`
