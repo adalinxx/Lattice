@@ -241,6 +241,71 @@ final class TransactionPreflightTests: XCTestCase {
         }
     }
 
+    func testPolicySeesInjectedValidationTime() async throws {
+        // The carrying block is stamped max(tip + 1, now), and the policy
+        // requires at least 3_000. Every clock sits far below wall time, which
+        // would accept each case, so only the injected clock decides.
+        let cases: [(tip: Int64, now: Int64, expected: TransactionPreflightDisposition)] = [
+            (1_000, 3_000, .ready),    // now wins and meets the bound
+            (1_000, 2_999, .invalid),  // now wins, one below the bound
+            (5_000, 0, .ready),        // tip + 1 wins over a stale clock
+        ]
+        for (tip, now, expected) in cases {
+            let fetcher = StorableFetcher()
+            let policy = try await storeWasmPolicy(
+                contextFieldAt: wasmPolicyContextTimestampOffset,
+                atLeast: 3_000,
+                fetcher: fetcher
+            )
+            let genesis = try await buildAndStoreGenesis(
+                spec: spec(policies: [policy]),
+                timestamp: tip,
+                target: easy,
+                fetcher: fetcher
+            )
+            let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
+            let result = await level.preflightTransaction(
+                transaction(signers: [CryptoUtils.generateKeyPair()], nonce: 0),
+                fetcher: fetcher,
+                validationContext: ValidationContext(nowMilliseconds: now)
+            )
+            XCTAssertEqual(result.disposition, expected, "tip \(tip), now \(now)")
+        }
+    }
+
+    func testNodeLocalPolicyResourceLimitIsUnavailable() async throws {
+        // An accepting policy is ready under default limits; a node whose own
+        // limits refuse the module has no verdict, which is never `.invalid`.
+        let cases: [(limits: WasmPolicyResourceLimits, expected: TransactionPreflightDisposition)] = [
+            (.default, .ready),
+            (WasmPolicyResourceLimits(maxModuleBytes: 1), .unavailable),
+        ]
+        for (limits, expected) in cases {
+            let fetcher = StorableFetcher()
+            let policy = try await storeWasmPolicy(
+                accepts: true,
+                scope: .transaction,
+                fetcher: fetcher
+            )
+            let genesis = try await buildAndStoreGenesis(
+                spec: spec(policies: [policy]),
+                timestamp: 1_000,
+                target: easy,
+                fetcher: fetcher
+            )
+            let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
+            let result = await level.preflightTransaction(
+                transaction(signers: [CryptoUtils.generateKeyPair()], nonce: 0),
+                fetcher: fetcher,
+                validationContext: ValidationContext(
+                    nowMilliseconds: 2_000,
+                    wasmResourceLimits: limits
+                )
+            )
+            XCTAssertEqual(result.disposition, expected, "maxModuleBytes \(limits.maxModuleBytes)")
+        }
+    }
+
     func testChildWithdrawalNeedsCandidateParentState() async throws {
         let fetcher = StorableFetcher()
         let signer = CryptoUtils.generateKeyPair()
