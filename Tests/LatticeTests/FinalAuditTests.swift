@@ -483,6 +483,41 @@ final class ChainPolicyBlockTests: XCTestCase {
         let valid = try await block.validateNexus(fetcher: fetcher).0
         XCTAssertFalse(valid, "Block rejected by action-scoped chain policy should fail validation")
     }
+
+    func testPolicySeesValidatedBlockHeightAndTimestamp() async throws {
+        let base = now() - 20_000
+        let blockTimestamp = base + 1000
+        // (offset, minimum, expected validity of a height-1 block at blockTimestamp)
+        let cases: [(Int, Int64, Bool)] = [
+            (wasmPolicyContextHeightOffset, 1, true),
+            (wasmPolicyContextHeightOffset, 2, false),
+            (wasmPolicyContextTimestampOffset, blockTimestamp, true),
+            (wasmPolicyContextTimestampOffset, blockTimestamp + 1, false),
+        ]
+        for (offset, minimum, expected) in cases {
+            let fetcher = f()
+            let kp = CryptoUtils.generateKeyPair()
+            let kpAddr = id(kp.publicKey)
+            let policy = try await storeWasmPolicy(contextFieldAt: offset, atLeast: minimum, fetcher: fetcher)
+            let policySpec = ChainSpec.test(wasmPolicies: [policy])
+            // Genesis carries no transactions, so the policy is not exercised there.
+            let genesis = try await buildAndStoreGenesis(
+                spec: policySpec, timestamp: base, target: UInt256(1000), fetcher: fetcher
+            )
+            let body = TransactionBody(
+                accountActions: [AccountAction(owner: kpAddr, delta: Int64(policySpec.rewardAtBlock(0)))],
+                actions: [], depositActions: [], genesisActions: [],
+                receiptActions: [], withdrawalActions: [],
+                signers: [kpAddr], fee: 0, nonce: 0, chainPath: ["Nexus"]
+            )
+            let block = try await buildAndStoreBlock(
+                previous: genesis, transactions: [tx(body, kp)],
+                timestamp: blockTimestamp, target: UInt256(1000), nonce: 1, fetcher: fetcher
+            )
+            let valid = try await block.validateNexus(fetcher: fetcher).0
+            XCTAssertEqual(valid, expected, "offset \(offset), minimum \(minimum)")
+        }
+    }
 }
 
 // ============================================================================

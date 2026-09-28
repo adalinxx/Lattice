@@ -6,10 +6,15 @@ import WasmParser
 import LatticePrimitives
 
 public struct WasmPolicyContext: Codable, Sendable {
-    public static let canonicalEncodingVersion: UInt16 = 1
+    public static let canonicalEncodingVersion: UInt16 = 2
 
     public let abiVersion: UInt16
     public let scope: WasmPolicyRef.Scope
+    /// Height of the block the transaction is validated in.
+    public let height: UInt64
+    /// Timestamp (ms) of that block. Miner-chosen: consensus only requires it to
+    /// exceed the parent's, so prefer `height` for rules a miner must not skew.
+    public let timestamp: Int64
     public let chainSpec: ChainSpec
     public let chainPath: [String]
     public let transaction: TransactionBody?
@@ -18,6 +23,8 @@ public struct WasmPolicyContext: Codable, Sendable {
 
     public init(
         scope: WasmPolicyRef.Scope,
+        height: UInt64,
+        timestamp: Int64,
         chainSpec: ChainSpec,
         chainPath: [String],
         transaction: TransactionBody?,
@@ -26,6 +33,8 @@ public struct WasmPolicyContext: Codable, Sendable {
     ) {
         self.abiVersion = WasmPolicyRef.currentABIVersion
         self.scope = scope
+        self.height = height
+        self.timestamp = timestamp
         self.chainSpec = chainSpec
         self.chainPath = chainPath
         self.transaction = transaction
@@ -71,6 +80,8 @@ private struct WasmPolicyContextCanonicalEncoder {
         appendUInt16(WasmPolicyContext.canonicalEncodingVersion)
         appendUInt16(context.abiVersion)
         appendUInt8(context.scope.canonicalTag)
+        appendUInt64(context.height)
+        appendUInt64(UInt64(bitPattern: context.timestamp))
         try appendNode(context.chainSpec)
         try appendStringArray(context.chainPath)
         try appendOptionalNode(context.transaction)

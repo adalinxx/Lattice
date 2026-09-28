@@ -520,6 +520,53 @@ func storeWasmPolicy(
     return WasmPolicyRef(moduleCID: module.rawCID, scope: scope, entrypoint: entrypoint)
 }
 
+/// Fixed context offsets of the block fields a policy can read.
+let wasmPolicyContextHeightOffset = 11
+let wasmPolicyContextTimestampOffset = 19
+
+/// A transaction policy accepting iff the big-endian 64-bit context field at
+/// `offset` is at least `minimum` (signed compare).
+func storeWasmPolicy(
+    contextFieldAt offset: Int,
+    atLeast minimum: Int64,
+    fetcher: StorableFetcher
+) async throws -> WasmPolicyRef {
+    let wat = """
+    (module
+      (memory (export "memory") 1)
+      (func (export "lattice_alloc") (param $len i32) (result i32) i32.const 1024)
+      (func (export "lattice_validate_transaction") (param $ptr i32) (param $len i32) (result i32)
+        (local $i i32)
+        (local $v i64)
+        (loop $read
+          local.get $v
+          i64.const 8
+          i64.shl
+          local.get $ptr
+          i32.const \(offset)
+          i32.add
+          local.get $i
+          i32.add
+          i64.load8_u
+          i64.or
+          local.set $v
+          local.get $i
+          i32.const 1
+          i32.add
+          local.tee $i
+          i32.const 8
+          i32.lt_u
+          br_if $read)
+        local.get $v
+        i64.const \(minimum)
+        i64.ge_s)
+    )
+    """
+    let module = try WasmPolicyModuleHeader(node: WasmPolicyModule(bytes: Data(try wat2wasm(wat))))
+    try await module.storeRecursively(storer: fetcher)
+    return WasmPolicyRef(moduleCID: module.rawCID, scope: .transaction)
+}
+
 /// The by-height canonical index is derived state that a delta projection can
 /// desync without changing the membership set, so parity checks compare it too.
 func assertMainChainIndexMatchesPath(
