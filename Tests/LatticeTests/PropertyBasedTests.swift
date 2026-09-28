@@ -26,13 +26,15 @@ final class ChainSpecPropertyTests: XCTestCase {
             ChainSpec(maxNumberOfTransactionsPerBlock: 1, maxStateGrowth: 1, premine: 0, targetBlockTime: 1, initialReward: 1, halvingInterval: 1, halfLife: 10),
         ]
 
+        let seed = propertySeed()
+        var rng = seed.generator()
         for spec in specs {
             guard spec.isValid else { continue }
             for _ in 0..<100 {
-                let block = UInt64.random(in: 0...10_000_000)
+                let block = UInt64.random(in: 0...10_000_000, using: &rng)
                 let r1 = spec.rewardAtBlock(block)
                 let r2 = spec.rewardAtBlock(block)
-                XCTAssertEqual(r1, r2, "Reward function not deterministic at block \(block)")
+                XCTAssertEqual(r1, r2, "Reward function not deterministic at block \(block) \(seed.note)")
             }
         }
     }
@@ -85,14 +87,16 @@ final class ChainSpecPropertyTests: XCTestCase {
     func testTotalRewardsAdditivity() {
         let spec = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: 64, halvingInterval: 500, halfLife: 10)
 
+        let seed = propertySeed()
+        var rng = seed.generator()
         for _ in 0..<50 {
-            let a = UInt64.random(in: 0...1000)
-            let b = UInt64.random(in: 0...1000)
+            let a = UInt64.random(in: 0...1000, using: &rng)
+            let b = UInt64.random(in: 0...1000, using: &rng)
             let totalAB = spec.totalRewards(upToBlock: a + b)
             let totalA = spec.totalRewards(upToBlock: a)
             let partB = (a..<(a + b)).reduce(UInt64(0)) { $0 + spec.rewardAtBlock($1) }
             XCTAssertEqual(totalAB, totalA + partB,
-                           "Additivity failed for a=\(a), b=\(b)")
+                           "Additivity failed for a=\(a), b=\(b) \(seed.note)")
         }
     }
 
@@ -266,27 +270,29 @@ final class BalanceConservationPropertyTests: XCTestCase {
     // Property: In a valid block, totalBalanceAfter <= totalBalanceBefore + reward - deposits + withdrawals
     // This is the fundamental conservation law.
     func testBalanceConservationInequality() {
+        let seed = propertySeed()
+        var rng = seed.generator()
         let spec = ChainSpec.development
 
         for blockHeight: UInt64 in [0, 1, 100, 1000] {
             let reward = spec.rewardAtBlock(blockHeight)
 
             for _ in 0..<50 {
-                let numAccounts = Int.random(in: 1...10)
+                let numAccounts = Int.random(in: 1...10, using: &rng)
                 var totalBefore: UInt64 = 0
                 var totalAfter: UInt64 = 0
 
                 for _ in 0..<numAccounts {
-                    let old = UInt64.random(in: 0...10000)
+                    let old = UInt64.random(in: 0...10000, using: &rng)
                     let maxNew = old + reward
-                    let new = UInt64.random(in: 0...maxNew)
+                    let new = UInt64.random(in: 0...maxNew, using: &rng)
                     totalBefore += old
                     totalAfter += new
                 }
 
                 if totalAfter <= totalBefore + reward {
                     // This is a valid balance configuration (no deposits/withdrawals)
-                    XCTAssertTrue(totalAfter <= totalBefore + reward)
+                    XCTAssertTrue(totalAfter <= totalBefore + reward, seed.note)
                 }
             }
         }
@@ -294,24 +300,28 @@ final class BalanceConservationPropertyTests: XCTestCase {
 
     // Property: Swap locks reduce available balance
     func testSwapLocksBalance() {
+        let seed = propertySeed()
+        var rng = seed.generator()
         for _ in 0..<100 {
-            let swapAmount = UInt64.random(in: 1...10000)
+            let swapAmount = UInt64.random(in: 1...10000, using: &rng)
             let action = DepositAction(
-                nonce: UInt128.random(in: 0...UInt128.max),
+                nonce: UInt128.random(in: 0...UInt128.max, using: &rng),
                 demander: "test_demander",
                 amountDemanded: swapAmount,
                 amountDeposited: swapAmount
             )
-            XCTAssertGreaterThan(action.amountDeposited, 0)
+            XCTAssertGreaterThan(action.amountDeposited, 0, seed.note)
         }
     }
 
     // Property: Account actions with negative delta (debit) require signer authorization
     func testDebitRequiresSignerProperty() {
+        let seed = propertySeed()
+        var rng = seed.generator()
         for _ in 0..<100 {
-            let owner = "owner_\(UUID().uuidString)"
-            let oldBalance = UInt64.random(in: 100...10000)
-            let newBalance = UInt64.random(in: 0..<oldBalance)
+            let owner = "owner_\(rng.randomUUIDString())"
+            let oldBalance = UInt64.random(in: 100...10000, using: &rng)
+            let newBalance = UInt64.random(in: 0..<oldBalance, using: &rng)
 
             let action = AccountAction(owner: owner, delta: Int64(newBalance) - Int64(oldBalance))
             let body = TransactionBody(
@@ -327,7 +337,7 @@ final class BalanceConservationPropertyTests: XCTestCase {
                 chainPath: ["Nexus"]
             )
             XCTAssertFalse(body.accountActionsAreValid(),
-                           "Debit without signer should be invalid")
+                           "Debit without signer should be invalid \(seed.note)")
 
             let bodyWithSigner = TransactionBody(
                 accountActions: [action],
@@ -342,16 +352,18 @@ final class BalanceConservationPropertyTests: XCTestCase {
                 chainPath: ["Nexus"]
             )
             XCTAssertTrue(bodyWithSigner.accountActionsAreValid(),
-                          "Debit with matching signer should be valid")
+                          "Debit with matching signer should be valid \(seed.note)")
         }
     }
 
     // Property: Credit (positive delta) does NOT require signer
     func testCreditDoesNotRequireSigner() {
+        let seed = propertySeed()
+        var rng = seed.generator()
         for _ in 0..<100 {
-            let owner = "owner_\(UUID().uuidString)"
-            let oldBalance = UInt64.random(in: 0...10000)
-            let newBalance = oldBalance + UInt64.random(in: 1...10000)
+            let owner = "owner_\(rng.randomUUIDString())"
+            let oldBalance = UInt64.random(in: 0...10000, using: &rng)
+            let newBalance = oldBalance + UInt64.random(in: 1...10000, using: &rng)
 
             let action = AccountAction(owner: owner, delta: Int64(newBalance) - Int64(oldBalance))
             let body = TransactionBody(
@@ -367,7 +379,7 @@ final class BalanceConservationPropertyTests: XCTestCase {
                 chainPath: ["Nexus"]
             )
             XCTAssertTrue(body.accountActionsAreValid(),
-                          "Credit without signer should be valid")
+                          "Credit without signer should be valid \(seed.note)")
         }
     }
 }
@@ -378,31 +390,35 @@ final class CrossChainProtocolPropertyTests: XCTestCase {
 
     // Property: SwapKey round-trips through string representation
     func testSwapKeyRoundTrip() {
+        let seed = propertySeed()
+        var rng = seed.generator()
         for _ in 0..<200 {
-            let nonce = UInt128.random(in: 0...UInt128.max)
-            let demander = "demander_\(UUID().uuidString)"
-            let amountDemanded = UInt64.random(in: 1...UInt64.max)
+            let nonce = UInt128.random(in: 0...UInt128.max, using: &rng)
+            let demander = "demander_\(rng.randomUUIDString())"
+            let amountDemanded = UInt64.random(in: 1...UInt64.max, using: &rng)
 
             let key = DepositKey(depositAction: DepositAction(nonce: nonce, demander: demander, amountDemanded: amountDemanded, amountDeposited: amountDemanded))
             let stringRepr = key.description
             let parsed = DepositKey(stringRepr)
 
-            XCTAssertNotNil(parsed, "Failed to parse SwapKey: \(stringRepr)")
+            XCTAssertNotNil(parsed, "Failed to parse SwapKey: \(stringRepr) \(seed.note)")
             if let parsed = parsed {
-                XCTAssertEqual(parsed.nonce, nonce)
-                XCTAssertEqual(parsed.demander, demander)
-                XCTAssertEqual(parsed.amountDemanded, amountDemanded)
+                XCTAssertEqual(parsed.nonce, nonce, seed.note)
+                XCTAssertEqual(parsed.demander, demander, seed.note)
+                XCTAssertEqual(parsed.amountDemanded, amountDemanded, seed.note)
             }
         }
     }
 
     // Property: WithdrawalAction produces matching SwapKey
     func testSwapClaimProducesMatchingDepositKey() {
+        let seed = propertySeed()
+        var rng = seed.generator()
         for _ in 0..<100 {
-            let nonce = UInt128.random(in: 0...UInt128.max)
-            let demander = "demander_\(UUID().uuidString)"
-            let withdrawer = "withdrawer_\(UUID().uuidString)"
-            let amountDemanded = UInt64.random(in: 1...1000000)
+            let nonce = UInt128.random(in: 0...UInt128.max, using: &rng)
+            let demander = "demander_\(rng.randomUUIDString())"
+            let withdrawer = "withdrawer_\(rng.randomUUIDString())"
+            let amountDemanded = UInt64.random(in: 1...1000000, using: &rng)
 
             let swap = DepositAction(nonce: nonce, demander: demander, amountDemanded: amountDemanded, amountDeposited: amountDemanded)
             let claim = WithdrawalAction(withdrawer: withdrawer, nonce: nonce, demander: demander, amountDemanded: amountDemanded, amountWithdrawn: amountDemanded)
@@ -411,18 +427,20 @@ final class CrossChainProtocolPropertyTests: XCTestCase {
             let claimKey = DepositKey(withdrawalAction: claim)
 
             XCTAssertEqual(swapKey.description, claimKey.description,
-                           "Swap and claim should produce matching keys")
+                           "Swap and claim should produce matching keys \(seed.note)")
         }
     }
 
     // Property: SettleKey consistency for same swap
     func testSettleKeyConsistency() {
+        let seed = propertySeed()
+        var rng = seed.generator()
         let directory = "TestChain"
         for _ in 0..<100 {
-            let nonce = UInt128.random(in: 0...UInt128.max)
-            let demander = "demander_\(UUID().uuidString)"
-            let withdrawer = "withdrawer_\(UUID().uuidString)"
-            let amountDemanded = UInt64.random(in: 1...1000000)
+            let nonce = UInt128.random(in: 0...UInt128.max, using: &rng)
+            let demander = "demander_\(rng.randomUUIDString())"
+            let withdrawer = "withdrawer_\(rng.randomUUIDString())"
+            let amountDemanded = UInt64.random(in: 1...1000000, using: &rng)
 
             let swap = DepositAction(nonce: nonce, demander: demander, amountDemanded: amountDemanded, amountDeposited: amountDemanded)
             let claim = WithdrawalAction(withdrawer: withdrawer, nonce: nonce, demander: demander, amountDemanded: amountDemanded, amountWithdrawn: amountDemanded)
@@ -430,8 +448,8 @@ final class CrossChainProtocolPropertyTests: XCTestCase {
             let settleKeyFromSwap = ReceiptKey(receiptAction: ReceiptAction(withdrawer: withdrawer, nonce: nonce, demander: demander, amountDemanded: amountDemanded, directory: directory))
             let settleKeyFromClaim = ReceiptKey(withdrawalAction: claim, directory: directory)
 
-            XCTAssertEqual(settleKeyFromSwap.description, settleKeyFromClaim.description)
-            XCTAssertEqual(settleKeyFromSwap.directory, directory)
+            XCTAssertEqual(settleKeyFromSwap.description, settleKeyFromClaim.description, seed.note)
+            XCTAssertEqual(settleKeyFromSwap.directory, directory, seed.note)
         }
     }
 
@@ -456,9 +474,11 @@ final class StateDeltaPropertyTests: XCTestCase {
 
     // Property: Creating and then deleting an account has net zero state delta
     func testCreateDeleteNetZero() {
+        let seed = propertySeed()
+        var rng = seed.generator()
         for _ in 0..<100 {
-            let owner = UUID().uuidString
-            let balance = UInt64.random(in: 1...1000000)
+            let owner = rng.randomUUIDString()
+            let balance = UInt64.random(in: 1...1000000, using: &rng)
 
             let create = AccountAction(owner: owner, delta: Int64(balance))
             let delete = AccountAction(owner: owner, delta: -Int64(balance))
@@ -467,15 +487,17 @@ final class StateDeltaPropertyTests: XCTestCase {
             let deleteDelta = try! delete.stateDelta()
 
             XCTAssertEqual(createDelta + deleteDelta, 0,
-                           "Create + delete should net to zero for owner=\(owner)")
+                           "Create + delete should net to zero for owner=\(owner) \(seed.note)")
         }
     }
 
     // Property: Inserting and deleting a KV action has net zero state delta
     func testActionInsertDeleteNetZero() {
+        let seed = propertySeed()
+        var rng = seed.generator()
         for _ in 0..<100 {
-            let key = UUID().uuidString
-            let value = UUID().uuidString
+            let key = rng.randomUUIDString()
+            let value = rng.randomUUIDString()
 
             let insert = Action(key: key, oldValue: nil, newValue: value)
             let delete = Action(key: key, oldValue: value, newValue: nil)
@@ -484,36 +506,40 @@ final class StateDeltaPropertyTests: XCTestCase {
             let deleteDelta = try! delete.stateDelta()
 
             XCTAssertEqual(insertDelta + deleteDelta, 0,
-                           "Insert + delete should net to zero")
+                           "Insert + delete should net to zero \(seed.note)")
         }
     }
 
     // Property: State delta magnitude is bounded by key + value sizes
     func testStateDeltaBoundedByDataSize() {
+        let seed = propertySeed()
+        var rng = seed.generator()
         for _ in 0..<100 {
-            let key = String(repeating: "k", count: Int.random(in: 1...50))
-            let value = String(repeating: "v", count: Int.random(in: 1...100))
+            let key = String(repeating: "k", count: Int.random(in: 1...50, using: &rng))
+            let value = String(repeating: "v", count: Int.random(in: 1...100, using: &rng))
 
             let insert = Action(key: key, oldValue: nil, newValue: value)
             let delta = try! insert.stateDelta()
 
             let maxDelta = key.utf8.count + value.utf8.count
             XCTAssertEqual(delta, maxDelta,
-                           "Insert delta should equal key + value size")
+                           "Insert delta should equal key + value size \(seed.note)")
         }
     }
 
     // Property: Swap state delta is always positive (swaps add state)
     func testDepositStateDeltaPositive() {
+        let seed = propertySeed()
+        var rng = seed.generator()
         for _ in 0..<100 {
             let action = DepositAction(
-                nonce: UInt128.random(in: 0...UInt128.max),
-                demander: UUID().uuidString,
-                amountDemanded: UInt64.random(in: 1...1000000),
-                amountDeposited: UInt64.random(in: 1...1000000)
+                nonce: UInt128.random(in: 0...UInt128.max, using: &rng),
+                demander: rng.randomUUIDString(),
+                amountDemanded: UInt64.random(in: 1...1000000, using: &rng),
+                amountDeposited: UInt64.random(in: 1...1000000, using: &rng)
             )
             XCTAssertGreaterThan(action.stateDelta(), 0,
-                                 "Swap delta should always be positive")
+                                 "Swap delta should always be positive \(seed.note)")
         }
     }
 
@@ -650,4 +676,28 @@ final class BlockStructurePropertyTests: XCTestCase {
         XCTAssertEqual(TRANSACTION_PROPERTIES.count, 1)
     }
 
+}
+
+// MARK: - Seed Replay
+
+final class PropertySeedTests: XCTestCase {
+
+    // Property: a seed replays. Two generators from the same seed yield the
+    // same draws through every stdlib path the seeded properties use, a
+    // different seed yields different draws, and the generator is pinned to
+    // a known answer so a replay agrees across hosts, not only across runs.
+    func testSameSeedReplaysTheSameSequence() {
+        let seed = propertySeed()
+        func draws(_ value: UInt64) -> [UInt64] {
+            var rng = SeededRNG(seed: value)
+            var out = (0..<64).map { _ in rng.next() }
+            out += (0..<64).map { _ in UInt64.random(in: 0...10_000_000, using: &rng) }
+            out += Array(0..<32).shuffled(using: &rng).map(UInt64.init)
+            return out
+        }
+        XCTAssertEqual(draws(seed.value), draws(seed.value), seed.note)
+        XCTAssertNotEqual(draws(seed.value), draws(seed.value &+ 1), seed.note)
+        var zero = SeededRNG(seed: 0)
+        XCTAssertEqual(zero.next(), 0xe220a8397b1dcdaf, "SplitMix64 known answer for seed 0")
+    }
 }

@@ -585,3 +585,106 @@ func assertMainChainIndexMatchesPath(
     }
     XCTAssertEqual(index, expected, message, file: file, line: line)
 }
+
+// MARK: - Deterministic PRNG for Reproducible Fuzz and Property Tests
+
+struct SeededRNG: RandomNumberGenerator {
+    private var state: UInt64
+
+    init(seed: UInt64) {
+        state = seed
+    }
+
+    mutating func next() -> UInt64 {
+        state &+= 0x9e3779b97f4a7c15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xbf58476d1ce4e5b9
+        z = (z ^ (z >> 27)) &* 0x94d049bb133111eb
+        return z ^ (z >> 31)
+    }
+}
+
+extension SeededRNG {
+    mutating func randomString(length: Int) -> String {
+        let chars = "abcdef0123456789"
+        return String((0..<length).map { _ in chars.randomElement(using: &self)! })
+    }
+
+    mutating func randomHash() -> String {
+        randomString(length: 64)
+    }
+
+    mutating func randomUInt64(in range: ClosedRange<UInt64>) -> UInt64 {
+        UInt64.random(in: range, using: &self)
+    }
+
+    mutating func randomBool() -> Bool {
+        Bool.random(using: &self)
+    }
+
+    /// Same shape as `UUID().uuidString`, drawn from the seed.
+    mutating func randomUUIDString() -> String {
+        let high = next(), low = next()
+        let bytes = (0..<8).map { UInt8(truncatingIfNeeded: high >> ($0 * 8)) }
+            + (0..<8).map { UInt8(truncatingIfNeeded: low >> ($0 * 8)) }
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5],
+                           bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11],
+                           bytes[12], bytes[13], bytes[14], bytes[15])).uuidString
+    }
+}
+
+/// The seed a property test draws its inputs from. `LATTICE_TEST_SEED`
+/// (decimal, or hex with a `0x` prefix) overrides the fixed default, so a
+/// default run is deterministic and any failure replays from the seed it
+/// prints in `note`.
+struct PropertySeed {
+    static let environmentKey = "LATTICE_TEST_SEED"
+    static let defaultValue: UInt64 = 0x1A77_1CE5_EED0_0001
+
+    let value: UInt64
+    /// The command that reruns this one test with this seed.
+    let replay: String
+
+    /// Append to every assertion message of a seeded property.
+    var note: String {
+        "[seed 0x\(String(value, radix: 16)); replay: \(replay)]"
+    }
+
+    func generator() -> SeededRNG {
+        SeededRNG(seed: value)
+    }
+
+    /// Decimal, or hex with a `0x`/`0X` prefix.
+    static func parse(_ text: String) -> UInt64? {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        if trimmed.lowercased().hasPrefix("0x") {
+            return UInt64(trimmed.dropFirst(2), radix: 16)
+        }
+        return UInt64(trimmed)
+    }
+
+    static var current: UInt64 {
+        guard let raw = ProcessInfo.processInfo.environment[environmentKey] else {
+            return defaultValue
+        }
+        guard let value = parse(raw) else {
+            preconditionFailure(
+                "\(environmentKey)=\(raw) is neither a decimal nor a 0x-prefixed hex UInt64"
+            )
+        }
+        return value
+    }
+}
+
+extension XCTestCase {
+    /// The seed for the calling test, with a replay hint naming that test.
+    func propertySeed(function: String = #function) -> PropertySeed {
+        let value = PropertySeed.current
+        let test = function.hasSuffix("()") ? String(function.dropLast(2)) : function
+        return PropertySeed(
+            value: value,
+            replay: "\(PropertySeed.environmentKey)=0x\(String(value, radix: 16)) "
+                + "swift test --filter LatticeTests.\(type(of: self))/\(test)"
+        )
+    }
+}

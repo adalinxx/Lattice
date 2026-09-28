@@ -530,14 +530,15 @@ final class ParentRunAttributionTests: XCTestCase {
         XCTAssertEqual(liveP1, sum(5, 20))
         XCTAssertEqual(liveP2, sum(3, 7))
 
-        var generator = SystemRandomNumberGenerator()
+        let seed = propertySeed()
+        var generator = seed.generator()
         for _ in 0..<5 {
             let cold = try await ChainState.restore(replaying: facts.shuffled(using: &generator))
             await cold.serveRuns(for: d) // served AFTER restore: the whole-graph settle
             let coldP1 = await run(cold, at: "p1")
             let coldP2 = await run(cold, at: "p2")
-            XCTAssertEqual(coldP1, liveP1)
-            XCTAssertEqual(coldP2, liveP2)
+            XCTAssertEqual(coldP1, liveP1, seed.note)
+            XCTAssertEqual(coldP2, liveP2, seed.note)
         }
     }
 

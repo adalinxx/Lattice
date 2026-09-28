@@ -9,45 +9,6 @@ import XCTest
 import UInt256
 import Foundation
 
-// MARK: - Deterministic PRNG for Reproducible Fuzz Tests
-
-struct SeededRNG: RandomNumberGenerator {
-    private var state: UInt64
-
-    init(seed: UInt64) {
-        state = seed
-    }
-
-    mutating func next() -> UInt64 {
-        state &+= 0x9e3779b97f4a7c15
-        var z = state
-        z = (z ^ (z >> 30)) &* 0xbf58476d1ce4e5b9
-        z = (z ^ (z >> 27)) &* 0x94d049bb133111eb
-        return z ^ (z >> 31)
-    }
-}
-
-// MARK: - Random Generators
-
-extension SeededRNG {
-    mutating func randomString(length: Int) -> String {
-        let chars = "abcdef0123456789"
-        return String((0..<length).map { _ in chars.randomElement(using: &self)! })
-    }
-
-    mutating func randomHash() -> String {
-        randomString(length: 64)
-    }
-
-    mutating func randomUInt64(in range: ClosedRange<UInt64>) -> UInt64 {
-        UInt64.random(in: range, using: &self)
-    }
-
-    mutating func randomBool() -> Bool {
-        Bool.random(using: &self)
-    }
-}
-
 // MARK: - ChainSpec Fuzz Tests
 
 final class ChainSpecFuzzTests: XCTestCase {
