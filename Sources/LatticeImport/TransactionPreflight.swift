@@ -70,7 +70,8 @@ public extension ChainLevel {
                     chainPath: context.path,
                     height: snapshot.tipHeight + 1,
                     timestamp: nextTimestamp,
-                    fetcher: fetcher
+                    fetcher: fetcher,
+                    resourceLimits: validationContext.wasmResourceLimits
                   ) else {
                 return result(.invalid, tipCID: tip.cid)
             }

@@ -242,15 +242,15 @@ final class TransactionPreflightTests: XCTestCase {
     }
 
     func testPolicySeesInjectedValidationTime() async throws {
-        // The tip is genesis at 1_000, so the carrying block is stamped
-        // max(1_001, now). The policy requires at least 3_000: only the
-        // injected clock can decide it, and both clocks sit far below the
-        // wall clock, which would accept either.
-        let cases: [(now: Int64, expected: TransactionPreflightDisposition)] = [
-            (3_000, .ready),
-            (2_999, .invalid),
+        // The carrying block is stamped max(tip + 1, now), and the policy
+        // requires at least 3_000. Every clock sits far below wall time, which
+        // would accept each case, so only the injected clock decides.
+        let cases: [(tip: Int64, now: Int64, expected: TransactionPreflightDisposition)] = [
+            (1_000, 3_000, .ready),    // now wins and meets the bound
+            (1_000, 2_999, .invalid),  // now wins, one below the bound
+            (5_000, 0, .ready),        // tip + 1 wins over a stale clock
         ]
-        for (now, expected) in cases {
+        for (tip, now, expected) in cases {
             let fetcher = StorableFetcher()
             let policy = try await storeWasmPolicy(
                 contextFieldAt: wasmPolicyContextTimestampOffset,
@@ -259,7 +259,7 @@ final class TransactionPreflightTests: XCTestCase {
             )
             let genesis = try await buildAndStoreGenesis(
                 spec: spec(policies: [policy]),
-                timestamp: 1_000,
+                timestamp: tip,
                 target: easy,
                 fetcher: fetcher
             )
@@ -269,7 +269,7 @@ final class TransactionPreflightTests: XCTestCase {
                 fetcher: fetcher,
                 validationContext: ValidationContext(nowMilliseconds: now)
             )
-            XCTAssertEqual(result.disposition, expected, "now \(now)")
+            XCTAssertEqual(result.disposition, expected, "tip \(tip), now \(now)")
         }
     }
 
