@@ -273,6 +273,39 @@ final class TransactionPreflightTests: XCTestCase {
         }
     }
 
+    func testNodeLocalPolicyResourceLimitIsUnavailable() async throws {
+        // An accepting policy is ready under default limits; a node whose own
+        // limits refuse the module has no verdict, which is never `.invalid`.
+        let cases: [(limits: WasmPolicyResourceLimits, expected: TransactionPreflightDisposition)] = [
+            (.default, .ready),
+            (WasmPolicyResourceLimits(maxModuleBytes: 1), .unavailable),
+        ]
+        for (limits, expected) in cases {
+            let fetcher = StorableFetcher()
+            let policy = try await storeWasmPolicy(
+                accepts: true,
+                scope: .transaction,
+                fetcher: fetcher
+            )
+            let genesis = try await buildAndStoreGenesis(
+                spec: spec(policies: [policy]),
+                timestamp: 1_000,
+                target: easy,
+                fetcher: fetcher
+            )
+            let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
+            let result = await level.preflightTransaction(
+                transaction(signers: [CryptoUtils.generateKeyPair()], nonce: 0),
+                fetcher: fetcher,
+                validationContext: ValidationContext(
+                    nowMilliseconds: 2_000,
+                    wasmResourceLimits: limits
+                )
+            )
+            XCTAssertEqual(result.disposition, expected, "maxModuleBytes \(limits.maxModuleBytes)")
+        }
+    }
+
     func testChildWithdrawalNeedsCandidateParentState() async throws {
         let fetcher = StorableFetcher()
         let signer = CryptoUtils.generateKeyPair()

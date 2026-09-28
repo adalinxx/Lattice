@@ -152,9 +152,15 @@ private func transactionPreflightEvidenceUnavailable(_ error: Error) -> Bool {
             return false
         }
     }
-    if let error = error as? WasmPolicyError,
-       case .missingModule = error {
-        return true
+    if let error = error as? WasmPolicyError {
+        switch error {
+        case .missingModule, .resourceUnavailable:
+            // As in import: a node-local resource guard is no verdict on the
+            // transaction, so nodes with different limits never disagree on it.
+            return true
+        default:
+            break
+        }
     }
     if let error = error as? TransformErrors,
        case .missingData = error {
