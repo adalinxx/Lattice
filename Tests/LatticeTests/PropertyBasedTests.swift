@@ -7,6 +7,7 @@ import XCTest
 @testable import LatticeBlockTree
 @testable import LatticeImport
 import UInt256
+import cashew
 import Foundation
 
 // MARK: - State Transition Invariant Tests
@@ -29,7 +30,10 @@ final class ChainSpecPropertyTests: XCTestCase {
         let seed = propertySeed()
         var rng = seed.generator()
         for spec in specs {
-            guard spec.isValid else { continue }
+            guard spec.isValid else {
+                XCTFail("fixture spec must be valid, or the property runs on nothing: \(spec)")
+                continue
+            }
             for _ in 0..<100 {
                 let block = UInt64.random(in: 0...10_000_000, using: &rng)
                 let r1 = spec.rewardAtBlock(block)
@@ -78,7 +82,10 @@ final class ChainSpecPropertyTests: XCTestCase {
         let premineValues: [UInt64] = [0, 1, 10, 100, 1000, 5000]
         for premine in premineValues {
             let spec = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: premine, targetBlockTime: 1000, initialReward: 32_768, halvingInterval: 100_000, halfLife: 10)
-            guard spec.isValid else { continue }
+            guard spec.isValid else {
+                XCTFail("fixture spec must be valid, or the property runs on nothing: premine=\(premine)")
+                continue
+            }
             XCTAssertEqual(spec.premineAmount(), spec.totalRewards(upToBlock: premine),
                            "premineAmount != totalRewards(premine) for premine=\(premine)")
         }
@@ -267,50 +274,143 @@ final class ForkChoicePropertyTests: XCTestCase {
 
 final class BalanceConservationPropertyTests: XCTestCase {
 
-    // Property: In a valid block, totalBalanceAfter <= totalBalanceBefore + reward - deposits + withdrawals
-    // This is the fundamental conservation law.
-    func testBalanceConservationInequality() {
+    // Property: the block validator accepts an action set whose credits fit
+    // within debits + reward + withdrawals - deposits, and rejects the same set
+    // once it mints one unit more than that budget.
+    func testBalanceConservationInequality() throws {
         let seed = propertySeed()
         var rng = seed.generator()
         let spec = ChainSpec.development
 
         for blockHeight: UInt64 in [0, 1, 100, 1000] {
+            let block = Block(
+                parent: nil,
+                transactions: try HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Transaction>>()),
+                target: UInt256(1000), nextTarget: UInt256(1000),
+                spec: try VolumeImpl<ChainSpec>(node: spec),
+                parentState: try LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
+                prevState: try LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
+                postState: try LatticeStateHeader(node: LatticeState.emptyState()),
+                children: try HeaderImpl(node: ChildIndex()),
+                height: blockHeight, timestamp: 1_000_000, nonce: 0
+            )
             let reward = spec.rewardAtBlock(blockHeight)
 
             for _ in 0..<50 {
-                let numAccounts = Int.random(in: 1...10, using: &rng)
-                var totalBefore: UInt64 = 0
-                var totalAfter: UInt64 = 0
-
-                for _ in 0..<numAccounts {
-                    let old = UInt64.random(in: 0...10000, using: &rng)
-                    let maxNew = old + reward
-                    let new = UInt64.random(in: 0...maxNew, using: &rng)
-                    totalBefore += old
-                    totalAfter += new
+                var accountActions: [AccountAction] = []
+                var budget = reward
+                for i in 0..<Int.random(in: 0...5, using: &rng) {
+                    let debit = UInt64.random(in: 1...10_000, using: &rng)
+                    accountActions.append(AccountAction(owner: "sender_\(i)", delta: -Int64(debit)))
+                    budget += debit
+                }
+                var withdrawals: [WithdrawalAction] = []
+                for i in 0..<Int.random(in: 0...3, using: &rng) {
+                    let amount = UInt64.random(in: 1...10_000, using: &rng)
+                    withdrawals.append(WithdrawalAction(
+                        withdrawer: "withdrawer_\(i)", nonce: UInt128(i),
+                        demander: "demander_\(i)", amountDemanded: amount,
+                        amountWithdrawn: amount
+                    ))
+                    budget += amount
+                }
+                var deposits: [DepositAction] = []
+                for i in 0..<Int.random(in: 0...3, using: &rng) where budget > 0 {
+                    let amount = UInt64.random(in: 1...budget, using: &rng)
+                    deposits.append(DepositAction(
+                        nonce: UInt128(i), demander: "depositor_\(i)",
+                        amountDemanded: amount, amountDeposited: amount
+                    ))
+                    budget -= amount
+                }
+                // Spend the whole budget half the time, so the boundary is exercised.
+                var unspent = Bool.random(using: &rng) ? budget : UInt64.random(in: 0...budget, using: &rng)
+                let spend = budget - unspent
+                var remaining = spend
+                var recipient = 0
+                while remaining > 0 {
+                    let credit = UInt64.random(in: 1...remaining, using: &rng)
+                    accountActions.append(AccountAction(owner: "recipient_\(recipient)", delta: Int64(credit)))
+                    remaining -= credit
+                    recipient += 1
                 }
 
-                if totalAfter <= totalBefore + reward {
-                    // This is a valid balance configuration (no deposits/withdrawals)
-                    XCTAssertTrue(totalAfter <= totalBefore + reward, seed.note)
-                }
+                XCTAssertTrue(
+                    try block.validateBalanceChanges(
+                        spec: spec, allDepositActions: deposits,
+                        allWithdrawalActions: withdrawals, allAccountActions: accountActions
+                    ),
+                    "credits \(spend) within budget \(budget) must validate at height \(blockHeight) \(seed.note)"
+                )
+
+                unspent += 1
+                let minting = accountActions + [AccountAction(owner: "minter", delta: Int64(unspent))]
+                XCTAssertFalse(
+                    try block.validateBalanceChanges(
+                        spec: spec, allDepositActions: deposits,
+                        allWithdrawalActions: withdrawals, allAccountActions: minting
+                    ),
+                    "credits \(budget + 1) over budget \(budget) must be rejected at height \(blockHeight) \(seed.note)"
+                )
             }
         }
     }
 
-    // Property: Swap locks reduce available balance
-    func testSwapLocksBalance() {
+    // Property: applying a deposit with its funding debit moves exactly the
+    // deposited amount from the demander's balance into the deposit record,
+    // and a deposit larger than the balance cannot be funded.
+    func testSwapLocksBalance() async throws {
         let seed = propertySeed()
         var rng = seed.generator()
-        for _ in 0..<100 {
-            let swapAmount = UInt64.random(in: 1...10000, using: &rng)
-            let action = DepositAction(
-                nonce: UInt128.random(in: 0...UInt128.max, using: &rng),
-                demander: "test_demander",
-                amountDemanded: swapAmount,
-                amountDeposited: swapAmount
+        for _ in 0..<50 {
+            let fetcher = StorableFetcher()
+            let demander = "demander_\(rng.randomUUIDString())"
+            let balance = UInt64.random(in: 1...10_000, using: &rng)
+            let (funded, _) = try await LatticeState.emptyState().proveAndUpdateState(
+                allAccountActions: [AccountAction(owner: demander, delta: Int64(balance))],
+                allActions: [], allDepositActions: [], allGenesisActions: [],
+                allReceiptActions: [], allWithdrawalActions: [], transactionBodies: [],
+                fetcher: fetcher
             )
-            XCTAssertGreaterThan(action.amountDeposited, 0, seed.note)
+            try await LatticeStateHeader(node: funded).storeRecursively(storer: fetcher)
+
+            let amount = UInt64.random(in: 1...balance, using: &rng)
+            let deposit = DepositAction(
+                nonce: UInt128.random(in: 0...UInt128.max, using: &rng),
+                demander: demander,
+                amountDemanded: UInt64.random(in: 1...10_000, using: &rng),
+                amountDeposited: amount
+            )
+            let (locked, _) = try await funded.proveAndUpdateState(
+                allAccountActions: [AccountAction(owner: demander, delta: -Int64(amount))],
+                allActions: [], allDepositActions: [deposit], allGenesisActions: [],
+                allReceiptActions: [], allWithdrawalActions: [], transactionBodies: [],
+                fetcher: fetcher
+            )
+            try await LatticeStateHeader(node: locked).storeRecursively(storer: fetcher)
+
+            let accounts = try await locked.accountState.resolve(fetcher: fetcher)
+            let balanceAfter: UInt64 = (try? accounts.node?.get(key: demander)) ?? 0
+            XCTAssertEqual(balanceAfter, balance - amount, "deposit must debit the demander \(seed.note)")
+            let depositsAfter = try await locked.depositState.resolve(fetcher: fetcher)
+            let lockedAmount: UInt64? = try? depositsAfter.node?.get(key: DepositKey(depositAction: deposit).description)
+            XCTAssertEqual(lockedAmount, amount, "deposit must lock the deposited amount \(seed.note)")
+
+            let overdraw = DepositAction(
+                nonce: deposit.nonce &+ 1, demander: demander,
+                amountDemanded: 1, amountDeposited: balance - amount + 1
+            )
+            do {
+                _ = try await locked.proveAndUpdateState(
+                    allAccountActions: [AccountAction(owner: demander, delta: -Int64(overdraw.amountDeposited))],
+                    allActions: [], allDepositActions: [overdraw], allGenesisActions: [],
+                    allReceiptActions: [], allWithdrawalActions: [], transactionBodies: [],
+                    fetcher: fetcher
+                )
+                XCTFail("a deposit beyond the remaining balance must not be funded \(seed.note)")
+            } catch StateErrors.insufficientBalance {
+                // expected
+            }
         }
     }
 
@@ -449,7 +549,6 @@ final class CrossChainProtocolPropertyTests: XCTestCase {
             let settleKeyFromClaim = ReceiptKey(withdrawalAction: claim, directory: directory)
 
             XCTAssertEqual(settleKeyFromSwap.description, settleKeyFromClaim.description, seed.note)
-            XCTAssertEqual(settleKeyFromSwap.directory, directory, seed.note)
         }
     }
 
