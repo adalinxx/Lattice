@@ -92,7 +92,7 @@ func blockHeader(_ block: Block) -> BlockHeader {
 @MainActor
 final class BlockConstructionTests: XCTestCase {
 
-    func testGenesisBlockHasDeterministicCID() {
+    func testGenesisBlockHasDeterministicCID() async {
         let g1 = makeGenesisBlock(timestamp: 1000, nonce: 42)
         let g2 = makeGenesisBlock(timestamp: 1000, nonce: 42)
         let h1 = blockHeader(g1)
@@ -100,7 +100,7 @@ final class BlockConstructionTests: XCTestCase {
         XCTAssertEqual(h1.rawCID, h2.rawCID, "Same genesis params should produce same CID")
     }
 
-    func testDifferentNonceProducesDifferentCID() {
+    func testDifferentNonceProducesDifferentCID() async {
         let g1 = makeGenesisBlock(nonce: 1)
         let g2 = makeGenesisBlock(nonce: 2)
         let h1 = blockHeader(g1)
@@ -108,19 +108,19 @@ final class BlockConstructionTests: XCTestCase {
         XCTAssertNotEqual(h1.rawCID, h2.rawCID)
     }
 
-    func testDifferentTimestampProducesDifferentCID() {
+    func testDifferentTimestampProducesDifferentCID() async {
         let g1 = makeGenesisBlock(timestamp: 1000)
         let g2 = makeGenesisBlock(timestamp: 2000)
         XCTAssertNotEqual(blockHeader(g1).rawCID, blockHeader(g2).rawCID)
     }
 
-    func testBlockReferencesParentCID() {
+    func testBlockReferencesParentCID() async {
         let genesis = makeGenesisBlock()
         let block1 = makeBlock(previous: genesis, height: 1, timestamp: 2000)
         XCTAssertEqual(block1.parent?.rawCID, blockHeader(genesis).rawCID)
     }
 
-    func testDifficultyHashCommitsToAllFields() {
+    func testDifficultyHashCommitsToAllFields() async {
         let genesis = makeGenesisBlock()
         let block1a = makeBlock(previous: genesis, height: 1, timestamp: 2000, nonce: 1)
         let block1b = makeBlock(previous: genesis, height: 1, timestamp: 2000, nonce: 2)
@@ -383,7 +383,7 @@ final class ChainLevelE2ETests: XCTestCase {
 @MainActor
 final class StateContinuityE2ETests: XCTestCase {
 
-    func testBlockStateChaining() {
+    func testBlockStateChaining() async {
         let genesis = makeGenesisBlock()
         let block1 = makeBlock(previous: genesis, height: 1, timestamp: 2000)
         XCTAssertEqual(block1.prevState.rawCID, genesis.postState.rawCID,
@@ -394,14 +394,14 @@ final class StateContinuityE2ETests: XCTestCase {
             "Block 2's homestead should equal block 1's frontier")
     }
 
-    func testGenesisHasEmptyHomestead() {
+    func testGenesisHasEmptyHomestead() async {
         let genesis = makeGenesisBlock()
         let emptyState = emptyLatticeState()
         XCTAssertEqual(genesis.prevState.rawCID, emptyState.rawCID,
             "Genesis homestead should be empty state")
     }
 
-    func testChainSpecPersistsAcrossBlocks() {
+    func testChainSpecPersistsAcrossBlocks() async {
         let genesis = makeGenesisBlock()
         let block1 = makeBlock(previous: genesis, height: 1, timestamp: 2000)
         let block2 = makeBlock(previous: block1, height: 2, timestamp: 3000)
@@ -409,7 +409,7 @@ final class StateContinuityE2ETests: XCTestCase {
         XCTAssertEqual(block1.spec.rawCID, block2.spec.rawCID)
     }
 
-    func testBlockIndexIncrements() {
+    func testBlockIndexIncrements() async {
         let genesis = makeGenesisBlock()
         XCTAssertEqual(genesis.height, 0)
         let block1 = makeBlock(previous: genesis, height: 1, timestamp: 2000)
@@ -418,7 +418,7 @@ final class StateContinuityE2ETests: XCTestCase {
         XCTAssertEqual(block2.height, 2)
     }
 
-    func testTimestampsIncrease() {
+    func testTimestampsIncrease() async {
         let genesis = makeGenesisBlock(timestamp: 1000)
         let block1 = makeBlock(previous: genesis, height: 1, timestamp: 2000)
         let block2 = makeBlock(previous: block1, height: 2, timestamp: 3000)

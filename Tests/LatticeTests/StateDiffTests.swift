@@ -137,7 +137,7 @@ final class StateDiffTests: XCTestCase {
         for (_, count) in diff2.created { XCTAssertEqual(count, 1) }
     }
 
-    func testMergingDiffsAccumulatesCounts() {
+    func testMergingDiffsAccumulatesCounts() async {
         let a = StateDiff(
             replaced: ["cid1": 1, "cid2": 1],
             created: ["cid3": 1]
@@ -155,7 +155,7 @@ final class StateDiffTests: XCTestCase {
         XCTAssertEqual(merged.created["cid5"], 1)
     }
 
-    func testMutatingMerge() {
+    func testMutatingMerge() async {
         var a = StateDiff(replaced: ["x": 1], created: ["y": 1])
         let b = StateDiff(replaced: ["x": 2], created: ["y": 3, "z": 1])
         a.merge(b)
@@ -477,7 +477,7 @@ final class StateDiffTests: XCTestCase {
 
     // MARK: - Stub headers (node == nil)
 
-    func testDiffWithOneStubHeader() {
+    func testDiffWithOneStubHeader() async {
         let stub = AccountStateHeader(rawCID: "stubcid")
         let materialized = try! AccountStateHeader(node: AccountState())
 
@@ -490,7 +490,7 @@ final class StateDiffTests: XCTestCase {
         XCTAssertTrue(diff2.created.isEmpty, "stub new has no node → nothing created")
     }
 
-    func testDiffBetweenTwoStubs() {
+    func testDiffBetweenTwoStubs() async {
         let a = AccountStateHeader(rawCID: "cid_a")
         let b = AccountStateHeader(rawCID: "cid_b")
         let diff = diffCIDs(old: a, new: b)

@@ -504,7 +504,7 @@ final class CrossChainProtocolIntegrationTests: XCTestCase {
 @MainActor
 final class SwapAuthorizationTests: XCTestCase {
 
-    func testWithdrawalByNonWithdrawerRejected() {
+    func testWithdrawalByNonWithdrawerRejected() async {
         let alice = CryptoUtils.generateKeyPair()
         let bob = CryptoUtils.generateKeyPair()
         let aliceAddr = id(alice.publicKey)
@@ -523,7 +523,7 @@ final class SwapAuthorizationTests: XCTestCase {
         XCTAssertFalse(body.withdrawalActionsAreValid(), "Withdrawal signed by non-withdrawer should be rejected")
     }
 
-    func testWithdrawalByWithdrawerAccepted() {
+    func testWithdrawalByWithdrawerAccepted() async {
         let alice = CryptoUtils.generateKeyPair()
         let bob = CryptoUtils.generateKeyPair()
         let aliceAddr = id(alice.publicKey)
@@ -539,7 +539,7 @@ final class SwapAuthorizationTests: XCTestCase {
         XCTAssertTrue(body.withdrawalActionsAreValid(), "Withdrawal signed by withdrawer should be accepted")
     }
 
-    func testWithdrawalDifferingFromDemandAccepted() {
+    func testWithdrawalDifferingFromDemandAccepted() async {
         let alice = CryptoUtils.generateKeyPair()
         let aliceAddr = id(alice.publicKey)
 
@@ -556,7 +556,7 @@ final class SwapAuthorizationTests: XCTestCase {
         XCTAssertTrue(body.withdrawalActionsAreValid(), "Body-level withdrawal validation no longer requires amountWithdrawn == amountDemanded")
     }
 
-    func testReceiptWithMismatchedWithdrawerRejected() {
+    func testReceiptWithMismatchedWithdrawerRejected() async {
         let alice = CryptoUtils.generateKeyPair()
         let bob = CryptoUtils.generateKeyPair()
         let aliceAddr = id(alice.publicKey)
@@ -1181,7 +1181,7 @@ final class DifficultyManipulationTests: XCTestCase {
         )
     }
 
-    func testDifficultyMovesWithDriftAndNeverToZero() {
+    func testDifficultyMovesWithDriftAndNeverToZero() async {
         let spec = s()
         let anchor = UInt256(1000)
 
@@ -1196,7 +1196,7 @@ final class DifficultyManipulationTests: XCTestCase {
         XCTAssertGreaterThan(slow, anchor)
     }
 
-    func testZeroElapsedTimeHardens() {
+    func testZeroElapsedTimeHardens() async {
         // A timestamp at the anchor is a whole block ahead of schedule: it
         // costs the miner difficulty rather than holding the target.
         let spec = s()
@@ -1204,7 +1204,7 @@ final class DifficultyManipulationTests: XCTestCase {
         XCTAssertLessThan(scheduled(spec, anchor: anchor, elapsed: 0), anchor)
     }
 
-    func testNegativeElapsedTimeHardensLikeZero() {
+    func testNegativeElapsedTimeHardensLikeZero() async {
         // A clock moved before the anchor clamps to zero elapsed: no easier
         // than zero, so moving the clock back buys nothing.
         let spec = s()
@@ -1412,17 +1412,17 @@ final class DeltaModelTests: XCTestCase {
         }
     }
 
-    func testInt64MinDeltaRejected() {
+    func testInt64MinDeltaRejected() async {
         let action = AccountAction(owner: "test", delta: Int64.min)
         XCTAssertFalse(action.verify(), "Int64.min delta must be rejected")
     }
 
-    func testZeroDeltaRejected() {
+    func testZeroDeltaRejected() async {
         let action = AccountAction(owner: "test", delta: 0)
         XCTAssertFalse(action.verify(), "Zero delta must be rejected")
     }
 
-    func testValidDeltasAccepted() {
+    func testValidDeltasAccepted() async {
         XCTAssertTrue(AccountAction(owner: "a", delta: 1).verify())
         XCTAssertTrue(AccountAction(owner: "a", delta: -1).verify())
         XCTAssertTrue(AccountAction(owner: "a", delta: Int64.max).verify())

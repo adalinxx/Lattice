@@ -15,7 +15,7 @@ final class GoldenInventoryTests: XCTestCase {
         ("WorkTableGoldenTests", WorkTableGoldenTests.goldenName),
     ]
 
-    func testEveryGoldenFileExistsAndIsJSON() throws {
+    func testEveryGoldenFileExistsAndIsJSON() async throws {
         for entry in Self.inventory {
             let url = GoldenFile.url(entry.golden)
             let data = try XCTUnwrap(
@@ -29,7 +29,7 @@ final class GoldenInventoryTests: XCTestCase {
         }
     }
 
-    func testGoldensDirectoryHoldsOnlyInventoriedFiles() throws {
+    func testGoldensDirectoryHoldsOnlyInventoriedFiles() async throws {
         let present = try FileManager.default.contentsOfDirectory(atPath: GoldenFile.directory.path)
             .filter { !$0.hasPrefix(".") }
         XCTAssertEqual(

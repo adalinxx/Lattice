@@ -73,7 +73,7 @@ final class DoubleSpendTests: XCTestCase {
         XCTAssertFalse(second.addedBlock, "Duplicate block must be rejected")
     }
 
-    func testTransactionNonceReplayBlocked() {
+    func testTransactionNonceReplayBlocked() async {
         let body1 = TransactionBody(
             accountActions: [AccountAction(owner: "alice", delta: Int64(50) - Int64(100))],
             actions: [], depositActions: [], genesisActions: [],
@@ -92,7 +92,7 @@ final class DoubleSpendTests: XCTestCase {
         XCTAssertEqual(body1.nonce, body2.nonce, "Replaying the same nonce must be detectable at state update time")
     }
 
-    func testDifferentSignersSameNonceNotBlocked() {
+    func testDifferentSignersSameNonceNotBlocked() async {
         let body1 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
@@ -218,7 +218,7 @@ final class StateModelHardeningTests: XCTestCase {
         }
     }
 
-    func testSignatureRequiresDomainTag() throws {
+    func testSignatureRequiresDomainTag() async throws {
         let keyPair = CryptoUtils.generateKeyPair()
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
@@ -340,7 +340,7 @@ final class SignatureForgeryTests: XCTestCase {
     /// a bare 32-byte Ed25519 hex key gave the same key two valid encodings on
     /// live consensus surface. Bare-hex must now fail verification while the
     /// canonical Multikey form still verifies.
-    func testBareHexPublicKeyEncodingRejected() {
+    func testBareHexPublicKeyEncodingRejected() async {
         let kp = CryptoUtils.generateKeyPair()
         let message = "single-encoding-check"
         guard let sig = CryptoUtils.sign(message: message, privateKeyHex: kp.privateKey) else {
@@ -356,7 +356,7 @@ final class SignatureForgeryTests: XCTestCase {
             "bare 32-byte hex encoding of the same key must fail closed")
     }
 
-    func testNoncanonicalSignatureAndPublicKeyHexFailClosed() {
+    func testNoncanonicalSignatureAndPublicKeyHexFailClosed() async {
         let kp = CryptoUtils.generateKeyPair()
         let message = "canonical-hex-check"
         guard let signature = CryptoUtils.sign(message: message, privateKeyHex: kp.privateKey),
@@ -398,7 +398,7 @@ final class SignatureForgeryTests: XCTestCase {
         ))
     }
 
-    func testForgedSignatureRejected() {
+    func testForgedSignatureRejected() async {
         let kp = CryptoUtils.generateKeyPair()
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
@@ -412,7 +412,7 @@ final class SignatureForgeryTests: XCTestCase {
         XCTAssertFalse(tx.signaturesAreValid(), "Forged signature must be rejected")
     }
 
-    func testWrongSignerKeyRejected() {
+    func testWrongSignerKeyRejected() async {
         let kp1 = CryptoUtils.generateKeyPair()
         let kp2 = CryptoUtils.generateKeyPair()
         let signerCID = try! HeaderImpl<PublicKey>(node: PublicKey(key: kp2.publicKey)).rawCID
@@ -429,7 +429,7 @@ final class SignatureForgeryTests: XCTestCase {
         XCTAssertFalse(tx.signaturesMatchSigners(), "But signer CID doesn't match")
     }
 
-    func testEmptySignatureRejected() {
+    func testEmptySignatureRejected() async {
         let kp = CryptoUtils.generateKeyPair()
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
@@ -448,7 +448,7 @@ final class SignatureForgeryTests: XCTestCase {
 @MainActor
 final class BalanceConservationTests: XCTestCase {
 
-    func testTransactionValueConservationHelper() {
+    func testTransactionValueConservationHelper() async {
         let valid = TransactionBody(
             accountActions: [
                 AccountAction(owner: "sender", delta: -101),
@@ -527,7 +527,7 @@ final class BalanceConservationTests: XCTestCase {
         XCTAssertTrue(beyondUInt64.conserved)
     }
 
-    func testCannotCreateMoneyFromNothing() throws {
+    func testCannotCreateMoneyFromNothing() async throws {
         let g = Block(
             parent: nil,
             transactions: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Transaction>>()),
@@ -546,7 +546,7 @@ final class BalanceConservationTests: XCTestCase {
         XCTAssertFalse(valid, "Cannot create more value than premine allows")
     }
 
-    func testFeeClaimRequiresSignerDebit() throws {
+    func testFeeClaimRequiresSignerDebit() async throws {
         let g = Block(
             parent: nil,
             transactions: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Transaction>>()),
@@ -581,7 +581,7 @@ final class BalanceConservationTests: XCTestCase {
         XCTAssertFalse(invalid, "Fees without matching debits must not expand the block credit budget")
     }
 
-    func testGenesisFeesDoNotExpandPremineBudget() throws {
+    func testGenesisFeesDoNotExpandPremineBudget() async throws {
         let g = Block(
             parent: nil,
             transactions: try! HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Transaction>>()),
@@ -958,7 +958,7 @@ final class ConsensusStressTests: XCTestCase {
 @MainActor
 final class EconomicInvariantTests: XCTestCase {
 
-    func testRewardHalvingOccursAtCorrectBlock() {
+    func testRewardHalvingOccursAtCorrectBlock() async {
         let s = spec()
         let halfInterval = s.halvingInterval
         let initial = s.rewardAtBlock(0)
@@ -968,7 +968,7 @@ final class EconomicInvariantTests: XCTestCase {
         XCTAssertEqual(atHalving, initial / 2, "Reward halves at interval boundary")
     }
 
-    func testPremineOffsetShiftsHalving() {
+    func testPremineOffsetShiftsHalving() async {
         let premineSpec = ChainSpec.test(
             premine: 100,
             halfLife: 10
@@ -980,7 +980,7 @@ final class EconomicInvariantTests: XCTestCase {
         XCTAssertEqual(premineSpec.rewardAtBlock(firstHalvingBlock), reward / 2)
     }
 
-    func testTotalRewardsMatchIndividualSum() {
+    func testTotalRewardsMatchIndividualSum() async {
         let s = spec()
         let n: UInt64 = 200
         let individual = (0..<n).reduce(UInt64(0)) { $0 + s.rewardAtBlock($1) }
@@ -995,7 +995,7 @@ final class EconomicInvariantTests: XCTestCase {
 @MainActor
 final class CrossChainKeyIntegrityTests: XCTestCase {
 
-    func testSwapKeyRoundTrip() {
+    func testSwapKeyRoundTrip() async {
         for nonce: UInt128 in [0, 1, 42, UInt128.max / 2] {
             let key = DepositKey(depositAction: DepositAction(nonce: nonce, demander: "abc", amountDemanded: 999, amountDeposited: 999))
             let parsed = DepositKey(key.description)
@@ -1006,7 +1006,7 @@ final class CrossChainKeyIntegrityTests: XCTestCase {
         }
     }
 
-    func testSettleKeyRoundTrip() {
+    func testSettleKeyRoundTrip() async {
         let receiptAction = ReceiptAction(withdrawer: "w", nonce: 77, demander: "d", amountDemanded: 500, directory: "chain1")
         let key = ReceiptKey(receiptAction: receiptAction)
         let parsed = ReceiptKey(key.description)
@@ -1017,7 +1017,7 @@ final class CrossChainKeyIntegrityTests: XCTestCase {
         XCTAssertEqual(parsed?.nonce, 77)
     }
 
-    func testSwapAndClaimKeysMatch() {
+    func testSwapAndClaimKeysMatch() async {
         let swap = DepositAction(nonce: 42, demander: "alice", amountDemanded: 100, amountDeposited: 100)
         let claim = WithdrawalAction(withdrawer: "bob", nonce: 42, demander: "alice", amountDemanded: 100, amountWithdrawn: 100)
         let swapKey = DepositKey(depositAction: swap)
@@ -1026,7 +1026,7 @@ final class CrossChainKeyIntegrityTests: XCTestCase {
             "Swap and claim must produce the same lookup key")
     }
 
-    func testMalformedKeysReturnNil() {
+    func testMalformedKeysReturnNil() async {
         for bad in ["", "x", "a/b"] {
             XCTAssertNil(DepositKey(bad), "'\(bad)' should fail to parse as SwapKey")
         }
@@ -1041,7 +1041,7 @@ final class CrossChainKeyIntegrityTests: XCTestCase {
 @MainActor
 final class BugRegressionTests: XCTestCase {
 
-    func testSettleKeySeparatorFixed() {
+    func testSettleKeySeparatorFixed() async {
         let receiptAction = ReceiptAction(withdrawer: "w", nonce: 42, demander: "d", amountDemanded: 100, directory: "c")
         let key = ReceiptKey(receiptAction: receiptAction)
         let desc = key.description
