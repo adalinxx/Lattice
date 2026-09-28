@@ -96,7 +96,7 @@ final class DepositStateTests: XCTestCase {
         XCTAssertEqual(stored, depositAmount, "Deposit should be stored in state")
     }
 
-    func testDepositVariableRateAccepted() {
+    func testDepositVariableRateAccepted() async {
         let kp = CryptoUtils.generateKeyPair()
         let kpAddr = addr(kp.publicKey)
 
@@ -112,7 +112,7 @@ final class DepositStateTests: XCTestCase {
         XCTAssertTrue(body.depositActionsAreValid(), "amountDeposited may differ from amountDemanded for variable-rate swaps")
     }
 
-    func testDepositZeroAmountRejected() {
+    func testDepositZeroAmountRejected() async {
         let kp = CryptoUtils.generateKeyPair()
         let kpAddr = addr(kp.publicKey)
 
@@ -128,7 +128,7 @@ final class DepositStateTests: XCTestCase {
         XCTAssertFalse(body.depositActionsAreValid(), "Zero deposit should be rejected")
     }
 
-    func testDepositRequiresDemandInSigners() {
+    func testDepositRequiresDemandInSigners() async {
         let kp = CryptoUtils.generateKeyPair()
         let kpAddr = addr(kp.publicKey)
         let other = CryptoUtils.generateKeyPair()
@@ -168,7 +168,7 @@ final class DepositStateTests: XCTestCase {
 @MainActor
 final class ReceiptStateTests: XCTestCase {
 
-    func testReceiptRequiresWithdrawerInSigners() {
+    func testReceiptRequiresWithdrawerInSigners() async {
         let demander = CryptoUtils.generateKeyPair()
         let demanderAddr = addr(demander.publicKey)
         let withdrawer = CryptoUtils.generateKeyPair()
@@ -261,7 +261,7 @@ final class ReceiptStateTests: XCTestCase {
 @MainActor
 final class WithdrawalValidationTests: XCTestCase {
 
-    func testWithdrawalVariableRateAccepted() {
+    func testWithdrawalVariableRateAccepted() async {
         let kp = CryptoUtils.generateKeyPair()
         let kpAddr = addr(kp.publicKey)
 
@@ -278,7 +278,7 @@ final class WithdrawalValidationTests: XCTestCase {
         XCTAssertTrue(body.withdrawalActionsAreValid(), "amountWithdrawn may differ from amountDemanded; storage check happens at state-application time")
     }
 
-    func testWithdrawalZeroAmountRejected() {
+    func testWithdrawalZeroAmountRejected() async {
         let kp = CryptoUtils.generateKeyPair()
         let kpAddr = addr(kp.publicKey)
 
@@ -295,7 +295,7 @@ final class WithdrawalValidationTests: XCTestCase {
         XCTAssertFalse(body.withdrawalActionsAreValid(), "Zero withdrawal should be rejected")
     }
 
-    func testWithdrawalRequiresWithdrawerInSigners() {
+    func testWithdrawalRequiresWithdrawerInSigners() async {
         let kp = CryptoUtils.generateKeyPair()
         let kpAddr = addr(kp.publicKey)
         let other = CryptoUtils.generateKeyPair()
@@ -876,7 +876,7 @@ final class CrossChainFlowTests: XCTestCase {
     }
 
     /// Receipt requires withdrawer authorization since their funds are debited
-    func testReceiptWithdrawerMustSign() {
+    func testReceiptWithdrawerMustSign() async {
         let attacker = CryptoUtils.generateKeyPair()
         let attackerAddr = addr(attacker.publicKey)
         let legitimate = CryptoUtils.generateKeyPair()
@@ -982,7 +982,7 @@ final class CrossChainFlowTests: XCTestCase {
 @MainActor
 final class OverflowSafetyTests: XCTestCase {
 
-    func testGetTotalDepositedOverflow() {
+    func testGetTotalDepositedOverflow() async {
         let actions = [
             DepositAction(nonce: 1, demander: "a", amountDemanded: UInt64.max, amountDeposited: UInt64.max),
             DepositAction(nonce: 2, demander: "a", amountDemanded: 1, amountDeposited: 1),
@@ -991,7 +991,7 @@ final class OverflowSafetyTests: XCTestCase {
         XCTAssertTrue(overflow, "Should detect overflow")
     }
 
-    func testGetTotalWithdrawnOverflow() {
+    func testGetTotalWithdrawnOverflow() async {
         let actions = [
             WithdrawalAction(withdrawer: "a", nonce: 1, demander: "b", amountDemanded: UInt64.max, amountWithdrawn: UInt64.max),
             WithdrawalAction(withdrawer: "a", nonce: 2, demander: "b", amountDemanded: 1, amountWithdrawn: 1),
@@ -1000,7 +1000,7 @@ final class OverflowSafetyTests: XCTestCase {
         XCTAssertTrue(overflow, "Should detect overflow")
     }
 
-    func testGetTotalDepositedNoOverflow() {
+    func testGetTotalDepositedNoOverflow() async {
         let actions = [
             DepositAction(nonce: 1, demander: "a", amountDemanded: 100, amountDeposited: 100),
             DepositAction(nonce: 2, demander: "a", amountDemanded: 200, amountDeposited: 200),

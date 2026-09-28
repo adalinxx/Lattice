@@ -41,7 +41,7 @@ final class PremineUncappedTests: XCTestCase {
 
     // MARK: - isValid
 
-    func testPremineAtAndBeyondHalvingIntervalIsValid() {
+    func testPremineAtAndBeyondHalvingIntervalIsValid() async {
         XCTAssertTrue(spec(premine: halvingInterval).isValid, "premine == halvingInterval must be valid (cap removed)")
         XCTAssertTrue(spec(premine: halvingInterval * 3 + 1234).isValid, "premine spanning multiple halvings must be valid")
         XCTAssertTrue(spec(premine: halvingInterval * 64).isValid, "a fully-premined chain must be valid")
@@ -50,7 +50,7 @@ final class PremineUncappedTests: XCTestCase {
 
     // MARK: - premineAmount across halving boundaries
 
-    func testPremineAmountSumsAcrossHalvingPeriods() {
+    func testPremineAmountSumsAcrossHalvingPeriods() async {
         // premine = 1.5 halving intervals:
         //   blocks      0..10_000 at reward 1024 → 10_240_000
         //   blocks 10_000..15_000 at reward  512 →  2_560_000
@@ -58,7 +58,7 @@ final class PremineUncappedTests: XCTestCase {
         XCTAssertEqual(s.premineAmount(), 10_240_000 + 2_560_000)
     }
 
-    func testFullyPreminedChainCapturesEntireSupplyAndMinesNothing() {
+    func testFullyPreminedChainCapturesEntireSupplyAndMinesNothing() async {
         // premine large enough to consume every nonzero-reward block.
         let s = spec(premine: halvingInterval * 64)
         XCTAssertEqual(s.premineAmount(), unshiftedTotalSupply, "a fully-premined chain's genesis credit is the whole supply")
@@ -68,7 +68,7 @@ final class PremineUncappedTests: XCTestCase {
         XCTAssertEqual(s.premineAmount() + s.totalRewards(upToBlock: 1_000_000), unshiftedTotalSupply)
     }
 
-    func testPremineAmountBoundedByTotalSupplyAtExtreme() {
+    func testPremineAmountBoundedByTotalSupplyAtExtreme() async {
         // Emission terminates once reward hits 0 (initialReward = 2^10 ⇒ 11 nonzero
         // halvings), so premineAmount can never exceed total supply no matter how
         // absurd the premine — and never traps/overflows. You cannot premine more
@@ -76,7 +76,7 @@ final class PremineUncappedTests: XCTestCase {
         XCTAssertEqual(spec(premine: UInt64.max).premineAmount(), unshiftedTotalSupply)
     }
 
-    func testPremineAmountDoesNotTrapOnLargeHalvingInterval() {
+    func testPremineAmountDoesNotTrapOnLargeHalvingInterval() async {
         let s = ChainSpec.test(
             maxNumberOfTransactionsPerBlock: 1000,
             maxStateGrowth: 1_000_000,
@@ -88,7 +88,7 @@ final class PremineUncappedTests: XCTestCase {
         XCTAssertEqual(s.premineAmount(), UInt64.max)
     }
 
-    func testTotalRewardsDoesNotTrapOnLargeHalvingInterval() {
+    func testTotalRewardsDoesNotTrapOnLargeHalvingInterval() async {
         let s = ChainSpec.test(
             maxNumberOfTransactionsPerBlock: 1000,
             maxStateGrowth: 1_000_000,
@@ -100,7 +100,7 @@ final class PremineUncappedTests: XCTestCase {
         XCTAssertEqual(s.totalRewards(upToBlock: UInt64.max), UInt64.max)
     }
 
-    func testEmissionTotalsRemainPinnedForValidSpecs() {
+    func testEmissionTotalsRemainPinnedForValidSpecs() async {
         let cases: [(premine: UInt64, premineAmount: UInt64, totalRewards: UInt64)] = [
             (0, 0, 20_470_000),
             (1, 1_024, 20_468_976),
@@ -125,7 +125,7 @@ final class PremineUncappedTests: XCTestCase {
         XCTAssertEqual(ChainSpec.development.totalRewards(upToBlock: 1_000_000), 19_446_000)
     }
 
-    func testExtremePremineRewardHelpersStayTotalAndDoNotTrap() {
+    func testExtremePremineRewardHelpersStayTotalAndDoNotTrap() async {
         // Regression: an uncapped premine makes `blockHeight + premine` overflow in
         // rewardAtBlock/totalRewards. Validation must stay total (no trap) over any
         // valid ChainSpec — overflow ⇒ astronomically past every halving ⇒ 0 reward.
@@ -174,7 +174,7 @@ final class PremineUncappedTests: XCTestCase {
 
     // MARK: - rewardAtBlock curve shift
 
-    func testRewardCurveShiftsForwardByPremineAcrossHalvings() {
+    func testRewardCurveShiftsForwardByPremineAcrossHalvings() async {
         // premine == one full halving interval ⇒ block 0 starts in the SECOND
         // halving epoch, so the first mined reward is initialReward/2.
         let s = spec(premine: halvingInterval)
@@ -185,7 +185,7 @@ final class PremineUncappedTests: XCTestCase {
 
     // MARK: - Supply conservation invariant (the core "tokenomics still work" check)
 
-    func testTotalSupplyIsConservedRegardlessOfPremineSize() {
+    func testTotalSupplyIsConservedRegardlessOfPremineSize() async {
         // For ANY premine P, the genesis credit (premineAmount) plus all
         // subsequently mined emission equals the fixed unshifted lifetime supply.
         // Premine only redistributes a fixed pie between genesis and mining.

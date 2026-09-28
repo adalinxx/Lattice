@@ -730,7 +730,7 @@ final class ForkChoiceReplayGoldenTests: XCTestCase {
 
     /// The generator's coverage claims, so a later edit to it cannot quietly
     /// drop one of the shapes the golden exists to pin.
-    func testScriptCoversEveryClaimedShape() throws {
+    func testScriptCoversEveryClaimedShape() async throws {
         let byName = graph.blocksByName
         let arrivalPosition = Dictionary(
             uniqueKeysWithValues: graph.events.filter { $0.kind == .block }
