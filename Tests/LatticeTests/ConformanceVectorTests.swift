@@ -298,11 +298,11 @@ final class ConformanceVectorTests: XCTestCase {
         )
     }
 
-    static func genesis(_ spec: ChainSpec) async throws -> Block {
+    static func genesis(_ spec: ChainSpec, target: UInt256 = .max) async throws -> Block {
         try await BlockBuilder.buildGenesis(
             spec: spec,
             timestamp: 1_000_000_000_000,
-            target: UInt256.max,
+            target: target,
             fetcher: InMemoryContentSource([:])
         )
     }
@@ -378,6 +378,27 @@ final class ConformanceVectorTests: XCTestCase {
         ]
     }
 
+    /// A body signed by two parties, listed alice-then-carol in `signers`.
+    static func twoSignerBody() throws -> TransactionBody {
+        let (alice, bob, carol) = try parties()
+        return body(
+            signers: [alice, carol],
+            nonce: 3,
+            accountActions: [
+                AccountAction(owner: alice.address, delta: -11),
+                AccountAction(owner: carol.address, delta: -11),
+                AccountAction(owner: bob.address, delta: 20),
+            ]
+        )
+    }
+
+    /// The Ed25519 group order L = 2^252 + 27742317777372353535851937790883648493,
+    /// little-endian (RFC 8032 section 5.1).
+    static let ed25519GroupOrder: [UInt8] = [
+        0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10,
+    ]
+
     // MARK: - Generation
 
     static func generateEncoding() async throws -> EncodingFile {
@@ -395,14 +416,31 @@ final class ConformanceVectorTests: XCTestCase {
         for (name, body) in try await transactionBodies() {
             try add(name, "TransactionBody", body)
         }
-        let (alice, _, _) = try parties()
-        let signed = try await generateSigning().vectors.first { $0.name == "transaction/envelope" }
+        let (alice, _, carol) = try parties()
+        let signing = try await generateSigning().vectors
+        func signature(_ name: String) throws -> String {
+            try XCTUnwrap(signing.first { $0.name == name }?.signature, name)
+        }
         let accountBody = try await transactionBodies()[0].body
         try add("transaction/signed", "Transaction", Transaction(
-            signatures: [alice.publicKey: try XCTUnwrap(signed?.signature)],
+            signatures: [alice.publicKey: try signature("transaction/envelope")],
             body: try HeaderImpl(node: accountBody)
         ))
+        // Two signers: the signatures array is sorted by public-key hex, so
+        // carol's entry precedes alice's although `signers` lists alice first.
+        try add("transaction/signed-two-signers", "Transaction", Transaction(
+            signatures: [
+                alice.publicKey: try signature("transaction/two-signers/alice"),
+                carol.publicKey: try signature("transaction/two-signers/carol"),
+            ],
+            body: try HeaderImpl(node: try twoSignerBody())
+        ))
         try add("block/genesis", "Block", try await genesis(nexusSpec()))
+        // A U256 is minimal-length hex: a non-max target shows the encoding
+        // drops leading zero digits (no fixed 64-digit width).
+        try add("block/genesis-non-max-target", "Block", try await genesis(
+            nexusSpec(), target: UInt256.max >> 20
+        ))
         try add("chain-spec/nexus", "ChainSpec", nexusSpec())
         try add("chain-spec/with-wasm-policy", "ChainSpec", childSpec())
         return EncodingFile(
@@ -450,7 +488,7 @@ final class ConformanceVectorTests: XCTestCase {
     }
 
     static func generateSigning() async throws -> SigningFile {
-        let (alice, bob, _) = try parties()
+        let (alice, bob, carol) = try parties()
         let committedFile = FileManager.default
             .contents(atPath: directory.appendingPathComponent("signing.json").path)
             .flatMap { try? JSONDecoder().decode(SigningFile.self, from: $0) }
@@ -496,6 +534,31 @@ final class ConformanceVectorTests: XCTestCase {
 
         var flipped = try XCTUnwrap(Data(hex: messageSignature))
         flipped[0] ^= 0x01
+        let twoSigners = try twoSignerBody()
+        let twoSignerEnvelope = TransactionSigning.preimage(body: twoSigners)
+        let twoSignerAlice = try canonicalSignature(
+            message: twoSignerEnvelope, signer: alice, committed: committed["transaction/two-signers/alice"]
+        )
+        let twoSignerCarol = try canonicalSignature(
+            message: twoSignerEnvelope, signer: carol, committed: committed["transaction/two-signers/carol"]
+        )
+        // The same key as a bare 32-byte Ed25519 hex (no Multikey prefix):
+        // Lattice accepts exactly one key encoding, so this must not verify.
+        let bareKey = Party(
+            privateKey: alice.privateKey,
+            publicKey: String(alice.publicKey.dropFirst(4)),
+            address: alice.address
+        )
+        // S + L: the same point equation holds, but a non-canonical scalar
+        // (S >= L) must be rejected, or every signature has a malleable twin.
+        var malleated = try XCTUnwrap(Data(hex: messageSignature))
+        var carry: UInt16 = 0
+        for index in 0..<32 {
+            let sum = UInt16(malleated[32 + index]) + UInt16(Self.ed25519GroupOrder[index]) + carry
+            malleated[32 + index] = UInt8(sum & 0xff)
+            carry = sum >> 8
+        }
+        XCTAssertEqual(carry, 0)
 
         return SigningFile(
             version: vectorVersion,
@@ -510,6 +573,12 @@ final class ConformanceVectorTests: XCTestCase {
                            message: message, signature: messageSignature, valid: false),
                 try vector("message/tampered-signature", scheme: "message", signer: alice,
                            message: message, signature: flipped.hexString, valid: false),
+                try vector("message/uppercase-signature-hex", scheme: "message", signer: alice,
+                           message: message, signature: messageSignature.uppercased(), valid: false),
+                try vector("message/bare-ed25519-public-key", scheme: "message", signer: bareKey,
+                           message: message, signature: messageSignature, valid: false),
+                try vector("message/malleated-signature-s-plus-l", scheme: "message", signer: alice,
+                           message: message, signature: malleated.hexString, valid: false),
                 try vector("transaction/envelope", scheme: "transaction", signer: alice, body: body,
                            message: envelope, signature: envelopeSignature, valid: true),
                 try vector("transaction/legacy-body-cid", scheme: "transaction", signer: alice, body: body,
@@ -517,6 +586,10 @@ final class ConformanceVectorTests: XCTestCase {
                 try vector("transaction/tampered-nonce", scheme: "transaction", signer: alice, body: tamperedBody,
                            message: TransactionSigning.preimage(body: tamperedBody),
                            signature: envelopeSignature, valid: false),
+                try vector("transaction/two-signers/alice", scheme: "transaction", signer: alice, body: twoSigners,
+                           message: twoSignerEnvelope, signature: twoSignerAlice, valid: true),
+                try vector("transaction/two-signers/carol", scheme: "transaction", signer: carol, body: twoSigners,
+                           message: twoSignerEnvelope, signature: twoSignerCarol, valid: true),
             ]
         )
     }
@@ -527,6 +600,12 @@ final class ConformanceVectorTests: XCTestCase {
     static func canonicalSignature(message: String, signer: Party, committed: String?) throws -> String {
         let first = try XCTUnwrap(CryptoUtils.sign(message: message, privateKeyHex: signer.privateKey))
         let second = try XCTUnwrap(CryptoUtils.sign(message: message, privateKeyHex: signer.privateKey))
+        #if !canImport(CryptoKit)
+        // Only CryptoKit randomizes Ed25519. Everywhere else (BoringSSL on
+        // Linux) the signer must be RFC 8032 deterministic, so this host can
+        // never fall through to the lenient branch below.
+        XCTAssertEqual(first, second, "this host's Ed25519 signer must be RFC 8032 deterministic")
+        #endif
         if first == second { return first }
         if let committed, CryptoUtils.verify(message: message, signature: committed, publicKeyHex: signer.publicKey) {
             return committed
@@ -542,6 +621,22 @@ final class ConformanceVectorTests: XCTestCase {
         let aliceProof = try await proof(state, key: alice.address, .existence)
         let bobProof = try await proof(state, key: bob.address, .existence)
         let carolProof = try await proof(state, key: carol.address, .insertion)
+        // Alice's leaf with its value rewritten 1000 -> 999 under the ORIGINAL
+        // CID. The claim (999) matches the tampered bytes, so only the
+        // entry-CID integrity check can reject it.
+        let leafValue1000 = "6576616c75651903e8"  // text "value", uint 1000
+        let tamperedAliceProof = aliceProof.map { entry in
+            ProofVector.Entry(
+                cid: entry.cid,
+                dagCborHex: entry.dagCborHex.replacingOccurrences(
+                    of: leafValue1000, with: "6576616c75651903e7"  // uint 999
+                )
+            )
+        }
+        XCTAssertEqual(
+            zip(aliceProof, tamperedAliceProof).filter { $0.dagCborHex != $1.dagCborHex }.count, 1,
+            "exactly one proof entry (alice's leaf) must be tampered"
+        )
 
         func vector(_ name: String, root: String, key: String, value: String?, entries: [ProofVector.Entry], valid: Bool) -> ProofVector {
             ProofVector(name: name, root: root, key: key, value: value, entries: entries, valid: valid)
@@ -557,6 +652,7 @@ final class ConformanceVectorTests: XCTestCase {
                 vector("negative/wrong-root", root: otherState.root, key: bob.address, value: "250", entries: bobProof, valid: false),
                 vector("negative/wrong-value", root: state.root, key: alice.address, value: "999", entries: aliceProof, valid: false),
                 vector("negative/absence-of-present-key", root: state.root, key: bob.address, value: nil, entries: bobProof, valid: false),
+                vector("negative/tampered-entry", root: state.root, key: alice.address, value: "999", entries: tamperedAliceProof, valid: false),
             ]
         )
     }

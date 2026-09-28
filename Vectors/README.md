@@ -20,19 +20,33 @@ Every vector has a stable `name`. Hex is lowercase and has no `0x` prefix.
 
 | File | Contents | Spec |
 |---|---|---|
-| `encoding.json` | DAG-CBOR bytes (`dagCborHex`) and CID (`cid`) for a `TransactionBody` with each action kind, a signed `Transaction`, a genesis `Block`, and two `ChainSpec`s. `value` shows the same fields as readable JSON, for building the value in an SDK. `dagCborHex` is normative. | §3 |
+| `encoding.json` | DAG-CBOR bytes (`dagCborHex`) and CID (`cid`) for a `TransactionBody` with each action kind, a `Transaction` with one signer and one with two, a genesis `Block` at the maximum target and one at a lower target, and two `ChainSpec`s. `value` shows the same fields as readable JSON, for building the value in an SDK. `dagCborHex` is normative. | §3 |
 | `addresses.json` | Ed25519 key (`privateKey` when one is known, then `publicKeyEd25519Hex`), its Multikey hex (`publicKey`), the DAG-CBOR `PublicKey` node, and the `address`. | §11.1 |
-| `signing.json` | Ed25519 signatures over `signedBytesHex = UTF8("lattice-tx-v1:" + message)`. Scheme `message` verifies with `CryptoUtils.verify`. Scheme `transaction` carries the body (`transactionBodyDagCborHex`, `transactionBodyCid`) and verifies with `TransactionSigning.verify`: its `message` is the `lattice-tx-v1` envelope, or the body CID for the legacy form. Includes negative cases: a tampered message, the wrong public key, a tampered signature, and a tampered nonce. | §7.1 |
-| `proofs.json` | Sparse Merkle proofs over an `AccountState` trie (address to uint64 balance). `entries` are the content-addressed DAG-CBOR nodes along the key's path. A proof is valid when `key` resolves from `root`, using only those entries (each checked against its CID), to exactly `value`, or to absence when `value` is `null`. Includes negative cases: a wrong root, a wrong value, and a claimed absence of a present key. | §3.4 |
+| `signing.json` | Ed25519 signatures over `signedBytesHex = UTF8("lattice-tx-v1:" + message)`. Scheme `message` verifies with `CryptoUtils.verify`. Scheme `transaction` carries the body (`transactionBodyDagCborHex`, `transactionBodyCid`) and verifies with `TransactionSigning.verify`: its `message` is the `lattice-tx-v1` envelope, or the body CID for the legacy form. Includes negative cases: a tampered message, the wrong public key, a tampered signature, uppercase signature hex, a bare 32-byte Ed25519 key instead of Multikey, a malleated signature (S + L), and a tampered nonce. | §7.1 |
+| `proofs.json` | Sparse Merkle proofs over an `AccountState` trie (address to uint64 balance). `entries` are the content-addressed DAG-CBOR nodes along the key's path. A proof is valid when `key` resolves from `root`, using only those entries (each checked against its CID), to exactly `value`, or to absence when `value` is `null`. Includes negative cases: a wrong root, a wrong value, a claimed absence of a present key, and a tampered entry (the leaf's bytes altered under its original CID, claiming the altered value), which only the entry-CID check rejects. | §3.4 |
 
 Encoding details an SDK must match, all visible in `encoding.json`:
 
 - DAG-CBOR map keys are sorted by length first, then bytewise.
-- A reference to another object is the map `{"rawCID": "<cid>"}`, not a
-  tag-42 link.
-- A `U256` is a `"0x"`-prefixed, 64-digit, lowercase hex string.
+- A field that is a Header (a content-addressed child object, such as a
+  block's `spec`, `transactions` or states, or a transaction's `body`) is the
+  map `{"rawCID": "<cid>"}`, not a tag-42 link. Other CID-valued fields are
+  plain text strings: addresses (`signers`, `owner`, `demander`,
+  `withdrawer`) and `GenesisAction.blockCID`. `PublicKey.key` is the Multikey
+  hex as a text string.
+- A `U256` is a `"0x"`-prefixed, lowercase hex string of minimal length: no
+  leading zero digits, so zero is `"0x0"` (see
+  `block/genesis-non-max-target`).
 - An absent optional field is omitted, not encoded as null.
-- A CID is CIDv1, dag-cbor codec, sha2-256, and base32 (`bafy…`).
+- A transaction's `signatures` is an array of `{"key", "value"}` maps
+  (public-key hex, signature hex), sorted ascending by `key`, independent of
+  the order of `signers` (see `transaction/signed-two-signers`).
+- A CID string is multibase prefix `b` followed by lowercase RFC 4648 base32
+  without padding of the binary CID: version `0x01` (CIDv1), codec `0x71`
+  (dag-cbor), then the multihash `0x12 0x20` (sha2-256, 32 bytes) and the
+  SHA-256 digest of the DAG-CBOR bytes.
+- `WasmPolicyRef.moduleCID` in `chain-spec/with-wasm-policy` is an opaque
+  string here; the encoding does not validate it as a CID.
 
 The keys come from the golden generator's fixed seed (`GoldenRandom(seed:
 0x5EED_5EED)`). Generation uses no clock and no system randomness.
@@ -65,6 +79,8 @@ rerun, and the tests pass. For signatures, run it on Linux, for example in
 `swift:6.1-jammy`.
 
 ## Versioning
+
+This rule is a review convention; no check enforces it.
 
 - Adding a vector or a file is additive. It keeps `version`.
 - Changing or removing an existing vector changes what "conforming" means.
