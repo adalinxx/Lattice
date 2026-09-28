@@ -24,7 +24,8 @@ public extension ChainLevel {
     func preflightTransaction(
         _ transaction: Transaction,
         parentState: LatticeStateHeader? = nil,
-        fetcher: any Fetcher
+        fetcher: any Fetcher,
+        validationContext: ValidationContext = .current
     ) async -> TransactionPreflightResult {
         let tip = await chain.transactionPreflightTip()
         guard let snapshot = tip.snapshot else {
@@ -60,7 +61,7 @@ public extension ChainLevel {
             // one above the tip, stamped no earlier than now.
             let (afterTip, overflow) = snapshot.timestamp.addingReportingOverflow(1)
             guard !overflow else { return result(.unavailable, tipCID: tip.cid) }
-            let nextTimestamp = max(afterTip, ValidationContext.current.nowMilliseconds)
+            let nextTimestamp = max(afterTip, validationContext.nowMilliseconds)
             guard spec.isValid,
                   try body.getStateDelta() <= spec.maxStateGrowth,
                   try await TransactionBody.batchVerifyPolicies(
@@ -69,7 +70,8 @@ public extension ChainLevel {
                     chainPath: context.path,
                     height: snapshot.tipHeight + 1,
                     timestamp: nextTimestamp,
-                    fetcher: fetcher
+                    fetcher: fetcher,
+                    resourceLimits: validationContext.wasmResourceLimits
                   ) else {
                 return result(.invalid, tipCID: tip.cid)
             }
@@ -150,9 +152,15 @@ private func transactionPreflightEvidenceUnavailable(_ error: Error) -> Bool {
             return false
         }
     }
-    if let error = error as? WasmPolicyError,
-       case .missingModule = error {
-        return true
+    if let error = error as? WasmPolicyError {
+        switch error {
+        case .missingModule, .resourceUnavailable:
+            // As in import: a node-local resource guard is no verdict on the
+            // transaction, so nodes with different limits never disagree on it.
+            return true
+        default:
+            break
+        }
     }
     if let error = error as? TransformErrors,
        case .missingData = error {
