@@ -240,6 +240,7 @@ final class ProtocolResourceBoundTests: XCTestCase {
             bodies: [],
             spec: spec,
             chainPath: ["Nexus"],
+            height: 1, timestamp: 1,
             fetcher: fetcher
         )
         let configured = try await TransactionBody.validateConfiguredPolicyModules(

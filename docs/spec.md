@@ -707,7 +707,7 @@ Credits (`delta > 0`) do not require signer authorization.
 
 ### 7.4 WASM Policies
 
-Chain policies are content-addressed validation modules referenced by `ChainSpec.wasmPolicies`. In ABI version 1, policies are implemented as WASM modules. A policy declares a scope (`transaction` or `action`), ABI version, module CID, and exported entrypoint. The host passes a versioned canonical binary policy context containing the chain spec, chain path, and the transaction/action under validation. The policy returns `1` to accept and any other value to reject.
+Chain policies are content-addressed validation modules referenced by `ChainSpec.wasmPolicies`. In ABI version 1, policies are implemented as WASM modules. A policy declares a scope (`transaction` or `action`), ABI version, module CID, and exported entrypoint. The host passes a versioned canonical binary policy context containing the height and timestamp of the block being validated, the chain spec, chain path, and the transaction/action under validation. The policy returns `1` to accept and any other value to reject.
 
 Genesis validates every configured policy reference and entrypoint, even when
 genesis contains no transaction or Action to exercise that scope. This prevents
@@ -730,11 +730,22 @@ The policy context byte layout is:
 | Context encoding version | `uint16`, big-endian |
 | Policy ABI version | `uint16`, big-endian |
 | Scope | `uint8`; `0` = transaction, `1` = action |
+| Block height | `uint64`, big-endian (byte offset 11) |
+| Block timestamp | `int64` milliseconds, big-endian two's complement (byte offset 19) |
 | Chain spec | `uint32` byte length, then DAG-CBOR `ChainSpec` bytes |
 | Chain path | `uint32` item count, then each path component as `uint32` byte length + UTF-8 bytes |
 | Transaction | `uint8` presence tag; if `1`, `uint32` byte length + DAG-CBOR `TransactionBody` bytes |
 | Action | `uint8` presence tag; if `1`, `uint32` byte length + DAG-CBOR `Action` bytes |
 | Action index | `uint8` presence tag; if `1`, `uint64` index, big-endian |
+
+The context encoding version is `2`. Height and timestamp are those of the
+block that carries the transaction. The timestamp is chosen by the miner:
+consensus requires only that it exceed the parent's (and nodes defer blocks
+from their own future), so a miner can place it anywhere between the parent's
+timestamp and the present. Rules that a miner must not be able to shift, such
+as expiry, SHOULD key on height. Transaction preflight, which has no carrying
+block, evaluates policies against the block that would extend the current tip:
+height `tip + 1`, timestamp `max(tip.timestamp + 1, now)`.
 
 ### 7.5 Context-Specific Rules
 

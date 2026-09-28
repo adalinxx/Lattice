@@ -56,12 +56,20 @@ public extension ChainLevel {
             guard let spec = try await specHeader.resolve(fetcher: fetcher).node else {
                 return result(.unavailable, tipCID: tip.cid)
             }
+            // Policies see the block that would carry this transaction next: the
+            // one above the tip, stamped no earlier than now.
+            let nextTimestamp = max(
+                snapshot.timestamp + 1,
+                ValidationContext.current.nowMilliseconds
+            )
             guard spec.isValid,
                   try body.getStateDelta() <= spec.maxStateGrowth,
                   try await TransactionBody.batchVerifyPolicies(
                     bodies: [body],
                     spec: spec,
                     chainPath: context.path,
+                    height: snapshot.tipHeight + 1,
+                    timestamp: nextTimestamp,
                     fetcher: fetcher
                   ) else {
                 return result(.invalid, tipCID: tip.cid)
