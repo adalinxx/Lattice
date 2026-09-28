@@ -14,7 +14,7 @@ import DeterminismGoldens
 /// canonical context encoding), the content ids of the policy modules, and the
 /// real `WasmPolicyEvaluator` verdicts. They are asserted byte-for-byte and run
 /// on BOTH macOS (this XCTest) and Linux (the `lattice-determinism-check`
-/// executable, see `.github/workflows/test.yml`'s `test-linux` lane), so any
+/// executable, see `.github/workflows/ci.yml`'s `test-linux` job), so any
 /// host-dependent divergence in the canonical encoder, the CAS hashing, or the
 /// Wasm execution profile is caught by construction.
 ///

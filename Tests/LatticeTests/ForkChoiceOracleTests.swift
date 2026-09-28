@@ -58,7 +58,7 @@ final class ForkChoiceOracleTests: XCTestCase {
 
     /// §9.1/§9.2: repeated observations of one grind at its location count
     /// once, at the strongest quantity; distinct grinds sum.
-    func testOracleDeduplicatesRepeatedObservationsOfOneGrind() {
+    func testOracleDeduplicatesRepeatedObservationsOfOneGrind() async {
         var oracle = ForkChoiceOracle()
         oracle.apply(block("g", parent: nil, height: 0, work: 1))
         oracle.apply(block("a", parent: "g", height: 1, work: 3))
@@ -73,7 +73,7 @@ final class ForkChoiceOracleTests: XCTestCase {
 
     /// §9.4: equal `trueCumWork` prefers the lexicographically smaller
     /// canonical CID bytes — decided here with the CID library alone.
-    func testOracleBreaksEqualWorkTiesBySmallerCanonicalCIDBytes() throws {
+    func testOracleBreaksEqualWorkTiesBySmallerCanonicalCIDBytes() async throws {
         var oracle = ForkChoiceOracle()
         oracle.apply(block("g", parent: nil, height: 0, work: 1))
         oracle.apply(block("left", parent: "g", height: 1, work: 2))
@@ -89,7 +89,7 @@ final class ForkChoiceOracleTests: XCTestCase {
 
     /// §9.9: an excluded block's work still weighs its ancestors, but the
     /// descent never steps into it — however heavy its subtree grows.
-    func testOracleNeverStepsIntoAnExcludedBlockButStillWeighsIt() throws {
+    func testOracleNeverStepsIntoAnExcludedBlockButStillWeighsIt() async throws {
         var oracle = ForkChoiceOracle()
         oracle.apply(block("g", parent: nil, height: 0, work: 1))
         oracle.apply(block("bad", parent: "g", height: 1, work: 50))
@@ -104,7 +104,7 @@ final class ForkChoiceOracleTests: XCTestCase {
     }
 
     /// §9.4: competing genesis roots are compared by the same rule.
-    func testOracleSelectsTheHeavierGenesisRoot() throws {
+    func testOracleSelectsTheHeavierGenesisRoot() async throws {
         var oracle = ForkChoiceOracle()
         oracle.apply(block("g1", parent: nil, height: 0, work: 1))
         oracle.apply(block("g2", parent: nil, height: 0, work: 1))

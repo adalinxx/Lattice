@@ -52,3 +52,22 @@ jobs:
           awk -v percent="$percent" -v critical_percent="$critical_percent" \
             -v critical_floor="$critical_floor" \
             'BEGIN { exit percent < 90 || critical_percent < 90 || critical_floor < 85 }'
+      - name: Host-determinism goldens
+        run: swift run lattice-determinism-check
+
+  # Linux runs the host-determinism goldens and compiles the tests, but does
+  # not run the suite yet: Swift 6.1 corelibs XCTest casts every test method
+  # to a non-isolated type, so synchronous tests in `@MainActor` classes crash
+  # the runner before any test runs. The full suite joins this job in a
+  # follow-up that makes those tests async.
+  test-linux:
+    runs-on: ubuntu-latest
+    container: swift:6.1-jammy
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift --version
+      - run: swift build
+      - run: swift build --build-tests
+      - name: Host-determinism goldens
+        run: swift run lattice-determinism-check
