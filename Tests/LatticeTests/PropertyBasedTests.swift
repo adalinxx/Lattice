@@ -281,8 +281,14 @@ final class BalanceConservationPropertyTests: XCTestCase {
         let seed = propertySeed()
         var rng = seed.generator()
         let spec = ChainSpec.development
+        // The first halving lands at height halvingInterval - premine; the two
+        // heights around it pay different rewards, so a validator reading the
+        // reward at the wrong height cannot pass.
+        let halving = spec.halvingInterval - spec.premine
+        XCTAssertNotEqual(spec.rewardAtBlock(halving - 1), spec.rewardAtBlock(halving),
+                          "fixture must straddle a halving")
 
-        for blockHeight: UInt64 in [0, 1, 100, 1000] {
+        for blockHeight: UInt64 in [0, 1, 100, 1000, halving - 1, halving] {
             let block = Block(
                 parent: nil,
                 transactions: try HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Transaction>>()),
@@ -391,7 +397,7 @@ final class BalanceConservationPropertyTests: XCTestCase {
 
             let accounts = try await locked.accountState.resolve(fetcher: fetcher)
             let balanceAfter: UInt64 = (try? accounts.node?.get(key: demander)) ?? 0
-            XCTAssertEqual(balanceAfter, balance - amount, "deposit must debit the demander \(seed.note)")
+            XCTAssertEqual(balanceAfter, balance - amount, "the demander's balance must fall by exactly the deposited amount \(seed.note)")
             let depositsAfter = try await locked.depositState.resolve(fetcher: fetcher)
             let lockedAmount: UInt64? = try? depositsAfter.node?.get(key: DepositKey(depositAction: deposit).description)
             XCTAssertEqual(lockedAmount, amount, "deposit must lock the deposited amount \(seed.note)")
