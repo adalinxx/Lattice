@@ -2,10 +2,10 @@ import Lattice
 import UInt256
 import cashew
 import Foundation
-import os
+import Synchronization
 
 final class DemoStore: Fetcher, Storer, VolumeStorer, @unchecked Sendable {
-    private let storage = OSAllocatedUnfairLock<[String: Data]>(initialState: [:])
+    private let storage = Mutex<[String: Data]>([:])
 
     func fetch(rawCid: String) async throws -> Data {
         guard let data = storage.withLock({ $0[rawCid] }) else {
