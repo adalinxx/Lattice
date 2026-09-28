@@ -16,7 +16,9 @@ it does.
 
 Each file is JSON with a top-level `version`, a `spec` reference into
 [`docs/spec.md`](../docs/spec.md), a `description`, and a `vectors` array.
-Every vector has a stable `name`. Hex is lowercase and has no `0x` prefix.
+Every vector has a stable `name`. Hex is lowercase and has no `0x` prefix,
+except the negative vector `message/uppercase-signature-hex`, whose
+signature is uppercase on purpose and must be rejected.
 
 | File | Contents | Spec |
 |---|---|---|
