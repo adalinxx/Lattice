@@ -276,6 +276,8 @@ extension TransactionBody {
         bodies: [TransactionBody],
         spec: ChainSpec,
         chainPath: [String],
+        height: UInt64,
+        timestamp: Int64,
         fetcher: Fetcher,
         scopes: Set<WasmPolicyRef.Scope>? = nil,
         resourceLimits: WasmPolicyResourceLimits = .default
@@ -311,7 +313,8 @@ extension TransactionBody {
             case .transaction:
                 for body in bodies {
                     let context = WasmPolicyContext(
-                        scope: .transaction, chainSpec: spec, chainPath: chainPath,
+                        scope: .transaction, height: height, timestamp: timestamp,
+                        chainSpec: spec, chainPath: chainPath,
                         transaction: body, action: nil, actionIndex: nil
                     )
                     guard try evaluate(policy, context) else { return false }
@@ -320,7 +323,8 @@ extension TransactionBody {
                 for body in bodies {
                     for (actionIndex, action) in body.actions.enumerated() {
                         let context = WasmPolicyContext(
-                            scope: .action, chainSpec: spec, chainPath: chainPath,
+                            scope: .action, height: height, timestamp: timestamp,
+                            chainSpec: spec, chainPath: chainPath,
                             transaction: body, action: action, actionIndex: actionIndex
                         )
                         guard try evaluate(policy, context) else { return false }
