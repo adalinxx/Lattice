@@ -26,13 +26,15 @@ final class ChainSpecPropertyTests: XCTestCase {
             ChainSpec(maxNumberOfTransactionsPerBlock: 1, maxStateGrowth: 1, premine: 0, targetBlockTime: 1, initialReward: 1, halvingInterval: 1, halfLife: 10),
         ]
 
+        let seed = propertySeed()
+        var rng = seed.generator()
         for spec in specs {
             guard spec.isValid else { continue }
             for _ in 0..<100 {
-                let block = UInt64.random(in: 0...10_000_000)
+                let block = UInt64.random(in: 0...10_000_000, using: &rng)
                 let r1 = spec.rewardAtBlock(block)
                 let r2 = spec.rewardAtBlock(block)
-                XCTAssertEqual(r1, r2, "Reward function not deterministic at block \(block)")
+                XCTAssertEqual(r1, r2, "Reward function not deterministic at block \(block) \(seed.note)")
             }
         }
     }
@@ -85,14 +87,16 @@ final class ChainSpecPropertyTests: XCTestCase {
     func testTotalRewardsAdditivity() {
         let spec = ChainSpec(maxNumberOfTransactionsPerBlock: 100, maxStateGrowth: 1000, premine: 0, targetBlockTime: 1000, initialReward: 64, halvingInterval: 500, halfLife: 10)
 
+        let seed = propertySeed()
+        var rng = seed.generator()
         for _ in 0..<50 {
-            let a = UInt64.random(in: 0...1000)
-            let b = UInt64.random(in: 0...1000)
+            let a = UInt64.random(in: 0...1000, using: &rng)
+            let b = UInt64.random(in: 0...1000, using: &rng)
             let totalAB = spec.totalRewards(upToBlock: a + b)
             let totalA = spec.totalRewards(upToBlock: a)
             let partB = (a..<(a + b)).reduce(UInt64(0)) { $0 + spec.rewardAtBlock($1) }
             XCTAssertEqual(totalAB, totalA + partB,
-                           "Additivity failed for a=\(a), b=\(b)")
+                           "Additivity failed for a=\(a), b=\(b) \(seed.note)")
         }
     }
 
@@ -650,4 +654,28 @@ final class BlockStructurePropertyTests: XCTestCase {
         XCTAssertEqual(TRANSACTION_PROPERTIES.count, 1)
     }
 
+}
+
+// MARK: - Seed Replay
+
+final class PropertySeedTests: XCTestCase {
+
+    // Property: a seed replays. Two generators from the same seed yield the
+    // same draws through every stdlib path the seeded properties use, a
+    // different seed yields different draws, and the generator is pinned to
+    // a known answer so a replay agrees across hosts, not only across runs.
+    func testSameSeedReplaysTheSameSequence() {
+        let seed = propertySeed()
+        func draws(_ value: UInt64) -> [UInt64] {
+            var rng = SeededRNG(seed: value)
+            var out = (0..<64).map { _ in rng.next() }
+            out += (0..<64).map { _ in UInt64.random(in: 0...10_000_000, using: &rng) }
+            out += Array(0..<32).shuffled(using: &rng).map(UInt64.init)
+            return out
+        }
+        XCTAssertEqual(draws(seed.value), draws(seed.value), seed.note)
+        XCTAssertNotEqual(draws(seed.value), draws(seed.value &+ 1), seed.note)
+        var zero = SeededRNG(seed: 0)
+        XCTAssertEqual(zero.next(), 0xe220a8397b1dcdaf, "SplitMix64 known answer for seed 0")
+    }
 }
