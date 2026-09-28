@@ -217,6 +217,30 @@ final class TransactionPreflightTests: XCTestCase {
         XCTAssertEqual(rejected.disposition, .invalid)
     }
 
+    func testPolicySeesNextBlockHeight() async throws {
+        // The tip is genesis (height 0), so the carrying block is height 1.
+        for (minimum, expected) in [(Int64(1), TransactionPreflightDisposition.ready), (2, .invalid)] {
+            let fetcher = StorableFetcher()
+            let policy = try await storeWasmPolicy(
+                contextFieldAt: wasmPolicyContextHeightOffset,
+                atLeast: minimum,
+                fetcher: fetcher
+            )
+            let genesis = try await buildAndStoreGenesis(
+                spec: spec(policies: [policy]),
+                timestamp: 1_000,
+                target: easy,
+                fetcher: fetcher
+            )
+            let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
+            let result = await level.preflightTransaction(
+                transaction(signers: [CryptoUtils.generateKeyPair()], nonce: 0),
+                fetcher: fetcher
+            )
+            XCTAssertEqual(result.disposition, expected, "minimum height \(minimum)")
+        }
+    }
+
     func testChildWithdrawalNeedsCandidateParentState() async throws {
         let fetcher = StorableFetcher()
         let signer = CryptoUtils.generateKeyPair()

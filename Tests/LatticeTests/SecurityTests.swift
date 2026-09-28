@@ -810,7 +810,7 @@ final class FilterBypassTests: XCTestCase {
             signers: [], fee: 50, nonce: 1,
             chainPath: ["Nexus"]
         )
-        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [cheapTx], spec: feeSpec, chainPath: ["Nexus"], fetcher: fetcher)
+        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [cheapTx], spec: feeSpec, chainPath: ["Nexus"], height: 1, timestamp: 1, fetcher: fetcher)
         XCTAssertFalse(accepted)
     }
 
@@ -823,7 +823,7 @@ final class FilterBypassTests: XCTestCase {
         )
         let badAction = Action(key: "system/hack", oldValue: nil, newValue: "data")
         let body = TransactionBody(accountActions: [], actions: [badAction], depositActions: [], genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 1, nonce: 0, chainPath: ["Nexus"])
-        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: nsSpec, chainPath: ["Nexus"], fetcher: fetcher)
+        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: nsSpec, chainPath: ["Nexus"], height: 1, timestamp: 1, fetcher: fetcher)
         XCTAssertFalse(accepted)
     }
 
@@ -841,8 +841,8 @@ final class FilterBypassTests: XCTestCase {
             signers: [], fee: 10, nonce: 1,
             chainPath: ["Nexus"]
         )
-        let childAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [cheapTx], spec: childSpec, chainPath: ["Nexus", "Child"], fetcher: fetcher)
-        let parentAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [cheapTx], spec: parentSpec, chainPath: ["Nexus", "Child"], fetcher: fetcher)
+        let childAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [cheapTx], spec: childSpec, chainPath: ["Nexus", "Child"], height: 1, timestamp: 1, fetcher: fetcher)
+        let parentAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [cheapTx], spec: parentSpec, chainPath: ["Nexus", "Child"], height: 1, timestamp: 1, fetcher: fetcher)
         XCTAssertTrue(childAccepted, "Child spec has no policy, so it should not inherit the parent's rejecting policy by consensus")
         XCTAssertFalse(parentAccepted, "Parent policy still rejects when evaluated as the parent's own policy")
     }

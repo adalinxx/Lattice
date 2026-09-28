@@ -578,8 +578,35 @@ final class WasmPolicyTests: XCTestCase {
             halfLife: 10,
             wasmPolicies: [policy]
         )
-        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
+        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], height: 1, timestamp: 1, fetcher: fetcher)
         XCTAssertTrue(accepted)
+    }
+
+    func testTransactionPolicySeesBlockHeightAndTimestamp() async throws {
+        let fetcher = StorableFetcher()
+        let body = TransactionBody(
+            accountActions: [], actions: [], depositActions: [],
+            genesisActions: [],
+            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
+            chainPath: ["Nexus"]
+        )
+        let heightPolicy = try await storeWasmPolicy(
+            contextFieldAt: wasmPolicyContextHeightOffset, atLeast: 5, fetcher: fetcher
+        )
+        let heightSpec = ChainSpec.test(halfLife: 10, wasmPolicies: [heightPolicy])
+        let belowHeight = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: heightSpec, chainPath: ["Nexus"], height: 4, timestamp: 1, fetcher: fetcher)
+        let atHeight = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: heightSpec, chainPath: ["Nexus"], height: 5, timestamp: 1, fetcher: fetcher)
+        XCTAssertFalse(belowHeight)
+        XCTAssertTrue(atHeight)
+
+        let timePolicy = try await storeWasmPolicy(
+            contextFieldAt: wasmPolicyContextTimestampOffset, atLeast: 1_000, fetcher: fetcher
+        )
+        let timeSpec = ChainSpec.test(halfLife: 10, wasmPolicies: [timePolicy])
+        let beforeTime = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: timeSpec, chainPath: ["Nexus"], height: 1, timestamp: 999, fetcher: fetcher)
+        let atTime = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: timeSpec, chainPath: ["Nexus"], height: 1, timestamp: 1_000, fetcher: fetcher)
+        XCTAssertFalse(beforeTime)
+        XCTAssertTrue(atTime)
     }
 
     func testTransactionPolicyRejects() async throws {
@@ -595,7 +622,7 @@ final class WasmPolicyTests: XCTestCase {
             halfLife: 10,
             wasmPolicies: [policy]
         )
-        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
+        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], height: 1, timestamp: 1, fetcher: fetcher)
         XCTAssertFalse(accepted)
     }
 
@@ -618,8 +645,8 @@ final class WasmPolicyTests: XCTestCase {
             halfLife: 10,
             wasmPolicies: [policy]
         )
-        let lowAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [lowFee], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
-        let highAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [highFee], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
+        let lowAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [lowFee], spec: spec, chainPath: ["Nexus"], height: 1, timestamp: 1, fetcher: fetcher)
+        let highAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [highFee], spec: spec, chainPath: ["Nexus"], height: 1, timestamp: 1, fetcher: fetcher)
         XCTAssertFalse(lowAccepted)
         XCTAssertTrue(highAccepted)
     }
@@ -638,13 +665,13 @@ final class WasmPolicyTests: XCTestCase {
             wasmPolicies: [policy]
         )
         let acceptedOnMatchingPath = try await TransactionBody.batchVerifyPolicies(
-            bodies: [body], spec: spec, chainPath: ["Nexus", "policy-chain-sentinel"], fetcher: fetcher
+            bodies: [body], spec: spec, chainPath: ["Nexus", "policy-chain-sentinel"], height: 1, timestamp: 1, fetcher: fetcher
         )
         let rejectedOnDifferentPath = try await TransactionBody.batchVerifyPolicies(
-            bodies: [body], spec: spec, chainPath: ["Nexus", "other-chain"], fetcher: fetcher
+            bodies: [body], spec: spec, chainPath: ["Nexus", "other-chain"], height: 1, timestamp: 1, fetcher: fetcher
         )
         let rejectedOnRootRelativePath = try await TransactionBody.batchVerifyPolicies(
-            bodies: [body], spec: spec, chainPath: ["policy-chain-sentinel"], fetcher: fetcher
+            bodies: [body], spec: spec, chainPath: ["policy-chain-sentinel"], height: 1, timestamp: 1, fetcher: fetcher
         )
         XCTAssertTrue(acceptedOnMatchingPath)
         XCTAssertFalse(rejectedOnDifferentPath)
@@ -665,7 +692,7 @@ final class WasmPolicyTests: XCTestCase {
             halfLife: 10,
             wasmPolicies: [acceptingPolicy, rejectingPolicy]
         )
-        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
+        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], height: 1, timestamp: 1, fetcher: fetcher)
         XCTAssertFalse(accepted)
     }
 
@@ -689,6 +716,8 @@ final class WasmPolicyTests: XCTestCase {
         )
         let context = WasmPolicyContext(
             scope: .transaction,
+            height: 7,
+            timestamp: -1,
             chainSpec: spec,
             chainPath: ["Nexus"],
             transaction: body,
@@ -696,10 +725,12 @@ final class WasmPolicyTests: XCTestCase {
             actionIndex: nil
         )
         let hex = try context.canonicalData().map { String(format: "%02x", $0) }.joined()
-        XCTAssertEqual(hex, "4c5750435458000100010000000100a9677072656d696e65006868616c664c6966650a6c6d6178426c6f636b53697a651a000f42406c7761736d506f6c696369657381a46573636f70656b7472616e73616374696f6e696d6f64756c654349446b626166792d706f6c6963796a61626956657273696f6e016a656e747279706f696e74781c6c6174746963655f76616c69646174655f7472616e73616374696f6e6d696e697469616c5265776172641904006e6d6178537461746547726f7774681a000186a06f68616c76696e67496e74657276616c1927106f746172676574426c6f636b54696d651903e8781f6d61784e756d6265724f665472616e73616374696f6e73506572426c6f636b186400000001000000054e6578757301000000a9aa6366656507656e6f6e63650967616374696f6e7381a2636b65796b6170702f76312f64617461686e657756616c75656576616c7565677369676e6572738165616c69636569636861696e5061746881654e657875736e6163636f756e74416374696f6e73806e6465706f736974416374696f6e73806e67656e65736973416374696f6e73806e72656365697074416374696f6e7380717769746864726177616c416374696f6e73800000")
+        XCTAssertEqual(hex, "4c575043545800020001000000000000000007ffffffffffffffff00000100a9677072656d696e65006868616c664c6966650a6c6d6178426c6f636b53697a651a000f42406c7761736d506f6c696369657381a46573636f70656b7472616e73616374696f6e696d6f64756c654349446b626166792d706f6c6963796a61626956657273696f6e016a656e747279706f696e74781c6c6174746963655f76616c69646174655f7472616e73616374696f6e6d696e697469616c5265776172641904006e6d6178537461746547726f7774681a000186a06f68616c76696e67496e74657276616c1927106f746172676574426c6f636b54696d651903e8781f6d61784e756d6265724f665472616e73616374696f6e73506572426c6f636b186400000001000000054e6578757301000000a9aa6366656507656e6f6e63650967616374696f6e7381a2636b65796b6170702f76312f64617461686e657756616c75656576616c7565677369676e6572738165616c69636569636861696e5061746881654e657875736e6163636f756e74416374696f6e73806e6465706f736974416374696f6e73806e67656e65736973416374696f6e73806e72656365697074416374696f6e7380717769746864726177616c416374696f6e73800000")
 
         let actionContext = WasmPolicyContext(
             scope: .action,
+            height: 7,
+            timestamp: -1,
             chainSpec: spec,
             chainPath: ["Nexus"],
             transaction: body,
@@ -707,7 +738,7 @@ final class WasmPolicyTests: XCTestCase {
             actionIndex: 0
         )
         let actionHex = try actionContext.canonicalData().map { String(format: "%02x", $0) }.joined()
-        XCTAssertEqual(actionHex, "4c5750435458000100010100000100a9677072656d696e65006868616c664c6966650a6c6d6178426c6f636b53697a651a000f42406c7761736d506f6c696369657381a46573636f70656b7472616e73616374696f6e696d6f64756c654349446b626166792d706f6c6963796a61626956657273696f6e016a656e747279706f696e74781c6c6174746963655f76616c69646174655f7472616e73616374696f6e6d696e697469616c5265776172641904006e6d6178537461746547726f7774681a000186a06f68616c76696e67496e74657276616c1927106f746172676574426c6f636b54696d651903e8781f6d61784e756d6265724f665472616e73616374696f6e73506572426c6f636b186400000001000000054e6578757301000000a9aa6366656507656e6f6e63650967616374696f6e7381a2636b65796b6170702f76312f64617461686e657756616c75656576616c7565677369676e6572738165616c69636569636861696e5061746881654e657875736e6163636f756e74416374696f6e73806e6465706f736974416374696f6e73806e67656e65736973416374696f6e73806e72656365697074416374696f6e7380717769746864726177616c416374696f6e73800100000020a2636b65796b6170702f76312f64617461686e657756616c75656576616c7565010000000000000000")
+        XCTAssertEqual(actionHex, "4c575043545800020001010000000000000007ffffffffffffffff00000100a9677072656d696e65006868616c664c6966650a6c6d6178426c6f636b53697a651a000f42406c7761736d506f6c696369657381a46573636f70656b7472616e73616374696f6e696d6f64756c654349446b626166792d706f6c6963796a61626956657273696f6e016a656e747279706f696e74781c6c6174746963655f76616c69646174655f7472616e73616374696f6e6d696e697469616c5265776172641904006e6d6178537461746547726f7774681a000186a06f68616c76696e67496e74657276616c1927106f746172676574426c6f636b54696d651903e8781f6d61784e756d6265724f665472616e73616374696f6e73506572426c6f636b186400000001000000054e6578757301000000a9aa6366656507656e6f6e63650967616374696f6e7381a2636b65796b6170702f76312f64617461686e657756616c75656576616c7565677369676e6572738165616c69636569636861696e5061746881654e657875736e6163636f756e74416374696f6e73806e6465706f736974416374696f6e73806e67656e65736973416374696f6e73806e72656365697074416374696f6e7380717769746864726177616c416374696f6e73800100000020a2636b65796b6170702f76312f64617461686e657756616c75656576616c7565010000000000000000")
     }
 
     func testActionPolicyAccepts() async throws {
@@ -724,7 +755,7 @@ final class WasmPolicyTests: XCTestCase {
             halfLife: 10,
             wasmPolicies: [policy]
         )
-        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
+        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], height: 1, timestamp: 1, fetcher: fetcher)
         XCTAssertTrue(accepted)
     }
 
@@ -739,8 +770,8 @@ final class WasmPolicyTests: XCTestCase {
         )
         let goodBody = TransactionBody(accountActions: [], actions: [goodAction], depositActions: [], genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 1, nonce: 1, chainPath: ["Nexus"])
         let badBody = TransactionBody(accountActions: [], actions: [badAction], depositActions: [], genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 1, nonce: 1, chainPath: ["Nexus"])
-        let goodAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [goodBody], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
-        let badAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [badBody], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
+        let goodAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [goodBody], spec: spec, chainPath: ["Nexus"], height: 1, timestamp: 1, fetcher: fetcher)
+        let badAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [badBody], spec: spec, chainPath: ["Nexus"], height: 1, timestamp: 1, fetcher: fetcher)
         XCTAssertTrue(goodAccepted)
         XCTAssertFalse(badAccepted)
     }
@@ -763,7 +794,7 @@ final class WasmPolicyTests: XCTestCase {
             halfLife: 10,
             wasmPolicies: [policy]
         )
-        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
+        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], height: 1, timestamp: 1, fetcher: fetcher)
         XCTAssertFalse(accepted)
 
         XCTAssertThrowsError(try WasmPolicyEvaluator.validate(
@@ -813,7 +844,7 @@ final class WasmPolicyTests: XCTestCase {
             halfLife: 10,
             wasmPolicies: [policy]
         )
-        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], fetcher: fetcher)
+        let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: spec, chainPath: ["Nexus"], height: 1, timestamp: 1, fetcher: fetcher)
         XCTAssertTrue(accepted)
     }
 
@@ -834,6 +865,7 @@ final class WasmPolicyTests: XCTestCase {
                 bodies: [body],
                 spec: spec,
                 chainPath: ["Nexus"],
+                height: 1, timestamp: 1,
                 fetcher: fetcher
             )
             XCTFail("missing module bytes must remain retriable")
@@ -1103,6 +1135,8 @@ final class WasmPolicyTests: XCTestCase {
         )
         return WasmPolicyContext(
             scope: .transaction,
+            height: 1,
+            timestamp: 1,
             chainSpec: cacheTestSpec(policy: policy),
             chainPath: ["Nexus"],
             transaction: body,
