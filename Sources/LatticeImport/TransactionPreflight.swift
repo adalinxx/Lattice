@@ -58,10 +58,9 @@ public extension ChainLevel {
             }
             // Policies see the block that would carry this transaction next: the
             // one above the tip, stamped no earlier than now.
-            let nextTimestamp = max(
-                snapshot.timestamp + 1,
-                ValidationContext.current.nowMilliseconds
-            )
+            let (afterTip, overflow) = snapshot.timestamp.addingReportingOverflow(1)
+            guard !overflow else { return result(.unavailable, tipCID: tip.cid) }
+            let nextTimestamp = max(afterTip, ValidationContext.current.nowMilliseconds)
             guard spec.isValid,
                   try body.getStateDelta() <= spec.maxStateGrowth,
                   try await TransactionBody.batchVerifyPolicies(
