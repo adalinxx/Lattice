@@ -55,11 +55,7 @@ jobs:
       - name: Host-determinism goldens
         run: swift run lattice-determinism-check
 
-  # Linux runs the host-determinism goldens and compiles the tests, but does
-  # not run the suite yet: Swift 6.1 corelibs XCTest casts every test method
-  # to a non-isolated type, so synchronous tests in `@MainActor` classes crash
-  # the runner before any test runs. The full suite joins this job in a
-  # follow-up that makes those tests async.
+  # Linux runs the full test suite and the host-determinism goldens.
   test-linux:
     runs-on: ubuntu-latest
     container: swift:6.1-jammy
@@ -69,5 +65,6 @@ jobs:
       - run: swift --version
       - run: swift build
       - run: swift build --build-tests
+      - run: swift test
       - name: Host-determinism goldens
         run: swift run lattice-determinism-check

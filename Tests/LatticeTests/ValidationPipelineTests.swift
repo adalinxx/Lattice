@@ -229,7 +229,7 @@ final class BlockBuilderSubmissionTests: XCTestCase {
 @MainActor
 final class SignatureVerificationTests: XCTestCase {
 
-    func testValidSignatureVerifies() {
+    func testValidSignatureVerifies() async {
         let keyPair = CryptoUtils.generateKeyPair()
         let message = "test_message_cid"
         let signature = CryptoUtils.sign(message: message, privateKeyHex: keyPair.privateKey)
@@ -238,14 +238,14 @@ final class SignatureVerificationTests: XCTestCase {
         XCTAssertTrue(valid)
     }
 
-    func testInvalidSignatureRejected() {
+    func testInvalidSignatureRejected() async {
         let keyPair = CryptoUtils.generateKeyPair()
         let message = "test_message_cid"
         let valid = CryptoUtils.verify(message: message, signature: "deadbeef", publicKeyHex: keyPair.publicKey)
         XCTAssertFalse(valid)
     }
 
-    func testWrongKeyRejected() {
+    func testWrongKeyRejected() async {
         let keyPair1 = CryptoUtils.generateKeyPair()
         let keyPair2 = CryptoUtils.generateKeyPair()
         let message = "test_message_cid"
@@ -254,14 +254,14 @@ final class SignatureVerificationTests: XCTestCase {
         XCTAssertFalse(valid)
     }
 
-    func testTamperedMessageRejected() {
+    func testTamperedMessageRejected() async {
         let keyPair = CryptoUtils.generateKeyPair()
         let signature = CryptoUtils.sign(message: "original", privateKeyHex: keyPair.privateKey)!
         let valid = CryptoUtils.verify(message: "tampered", signature: signature, publicKeyHex: keyPair.publicKey)
         XCTAssertFalse(valid)
     }
 
-    func testTransactionSignatureMatching() {
+    func testTransactionSignatureMatching() async {
         let keyPair = CryptoUtils.generateKeyPair()
         let publicKeyCID = try! HeaderImpl<PublicKey>(node: PublicKey(key: keyPair.publicKey)).rawCID
 
@@ -282,7 +282,7 @@ final class SignatureVerificationTests: XCTestCase {
         XCTAssertTrue(tx.signaturesMatchSigners())
     }
 
-    func testTransactionWrongSignerRejected() {
+    func testTransactionWrongSignerRejected() async {
         let keyPair1 = CryptoUtils.generateKeyPair()
         let keyPair2 = CryptoUtils.generateKeyPair()
         let wrongSignerCID = try! HeaderImpl<PublicKey>(node: PublicKey(key: keyPair2.publicKey)).rawCID
@@ -310,7 +310,7 @@ final class SignatureVerificationTests: XCTestCase {
 @MainActor
 final class TransactionNonceScopingTests: XCTestCase {
 
-    func testSameNonceDifferentSignersProduceDifferentKeys() {
+    func testSameNonceDifferentSignersProduceDifferentKeys() async {
         let body1 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
@@ -329,7 +329,7 @@ final class TransactionNonceScopingTests: XCTestCase {
         XCTAssertNotEqual(key1, key2, "Different signers should track nonces under distinct keys")
     }
 
-    func testSameSignerSameNonceProducesSameKey() {
+    func testSameSignerSameNonceProducesSameKey() async {
         let body1 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
@@ -348,7 +348,7 @@ final class TransactionNonceScopingTests: XCTestCase {
         XCTAssertEqual(key1, key2, "Same signer should share a nonce-tracking key")
     }
 
-    func testMultipleSignersOrderIndependent() {
+    func testMultipleSignersOrderIndependent() async {
         let body1 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
@@ -404,7 +404,7 @@ final class BalanceValidationTests: XCTestCase {
 @MainActor
 final class KeyParsingSafetyTests: XCTestCase {
 
-    func testSwapKeyRoundTrip() {
+    func testSwapKeyRoundTrip() async {
         let original = DepositKey(depositAction: DepositAction(nonce: 42, demander: "demander1", amountDemanded: 1000, amountDeposited: 1000))
         let serialized = original.description
         let parsed = DepositKey(serialized)
@@ -414,13 +414,13 @@ final class KeyParsingSafetyTests: XCTestCase {
         XCTAssertEqual(parsed?.amountDemanded, 1000)
     }
 
-    func testSwapKeyMalformedReturnsNil() {
+    func testSwapKeyMalformedReturnsNil() async {
         XCTAssertNil(DepositKey(""))
         XCTAssertNil(DepositKey("onlyone"))
         XCTAssertNil(DepositKey("two/parts"))
     }
 
-    func testSettleKeyRoundTrip() {
+    func testSettleKeyRoundTrip() async {
         let receiptAction = ReceiptAction(withdrawer: "w1", nonce: 99, demander: "d1", amountDemanded: 500, directory: "chain1")
         let original = ReceiptKey(receiptAction: receiptAction)
         let serialized = original.description
@@ -432,7 +432,7 @@ final class KeyParsingSafetyTests: XCTestCase {
         XCTAssertEqual(parsed?.nonce, 99)
     }
 
-    func testSettleKeyMalformedReturnsNil() {
+    func testSettleKeyMalformedReturnsNil() async {
         XCTAssertNil(ReceiptKey(""))
         XCTAssertNil(ReceiptKey("nodirectory"))
         XCTAssertNil(ReceiptKey("dir/demander"))
@@ -445,32 +445,32 @@ final class KeyParsingSafetyTests: XCTestCase {
 @MainActor
 final class CryptoUtilsTests: XCTestCase {
 
-    func testSha256IsDeterministic() {
+    func testSha256IsDeterministic() async {
         let hash1 = CryptoUtils.sha256("hello")
         let hash2 = CryptoUtils.sha256("hello")
         XCTAssertEqual(hash1, hash2)
     }
 
-    func testSha256ProducesNonEmptyOutput() {
+    func testSha256ProducesNonEmptyOutput() async {
         let hash = CryptoUtils.sha256("hello")
         XCTAssertFalse(hash.isEmpty)
         XCTAssertNotEqual(hash, "hello")
     }
 
-    func testCreateAddressIsDeterministic() {
+    func testCreateAddressIsDeterministic() async {
         let keyPair = CryptoUtils.generateKeyPair()
         let addr1 = CryptoUtils.createAddress(from: keyPair.publicKey)
         let addr2 = CryptoUtils.createAddress(from: keyPair.publicKey)
         XCTAssertEqual(addr1, addr2)
     }
 
-    func testCreateAddressIsNonEmpty() {
+    func testCreateAddressIsNonEmpty() async {
         let keyPair = CryptoUtils.generateKeyPair()
         let addr = CryptoUtils.createAddress(from: keyPair.publicKey)
         XCTAssertFalse(addr.isEmpty)
     }
 
-    func testDifferentKeysDifferentAddresses() {
+    func testDifferentKeysDifferentAddresses() async {
         let kp1 = CryptoUtils.generateKeyPair()
         let kp2 = CryptoUtils.generateKeyPair()
         let addr1 = CryptoUtils.createAddress(from: kp1.publicKey)
@@ -478,7 +478,7 @@ final class CryptoUtilsTests: XCTestCase {
         XCTAssertNotEqual(addr1, addr2)
     }
 
-    func testKeyPairGeneration() {
+    func testKeyPairGeneration() async {
         let kp = CryptoUtils.generateKeyPair()
         XCTAssertFalse(kp.privateKey.isEmpty)
         XCTAssertFalse(kp.publicKey.isEmpty)
@@ -543,7 +543,7 @@ final class OutOfOrderSubmissionTests: XCTestCase {
 @MainActor
 final class WasmPolicyTests: XCTestCase {
 
-    func testWasmPolicyExecutionProfileIsPinned() throws {
+    func testWasmPolicyExecutionProfileIsPinned() async throws {
         XCTAssertEqual(WasmPolicyEvaluator.executionFeatureSet, [.referenceTypes])
         XCTAssertFalse(WasmPolicyEvaluator.executionFeatureSet.contains(.memory64))
         XCTAssertFalse(WasmPolicyEvaluator.executionFeatureSet.contains(.threads))
@@ -696,7 +696,7 @@ final class WasmPolicyTests: XCTestCase {
         XCTAssertFalse(accepted)
     }
 
-    func testPolicyContextCanonicalEncodingGolden() throws {
+    func testPolicyContextCanonicalEncodingGolden() async throws {
         let policy = WasmPolicyRef(moduleCID: "bafy-policy", scope: .transaction)
         let spec = ChainSpec.test(
             halfLife: 10,
@@ -872,7 +872,7 @@ final class WasmPolicyTests: XCTestCase {
         } catch WasmPolicyError.missingModule("missing") {}
     }
 
-    func testInvalidAllocatorRejectsWithoutWritingOutOfBounds() throws {
+    func testInvalidAllocatorRejectsWithoutWritingOutOfBounds() async throws {
         let wat = """
         (module
           (memory (export "memory") 1)
@@ -892,7 +892,7 @@ final class WasmPolicyTests: XCTestCase {
         }
     }
 
-    func testNegativeAllocatorPointerRejectsWithoutTrapping() throws {
+    func testNegativeAllocatorPointerRejectsWithoutTrapping() async throws {
         let wat = """
         (module
           (memory (export "memory") 1)
@@ -915,7 +915,7 @@ final class WasmPolicyTests: XCTestCase {
         }
     }
 
-    func testAllocatorPointerDomainFailsClosedWithoutTrapping() throws {
+    func testAllocatorPointerDomainFailsClosedWithoutTrapping() async throws {
         struct AllocCase {
             let name: String
             let pointer: String
@@ -962,7 +962,7 @@ final class WasmPolicyTests: XCTestCase {
         }
     }
 
-    func testEmptyContextWithZeroPageMemoryDoesNotForceUnwrapBaseAddress() throws {
+    func testEmptyContextWithZeroPageMemoryDoesNotForceUnwrapBaseAddress() async throws {
         let policy = WasmPolicyRef(moduleCID: "inline", scope: .transaction)
         let moduleBytes = try allocatorFixture(pointer: "0", memoryPages: 0)
 
@@ -986,7 +986,7 @@ final class WasmPolicyTests: XCTestCase {
         return Data(try wat2wasm(wat))
     }
 
-    func testPolicyPreflightRejectsWrongEntrypointSignature() throws {
+    func testPolicyPreflightRejectsWrongEntrypointSignature() async throws {
         let wat = """
         (module
           (memory (export "memory") 1)
@@ -1008,7 +1008,7 @@ final class WasmPolicyTests: XCTestCase {
         }
     }
 
-    func testPolicyMemoryLimiterRejectsOversizedWithoutCrashing() throws {
+    func testPolicyMemoryLimiterRejectsOversizedWithoutCrashing() async throws {
         // No PROTOCOL memory ceiling, but a NODE-LOCAL resource limiter caps a
         // module's declared initial memory so an oversized module fails as a
         // WasmKit trap (thrown error) rather than OOM-killing the validator.
@@ -1045,7 +1045,7 @@ final class WasmPolicyTests: XCTestCase {
             resourceLimits: WasmPolicyResourceLimits(maxMemoryBytes: 4 * 1024 * 1024)))
     }
 
-    func testPolicyModuleByteBoundRejectsBeforeParseAsUnavailable() throws {
+    func testPolicyModuleByteBoundRejectsBeforeParseAsUnavailable() async throws {
         // A node-local ceiling on the raw module bytes, enforced before the
         // copy/parse (reject, never truncate). Excess is an unavailable verdict,
         // never module invalidity, so nodes with different bounds never disagree
@@ -1075,7 +1075,7 @@ final class WasmPolicyTests: XCTestCase {
             policy: policy, moduleBytes: module))
     }
 
-    func testPolicyModuleWithMemoryGrowIsRejectedAsNondeterministic() throws {
+    func testPolicyModuleWithMemoryGrowIsRejectedAsNondeterministic() async throws {
         // memory.grow returns -1 (not a trap) to the guest when a node-local
         // limiter denies growth, letting a policy branch to different verdicts on
         // nodes with different limits — a consensus fork. It is rejected at scan

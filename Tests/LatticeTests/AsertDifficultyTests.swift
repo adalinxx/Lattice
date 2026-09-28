@@ -29,7 +29,7 @@ final class AsertDifficultyTests: XCTestCase {
     /// `targetBlockTime` should sit still at its anchor's target no matter how
     /// far it has run — that is what "absolutely scheduled" buys, and it is the
     /// property a windowed average only approximates.
-    func testExactlyOnScheduleHoldsTheAnchorTargetAtAnyDepth() {
+    func testExactlyOnScheduleHoldsTheAnchorTargetAtAnyDepth() async {
         let s = spec()
         let anchorTarget = UInt256(1) << 215
         let anchorTime: Int64 = 1_000_000
@@ -50,7 +50,7 @@ final class AsertDifficultyTests: XCTestCase {
     /// Ahead of schedule hardens, behind eases, and one half-life is one
     /// doubling in each direction. The half-life is `halfLife` blocks of
     /// block time.
-    func testOneHalfLifeIsOneDoublingInEitherDirection() {
+    func testOneHalfLifeIsOneDoublingInEitherDirection() async {
         let s = spec(halfLife: 120)
         let anchorTarget = UInt256(1) << 215
         let anchorTime: Int64 = 1_000_000
@@ -120,7 +120,7 @@ final class AsertDifficultyTests: XCTestCase {
     /// time clamps at zero, which makes the drift maximally negative and the
     /// target harder, so clock manipulation costs difficulty rather than
     /// granting it.
-    func testBackwardsTimestampHardensRatherThanEases() {
+    func testBackwardsTimestampHardensRatherThanEases() async {
         let s = spec()
         let anchorTarget = UInt256(1) << 215
         let anchorTime: Int64 = 1_000_000
@@ -140,7 +140,7 @@ final class AsertDifficultyTests: XCTestCase {
 
     /// Adversarial inputs must not trap or wrap: a content-addressed spec and a
     /// block timestamp both arrive from the network.
-    func testExtremeInputsStaySaneAndBounded() {
+    func testExtremeInputsStaySaneAndBounded() async {
         let s = spec()
         let anchorTarget = UInt256(1) << 215
         for (timestamp, height) in [
@@ -159,7 +159,7 @@ final class AsertDifficultyTests: XCTestCase {
     /// A zero-length half-life would divide by zero. A spec is content
     /// addressed and attacker supplied, so the degenerate value has to be inert
     /// rather than fatal.
-    func testZeroHalfLifeIsInertRatherThanFatal() {
+    func testZeroHalfLifeIsInertRatherThanFatal() async {
         let s = spec(halfLife: 0)
         let anchorTarget = UInt256(1) << 200
         XCTAssertEqual(s.halfLifeMilliseconds(), 0)
@@ -337,7 +337,7 @@ final class AsertDifficultyTests: XCTestCase {
     /// at the maximum target is cheap to extend precisely because each of its
     /// blocks is worth almost nothing, so the incentive is neutral rather than
     /// exploitable.
-    func testAnEasierAnchorEarnsProportionallyLessWork() {
+    func testAnEasierAnchorEarnsProportionallyLessWork() async {
         let s = spec()
         let anchorTime: Int64 = 1_000_000
         let height: UInt64 = 200
@@ -374,7 +374,7 @@ final class AsertDifficultyTests: XCTestCase {
     /// That is the ordinary state of a chain just after launch -- genesis
     /// commits the maximum, so block 1 anchors there -- which makes this the
     /// common case, not an edge case.
-    func testNearMaximumAnchorHardensByTheScheduleNotAWholeDoubling() {
+    func testNearMaximumAnchorHardensByTheScheduleNotAWholeDoubling() async {
         let s = spec(targetBlockTime: 3_600_000, halfLife: 120)
         let anchorTime: Int64 = 1_000_000
         // One block, one millisecond after the anchor: 3_599_999 ms ahead of a
@@ -406,7 +406,7 @@ final class AsertDifficultyTests: XCTestCase {
     /// there silently pins every case to the same drift and asserts nothing.
     /// Pinning `elapsed` at zero and walking the height makes the drift exactly
     /// `targetBlockTime * (height - 1)`.
-    func testHardeningFromTheMaximumIsSmoothAcrossFractionsOfAHalfLife() {
+    func testHardeningFromTheMaximumIsSmoothAcrossFractionsOfAHalfLife() async {
         let blockTime: UInt64 = 1_000
         let window: UInt64 = 120
         let s = spec(targetBlockTime: blockTime, halfLife: window)
@@ -506,7 +506,7 @@ final class AsertDifficultyTests: XCTestCase {
     /// not validated, so a forged height-1 block can supply exactly this.
     /// The bound is wall clock on purpose: the defect is unbounded work, and
     /// only a clock can witness that.
-    func testZeroAnchorTargetTerminatesImmediately() {
+    func testZeroAnchorTargetTerminatesImmediately() async {
         // The shortest half-life a valid spec can commit, which is what makes
         // the iteration count enormous: `doublings` is the drift measured in
         // half-lives, so a one-millisecond half-life turns the bounded drift
@@ -532,7 +532,7 @@ final class AsertDifficultyTests: XCTestCase {
     /// enough, or a deep fork off an old block, produces a drift of many
     /// thousands of half-lives; the shift must saturate rather than iterate
     /// once per doubling.
-    func testExtremeDriftSaturatesInBoundedTime() {
+    func testExtremeDriftSaturatesInBoundedTime() async {
         let fast = spec(targetBlockTime: 1, halfLife: 1)
         let started = Date()
         for anchorTarget in [UInt256(1), UInt256(1) << 128, UInt256.max] {
@@ -607,7 +607,7 @@ final class AsertDifficultyTests: XCTestCase {
     /// the timestamp that buys the easiest target instead of reporting the
     /// truth. One sample cannot establish this, so the response is swept
     /// across several half-lives in both directions.
-    func testTargetIsMonotonicInTimestampAcrossTheCurve() {
+    func testTargetIsMonotonicInTimestampAcrossTheCurve() async {
         let s = spec(targetBlockTime: 1_000, halfLife: 120)
         let anchorTarget = UInt256(1) << 200
         let anchorTime: Int64 = 1_000_000

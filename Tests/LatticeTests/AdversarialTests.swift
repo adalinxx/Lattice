@@ -495,7 +495,7 @@ final class CrossChainSecurityTests: XCTestCase {
         }
     }
 
-    func testZeroClaimAmountIsInvalid() {
+    func testZeroClaimAmountIsInvalid() async {
         let c = WithdrawalAction(withdrawer: "r", nonce: 1, demander: "s", amountDemanded: 0, amountWithdrawn: 0)
         XCTAssertEqual(c.amountWithdrawn, 0)
     }
@@ -581,7 +581,7 @@ final class EconomicInvariantAdversarialTests: XCTestCase {
         XCTAssertEqual(balanceAfterPayer + balanceAfterMiner, premine + reward)
     }
 
-    func testHalvingScheduleCorrectness() {
+    func testHalvingScheduleCorrectness() async {
         let s = spec(premine: 0)
         let initial = s.initialReward
         let halvingInterval = s.halvingInterval
@@ -592,7 +592,7 @@ final class EconomicInvariantAdversarialTests: XCTestCase {
         XCTAssertEqual(s.rewardAtBlock(halvingInterval * 2), initial / 4)
     }
 
-    func testHalvingWithPremineOffset() {
+    func testHalvingWithPremineOffset() async {
         let s = spec(premine: 100)
         let initial = s.initialReward
         let halvingInterval = s.halvingInterval
@@ -603,12 +603,12 @@ final class EconomicInvariantAdversarialTests: XCTestCase {
         XCTAssertEqual(s.rewardAtBlock(firstHalving), initial / 2)
     }
 
-    func testPremineAmountCalculation() {
+    func testPremineAmountCalculation() async {
         let s = spec(premine: 1000)
         XCTAssertEqual(s.premineAmount(), 1000 * s.initialReward)
     }
 
-    func testPremineMayEqualOrExceedHalvingInterval() {
+    func testPremineMayEqualOrExceedHalvingInterval() async {
         // The `premine < halvingInterval` cap was removed: premine is a block-count
         // offset into the emission schedule and the reward math handles any size.
         // A premine spanning halving epochs — up to a fully-premined chain — is a
@@ -825,7 +825,7 @@ final class BlockLimitTests: XCTestCase {
         XCTAssertFalse(valid, "Genesis block should exceed 100 byte limit")
     }
 
-    func testChainSpecValidation() {
+    func testChainSpecValidation() async {
         let validSpec = spec()
         XCTAssertTrue(validSpec.isValid)
 
