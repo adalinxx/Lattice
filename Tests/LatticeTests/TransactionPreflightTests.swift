@@ -241,6 +241,38 @@ final class TransactionPreflightTests: XCTestCase {
         }
     }
 
+    func testPolicySeesInjectedValidationTime() async throws {
+        // The tip is genesis at 1_000, so the carrying block is stamped
+        // max(1_001, now). The policy requires at least 3_000: only the
+        // injected clock can decide it, and both clocks sit far below the
+        // wall clock, which would accept either.
+        let cases: [(now: Int64, expected: TransactionPreflightDisposition)] = [
+            (3_000, .ready),
+            (2_999, .invalid),
+        ]
+        for (now, expected) in cases {
+            let fetcher = StorableFetcher()
+            let policy = try await storeWasmPolicy(
+                contextFieldAt: wasmPolicyContextTimestampOffset,
+                atLeast: 3_000,
+                fetcher: fetcher
+            )
+            let genesis = try await buildAndStoreGenesis(
+                spec: spec(policies: [policy]),
+                timestamp: 1_000,
+                target: easy,
+                fetcher: fetcher
+            )
+            let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
+            let result = await level.preflightTransaction(
+                transaction(signers: [CryptoUtils.generateKeyPair()], nonce: 0),
+                fetcher: fetcher,
+                validationContext: ValidationContext(nowMilliseconds: now)
+            )
+            XCTAssertEqual(result.disposition, expected, "now \(now)")
+        }
+    }
+
     func testChildWithdrawalNeedsCandidateParentState() async throws {
         let fetcher = StorableFetcher()
         let signer = CryptoUtils.generateKeyPair()

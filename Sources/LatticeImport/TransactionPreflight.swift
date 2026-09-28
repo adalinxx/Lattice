@@ -24,7 +24,8 @@ public extension ChainLevel {
     func preflightTransaction(
         _ transaction: Transaction,
         parentState: LatticeStateHeader? = nil,
-        fetcher: any Fetcher
+        fetcher: any Fetcher,
+        validationContext: ValidationContext = .current
     ) async -> TransactionPreflightResult {
         let tip = await chain.transactionPreflightTip()
         guard let snapshot = tip.snapshot else {
@@ -60,7 +61,7 @@ public extension ChainLevel {
             // one above the tip, stamped no earlier than now.
             let (afterTip, overflow) = snapshot.timestamp.addingReportingOverflow(1)
             guard !overflow else { return result(.unavailable, tipCID: tip.cid) }
-            let nextTimestamp = max(afterTip, ValidationContext.current.nowMilliseconds)
+            let nextTimestamp = max(afterTip, validationContext.nowMilliseconds)
             guard spec.isValid,
                   try body.getStateDelta() <= spec.maxStateGrowth,
                   try await TransactionBody.batchVerifyPolicies(
