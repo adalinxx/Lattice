@@ -146,7 +146,7 @@ final class SerializationPinningTests: XCTestCase {
         )
     }
 
-    func testTransactionDictionaryCommitsEveryInput() throws {
+    func testTransactionDictionaryCommitsEveryInput() async throws {
         let body = TransactionBody(
             accountActions: [],
             actions: [],

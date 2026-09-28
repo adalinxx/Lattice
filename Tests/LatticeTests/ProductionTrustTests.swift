@@ -255,19 +255,19 @@ final class ChildGenesisValidationTests: XCTestCase {
         )
     }
 
-    func testGenesisActionAcceptsWellFormedAnchor() {
+    func testGenesisActionAcceptsWellFormedAnchor() async {
         XCTAssertTrue(bodyAnchoring(
             directory: "Child",
             blockCID: testCID("child")
         ).genesisActionsAreValid())
     }
 
-    func testGenesisActionRejectsEmptyDirectoryOrCID() {
+    func testGenesisActionRejectsEmptyDirectoryOrCID() async {
         XCTAssertFalse(bodyAnchoring(directory: "", blockCID: testCID("child")).genesisActionsAreValid())
         XCTAssertFalse(bodyAnchoring(directory: "Child", blockCID: "").genesisActionsAreValid())
     }
 
-    func testGenesisActionNormalizesChildCID() {
+    func testGenesisActionNormalizesChildCID() async {
         let alternateCID =
             "f01711220e9eb6c60800df90fc8e237ed53246f396e87579aba406aaa7976a056859ee22d"
         XCTAssertNotNil(CIDIdentity.canonicalString(alternateCID))
@@ -277,7 +277,7 @@ final class ChildGenesisValidationTests: XCTestCase {
         ).genesisActionsAreValid())
     }
 
-    func testGenesisActionEnforcesProofWireDirectoryAndDepthBounds() {
+    func testGenesisActionEnforcesProofWireDirectoryAndDepthBounds() async {
         let cid = testCID("child")
         let maximumDirectory = String(
             repeating: "x",
@@ -310,7 +310,7 @@ final class ChildGenesisValidationTests: XCTestCase {
         ).genesisActionsAreValid())
     }
 
-    func testGenesisActionRejectsDirectoryWithKeySeparator() {
+    func testGenesisActionRejectsDirectoryWithKeySeparator() async {
         // A "/" in the directory would break ReceiptKey injectivity (two distinct
         // (directory, demander) pairs could encode to the same receipt key), so it
         // must be rejected at anchor creation — the single entry for directory names.
@@ -567,13 +567,13 @@ final class DustAttackTests: XCTestCase {
 @MainActor
 final class SupplyOverflowTests: XCTestCase {
 
-    func testPremineDoesNotOverflowUInt64() {
+    func testPremineDoesNotOverflowUInt64() async {
         let spec = s()
         let (_, overflow) = spec.premine.multipliedReportingOverflow(by: spec.initialReward)
         XCTAssertFalse(overflow)
     }
 
-    func testRewardNeverOverflowsAtAnyBlock() {
+    func testRewardNeverOverflowsAtAnyBlock() async {
         let spec = s()
         let interval = spec.halvingInterval
         let samplePoints: [UInt64] = (0..<30).map { UInt64($0) * (interval / 10) }
@@ -583,7 +583,7 @@ final class SupplyOverflowTests: XCTestCase {
         }
     }
 
-    func testTotalRewardsMonotonicallyIncreases() {
+    func testTotalRewardsMonotonicallyIncreases() async {
         let spec = s(premine: 0)
         var prev: UInt64 = 0
         for count: UInt64 in stride(from: 100, through: 10000, by: 100) {
