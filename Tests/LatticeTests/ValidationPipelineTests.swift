@@ -273,7 +273,6 @@ final class SignatureVerificationTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [publicKeyCID],
-            fee: 0,
             nonce: 1,
             chainPath: ["Nexus"]
         )
@@ -295,7 +294,6 @@ final class SignatureVerificationTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [wrongSignerCID],
-            fee: 0,
             nonce: 1,
             chainPath: ["Nexus"]
         )
@@ -314,13 +312,13 @@ final class TransactionNonceScopingTests: XCTestCase {
         let body1 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["alice"], fee: 0, nonce: 42,
+            receiptActions: [], withdrawalActions: [], signers: ["alice"], nonce: 42,
             chainPath: ["Nexus"]
         )
         let body2 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["bob"], fee: 0, nonce: 42,
+            receiptActions: [], withdrawalActions: [], signers: ["bob"], nonce: 42,
             chainPath: ["Nexus"]
         )
 
@@ -333,13 +331,13 @@ final class TransactionNonceScopingTests: XCTestCase {
         let body1 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["alice"], fee: 0, nonce: 42,
+            receiptActions: [], withdrawalActions: [], signers: ["alice"], nonce: 42,
             chainPath: ["Nexus"]
         )
         let body2 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["alice"], fee: 0, nonce: 42,
+            receiptActions: [], withdrawalActions: [], signers: ["alice"], nonce: 42,
             chainPath: ["Nexus"]
         )
 
@@ -352,13 +350,13 @@ final class TransactionNonceScopingTests: XCTestCase {
         let body1 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["alice", "bob"], fee: 0, nonce: 1,
+            receiptActions: [], withdrawalActions: [], signers: ["alice", "bob"], nonce: 1,
             chainPath: ["Nexus"]
         )
         let body2 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["bob", "alice"], fee: 0, nonce: 1,
+            receiptActions: [], withdrawalActions: [], signers: ["bob", "alice"], nonce: 1,
             chainPath: ["Nexus"]
         )
 
@@ -571,7 +569,7 @@ final class WasmPolicyTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
+            receiptActions: [], withdrawalActions: [], signers: [], nonce: 1,
             chainPath: ["Nexus"]
         )
         let spec = ChainSpec.test(
@@ -587,7 +585,7 @@ final class WasmPolicyTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
+            receiptActions: [], withdrawalActions: [], signers: [], nonce: 1,
             chainPath: ["Nexus"]
         )
         let heightPolicy = try await storeWasmPolicy(
@@ -615,7 +613,7 @@ final class WasmPolicyTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
+            receiptActions: [], withdrawalActions: [], signers: [], nonce: 1,
             chainPath: ["Nexus"]
         )
         let spec = ChainSpec.test(
@@ -632,13 +630,13 @@ final class WasmPolicyTests: XCTestCase {
         let lowFee = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["low-signer"], fee: 5, nonce: 1,
+            receiptActions: [], withdrawalActions: [], signers: ["low-signer"], nonce: 1,
             chainPath: ["Nexus"]
         )
         let highFee = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["high-signer"], fee: 100, nonce: 1,
+            receiptActions: [], withdrawalActions: [], signers: ["high-signer"], nonce: 1,
             chainPath: ["Nexus"]
         )
         let spec = ChainSpec.test(
@@ -657,7 +655,7 @@ final class WasmPolicyTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
+            receiptActions: [], withdrawalActions: [], signers: [], nonce: 1,
             chainPath: ["Nexus"]
         )
         let spec = ChainSpec.test(
@@ -685,7 +683,7 @@ final class WasmPolicyTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
+            receiptActions: [], withdrawalActions: [], signers: [], nonce: 1,
             chainPath: ["Nexus"]
         )
         let spec = ChainSpec.test(
@@ -710,7 +708,6 @@ final class WasmPolicyTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: ["alice"],
-            fee: 7,
             nonce: 9,
             chainPath: ["Nexus"]
         )
@@ -725,7 +722,7 @@ final class WasmPolicyTests: XCTestCase {
             actionIndex: nil
         )
         let hex = try context.canonicalData().map { String(format: "%02x", $0) }.joined()
-        XCTAssertEqual(hex, "4c575043545800020001000000000000000007ffffffffffffffff00000100a9677072656d696e65006868616c664c6966650a6c6d6178426c6f636b53697a651a000f42406c7761736d506f6c696369657381a46573636f70656b7472616e73616374696f6e696d6f64756c654349446b626166792d706f6c6963796a61626956657273696f6e016a656e747279706f696e74781c6c6174746963655f76616c69646174655f7472616e73616374696f6e6d696e697469616c5265776172641904006e6d6178537461746547726f7774681a000186a06f68616c76696e67496e74657276616c1927106f746172676574426c6f636b54696d651903e8781f6d61784e756d6265724f665472616e73616374696f6e73506572426c6f636b186400000001000000054e6578757301000000a9aa6366656507656e6f6e63650967616374696f6e7381a2636b65796b6170702f76312f64617461686e657756616c75656576616c7565677369676e6572738165616c69636569636861696e5061746881654e657875736e6163636f756e74416374696f6e73806e6465706f736974416374696f6e73806e67656e65736973416374696f6e73806e72656365697074416374696f6e7380717769746864726177616c416374696f6e73800000")
+        XCTAssertEqual(hex, "4c575043545800020001000000000000000007ffffffffffffffff00000100a9677072656d696e65006868616c664c6966650a6c6d6178426c6f636b53697a651a000f42406c7761736d506f6c696369657381a46573636f70656b7472616e73616374696f6e696d6f64756c654349446b626166792d706f6c6963796a61626956657273696f6e016a656e747279706f696e74781c6c6174746963655f76616c69646174655f7472616e73616374696f6e6d696e697469616c5265776172641904006e6d6178537461746547726f7774681a000186a06f68616c76696e67496e74657276616c1927106f746172676574426c6f636b54696d651903e8781f6d61784e756d6265724f665472616e73616374696f6e73506572426c6f636b186400000001000000054e6578757301000000a4a9656e6f6e63650967616374696f6e7381a2636b65796b6170702f76312f64617461686e657756616c75656576616c7565677369676e6572738165616c69636569636861696e5061746881654e657875736e6163636f756e74416374696f6e73806e6465706f736974416374696f6e73806e67656e65736973416374696f6e73806e72656365697074416374696f6e7380717769746864726177616c416374696f6e73800000")
 
         let actionContext = WasmPolicyContext(
             scope: .action,
@@ -738,7 +735,7 @@ final class WasmPolicyTests: XCTestCase {
             actionIndex: 0
         )
         let actionHex = try actionContext.canonicalData().map { String(format: "%02x", $0) }.joined()
-        XCTAssertEqual(actionHex, "4c575043545800020001010000000000000007ffffffffffffffff00000100a9677072656d696e65006868616c664c6966650a6c6d6178426c6f636b53697a651a000f42406c7761736d506f6c696369657381a46573636f70656b7472616e73616374696f6e696d6f64756c654349446b626166792d706f6c6963796a61626956657273696f6e016a656e747279706f696e74781c6c6174746963655f76616c69646174655f7472616e73616374696f6e6d696e697469616c5265776172641904006e6d6178537461746547726f7774681a000186a06f68616c76696e67496e74657276616c1927106f746172676574426c6f636b54696d651903e8781f6d61784e756d6265724f665472616e73616374696f6e73506572426c6f636b186400000001000000054e6578757301000000a9aa6366656507656e6f6e63650967616374696f6e7381a2636b65796b6170702f76312f64617461686e657756616c75656576616c7565677369676e6572738165616c69636569636861696e5061746881654e657875736e6163636f756e74416374696f6e73806e6465706f736974416374696f6e73806e67656e65736973416374696f6e73806e72656365697074416374696f6e7380717769746864726177616c416374696f6e73800100000020a2636b65796b6170702f76312f64617461686e657756616c75656576616c7565010000000000000000")
+        XCTAssertEqual(actionHex, "4c575043545800020001010000000000000007ffffffffffffffff00000100a9677072656d696e65006868616c664c6966650a6c6d6178426c6f636b53697a651a000f42406c7761736d506f6c696369657381a46573636f70656b7472616e73616374696f6e696d6f64756c654349446b626166792d706f6c6963796a61626956657273696f6e016a656e747279706f696e74781c6c6174746963655f76616c69646174655f7472616e73616374696f6e6d696e697469616c5265776172641904006e6d6178537461746547726f7774681a000186a06f68616c76696e67496e74657276616c1927106f746172676574426c6f636b54696d651903e8781f6d61784e756d6265724f665472616e73616374696f6e73506572426c6f636b186400000001000000054e6578757301000000a4a9656e6f6e63650967616374696f6e7381a2636b65796b6170702f76312f64617461686e657756616c75656576616c7565677369676e6572738165616c69636569636861696e5061746881654e657875736e6163636f756e74416374696f6e73806e6465706f736974416374696f6e73806e67656e65736973416374696f6e73806e72656365697074416374696f6e7380717769746864726177616c416374696f6e73800100000020a2636b65796b6170702f76312f64617461686e657756616c75656576616c7565010000000000000000")
     }
 
     func testActionPolicyAccepts() async throws {
@@ -748,7 +745,7 @@ final class WasmPolicyTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [action], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], fee: 0, nonce: 1,
+            receiptActions: [], withdrawalActions: [], signers: [], nonce: 1,
             chainPath: ["Nexus"]
         )
         let spec = ChainSpec.test(
@@ -768,8 +765,8 @@ final class WasmPolicyTests: XCTestCase {
             halfLife: 10,
             wasmPolicies: [policy]
         )
-        let goodBody = TransactionBody(accountActions: [], actions: [goodAction], depositActions: [], genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 1, nonce: 1, chainPath: ["Nexus"])
-        let badBody = TransactionBody(accountActions: [], actions: [badAction], depositActions: [], genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 1, nonce: 1, chainPath: ["Nexus"])
+        let goodBody = TransactionBody(accountActions: [], actions: [goodAction], depositActions: [], genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], nonce: 1, chainPath: ["Nexus"])
+        let badBody = TransactionBody(accountActions: [], actions: [badAction], depositActions: [], genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], nonce: 1, chainPath: ["Nexus"])
         let goodAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [goodBody], spec: spec, chainPath: ["Nexus"], height: 1, timestamp: 1, fetcher: fetcher)
         let badAccepted = try await TransactionBody.batchVerifyPolicies(bodies: [badBody], spec: spec, chainPath: ["Nexus"], height: 1, timestamp: 1, fetcher: fetcher)
         XCTAssertTrue(goodAccepted)
@@ -787,7 +784,7 @@ final class WasmPolicyTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
+            receiptActions: [], withdrawalActions: [], signers: [], nonce: 1,
             chainPath: ["Nexus"]
         )
         let spec = ChainSpec.test(
@@ -837,7 +834,7 @@ final class WasmPolicyTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
+            receiptActions: [], withdrawalActions: [], signers: [], nonce: 1,
             chainPath: ["Nexus"]
         )
         let spec = ChainSpec.test(
@@ -857,7 +854,7 @@ final class WasmPolicyTests: XCTestCase {
         )
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], fee: 5, nonce: 1,
+            genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], nonce: 1,
             chainPath: ["Nexus"]
         )
         do {
@@ -1130,7 +1127,7 @@ final class WasmPolicyTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], fee: 100, nonce: 1,
+            receiptActions: [], withdrawalActions: [], signers: [], nonce: 1,
             chainPath: ["Nexus"]
         )
         return WasmPolicyContext(

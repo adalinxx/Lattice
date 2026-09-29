@@ -39,7 +39,6 @@ final class TransactionPreflightTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: withdrawalActions,
             signers: addresses,
-            fee: 0,
             nonce: nonce,
             chainPath: chainPath
         )

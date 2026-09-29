@@ -56,9 +56,13 @@ B = (
     children:         CID(ChildIndex),            // directory -> CID(Block), one node
     height:           uint64,
     timestamp:        int64,
+    rewardRecipient:  CID(PublicKey) | nil,       // omitted from the encoding when nil
     nonce:            uint64
 )
 ```
+
+`rewardRecipient` is the account credited with the block's coinbase (reward
+plus fees, section 8.2). `nil` burns that amount.
 
 ### 3.2 Transaction
 
@@ -80,7 +84,6 @@ TransactionBody = (
     receiptActions:     [ReceiptAction],
     withdrawalActions:  [WithdrawalAction],
     signers:            [CID(PublicKey)],
-    fee:                uint64,
     nonce:              uint64,
     chainPath:          [string]
 )
@@ -255,7 +258,8 @@ A genesis block `B` is valid if and only if ALL of the following hold:
 3. `B.timestamp <= validationContext.now`, where the import attempt captures
    `validationContext.now` once (node-local, retriable import — a future
    timestamp is deferred until real time reaches it, not permanently rejected)
-4. `B.prevState == CID(emptyState())`
+4. `B.prevState == CID(emptyState())` and `B.rewardRecipient == nil` (a
+   genesis mints only its premine; there is no reward to pay)
 5. `B.nextTarget == B.target`, and the target `B` commits is actually met — the
    same inclusive `hash <= target` rule every block obeys, evaluated against the
    hash that secures `B` at its own level (per §5.4 and §9.5):
@@ -330,12 +334,16 @@ A non-genesis nexus block `B` with previous block `P` is valid if and only if:
 8. The chain's policies pass
 9. Transaction count within limits
 10. State delta within limits
-11. **Balance conservation (non-genesis)**:
+11. **Fee rule and coinbase (non-genesis)**, section 8.2:
     ```
-    totalCredits + totalDeposited <= totalDebits + reward(B.height) + totalWithdrawn
+    totalCredits + totalDeposited <= totalDebits + totalWithdrawn
     ```
+    and, when `B.rewardRecipient` is set, it is a canonical address and the
+    coinbase amount `M` fits a positive `int64` delta
 12. All genesis actions valid
-13. Post-state correctness
+13. Post-state correctness: the transactions' actions, plus the coinbase credit
+    of exactly `M` to `B.rewardRecipient` when it is set and `M > 0`, applied to
+    `prevState` produce `postState`
 
 **Nexus validation does not validate child blocks.** The `children` field is
 committed by the root hash, but every child is validated by its own chain
@@ -430,12 +438,16 @@ powPrefix(B) =
     rawCID(B.postState)      || 0x00 ||
     rawCID(B.children)       || 0x00 ||
     decimal(B.height)        || 0x00 ||
-    decimal(B.timestamp)     || 0x00
+    decimal(B.timestamp)     || 0x00 ||
+    B.rewardRecipient?       || 0x00
 
 proofOfWorkHash(B) = U256(SHA256(powPrefix(B) || uint64BE(B.nonce)))
 ```
 
-The absent genesis predecessor contributes the empty field between separators.
+The absent genesis predecessor, and an absent `rewardRecipient`, contribute the
+empty field between separators. A present recipient is a canonical address, so
+it can never be empty. Binding the recipient here, not only through the block
+CID, is what stops a relayer from swapping it while keeping the nonce.
 
 For a nested tree, only the outer root's hash `h` is evaluated:
 
@@ -811,10 +823,12 @@ payment and receipt-state insertion still execute.
 
 ### 8.2 Balance Conservation with Cross-Chain Transfers
 
-For any block at index `i`:
+For any non-genesis block at index `i`, over its transactions' actions:
 
 ```
-totalCredits + totalDeposited <= totalDebits + reward(i) + totalWithdrawn
+fee rule:      totalCredits + totalDeposited <= totalDebits + totalWithdrawn
+fees:          F = totalDebits + totalWithdrawn - totalCredits - totalDeposited
+coinbase:      M = reward(i) + F
 ```
 
 Where:
@@ -823,18 +837,33 @@ Where:
 - `totalDeposited` = sum of all `DepositAction.amountDeposited` values
 - `totalWithdrawn` = sum of all `WithdrawalAction.amountWithdrawn` values
 
-The transaction `fee` does not independently expand this budget. A block may
-claim at most the credits funded by its actual account debits, withdrawals, and
-subsidy. Any unused budget is unclaimed and therefore burned; the block subsidy
-`reward(i)` remains the only minting source.
+Sums are exact (no wrap). Every account action is nonzero and not `int64.min`.
+The block reward funds no transaction: a transaction set that creates value is
+invalid.
 
-Deposits reduce the block-wide available budget by locking value in deposit
-state. Withdrawals add the matching locked value back to that budget; explicit
-account actions determine any credited recipients.
+If `B.rewardRecipient` is `nil`, `M` is burned. Otherwise the recipient MUST be
+a canonical address, and the post-state MUST credit it exactly `M` (nothing when
+`M == 0`); `M > int64.max` makes the block invalid. The credit is applied with
+the transactions' account actions, so a recipient that is also a payer nets
+through one balance. There is no under-claim: the only way to burn is a `nil`
+recipient.
+
+A recipient without an account is created by the credit. That insertion is not
+counted against `maxStateGrowth` (account updates count 0, section 6), so a
+block adds at most one such uncounted account beyond its transactions'.
+
+Deposits lock value in deposit state and so reduce `F`. Withdrawals return the
+matching locked value and so add to `F`; explicit account actions determine any
+credited recipients.
+
+Per block, supply changes by exactly
+`(reward(i) if B.rewardRecipient is set, else 0) + totalWithdrawn - totalDeposited`
+(counting deposit state as locked, not spendable, supply). Fees move from payers
+to the recipient; receipts net to zero.
 
 ### 8.3 Security Properties
 
-**No value creation**: The balance equation guarantees that credits cannot exceed debits plus block reward plus net withdrawal flow.
+**No value creation**: The fee rule guarantees that transaction credits cannot exceed debits plus net withdrawal flow; the only new value is the block reward, paid to `rewardRecipient`.
 
 **No double-deposit**: Deposit keys are unique in deposit state (insertion proof prevents duplicate deposits with the same nonce/demander/amount).
 
@@ -1317,16 +1346,16 @@ B[i].postState == B[i+1].prevState
 
 ### 12.2 Balance Conservation
 
-For any valid block, value is conserved as a **non-creation bound**:
+For any valid non-genesis block (section 8.2):
 
 ```
-totalCredits + totalDeposited <= totalDebits + reward + totalWithdrawn
+totalCredits + totalDeposited <= totalDebits + totalWithdrawn
+coinbase credit to rewardRecipient == reward + fees   (none when nil: burned)
 ```
 
-No credits may exceed the available budget. Unclaimed budget is burned; the block
-subsidy `reward` is the only minting source. A declared transaction fee does not
-independently create spendable budget. Deposits lock balance (move it into deposit
-state); withdrawals return it to the block-wide credit budget.
+The block subsidy `reward` is the only minting source, and only a set
+`rewardRecipient` receives it. Deposits lock balance (move it into deposit
+state); withdrawals return it.
 
 ### 12.3 Consensus Invariants
 

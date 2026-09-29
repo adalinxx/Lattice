@@ -21,7 +21,6 @@ final class BlockContentResolverTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: ["alice"],
-            fee: 0,
             nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -76,12 +75,11 @@ final class BlockContentResolverTests: XCTestCase {
             receiptActions: [receipt],
             withdrawalActions: [withdrawal],
             signers: [],
-            fee: 0,
             nonce: 0,
             chainPath: ["Nexus", "Child"]
         )
 
-        let paths = Block.validationPaths(transactionBodies: [body])
+        let paths = Block.validationPaths(transactionBodies: [body], rewardRecipient: nil)
         XCTAssertEqual(
             paths[[
                 PREV_STATE_PROPERTY,
@@ -126,7 +124,6 @@ final class BlockContentResolverTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: ["alice"],
-            fee: 0,
             nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -197,7 +194,6 @@ final class BlockContentResolverTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: ["alice"],
-            fee: 0,
             nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -551,7 +547,6 @@ private func contentTransaction(nonce: UInt64, payloadBytes: Int) -> Transaction
         receiptActions: [],
         withdrawalActions: [],
         signers: [],
-        fee: 0,
         nonce: nonce,
         chainPath: ["Nexus"]
     )
@@ -574,7 +569,6 @@ private func stateContentTransaction(payloadBytes: Int) -> Transaction {
         receiptActions: [],
         withdrawalActions: [],
         signers: [],
-        fee: 0,
         nonce: 0,
         chainPath: ["Nexus"]
     )

@@ -274,37 +274,28 @@ final class ForkChoicePropertyTests: XCTestCase {
 
 final class BalanceConservationPropertyTests: XCTestCase {
 
-    // Property: the block validator accepts an action set whose credits fit
-    // within debits + reward + withdrawals - deposits, and rejects the same set
-    // once it mints one unit more than that budget.
+    // Property: the coinbase rule accepts an action set whose credits plus
+    // deposits fit within debits plus withdrawals — the reward funds nothing —
+    // pays the recipient exactly reward + the unspent surplus, and rejects the
+    // same set once it mints one unit more than that budget.
     func testBalanceConservationInequality() throws {
         let seed = propertySeed()
         var rng = seed.generator()
         let spec = ChainSpec.development
         // The first halving lands at height halvingInterval - premine; the two
-        // heights around it pay different rewards, so a validator reading the
+        // heights around it pay different rewards, so a rule reading the
         // reward at the wrong height cannot pass.
         let halving = spec.halvingInterval - spec.premine
         XCTAssertNotEqual(spec.rewardAtBlock(halving - 1), spec.rewardAtBlock(halving),
                           "fixture must straddle a halving")
+        let recipientAddress = CryptoUtils.createAddress(from: CryptoUtils.generateKeyPair().publicKey)
 
-        for blockHeight: UInt64 in [0, 1, 100, 1000, halving - 1, halving] {
-            let block = Block(
-                parent: nil,
-                transactions: try HeaderImpl(node: MerkleDictionaryImpl<VolumeImpl<Transaction>>()),
-                target: UInt256(1000), nextTarget: UInt256(1000),
-                spec: try VolumeImpl<ChainSpec>(node: spec),
-                parentState: try LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
-                prevState: try LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
-                postState: try LatticeStateHeader(node: LatticeState.emptyState()),
-                children: try HeaderImpl(node: ChildIndex()),
-                height: blockHeight, timestamp: 1_000_000, nonce: 0
-            )
+        for blockHeight: UInt64 in [1, 100, 1000, halving - 1, halving] {
             let reward = spec.rewardAtBlock(blockHeight)
 
             for _ in 0..<50 {
                 var accountActions: [AccountAction] = []
-                var budget = reward
+                var budget: UInt64 = 0
                 for i in 0..<Int.random(in: 0...5, using: &rng) {
                     let debit = UInt64.random(in: 1...10_000, using: &rng)
                     accountActions.append(AccountAction(owner: "sender_\(i)", delta: -Int64(debit)))
@@ -330,7 +321,7 @@ final class BalanceConservationPropertyTests: XCTestCase {
                     budget -= amount
                 }
                 // Spend the whole budget half the time, so the boundary is exercised.
-                var unspent = Bool.random(using: &rng) ? budget : UInt64.random(in: 0...budget, using: &rng)
+                var unspent = Bool.random(using: &rng) ? 0 : UInt64.random(in: 0...budget, using: &rng)
                 let spend = budget - unspent
                 var remaining = spend
                 var recipient = 0
@@ -341,21 +332,28 @@ final class BalanceConservationPropertyTests: XCTestCase {
                     recipient += 1
                 }
 
-                XCTAssertTrue(
-                    try block.validateBalanceChanges(
-                        spec: spec, allDepositActions: deposits,
-                        allWithdrawalActions: withdrawals, allAccountActions: accountActions
-                    ),
-                    "credits \(spend) within budget \(budget) must validate at height \(blockHeight) \(seed.note)"
+                let credit = Block.coinbaseCredit(
+                    spec: spec, height: blockHeight, recipient: recipientAddress,
+                    accountActions: accountActions, depositActions: deposits,
+                    withdrawalActions: withdrawals
                 )
+                guard case .success(let action?) = credit else {
+                    XCTFail("credits \(spend) within budget \(budget) must validate at height \(blockHeight) \(seed.note)")
+                    continue
+                }
+                XCTAssertEqual(action.owner, recipientAddress)
+                XCTAssertEqual(action.delta, Int64(reward + unspent),
+                               "recipient earns reward + fees at height \(blockHeight) \(seed.note)")
 
                 unspent += 1
                 let minting = accountActions + [AccountAction(owner: "minter", delta: Int64(unspent))]
-                XCTAssertFalse(
-                    try block.validateBalanceChanges(
-                        spec: spec, allDepositActions: deposits,
-                        allWithdrawalActions: withdrawals, allAccountActions: minting
-                    ),
+                XCTAssertEqual(
+                    coinbaseFailure(Block.coinbaseCredit(
+                        spec: spec, height: blockHeight, recipient: recipientAddress,
+                        accountActions: minting, depositActions: deposits,
+                        withdrawalActions: withdrawals
+                    )),
+                    .feeRuleViolated,
                     "credits \(budget + 1) over budget \(budget) must be rejected at height \(blockHeight) \(seed.note)"
                 )
             }
@@ -438,7 +436,6 @@ final class BalanceConservationPropertyTests: XCTestCase {
                 receiptActions: [],
                 withdrawalActions: [],
                 signers: [],
-                fee: 0,
                 nonce: 0,
                 chainPath: ["Nexus"]
             )
@@ -453,7 +450,6 @@ final class BalanceConservationPropertyTests: XCTestCase {
                 receiptActions: [],
                 withdrawalActions: [],
                 signers: [owner],
-                fee: 0,
                 nonce: 0,
                 chainPath: ["Nexus"]
             )
@@ -480,7 +476,6 @@ final class BalanceConservationPropertyTests: XCTestCase {
                 receiptActions: [],
                 withdrawalActions: [],
                 signers: [],
-                fee: 0,
                 nonce: 0,
                 chainPath: ["Nexus"]
             )
@@ -666,7 +661,6 @@ final class StateDeltaPropertyTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [],
-            fee: 0,
             nonce: 0,
             chainPath: ["Nexus"]
         )

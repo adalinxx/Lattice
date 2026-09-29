@@ -254,7 +254,6 @@ enum AdmissionFixture {
             receiptActions: [],
             withdrawalActions: [],
             signers: [signer],
-            fee: 0,
             nonce: 0,
             chainPath: chainPath
         )
@@ -273,7 +272,6 @@ enum AdmissionFixture {
             receiptActions: [],
             withdrawalActions: [],
             signers: [],
-            fee: 0,
             nonce: 0,
             chainPath: chainPath
         )

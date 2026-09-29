@@ -215,6 +215,7 @@ func buildAndStoreBlock(
     target: UInt256? = nil,
     nextTarget: UInt256? = nil,
     nonce: UInt64 = 0,
+    rewardRecipient: String? = nil,
     fetcher: Fetcher
 ) async throws -> Block {
     let result = try await BlockBuilder.buildBlockWithTransition(
@@ -226,6 +227,7 @@ func buildAndStoreBlock(
         target: target,
         nextTarget: nextTarget,
         nonce: nonce,
+        rewardRecipient: rewardRecipient,
         fetcher: fetcher
     )
     guard let storer = fetcher as? (any Fetcher & Storer) else {
@@ -265,7 +267,6 @@ func buildPremineGenesis(
         receiptActions: [],
         withdrawalActions: [],
         signers: [],
-        fee: 0,
         nonce: 0,
         chainPath: ["Nexus"]
     )

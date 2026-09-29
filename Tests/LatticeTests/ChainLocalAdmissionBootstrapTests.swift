@@ -321,7 +321,6 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [],
-            fee: 0,
             nonce: 0,
             chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
@@ -377,7 +376,6 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
                 receiptActions: [],
                 withdrawalActions: [],
                 signers: signers,
-                fee: 0,
                 nonce: 0,
                 chainPath: [DEFAULT_ROOT_DIRECTORY]
             )
@@ -463,6 +461,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             children: genesis.children,
             height: genesis.height,
             timestamp: genesis.timestamp,
+            rewardRecipient: genesis.rewardRecipient,
             nonce: genesis.nonce
         )
         try await storeBuiltBlock(forged, in: fetcher)
@@ -583,6 +582,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             children: genesis.children,
             height: UInt64.max,
             timestamp: genesis.timestamp,
+            rewardRecipient: genesis.rewardRecipient,
             nonce: genesis.nonce
         )
 

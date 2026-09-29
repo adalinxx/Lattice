@@ -326,7 +326,6 @@ final class ConformanceVectorTests: XCTestCase {
             receiptActions: receiptActions,
             withdrawalActions: withdrawalActions,
             signers: signers.map(\.address),
-            fee: 1,
             nonce: nonce,
             chainPath: chainPath
         )

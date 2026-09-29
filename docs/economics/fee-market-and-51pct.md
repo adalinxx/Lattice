@@ -8,49 +8,44 @@ For issuance and supply, see [Nexus Tokenomics](nexus-tokenomics.md).
 
 ## What Consensus Enforces
 
-`TransactionBody.fee` is signed metadata because it is part of the transaction
-body. Lattice does not automatically debit that amount, credit a block author,
-or require total author credits to equal the sum of declared fees.
+A block names the account that collects its reward and fees in the header
+field `rewardRecipient`, which the proof-of-work preimage binds. There is no
+reward transaction and no fee field on transactions.
 
-Block validation instead evaluates the explicit account, deposit, and
-withdrawal actions under one non-creation bound:
+Block validation evaluates the explicit account, deposit, and withdrawal
+actions of its transactions:
 
 ```text
-totalCredits + totalDeposited
-    <= totalDebits + reward(height) + totalWithdrawn
+fee rule:  totalCredits + totalDeposited <= totalDebits + totalWithdrawn
+fees:      F = totalDebits + totalWithdrawn - totalCredits - totalDeposited
+coinbase:  M = rewardAtBlock(h) + F
 ```
 
-The fee field is absent from this equation. Therefore:
+Therefore:
 
-- declaring a fee never creates spendable budget;
-- credits above the block reward need explicit debits or withdrawals to fund
-  them;
-- unused budget is burned;
-- consensus does not name the recipient of a funded surplus.
+- the block reward funds no transaction; a transaction set that creates value
+  is invalid;
+- a transaction's fee is its surplus: what it debits and withdraws beyond what
+  it credits and deposits;
+- the recipient is credited exactly `M`, with no under-claim path;
+- a block without a recipient burns `M`, both reward and fees.
 
-The fee regression tests in
-[`SecurityTests.swift`](../../Tests/LatticeTests/SecurityTests.swift) demonstrate
-this aggregate rule. An unfunded `reward + fee` credit fails, while the same
-credit with an explicit matching debit succeeds. They do not establish an
-automatic fee-routing rule.
+Only `rewardAtBlock(h)` is new issuance. `F` is redistribution from payers to
+the recipient. The consensus rule and its tests live in
+[`Block+Coinbase.swift`](../../Sources/LatticeValidation/Block/Block+Coinbase.swift)
+and [`CoinbaseTests.swift`](../../Tests/LatticeTests/CoinbaseTests.swift).
 
 ## What The Node May Enforce
 
-A node's mempool and block builder may adopt the familiar policy:
+Fee policy stays with the node. A mempool can rank transactions by
+`TransactionBody.minerSurplus()` and should refuse a transaction whose surplus
+is negative (`nil`), since no block can include it without another transaction
+paying for it. WASM chain policies see transactions, not the coinbase credit,
+so a chain policy that restricts credits cannot govern the reward.
 
-1. require a transaction's explicit signer debit to cover its declared fee;
-2. select transactions by fee policy;
-3. add an explicit author credit funded by those debits.
-
-Under that policy, realized author revenue is
-
-```text
-R(h) = rewardAtBlock(h) + collectedFees
-```
-
-Only `rewardAtBlock(h)` is new issuance. `collectedFees` is redistribution. The
-mapping from declared fees to debits and author credits is node policy unless a
-chain-specific WASM policy makes it part of that chain's validity rules.
+Paying fees to the block author adds the standard fee-sniping incentive: a
+high-fee block is worth more to reorganize. The cost model below prices only
+the hash spend; it does not net out the fees a reorganization could capture.
 
 ## Nexus Difficulty Inputs
 

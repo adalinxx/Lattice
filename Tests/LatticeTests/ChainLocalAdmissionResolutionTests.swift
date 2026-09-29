@@ -220,6 +220,7 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
             children: valid.children,
             height: valid.height + 1,
             timestamp: valid.timestamp,
+            rewardRecipient: valid.rewardRecipient,
             nonce: valid.nonce
         )
         try await storeBuiltBlock(invalid, in: fetcher)

@@ -69,19 +69,12 @@ final class StatelessNexusVerificationTests: XCTestCase {
             spec: spec, timestamp: now - 30_000, target: target, fetcher: producerFetcher
         )
         try await storeBuiltBlock(genesis, in: producerFetcher)
-        let reward = spec.rewardAtBlock(1)
-        let coinbaseBody = TransactionBody(
-            accountActions: [AccountAction(owner: minerAddr, delta: Int64(reward))],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [minerAddr], fee: 0, nonce: 0,
-            chainPath: ["Nexus"]
-        )
         let ts1 = now - 29_000
         let block1 = try await buildAndStoreBlock(
-            previous: genesis, transactions: [sign(coinbaseBody, kp)],
+            previous: genesis,
             timestamp: ts1, target: target,
             nextTarget: nextDiff(spec, previous: genesis, timestamp: ts1),
-            nonce: 0, fetcher: producerFetcher
+            nonce: 0, rewardRecipient: minerAddr, fetcher: producerFetcher
         )
         try await storeBuiltBlock(block1, in: producerFetcher)
 
@@ -101,12 +94,6 @@ final class StatelessNexusVerificationTests: XCTestCase {
         // Full validation — verifier has no prior state, only CAS data
         let valid = try await blockNode.validateNexus(fetcher: verifierFetcher).0
         XCTAssertTrue(valid, "Stateless verifier should validate nexus block from CAS data alone")
-
-        // Independently verify frontier state derivation
-        let frontierValid = try await blockNode.validatePostState(
-            transactionBodies: [coinbaseBody], fetcher: verifierFetcher
-        ).0
-        XCTAssertTrue(frontierValid, "Frontier should be re-derivable via lazy loading")
     }
 
     /// Multiple blocks with different signers: verifier lazy-loads state for each block
@@ -129,15 +116,9 @@ final class StatelessNexusVerificationTests: XCTestCase {
         let ts1 = now - 29_000
         let block1 = try await buildAndStoreBlock(
             previous: genesis,
-            transactions: [sign(TransactionBody(
-                accountActions: [AccountAction(owner: aliceAddr, delta: Int64(spec.rewardAtBlock(1)))],
-                actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [], signers: [aliceAddr], fee: 0, nonce: 0,
-                chainPath: ["Nexus"]
-            ), alice)],
             timestamp: ts1, target: target,
             nextTarget: nextDiff(spec, previous: genesis, timestamp: ts1),
-            nonce: 0, fetcher: producerFetcher
+            nonce: 0, rewardRecipient: aliceAddr, fetcher: producerFetcher
         )
         try await storeBuiltBlock(block1, in: producerFetcher)
 
@@ -145,15 +126,9 @@ final class StatelessNexusVerificationTests: XCTestCase {
         let ts2 = now - 28_000
         let block2 = try await buildAndStoreBlock(
             previous: block1,
-            transactions: [sign(TransactionBody(
-                accountActions: [AccountAction(owner: bobAddr, delta: Int64(spec.rewardAtBlock(2)))],
-                actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [], signers: [bobAddr], fee: 0, nonce: 0,
-                chainPath: ["Nexus"]
-            ), bob)],
             timestamp: ts2, target: target,
             nextTarget: nextDiff(spec, previous: block1, timestamp: ts2),
-            nonce: 0, fetcher: producerFetcher
+            nonce: 0, rewardRecipient: bobAddr, fetcher: producerFetcher
         )
         try await storeBuiltBlock(block2, in: producerFetcher)
 
@@ -166,15 +141,15 @@ final class StatelessNexusVerificationTests: XCTestCase {
             transactions: [sign(TransactionBody(
                 accountActions: [
                     AccountAction(owner: aliceAddr, delta: -Int64(transfer + fee)),
-                    AccountAction(owner: bobAddr, delta: Int64(transfer + spec.rewardAtBlock(3)))
+                    AccountAction(owner: bobAddr, delta: Int64(transfer))
                 ],
                 actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [], signers: [aliceAddr], fee: fee, nonce: 1,
+                receiptActions: [], withdrawalActions: [], signers: [aliceAddr], nonce: 0,
                 chainPath: ["Nexus"]
             ), alice)],
             timestamp: ts3, target: target,
             nextTarget: nextDiff(spec, previous: block2, timestamp: ts3),
-            nonce: 0, fetcher: producerFetcher
+            nonce: 0, rewardRecipient: bobAddr, fetcher: producerFetcher
         )
         try await storeBuiltBlock(block3, in: producerFetcher)
 
@@ -216,7 +191,7 @@ final class StatelessChildChainVerificationTests: XCTestCase {
             transactions: [sign(TransactionBody(
                 accountActions: [AccountAction(owner: ownerAddr, delta: Int64(childSpec.premineAmount()))],
                 actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [], signers: [ownerAddr], fee: 0, nonce: 0,
+                receiptActions: [], withdrawalActions: [], signers: [ownerAddr], nonce: 0,
                 chainPath: ["Nexus"]
             ), kp)],
             timestamp: now - 30_000, target: target, fetcher: producerFetcher
@@ -233,19 +208,19 @@ final class StatelessChildChainVerificationTests: XCTestCase {
         let nexusBlock1 = try await buildAndStoreBlock(
             previous: nexusGenesis,
             transactions: [sign(TransactionBody(
-                accountActions: [AccountAction(owner: ownerAddr, delta: Int64(nexusSpec.rewardAtBlock(1)))],
+                accountActions: [],
                 actions: [], depositActions: [],
                 genesisActions: [GenesisAction(
                     directory: "Payments",
                     blockCID: try VolumeImpl<Block>(node: childGenesis).rawCID
                 )],
-                receiptActions: [], withdrawalActions: [], signers: [ownerAddr], fee: 0, nonce: 0,
+                receiptActions: [], withdrawalActions: [], signers: [ownerAddr], nonce: 0,
                 chainPath: ["Nexus"]
             ), kp)],
             children: ["Payments": childGenesis],
             timestamp: ts1, target: target,
             nextTarget: nextDiff(nexusSpec, previous: nexusGenesis, timestamp: ts1),
-            nonce: 0, fetcher: producerFetcher
+            nonce: 0, rewardRecipient: ownerAddr, fetcher: producerFetcher
         )
         try await storeBuiltBlock(nexusBlock1, in: producerFetcher)
 
@@ -253,14 +228,8 @@ final class StatelessChildChainVerificationTests: XCTestCase {
         // Use nexusGenesis as parentChainBlock so parentState = nexusGenesis.postState = nexusBlock1.prevState
         let childBlock1 = try await buildAndStoreBlock(
             previous: childGenesis,
-            transactions: [sign(TransactionBody(
-                accountActions: [AccountAction(owner: ownerAddr, delta: Int64(childSpec.rewardAtBlock(1)))],
-                actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [], signers: [ownerAddr], fee: 0, nonce: 1,
-                chainPath: ["Nexus", "Payments"]
-            ), kp)],
             parentChainBlock: nexusGenesis,
-            timestamp: ts1, target: target, nonce: 0, fetcher: producerFetcher
+            timestamp: ts1, target: target, nonce: 0, rewardRecipient: ownerAddr, fetcher: producerFetcher
         )
         try await storeBuiltBlock(childBlock1, in: producerFetcher)
 
@@ -286,7 +255,7 @@ final class StatelessChildChainVerificationTests: XCTestCase {
 final class TargetedResolutionTests: XCTestCase {
 
     func testStateResolutionWithManyAccountsValidatesStateless() async throws {
-        let spec = makeSpec()
+        let spec = makeSpec(premine: 1)
         let now = Int64(Date().timeIntervalSince1970 * 1000)
 
         // Create 10 separate signers so the state tree has many entries
@@ -299,23 +268,20 @@ final class TargetedResolutionTests: XCTestCase {
         }
 
         let producerFetcher = StorableFetcher()
-        let genesis = try await buildAndStoreGenesis(
-            spec: spec, timestamp: now - 30_000, target: target, fetcher: producerFetcher
+        // Genesis premines account 0.
+        let genesis = try await buildPremineGenesis(
+            spec: spec, owner: keyPairs[0], fetcher: producerFetcher, timestamp: now - 30_000
         )
-        try await storeBuiltBlock(genesis, in: producerFetcher)
 
-        // Block 1: fund all 10 accounts (each gets 1/10 of reward)
-        var txs1: [Transaction] = []
-        let reward1 = spec.rewardAtBlock(1)
-        for i in 0..<10 {
-            let credit = Int64(reward1) / 10
-            txs1.append(sign(TransactionBody(
-                accountActions: [AccountAction(owner: addrs[i], delta: credit)],
-                actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [], signers: [addrs[i]], fee: 0, nonce: 0,
-                chainPath: ["Nexus"]
-            ), keyPairs[i]))
-        }
+        // Block 1: account 0 funds the other 9 (each gets 1/10 of the premine)
+        let credit = Int64(spec.premineAmount()) / 10
+        let txs1 = [sign(TransactionBody(
+            accountActions: [AccountAction(owner: addrs[0], delta: -credit * 9)]
+                + (1..<10).map { AccountAction(owner: addrs[$0], delta: credit) },
+            actions: [], depositActions: [], genesisActions: [],
+            receiptActions: [], withdrawalActions: [], signers: [addrs[0]], nonce: 0,
+            chainPath: ["Nexus"]
+        ), keyPairs[0])]
 
         let ts1 = now - 29_000
         let block1 = try await buildAndStoreBlock(
@@ -334,15 +300,15 @@ final class TargetedResolutionTests: XCTestCase {
             transactions: [sign(TransactionBody(
                 accountActions: [
                     AccountAction(owner: addrs[0], delta: -transferAmount),
-                    AccountAction(owner: addrs[1], delta: transferAmount + Int64(spec.rewardAtBlock(2)))
+                    AccountAction(owner: addrs[1], delta: transferAmount)
                 ],
                 actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [], signers: [addrs[0]], fee: 0, nonce: 1,
+                receiptActions: [], withdrawalActions: [], signers: [addrs[0]], nonce: 1,
                 chainPath: ["Nexus"]
             ), keyPairs[0])],
             timestamp: ts2, target: target,
             nextTarget: nextDiff(spec, previous: block1, timestamp: ts2),
-            nonce: 0, fetcher: producerFetcher
+            nonce: 0, rewardRecipient: addrs[1], fetcher: producerFetcher
         )
         try await storeBuiltBlock(block2, in: producerFetcher)
 

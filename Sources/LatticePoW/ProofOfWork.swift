@@ -124,6 +124,12 @@ public extension Block {
         data.append(contentsOf: Block.fieldSeparator)
         data.append(contentsOf: String(block.timestamp).utf8)
         data.append(contentsOf: Block.fieldSeparator)
+        // The coinbase recipient is covered by the block CID but not by any
+        // field above, so it is bound here: without this line a relayer could
+        // swap the recipient and keep the nonce. `nil` hashes as the empty
+        // string, which no valid recipient (a canonical address CID) can equal.
+        data.append(contentsOf: (block.rewardRecipient ?? "").utf8)
+        data.append(contentsOf: Block.fieldSeparator)
         return data
     }
 

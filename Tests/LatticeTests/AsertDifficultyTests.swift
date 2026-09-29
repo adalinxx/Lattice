@@ -237,7 +237,7 @@ final class AsertDifficultyTests: XCTestCase {
                 nextTarget: blockTwo.nextTarget, spec: spec,
                 parentState: blockTwo.parentState, prevState: blockTwo.prevState,
                 postState: blockTwo.postState, children: blockTwo.children,
-                height: height, timestamp: blockTwo.timestamp, nonce: blockTwo.nonce
+                height: height, timestamp: blockTwo.timestamp, rewardRecipient: blockTwo.rewardRecipient, nonce: blockTwo.nonce
             )
         }
 

@@ -63,6 +63,7 @@ final class HomesteadContinuityTests: XCTestCase {
             children: try BlockBuilder.buildChildIndex([:]),
             height: 7, // WRONG: genesis must be height 0
             timestamp: now,
+            rewardRecipient: nil,
             nonce: 0
         )
         try await LatticeState.emptyHeader.storeRecursively(storer: fetcher)
@@ -94,7 +95,7 @@ final class HomesteadContinuityTests: XCTestCase {
                 accountActions: [AccountAction(owner: ownerAddr, delta: Int64(nexusSpec.rewardAtBlock(1)))],
                 actions: [], depositActions: [], genesisActions: [],
                 receiptActions: [], withdrawalActions: [],
-                signers: [ownerAddr], fee: 0, nonce: 0,
+                signers: [ownerAddr], nonce: 0,
                 chainPath: ["Nexus"]
             ), kp)],
             timestamp: ts1, target: target, fetcher: fetcher
@@ -112,6 +113,7 @@ final class HomesteadContinuityTests: XCTestCase {
             children: try BlockBuilder.buildChildIndex([:]),
             height: 0,
             timestamp: now,
+            rewardRecipient: nil,
             nonce: 0
         )
         try await storeBlock(nexusGenesis, to: fetcher)
@@ -148,7 +150,7 @@ final class HomesteadContinuityTests: XCTestCase {
                 accountActions: [AccountAction(owner: ownerAddr, delta: Int64(spec.rewardAtBlock(1)))],
                 actions: [], depositActions: [], genesisActions: [],
                 receiptActions: [], withdrawalActions: [],
-                signers: [ownerAddr], fee: 0, nonce: 0, chainPath: ["Nexus"]
+                signers: [ownerAddr], nonce: 0, chainPath: ["Nexus"]
             ), kp)],
             timestamp: ts1, target: target, fetcher: fetcher
         )
@@ -165,6 +167,7 @@ final class HomesteadContinuityTests: XCTestCase {
             children: try BlockBuilder.buildChildIndex([:]),
             height: 2,
             timestamp: now - 30_000,
+            rewardRecipient: nil,
             nonce: 0
         )
 
