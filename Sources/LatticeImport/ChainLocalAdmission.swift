@@ -1018,6 +1018,11 @@ private enum BlockImport {
                   canonicalCID == resolved.rawCID else {
                 return .failure(.providerMalformedEvidence)
             }
+            // A malformed recipient is a property of the CID-bound content,
+            // so the block is invalid before it can weigh.
+            guard block.hasWellFormedRewardRecipient else {
+                return .failure(.protocolInvalid)
+            }
             return .success((resolved, block))
         } catch {
             return .failure(classifyResolutionFailure(error))

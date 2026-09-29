@@ -93,7 +93,7 @@ final class SerializationPinningTests: XCTestCase {
         let hash = block.proofOfWorkHash()
         let hashHex = hash.toHexString()
 
-        let golden = "9c3f8a4d816a5a1bb7eeabd8b5939118f03eec6a086166f03cf01052b0009965"
+        let golden = "e5ba20b2da1a0d3542494c698a291f34e08de8c352976873861284782154e8f7"
         XCTAssertEqual(hashHex, golden,
             "PoW hash changed — the preimage construction changed. If intentional, update the golden value.")
     }
@@ -155,7 +155,6 @@ final class SerializationPinningTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [],
-            fee: 0,
             nonce: 0,
             chainPath: ["Nexus"]
         )

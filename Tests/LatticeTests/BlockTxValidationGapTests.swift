@@ -208,7 +208,6 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
         let swapNonce: UInt128 = 4242
         let cSpec = childSpecWithDeposit(depositAmount)
         let nSpec = gapSpec()
-        let nexusReward = nSpec.rewardAtBlock(1)
 
         let genesisTs: Int64 = t - 40_000
         let block1Ts: Int64 = t - 30_000
@@ -221,7 +220,7 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
                 DepositAction(nonce: swapNonce, demander: demanderAddr, amountDemanded: depositAmount, amountDeposited: depositAmount)
             ],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [demanderAddr], fee: 0, nonce: 0, chainPath: ["Nexus", "Payments"]
+            signers: [demanderAddr], nonce: 0, chainPath: ["Nexus", "Payments"]
         )
         let childGenesis = try await buildAndStoreGenesis(
             spec: cSpec, transactions: [gapSignTx(body: depositGenesisBody, keypair: demander)],
@@ -235,14 +234,14 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
         let n1Transactions: [Transaction]
         if includeReceipt {
             let receiptBody = TransactionBody(
-                accountActions: [AccountAction(owner: withdrawerAddr, delta: Int64(nexusReward))],
+                accountActions: [],
                 actions: [], depositActions: [],
                 genesisActions: [],
                 receiptActions: [
                     ReceiptAction(withdrawer: withdrawerAddr, nonce: swapNonce, demander: demanderAddr, amountDemanded: depositAmount, directory: "Payments")
                 ],
                 withdrawalActions: [],
-                signers: [withdrawerAddr], fee: 0, nonce: 0, chainPath: ["Nexus"]
+                signers: [withdrawerAddr], nonce: 0, chainPath: ["Nexus"]
             )
             n1Transactions = [gapSignTx(body: receiptBody, keypair: withdrawer)]
         } else {
@@ -250,7 +249,8 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
         }
         let n1 = try await buildAndStoreBlock(
             previous: nexusGenesis, transactions: n1Transactions,
-            timestamp: block1Ts, target: target, fetcher: fetcher
+            timestamp: block1Ts, target: target,
+            rewardRecipient: withdrawerAddr, fetcher: fetcher
         )
 
         // n2: built on n1 at cb1's timestamp. Under parent-homestead anchoring a
@@ -262,20 +262,20 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
         )
 
         // --- Leaf withdrawal block (height 1, genesis parent), anchored to n2 ---
-        let childReward = cSpec.rewardAtBlock(1)
         let withdrawalBody = TransactionBody(
-            accountActions: [AccountAction(owner: withdrawerAddr, delta: Int64(childReward) + Int64(depositAmount))],
+            accountActions: [AccountAction(owner: withdrawerAddr, delta: Int64(depositAmount))],
             actions: [], depositActions: [],
             genesisActions: [], receiptActions: [],
             withdrawalActions: [
                 WithdrawalAction(withdrawer: withdrawerAddr, nonce: swapNonce, demander: demanderAddr, amountDemanded: depositAmount, amountWithdrawn: depositAmount)
             ],
-            signers: [withdrawerAddr], fee: 0, nonce: 0, chainPath: ["Nexus", "Payments"]
+            signers: [withdrawerAddr], nonce: 0, chainPath: ["Nexus", "Payments"]
         )
         let childBlock1 = try await buildAndStoreBlock(
             previous: childGenesis, transactions: [gapSignTx(body: withdrawalBody, keypair: withdrawer)],
             parentChainBlock: n2,
-            timestamp: block1Ts, target: target, fetcher: fetcher
+            timestamp: block1Ts, target: target,
+            rewardRecipient: withdrawerAddr, fetcher: fetcher
         )
 
         // The withdrawal-correspondence proofs THROW on a missing receipt;

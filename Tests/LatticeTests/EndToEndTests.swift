@@ -51,6 +51,7 @@ func makeGenesisBlock(
         children: emptyChildBlocks(),
         height: 0,
         timestamp: timestamp,
+        rewardRecipient: nil,
         nonce: nonce
     )
 }
@@ -78,6 +79,7 @@ func makeBlock(
         children: children ?? emptyChildBlocks(),
         height: height,
         timestamp: timestamp,
+        rewardRecipient: nil,
         nonce: nonce
     )
 }

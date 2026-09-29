@@ -36,9 +36,14 @@ public struct Block: Hashable {
     public let children: HeaderImpl<ChildIndex>
     public let height: UInt64
     public let timestamp: Int64
+    /// Account credited with this block's reward plus its fees (the coinbase).
+    /// `nil` burns that amount. Bound into the proof-of-work preimage, so it
+    /// cannot be swapped without redoing the work. Omitted from the encoding
+    /// when `nil`.
+    public let rewardRecipient: String?
     public let nonce: UInt64
 
-    public init(version: UInt16 = Block.currentVersion, parent: VolumeImpl<Block>?, transactions: HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Transaction>>>, target: UInt256, nextTarget: UInt256, spec: VolumeImpl<ChainSpec>, parentState: LatticeStateHeader, prevState: LatticeStateHeader, postState: LatticeStateHeader, children: HeaderImpl<ChildIndex>, height: UInt64, timestamp: Int64, nonce: UInt64) {
+    public init(version: UInt16 = Block.currentVersion, parent: VolumeImpl<Block>?, transactions: HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Transaction>>>, target: UInt256, nextTarget: UInt256, spec: VolumeImpl<ChainSpec>, parentState: LatticeStateHeader, prevState: LatticeStateHeader, postState: LatticeStateHeader, children: HeaderImpl<ChildIndex>, height: UInt64, timestamp: Int64, rewardRecipient: String?, nonce: UInt64) {
         self.version = version
         self.parent = parent
         self.transactions = transactions
@@ -51,6 +56,7 @@ public struct Block: Hashable {
         self.children = children
         self.height = height
         self.timestamp = timestamp
+        self.rewardRecipient = rewardRecipient
         self.nonce = nonce
     }
 
@@ -67,6 +73,7 @@ public struct Block: Hashable {
         case children
         case height
         case timestamp
+        case rewardRecipient
         case nonce
     }
 
@@ -83,6 +90,13 @@ public struct Block: Hashable {
             preconditionFailure("Block canonical serialization failed")
         }
         return data
+    }
+
+    /// Structural rule: a present `rewardRecipient` is a canonical address.
+    /// Checked where block bytes enter admission and child-proof roots, so a
+    /// block with a malformed recipient never weighs.
+    public var hasWellFormedRewardRecipient: Bool {
+        rewardRecipient.map(CryptoUtils.isValidAddress) ?? true
     }
 
     public static func getTotalDeposited(_ allDepositActions: [DepositAction]) -> (total: UInt64, overflow: Bool) {
@@ -138,6 +152,7 @@ extension Block: Node {
             children: properties[CHILDREN_PROPERTY] as? HeaderImpl<ChildIndex> ?? children,
             height: height,
             timestamp: timestamp,
+            rewardRecipient: rewardRecipient,
             nonce: nonce
         )
     }

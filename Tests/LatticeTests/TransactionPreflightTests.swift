@@ -39,7 +39,6 @@ final class TransactionPreflightTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: withdrawalActions,
             signers: addresses,
-            fee: 0,
             nonce: nonce,
             chainPath: chainPath
         )
@@ -241,6 +240,33 @@ final class TransactionPreflightTests: XCTestCase {
             fetcher: fetcher
         )
         XCTAssertEqual(badSignatureResult.disposition, .invalid)
+    }
+
+    func testValueCreatingTransactionIsInvalid() async throws {
+        let fetcher = StorableFetcher()
+        let signer = CryptoUtils.generateKeyPair()
+        let genesis = try await buildAndStoreGenesis(
+            spec: spec(),
+            timestamp: 1_000,
+            target: easy,
+            fetcher: fetcher
+        )
+        let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
+        let address = testAddress(publicKey: signer.publicKey)
+
+        // Credits with nothing debited: negative miner surplus. The block
+        // reward no longer funds transactions, so no block may carry it.
+        let minting = transaction(
+            signers: [signer],
+            nonce: 0,
+            accountActions: [AccountAction(owner: address, delta: 5)]
+        )
+        let mintingResult = await level.preflightTransaction(minting, fetcher: fetcher)
+        XCTAssertEqual(mintingResult.disposition, .invalid)
+
+        let neutral = transaction(signers: [signer], nonce: 0)
+        let neutralResult = await level.preflightTransaction(neutral, fetcher: fetcher)
+        XCTAssertEqual(neutralResult.disposition, .ready)
     }
 
     func testMissingBodyAndPolicyContentAreUnavailable() async throws {

@@ -36,7 +36,6 @@ final class ChainSpecTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [],
-            fee: 0,
             nonce: 0,
             chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
@@ -53,7 +52,7 @@ final class ChainSpecTests: XCTestCase {
         )
         XCTAssertEqual(
             try BlockHeader(node: block).rawCID,
-            "bafyreifvxwhqbwvnrtr2plvtmlvpceqxnexyayjs7klgy6dbkj7yppdsz4"
+            "bafyreick4k7a6bxz4huqx4wiu3z5yph4tnpl4zvq2pi6xv3ouribtvzs24"
         )
     }
 

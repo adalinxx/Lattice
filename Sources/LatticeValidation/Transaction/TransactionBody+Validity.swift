@@ -99,24 +99,27 @@ extension TransactionBody {
         return true
     }
 
-    public func valueConservation() -> (totalDebits: WorkSum, totalCredits: WorkSum, overflow: Bool, conserved: Bool) {
-        var totalDebits = WorkSum.zero
-        var totalCredits = WorkSum.zero
+    /// What this transaction leaves for the block's coinbase: funds it
+    /// destroys (account debits plus withdrawals) minus funds it creates
+    /// (account credits plus deposits) — its contribution to F in
+    /// `Block.coinbaseAmount`. `nil` when negative: such a transaction creates
+    /// value and cannot be included without another transaction paying for
+    /// it. Also `nil` when an account action fails `verify()`.
+    public func minerSurplus() -> WorkSum? {
+        var destroyed = WorkSum.zero
+        var created = WorkSum.zero
         for action in accountActions {
-            guard action.verify() else { return (totalDebits, totalCredits, true, false) }
-            if action.isDebit { totalDebits = totalDebits + UInt256(action.absoluteAmount) }
-            if action.isCredit { totalCredits = totalCredits + UInt256(action.absoluteAmount) }
+            guard action.verify() else { return nil }
+            if action.isDebit { destroyed = destroyed + UInt256(action.absoluteAmount) }
+            if action.isCredit { created = created + UInt256(action.absoluteAmount) }
         }
-
-        let totalDeposited = depositActions.reduce(WorkSum.zero) {
-            $0 + UInt256($1.amountDeposited)
+        for withdrawal in withdrawalActions {
+            destroyed = destroyed + UInt256(withdrawal.amountWithdrawn)
         }
-        let totalWithdrawn = withdrawalActions.reduce(WorkSum.zero) {
-            $0 + UInt256($1.amountWithdrawn)
+        for deposit in depositActions {
+            created = created + UInt256(deposit.amountDeposited)
         }
-        let lhs = totalDebits + totalWithdrawn
-        let rhs = totalCredits + UInt256(fee) + totalDeposited
-        return (totalDebits, totalCredits, false, lhs == rhs)
+        return destroyed.subtracting(created)
     }
 
     package func withdrawalsAreValid(directory: String, prevState: LatticeState, parentState: LatticeState, fetcher: Fetcher) async throws -> Bool {

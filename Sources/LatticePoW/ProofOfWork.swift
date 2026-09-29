@@ -124,6 +124,16 @@ public extension Block {
         data.append(contentsOf: Block.fieldSeparator)
         data.append(contentsOf: String(block.timestamp).utf8)
         data.append(contentsOf: Block.fieldSeparator)
+        // The coinbase recipient is covered by the block CID but not by any
+        // field above, so it is bound here: without it a relayer could swap
+        // the recipient and keep the nonce. Presence is encoded explicitly —
+        // absent is 0x00, present is 0x01 || utf8 || 0x00 — so `nil` and `""`
+        // (distinct CIDs) never share a preimage and cannot double-count work.
+        if let recipient = block.rewardRecipient {
+            data.append(0x01)
+            data.append(contentsOf: recipient.utf8)
+        }
+        data.append(contentsOf: Block.fieldSeparator)
         return data
     }
 

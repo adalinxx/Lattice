@@ -42,12 +42,11 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         let bobAddr = addr(bob.publicKey)
         let s = spec()
         let premineAmount = s.premineAmount()
-        let reward = s.rewardAtBlock(0)
 
         let premineBody = TransactionBody(
             accountActions: [AccountAction(owner: aliceAddr, delta: Int64(premineAmount))],
             actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], fee: 0, nonce: 0,
+            receiptActions: [], withdrawalActions: [], signers: [], nonce: 0,
             chainPath: ["Nexus"]
         )
         let premineHeader = try! HeaderImpl<TransactionBody>(node: premineBody)
@@ -62,11 +61,11 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         let transferBody = TransactionBody(
             accountActions: [
                 AccountAction(owner: aliceAddr, delta: Int64(premineAmount - transferAmount) - Int64(premineAmount)),
-                AccountAction(owner: bobAddr, delta: Int64(transferAmount + reward))
+                AccountAction(owner: bobAddr, delta: Int64(transferAmount))
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [aliceAddr], fee: 0, nonce: 0, chainPath: ["Nexus"]
+            signers: [aliceAddr], nonce: 0, chainPath: ["Nexus"]
         )
         let transferHeader = try! HeaderImpl<TransactionBody>(node: transferBody)
         let transferSig = TransactionSigning.sign(bodyHeader: transferHeader, privateKeyHex: alice.privateKey)!
@@ -79,7 +78,8 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
 
         let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [transferTx], children: ["Child": child],
-            timestamp: t - 10_000, target: UInt256.max, nonce: 1, fetcher: fetcher
+            timestamp: t - 10_000, target: UInt256.max, nonce: 1,
+            rewardRecipient: bobAddr, fetcher: fetcher
         )
         // Persist the full block volume so both paths can resolve it by CID.
         try await VolumeImpl<Block>(node: block).store(
@@ -124,19 +124,21 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
             timestamp: t - 20_000, target: UInt256(1000), fetcher: fetcher
         )
         let reward = s.rewardAtBlock(0)
-        // Over-claim the reward → invalid block.
+        // Over-claim the reward: a fee-rule violation (C > D), the one defect,
+        // so the builder must be told to assemble it anyway.
         let overclaimBody = TransactionBody(
             accountActions: [AccountAction(owner: minerAddr, delta: Int64(reward + 1))],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [minerAddr], fee: 0, nonce: 0, chainPath: ["Nexus"]
+            signers: [minerAddr], nonce: 0, chainPath: ["Nexus"]
         )
         let bodyHeader = try! HeaderImpl<TransactionBody>(node: overclaimBody)
         let sig = TransactionSigning.sign(bodyHeader: bodyHeader, privateKeyHex: miner.privateKey)!
         let tx = Transaction(signatures: [miner.publicKey: sig], body: bodyHeader)
         let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [tx],
-            timestamp: t - 10_000, target: UInt256(1000), nonce: 1, fetcher: fetcher
+            timestamp: t - 10_000, target: UInt256(1000), nonce: 1,
+            allowFeeRuleViolation: true, fetcher: fetcher
         )
         try await VolumeImpl<Block>(node: block).store(
             paths: Block.contentResolutionPaths,

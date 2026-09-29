@@ -56,7 +56,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
                     depositActions: [], genesisActions: [], receiptActions: [],
                     withdrawalActions: [],
                     signers: [testAddress(publicKey: keyPair.publicKey)],
-                    fee: 0, nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
+                    nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
                 ),
                 by: keyPair
             )],
@@ -84,7 +84,6 @@ final class ParentStateAttestationTierTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [signer],
-            fee: 0,
             nonce: 0,
             chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
@@ -122,6 +121,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
             children: honest.children,
             height: honest.height,
             timestamp: honest.timestamp + 1,
+            rewardRecipient: nil,
             nonce: nonce
         )
     }
@@ -204,7 +204,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
                     depositActions: [], genesisActions: [], receiptActions: [],
                     withdrawalActions: [],
                     signers: [testAddress(publicKey: keyPair.publicKey)],
-                    fee: 0, nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
+                    nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
                 ),
                 by: keyPair
             )],
@@ -519,9 +519,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         let keyPair = CryptoUtils.generateKeyPair()
         let owner = testAddress(publicKey: keyPair.publicKey)
         let body = TransactionBody(
-            accountActions: [
-                AccountAction(owner: owner, delta: Int64(spec().initialReward)),
-            ],
+            accountActions: [],
             actions: [],
             depositActions: [],
             genesisActions: [GenesisAction(
@@ -531,14 +529,14 @@ final class ParentStateAttestationTierTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [owner],
-            fee: 0,
             nonce: 0,
             chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
         return try await buildAndStoreBlock(
             previous: previous,
             transactions: [signedTestTransaction(body, by: keyPair)],
-            timestamp: timestamp, target: easy, nonce: nonce, fetcher: fetcher
+            timestamp: timestamp, target: easy, nonce: nonce,
+            rewardRecipient: owner, fetcher: fetcher
         )
     }
 
@@ -692,9 +690,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         let keyPair = CryptoUtils.generateKeyPair()
         let owner = testAddress(publicKey: keyPair.publicKey)
         let body = TransactionBody(
-            accountActions: [
-                AccountAction(owner: owner, delta: Int64(spec().initialReward)),
-            ],
+            accountActions: [],
             actions: [],
             depositActions: [],
             genesisActions: [GenesisAction(
@@ -704,7 +700,6 @@ final class ParentStateAttestationTierTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [owner],
-            fee: 0,
             nonce: 0,
             chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
         )
@@ -712,7 +707,8 @@ final class ParentStateAttestationTierTests: XCTestCase {
             previous: childGenesis,
             transactions: [signedTestTransaction(body, by: keyPair)],
             parentChainBlock: shell,
-            timestamp: 2_000, target: easy, nonce: 4, fetcher: fetcher
+            timestamp: 2_000, target: easy, nonce: 4,
+            rewardRecipient: owner, fetcher: fetcher
         )
 
         // Two DIFFERENT carriers naming the same child block: two distinct
@@ -1011,7 +1007,6 @@ final class ParentStateAttestationTierTests: XCTestCase {
                     receiptActions: [],
                     withdrawalActions: [],
                     signers: [testAddress(publicKey: keyPair.publicKey)],
-                    fee: 0,
                     nonce: 0,
                     chainPath: [DEFAULT_ROOT_DIRECTORY]
                 ),
@@ -1109,7 +1104,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
                     depositActions: [], genesisActions: [], receiptActions: [],
                     withdrawalActions: [],
                     signers: [testAddress(publicKey: keyPair.publicKey)],
-                    fee: 0, nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
+                    nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
                 ),
                 by: keyPair
             )],

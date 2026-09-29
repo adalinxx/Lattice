@@ -273,7 +273,7 @@ final class StateDiffTests: XCTestCase {
             accountActions: [AccountAction(owner: owner, delta: 100)],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [owner], fee: 0, nonce: 0,
+            signers: [owner], nonce: 0,
             chainPath: ["Nexus"]
         )
 
@@ -300,8 +300,7 @@ final class StateDiffTests: XCTestCase {
         let state = try AccountStateHeader(node: AccountState())
         let transaction = TransactionBody(
             accountActions: [], actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["owner"], fee: 0,
-            nonce: .max,
+            receiptActions: [], withdrawalActions: [], signers: ["owner"], nonce: .max,
             chainPath: ["Nexus"]
         )
         do {

@@ -13,6 +13,9 @@ public enum BlockBuilderError: Error {
     /// has no origin to measure from. Refusing beats inventing one: a guessed
     /// anchor produces a target no validator would agree with.
     case missingDifficultyAnchor
+    /// The transactions and `rewardRecipient` admit no valid coinbase
+    /// (see `Block.coinbaseCredit`), so no block built from them would validate.
+    case invalidCoinbase(CoinbaseError)
 }
 
 public struct BlockBuildResult: Sendable {
@@ -149,6 +152,7 @@ public struct BlockBuilder {
         let (postState, stateDiff) = try await computePostState(
             prevState: prevState,
             transactionBodies: transactionBodies,
+            coinbase: nil,
             fetcher: fetcher
         )
 
@@ -165,6 +169,7 @@ public struct BlockBuilder {
             children: try buildChildIndex(children),
             height: 0,
             timestamp: timestamp,
+            rewardRecipient: nil,
             nonce: nonce
         )
         return BlockBuildResult(
@@ -186,6 +191,7 @@ public struct BlockBuilder {
         nextTarget: UInt256? = nil,
         nonce: UInt64 = 0,
         difficultyAnchor: DifficultyAnchor? = nil,
+        rewardRecipient: String? = nil,
         fetcher: Fetcher
     ) async throws -> Block {
         try await buildBlockWithTransition(
@@ -198,6 +204,7 @@ public struct BlockBuilder {
             nextTarget: nextTarget,
             nonce: nonce,
             difficultyAnchor: difficultyAnchor,
+            rewardRecipient: rewardRecipient,
             fetcher: fetcher
         ).block
     }
@@ -212,6 +219,7 @@ public struct BlockBuilder {
         nextTarget: UInt256? = nil,
         nonce: UInt64 = 0,
         difficultyAnchor: DifficultyAnchor? = nil,
+        rewardRecipient: String? = nil,
         fetcher: Fetcher
     ) async throws -> BlockBuildResult {
         let (height, heightOverflow) = previous.height.addingReportingOverflow(1)
@@ -225,18 +233,17 @@ public struct BlockBuilder {
         }
 
         let blockTarget = target ?? previous.nextTarget
+        func resolveSpec() async throws -> ChainSpec {
+            if let node = previous.spec.node { return node }
+            let resolved = try await previous.spec.resolve(fetcher: fetcher)
+            guard let node = resolved.node else { throw BlockBuilderError.missingSpec }
+            return node
+        }
         let blockNextTarget: UInt256
         if let nextTarget {
             blockNextTarget = nextTarget
         } else {
-            let specNode: ChainSpec
-            if let node = previous.spec.node {
-                specNode = node
-            } else {
-                let resolved = try await previous.spec.resolve(fetcher: fetcher)
-                guard let node = resolved.node else { throw BlockBuilderError.missingSpec }
-                specNode = node
-            }
+            let specNode = try await resolveSpec()
             // The schedule is measured from the height-1 ancestor. Building
             // block 1 itself, that ancestor is this block: its own target
             // becomes the anchor and the schedule starts here.
@@ -268,9 +275,24 @@ public struct BlockBuilder {
             transactions,
             fetcher: fetcher
         )
+        // The same rule the validator applies: the fee rule always holds, and
+        // a recipient is credited exactly the reward plus fees (nil burns it).
+        let coinbase: AccountAction?
+        switch Block.coinbaseCredit(
+            spec: try await resolveSpec(),
+            height: height,
+            recipient: rewardRecipient,
+            accountActions: transactionBodies.flatMap(\.accountActions),
+            depositActions: transactionBodies.flatMap(\.depositActions),
+            withdrawalActions: transactionBodies.flatMap(\.withdrawalActions)
+        ) {
+        case .success(let credit): coinbase = credit
+        case .failure(let error): throw BlockBuilderError.invalidCoinbase(error)
+        }
         let (postState, stateDiff) = try await computePostState(
             prevState: prevState,
             transactionBodies: transactionBodies,
+            coinbase: coinbase,
             fetcher: fetcher
         )
 
@@ -287,6 +309,7 @@ public struct BlockBuilder {
             children: try buildChildIndex(children),
             height: height,
             timestamp: timestamp,
+            rewardRecipient: rewardRecipient,
             nonce: nonce
         )
         return BlockBuildResult(
@@ -392,6 +415,7 @@ public struct BlockBuilder {
                     children: block.children,
                     height: block.height,
                     timestamp: block.timestamp,
+                    rewardRecipient: block.rewardRecipient,
                     nonce: nonce
                 )
             }
@@ -404,9 +428,10 @@ public struct BlockBuilder {
     static func computePostState(
         prevState: LatticeStateHeader,
         transactionBodies: [TransactionBody],
+        coinbase: AccountAction?,
         fetcher: Fetcher
     ) async throws -> (LatticeStateHeader, StateDiff) {
-        if transactionBodies.isEmpty {
+        if transactionBodies.isEmpty && coinbase == nil {
             return (prevState, .empty)
         }
 
@@ -418,6 +443,7 @@ public struct BlockBuilder {
             return try await computePostStateFromState(
                 state: resolvedNode,
                 transactionBodies: transactionBodies,
+                coinbase: coinbase,
                 fetcher: fetcher
             )
         }
@@ -425,6 +451,7 @@ public struct BlockBuilder {
         return try await computePostStateFromState(
             state: prevStateNode,
             transactionBodies: transactionBodies,
+            coinbase: coinbase,
             fetcher: fetcher
         )
     }
@@ -432,6 +459,7 @@ public struct BlockBuilder {
     static func computePostStateFromState(
         state: LatticeState,
         transactionBodies: [TransactionBody],
+        coinbase: AccountAction?,
         fetcher: Fetcher
     ) async throws -> (LatticeStateHeader, StateDiff) {
         // Collect each action family in one pass.
@@ -449,6 +477,7 @@ public struct BlockBuilder {
             allReceiptActions.append(contentsOf: body.receiptActions)
             allWithdrawalActions.append(contentsOf: body.withdrawalActions)
         }
+        if let coinbase { allAccountActions.append(coinbase) }
 
         let (updatedState, stateDiff) = try await state.proveAndUpdateState(
             allAccountActions: allAccountActions,
