@@ -439,15 +439,22 @@ powPrefix(B) =
     rawCID(B.children)       || 0x00 ||
     decimal(B.height)        || 0x00 ||
     decimal(B.timestamp)     || 0x00 ||
-    B.rewardRecipient?       || 0x00
+    recipientField(B)        || 0x00
+
+recipientField(B) = empty                          if B.rewardRecipient is nil
+                  = 0x01 || utf8(B.rewardRecipient) otherwise
 
 proofOfWorkHash(B) = U256(SHA256(powPrefix(B) || uint64BE(B.nonce)))
 ```
 
-The absent genesis predecessor, and an absent `rewardRecipient`, contribute the
-empty field between separators. A present recipient is a canonical address, so
-it can never be empty. Binding the recipient here, not only through the block
-CID, is what stops a relayer from swapping it while keeping the nonce.
+The absent genesis predecessor contributes the empty field between separators.
+The recipient's presence is encoded explicitly, so an absent recipient and a
+present empty one never share a preimage (they are distinct CIDs, and a shared
+preimage would let one grind weigh twice). Binding the recipient here, not only
+through the block CID, is what stops a relayer from swapping it while keeping
+the nonce. A block whose present `rewardRecipient` is not a canonical address is
+structurally invalid: it is refused when its bytes enter admission or serve as
+a child-proof root, before it can carry work.
 
 For a nested tree, only the outer root's hash `h` is evaluated:
 
@@ -856,10 +863,15 @@ Deposits lock value in deposit state and so reduce `F`. Withdrawals return the
 matching locked value and so add to `F`; explicit account actions determine any
 credited recipients.
 
-Per block, supply changes by exactly
-`(reward(i) if B.rewardRecipient is set, else 0) + totalWithdrawn - totalDeposited`
-(counting deposit state as locked, not spendable, supply). Fees move from payers
-to the recipient; receipts net to zero.
+Per block, spendable supply (deposit state counts as locked, not spendable)
+changes by exactly:
+
+```
+with a recipient:     reward(i) + totalWithdrawn - totalDeposited
+without a recipient:  totalWithdrawn - totalDeposited - F     (fees burn)
+```
+
+With a recipient, fees move from payers to the recipient; receipts net to zero.
 
 ### 8.3 Security Properties
 

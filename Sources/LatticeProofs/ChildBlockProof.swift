@@ -579,6 +579,7 @@ private actor _TrackingProofFetcher: Fetcher {
 
 private func contentBoundBlock(cid: String, data: Data) -> Block? {
     guard let block = Block(data: data),
+          block.hasWellFormedRewardRecipient,
           let header = try? VolumeImpl<Block>(node: block),
           header.rawCID == cid else { return nil }
     return block

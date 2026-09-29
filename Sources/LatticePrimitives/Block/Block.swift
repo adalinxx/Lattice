@@ -92,6 +92,13 @@ public struct Block: Hashable {
         return data
     }
 
+    /// Structural rule: a present `rewardRecipient` is a canonical address.
+    /// Checked where block bytes enter admission and child-proof roots, so a
+    /// block with a malformed recipient never weighs.
+    public var hasWellFormedRewardRecipient: Bool {
+        rewardRecipient.map(CryptoUtils.isValidAddress) ?? true
+    }
+
     public static func getTotalDeposited(_ allDepositActions: [DepositAction]) -> (total: UInt64, overflow: Bool) {
         var total: UInt64 = 0
         for action in allDepositActions {

@@ -275,22 +275,19 @@ public struct BlockBuilder {
             transactions,
             fetcher: fetcher
         )
-        // The same rule the validator applies: a recipient is credited exactly
-        // the reward plus fees. Without a recipient the amount burns, so there
-        // is nothing to compute.
-        var coinbase: AccountAction?
-        if let rewardRecipient {
-            switch Block.coinbaseCredit(
-                spec: try await resolveSpec(),
-                height: height,
-                recipient: rewardRecipient,
-                accountActions: transactionBodies.flatMap(\.accountActions),
-                depositActions: transactionBodies.flatMap(\.depositActions),
-                withdrawalActions: transactionBodies.flatMap(\.withdrawalActions)
-            ) {
-            case .success(let credit): coinbase = credit
-            case .failure(let error): throw BlockBuilderError.invalidCoinbase(error)
-            }
+        // The same rule the validator applies: the fee rule always holds, and
+        // a recipient is credited exactly the reward plus fees (nil burns it).
+        let coinbase: AccountAction?
+        switch Block.coinbaseCredit(
+            spec: try await resolveSpec(),
+            height: height,
+            recipient: rewardRecipient,
+            accountActions: transactionBodies.flatMap(\.accountActions),
+            depositActions: transactionBodies.flatMap(\.depositActions),
+            withdrawalActions: transactionBodies.flatMap(\.withdrawalActions)
+        ) {
+        case .success(let credit): coinbase = credit
+        case .failure(let error): throw BlockBuilderError.invalidCoinbase(error)
         }
         let (postState, stateDiff) = try await computePostState(
             prevState: prevState,

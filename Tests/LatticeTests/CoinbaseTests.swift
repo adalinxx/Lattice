@@ -4,6 +4,8 @@ import XCTest
 @testable import LatticePoW
 @testable import LatticeValidation
 @testable import LatticeProofs
+@testable import LatticeBlockTree
+@testable import LatticeImport
 import cashew
 import UInt256
 
@@ -94,6 +96,26 @@ struct CoinbaseFixture {
         return (body, signedTestTransaction(body, by: payer))
     }
 
+    /// Block 1 carrying `bodies` with a post-state that applies only their
+    /// actions — what a producer bypassing `BlockBuilder`'s checks would emit.
+    func unchecked(_ bodies: [TransactionBody], _ transactions: [Transaction], recipient: String?) async throws -> Block {
+        let honest = try await block([], recipient: nil)
+        let (post, _) = try await BlockBuilder.computePostState(
+            prevState: genesis.postState, transactionBodies: bodies,
+            coinbase: nil, fetcher: fetcher
+        )
+        let forged = Block(
+            version: honest.version, parent: honest.parent,
+            transactions: try BlockBuilder.buildTransactionsDictionary(transactions),
+            target: honest.target, nextTarget: honest.nextTarget, spec: honest.spec,
+            parentState: honest.parentState, prevState: honest.prevState,
+            postState: post, children: honest.children,
+            height: honest.height, timestamp: honest.timestamp,
+            rewardRecipient: recipient, nonce: honest.nonce
+        )
+        return try await storeBuiltBlock(forged, in: fetcher)
+    }
+
     func block(_ transactions: [Transaction], recipient: String?) async throws -> Block {
         try await buildAndStoreBlock(
             previous: genesis, transactions: transactions,
@@ -179,37 +201,37 @@ final class CoinbaseRuleTests: XCTestCase {
         // Credits 10 more than it debits: under the old rule the reward paid
         // for it; now nothing does.
         let subsidized = f.transfer(debit: 5, credits: [(freshAddress(), 15)])
-        let recipient = freshAddress()
-        do {
-            _ = try await f.block([subsidized.transaction], recipient: recipient)
-            XCTFail("the builder must refuse a block whose transactions create value")
-        } catch BlockBuilderError.invalidCoinbase(let error) {
-            XCTAssertEqual(error, .feeRuleViolated)
+        for recipient in [freshAddress(), nil] as [String?] {
+            do {
+                _ = try await BlockBuilder.buildBlock(
+                    previous: f.genesis, transactions: [subsidized.transaction],
+                    timestamp: f.base + 1000, target: UInt256(1000), nonce: 1,
+                    rewardRecipient: recipient, fetcher: f.fetcher
+                )
+                XCTFail("the builder must refuse a block whose transactions create value (recipient \(String(describing: recipient)))")
+            } catch BlockBuilderError.invalidCoinbase(let error) {
+                XCTAssertEqual(error, .feeRuleViolated)
+            }
+            let forged = try await f.unchecked([subsidized.body], [subsidized.transaction], recipient: recipient)
+            let valid = try await forged.validateNexus(fetcher: f.fetcher).0
+            XCTAssertFalse(valid, "the fee rule holds with or without a recipient")
         }
-        let burned = try await f.block([subsidized.transaction], recipient: nil)
-        let burnedValid = try await burned.validateNexus(fetcher: f.fetcher).0
-        XCTAssertFalse(burnedValid, "the fee rule holds without a recipient too")
-        let swapped = try await withRewardRecipient(burned, recipient).validateNexus(fetcher: f.fetcher).0
-        XCTAssertFalse(swapped)
     }
 
     func testReplayedOldStyleRewardTransactionIsRejected() async throws {
         let f = try await CoinbaseFixture.make()
         let miner = CryptoUtils.generateKeyPair()
         let minerAddress = testAddress(publicKey: miner.publicKey)
-        let oldReward = signedTestTransaction(TransactionBody(
+        let oldRewardBody = TransactionBody(
             accountActions: [AccountAction(owner: minerAddress, delta: Int64(f.reward))],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
             signers: [minerAddress], nonce: 0, chainPath: ["Nexus"]
-        ), by: miner)
+        )
+        let oldReward = signedTestTransaction(oldRewardBody, by: miner)
         for recipient in [nil, minerAddress] as [String?] {
-            let block = try await buildAndStoreBlock(
-                previous: f.genesis, transactions: [oldReward],
-                timestamp: f.base + 1000, target: UInt256(1000), nonce: 1,
-                fetcher: f.fetcher
-            )
-            let valid = try await withRewardRecipient(block, recipient).validateNexus(fetcher: f.fetcher).0
+            let block = try await f.unchecked([oldRewardBody], [oldReward], recipient: recipient)
+            let valid = try await block.validateNexus(fetcher: f.fetcher).0
             XCTAssertFalse(valid, "a signed self-credit cannot mint the reward (recipient \(String(describing: recipient)))")
         }
     }
@@ -347,14 +369,99 @@ final class CoinbaseRuleTests: XCTestCase {
             rewardRecipient: testCID("recipient"), nonce: 42
         )
         let prefix = Block.makeProofOfWorkPreimagePrefix(block: block)
-        let tail = Data("1700000000000\u{0}\(testCID("recipient"))\u{0}".utf8)
+        let tail = Data("1700000000000\u{0}\u{1}\(testCID("recipient"))\u{0}".utf8)
         XCTAssertEqual(prefix.suffix(tail.count), tail, "recipient is the last field before the nonce")
-        XCTAssertEqual(UInt256.hash(prefix).toHexString(), "572a319b70ee17ff9a7e0ed4a9a9317f4de6143e423c2c6fb0c5e336fdb88c69")
+        XCTAssertEqual(UInt256.hash(prefix).toHexString(), "07babc213ec18beb0fa0bc4e5b7a6181c5a655e38ba11d2b774cbf1a4539ae66")
 
         let burned = Block.makeProofOfWorkPreimagePrefix(block: withRewardRecipient(block, nil))
         let burnedTail = Data("\u{0}1700000000000\u{0}\u{0}".utf8)
         XCTAssertEqual(burned.suffix(burnedTail.count), burnedTail, "nil hashes as the empty field")
         XCTAssertEqual(UInt256.hash(burned).toHexString(), "7ad0ad3499d54106ba9a3b6df393f2468d53342f906093cce79197e6f599cfad")
+    }
+
+    /// `nil` and `""` are distinct CIDs; if they shared a preimage one grind
+    /// would weigh as two blocks.
+    func testPreimageDistinguishesAbsentFromEmptyRecipient() async throws {
+        let f = try await CoinbaseFixture.make()
+        let block = try await f.block([], recipient: nil)
+        let empty = withRewardRecipient(block, "")
+        XCTAssertNotEqual(try BlockHeader(node: block).rawCID, try BlockHeader(node: empty).rawCID)
+        XCTAssertNotEqual(
+            Block.makeProofOfWorkPreimagePrefix(block: block),
+            Block.makeProofOfWorkPreimagePrefix(block: empty)
+        )
+        XCTAssertNotEqual(block.proofOfWorkHash(), empty.proofOfWorkHash())
+    }
+
+    /// Every field that changes the block CID must change the PoW preimage;
+    /// otherwise a relayer can mint a CID twin that reuses the grind. The
+    /// Mirror check fails when a stored field is added without being listed
+    /// (and so covered) here.
+    func testEveryCIDFieldIsInThePreimage() throws {
+        let base = Block(
+            parent: VolumeImpl<Block>(rawCID: testCID("parent")),
+            transactions: HeaderImpl(rawCID: testCID("transactions")),
+            target: UInt256(1000), nextTarget: UInt256(999),
+            spec: VolumeImpl(rawCID: testCID("spec")),
+            parentState: LatticeStateHeader(rawCID: testCID("parentState")),
+            prevState: LatticeStateHeader(rawCID: testCID("prevState")),
+            postState: LatticeStateHeader(rawCID: testCID("postState")),
+            children: HeaderImpl(rawCID: testCID("children")),
+            height: 7, timestamp: 1_700_000_000_000,
+            rewardRecipient: testCID("recipient"), nonce: 42
+        )
+        func with(
+            version: UInt16? = nil, parent: VolumeImpl<Block>?? = nil,
+            transactions: HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Transaction>>>? = nil,
+            target: UInt256? = nil, nextTarget: UInt256? = nil,
+            spec: VolumeImpl<ChainSpec>? = nil, parentState: LatticeStateHeader? = nil,
+            prevState: LatticeStateHeader? = nil, postState: LatticeStateHeader? = nil,
+            children: HeaderImpl<ChildIndex>? = nil, height: UInt64? = nil,
+            timestamp: Int64? = nil, rewardRecipient: String?? = nil, nonce: UInt64? = nil
+        ) -> Block {
+            Block(
+                version: version ?? base.version, parent: parent ?? base.parent,
+                transactions: transactions ?? base.transactions,
+                target: target ?? base.target, nextTarget: nextTarget ?? base.nextTarget,
+                spec: spec ?? base.spec, parentState: parentState ?? base.parentState,
+                prevState: prevState ?? base.prevState, postState: postState ?? base.postState,
+                children: children ?? base.children, height: height ?? base.height,
+                timestamp: timestamp ?? base.timestamp,
+                rewardRecipient: rewardRecipient ?? base.rewardRecipient,
+                nonce: nonce ?? base.nonce
+            )
+        }
+        let mutations: [String: Block] = [
+            "version": with(version: base.version + 1),
+            "parent": with(parent: .some(VolumeImpl<Block>(rawCID: testCID("other")))),
+            "transactions": with(transactions: HeaderImpl(rawCID: testCID("other"))),
+            "target": with(target: UInt256(1001)),
+            "nextTarget": with(nextTarget: UInt256(998)),
+            "spec": with(spec: VolumeImpl(rawCID: testCID("other"))),
+            "parentState": with(parentState: LatticeStateHeader(rawCID: testCID("other"))),
+            "prevState": with(prevState: LatticeStateHeader(rawCID: testCID("other"))),
+            "postState": with(postState: LatticeStateHeader(rawCID: testCID("other"))),
+            "children": with(children: HeaderImpl(rawCID: testCID("other"))),
+            "height": with(height: 8),
+            "timestamp": with(timestamp: 1_700_000_000_001),
+            "rewardRecipient": with(rewardRecipient: .some(testCID("other"))),
+            "nonce": with(nonce: 43),
+        ]
+        let storedFields = Set(Mirror(reflecting: base).children.compactMap(\.label))
+        XCTAssertEqual(storedFields, Set(mutations.keys), "a new Block field must be bound into the PoW preimage and listed here")
+
+        let baseCID = try BlockHeader(node: base).rawCID
+        let basePreimage = Block.makeProofOfWorkPreimage(block: base, nonce: base.nonce)
+        for (field, mutated) in mutations {
+            XCTAssertNotEqual(try BlockHeader(node: mutated).rawCID, baseCID, "\(field) must change the CID")
+            XCTAssertNotEqual(
+                Block.makeProofOfWorkPreimage(block: mutated, nonce: mutated.nonce), basePreimage,
+                "\(field) changes the CID, so it must change the PoW preimage"
+            )
+        }
+        // Removing the recipient, and emptying it, are both distinct.
+        XCTAssertNotEqual(Block.makeProofOfWorkPreimagePrefix(block: with(rewardRecipient: .some(nil))),
+                          Block.makeProofOfWorkPreimagePrefix(block: with(rewardRecipient: .some(""))))
     }
 
     // MARK: - Reconstruction and encoding
@@ -463,5 +570,84 @@ final class CoinbaseChildChainTests: XCTestCase {
         XCTAssertTrue(directHop.binds(child: childBlock))
         XCTAssertFalse(directHop.binds(child: withRewardRecipient(childBlock, freshAddress())))
         XCTAssertFalse(directHop.binds(child: withRewardRecipient(childBlock, nil)))
+    }
+}
+
+// MARK: - Malformed recipients never weigh
+
+@MainActor
+final class CoinbaseRecipientAdmissionTests: XCTestCase {
+
+    private let malformed = ["", "miner"]
+
+    /// A relayed twin of a nil-recipient block with a present-but-invalid
+    /// recipient (`""` above all: it once shared the original's preimage) is
+    /// refused from its bytes before it can weigh, in every import mode.
+    func testMalformedRecipientTwinIsRefusedAsARoot() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let honest = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
+        for recipient in malformed {
+            let twin = withRewardRecipient(honest, recipient)
+            try await storeBuiltBlock(twin, in: fetcher)
+            let twinCID = try BlockHeader(node: twin).rawCID
+            for mode in [ImportMode.header, .full] {
+                let level = AdmissionFixture.makeLevel(genesis: genesis)
+                let result = try await level.admit(
+                    BlockHeader(rawCID: twinCID), mode: mode, fetcher: fetcher
+                )
+                XCTAssertEqual(result.failure, .protocolInvalid, "recipient \"\(recipient)\" mode \(mode)")
+                let weighed = await level.chain.contains(blockHash: twinCID)
+                XCTAssertFalse(weighed)
+            }
+        }
+        let level = AdmissionFixture.makeLevel(genesis: genesis)
+        let result = try await level.admit(honest, mode: .header, fetcher: fetcher)
+        XCTAssertNil(result.failure, "control: the honest block weighs")
+    }
+
+    /// The same twin as a child-proof root must not lend its grind to a child.
+    func testMalformedRecipientTwinIsRefusedAsAChildProofRoot() async throws {
+        let fetcher = StorableFetcher()
+        let parentGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let childGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let candidate = try await AdmissionFixture.makeChild(
+            of: childGenesis, fetcher: fetcher, timestamp: 2_000, nonce: 2,
+            parentChainBlock: parentGenesis
+        )
+        let carrier = try await buildAndStoreBlock(
+            previous: parentGenesis, children: ["Child": candidate],
+            timestamp: 3_000, target: AdmissionFixture.easy, nonce: 3, fetcher: fetcher
+        )
+        func childLevel() -> ChainLevel {
+            ChainLevel(
+                chain: ChainState.fromGenesis(block: childGenesis),
+                context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
+            )
+        }
+        for recipient in malformed {
+            let twin = try await storeBuiltBlock(withRewardRecipient(carrier, recipient), in: fetcher)
+            let proof = try await ChildBlockProof.generate(
+                rootHeader: try BlockHeader(node: twin), childDirectory: "Child", fetcher: fetcher
+            )
+            let verified = await proof.verifySecuringWork(
+                child: candidate, chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
+            )
+            guard case .failure(let failure) = verified else {
+                return XCTFail("a malformed-recipient root must not derive work")
+            }
+            XCTAssertEqual(failure, .malformedEvidence)
+            let result = try await childLevel().admit(
+                candidate, fetcher: fetcher, childPackage: ChildValidationPackage(proof: proof)
+            )
+            XCTAssertEqual(result.failure, .providerMalformedEvidence, "recipient \"\(recipient)\"")
+        }
+        let honestProof = try await ChildBlockProof.generate(
+            rootHeader: try BlockHeader(node: carrier), childDirectory: "Child", fetcher: fetcher
+        )
+        let accepted = try await childLevel().admit(
+            candidate, fetcher: fetcher, childPackage: ChildValidationPackage(proof: honestProof)
+        )
+        XCTAssertNil(accepted.failure, "control: the honest carrier secures the child")
     }
 }

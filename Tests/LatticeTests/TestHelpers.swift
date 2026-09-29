@@ -206,6 +206,13 @@ func buildAndStoreGenesis(
 }
 
 /// Test local-CAS policy counterpart to ``buildAndStoreGenesis``.
+///
+/// Many validator tests need a block whose transactions break the fee rule
+/// (C + P > D + W), which `BlockBuilder` refuses to build. For those, with no
+/// recipient, this assembles the block anyway: the builder's header over no
+/// transactions, then these transactions and the post-state their actions
+/// alone produce. Validation must reject it; builder refusal itself is tested
+/// against `BlockBuilder` directly (`CoinbaseTests`).
 func buildAndStoreBlock(
     previous: Block,
     transactions: [Transaction] = [],
@@ -218,18 +225,50 @@ func buildAndStoreBlock(
     rewardRecipient: String? = nil,
     fetcher: Fetcher
 ) async throws -> Block {
-    let result = try await BlockBuilder.buildBlockWithTransition(
-        previous: previous,
-        transactions: transactions,
-        children: children,
-        parentChainBlock: parentChainBlock,
-        timestamp: timestamp,
-        target: target,
-        nextTarget: nextTarget,
-        nonce: nonce,
-        rewardRecipient: rewardRecipient,
-        fetcher: fetcher
-    )
+    func build(_ transactions: [Transaction]) async throws -> BlockBuildResult {
+        try await BlockBuilder.buildBlockWithTransition(
+            previous: previous,
+            transactions: transactions,
+            children: children,
+            parentChainBlock: parentChainBlock,
+            timestamp: timestamp,
+            target: target,
+            nextTarget: nextTarget,
+            nonce: nonce,
+            rewardRecipient: rewardRecipient,
+            fetcher: fetcher
+        )
+    }
+    let result: BlockBuildResult
+    do {
+        result = try await build(transactions)
+    } catch BlockBuilderError.invalidCoinbase(.feeRuleViolated) where rewardRecipient == nil {
+        let header = try await build([]).block
+        var bodies: [TransactionBody] = []
+        for transaction in transactions {
+            guard let body = try await transaction.body.resolve(fetcher: fetcher).node else {
+                throw BlockBuilderError.invalidTransactionContent
+            }
+            bodies.append(body)
+        }
+        let (postState, stateDiff) = try await BlockBuilder.computePostState(
+            prevState: previous.postState, transactionBodies: bodies,
+            coinbase: nil, fetcher: fetcher
+        )
+        result = BlockBuildResult(
+            block: Block(
+                version: header.version, parent: header.parent,
+                transactions: try BlockBuilder.buildTransactionsDictionary(transactions),
+                target: header.target, nextTarget: header.nextTarget, spec: header.spec,
+                parentState: header.parentState, prevState: header.prevState,
+                postState: postState, children: header.children,
+                height: header.height, timestamp: header.timestamp,
+                rewardRecipient: nil, nonce: header.nonce
+            ),
+            stateDiff: stateDiff,
+            materializedPostState: postState.node
+        )
+    }
     guard let storer = fetcher as? (any Fetcher & Storer) else {
         return result.block
     }
