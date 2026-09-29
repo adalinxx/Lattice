@@ -306,6 +306,69 @@ final class TransactionPreflightTests: XCTestCase {
         }
     }
 
+    func testWasmPolicyErrorClassificationMatchesImport() {
+        // Preflight evicts exactly what import would exclude, and keeps pooled
+        // exactly what import would retry (#63). Only an unencodable context is
+        // a verdict; every other policy error is no verdict: retry, never
+        // exclude.
+        let cases: [WasmPolicyError] = [
+            .unsupportedABI(WasmPolicyRef.currentABIVersion + 1),
+            .missingModule("m"),
+            .invalidModule,
+            .missingMemory,
+            .missingAllocator,
+            .missingEntrypoint("e"),
+            .invalidFunctionSignature("f"),
+            .invalidAllocation,
+            .invalidReturn,
+            .contextEncodingFailed,
+            .resourceUnavailable,
+            .nondeterministicConstruct("c"),
+        ]
+        for error in cases {
+            let imported = ChainLevel.classifyValidationFailureForTesting(error)
+            let preflightUnavailable = transactionPreflightEvidenceUnavailable(error)
+            let isVerdict: Bool
+            if case .contextEncodingFailed = error { isVerdict = true } else { isVerdict = false }
+            XCTAssertEqual(
+                imported,
+                isVerdict ? .localVerificationFailure : .unavailableEvidence,
+                "import: \(error)"
+            )
+            XCTAssertEqual(preflightUnavailable, !isVerdict, "preflight: \(error)")
+            XCTAssertEqual(
+                preflightUnavailable,
+                !ChainLevel.isDeterministicInvalidityForTesting(imported),
+                "preflight and import disagree on \(error)"
+            )
+        }
+    }
+
+    func testMisbehavingPolicyIsUnavailableNotInvalid() async throws {
+        // A module without the configured entrypoint throws
+        // `.missingEntrypoint` at evaluation: no verdict on the transaction,
+        // so it stays pooled rather than being evicted.
+        let fetcher = StorableFetcher()
+        let policy = try await storeWasmPolicy(
+            accepts: true,
+            scope: .transaction,
+            fetcher: fetcher,
+            entrypoint: "absent_entrypoint"
+        )
+        let genesis = try await buildAndStoreGenesis(
+            spec: spec(policies: [policy]),
+            timestamp: 1_000,
+            target: easy,
+            fetcher: fetcher
+        )
+        let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
+        let result = await level.preflightTransaction(
+            transaction(signers: [CryptoUtils.generateKeyPair()], nonce: 0),
+            fetcher: fetcher
+        )
+        XCTAssertEqual(result.disposition, .unavailable)
+    }
+
     func testChildWithdrawalNeedsCandidateParentState() async throws {
         let fetcher = StorableFetcher()
         let signer = CryptoUtils.generateKeyPair()

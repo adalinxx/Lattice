@@ -142,7 +142,7 @@ public extension ChainLevel {
     }
 }
 
-private func transactionPreflightEvidenceUnavailable(_ error: Error) -> Bool {
+func transactionPreflightEvidenceUnavailable(_ error: Error) -> Bool {
     if error is FetcherError { return true }
     if let error = error as? DataErrors {
         switch error {
@@ -153,14 +153,8 @@ private func transactionPreflightEvidenceUnavailable(_ error: Error) -> Bool {
         }
     }
     if let error = error as? WasmPolicyError {
-        switch error {
-        case .missingModule, .resourceUnavailable:
-            // As in import: a node-local resource guard is no verdict on the
-            // transaction, so nodes with different limits never disagree on it.
-            return true
-        default:
-            break
-        }
+        // Import's classification, shared so the two never drift apart.
+        return wasmPolicyErrorVerdict(error) == .unavailable
     }
     if let error = error as? TransformErrors,
        case .missingData = error {
