@@ -618,7 +618,8 @@ final class ModelAFeeKeystoneTests: XCTestCase {
         )
         let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [signNexus(maliciousBody, miner)],
-            timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: f
+            timestamp: base + 1000, target: UInt256(1000), nonce: 1,
+            allowFeeRuleViolation: true, fetcher: f
         )
 
         let valid = try await block.validateNexus(fetcher: f).0

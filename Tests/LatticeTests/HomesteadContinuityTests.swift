@@ -23,13 +23,6 @@ private func addr(_ publicKey: String) -> String {
     try! HeaderImpl<PublicKey>(node: PublicKey(key: publicKey)).rawCID
 }
 
-private func sign(_ body: TransactionBody, _ kp: (privateKey: String, publicKey: String)) -> Transaction {
-    // known-valid local node; CID computation cannot fail (no Float/Double fields)
-    let h = try! HeaderImpl<TransactionBody>(node: body)
-    let s = TransactionSigning.sign(bodyHeader: h, privateKeyHex: kp.privateKey)!
-    return Transaction(signatures: [kp.publicKey: s], body: h)
-}
-
 private func storeBlock(_ block: Block, to fetcher: StorableFetcher) async throws {
     try await VolumeImpl<Block>(node: block).storeBlock(storer: fetcher)
 }
@@ -91,14 +84,7 @@ final class HomesteadContinuityTests: XCTestCase {
         let ts1 = now - 20_000
         let nexusBlock1 = try await buildAndStoreBlock(
             previous: nexusGenesis,
-            transactions: [sign(TransactionBody(
-                accountActions: [AccountAction(owner: ownerAddr, delta: Int64(nexusSpec.rewardAtBlock(1)))],
-                actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [],
-                signers: [ownerAddr], nonce: 0,
-                chainPath: ["Nexus"]
-            ), kp)],
-            timestamp: ts1, target: target, fetcher: fetcher
+            timestamp: ts1, target: target, rewardRecipient: ownerAddr, fetcher: fetcher
         )
 
         let forged = Block(
@@ -142,18 +128,13 @@ final class HomesteadContinuityTests: XCTestCase {
         let genesis = try await buildAndStoreGenesis(
             spec: spec, timestamp: now - 50_000, target: target, fetcher: fetcher
         )
-        // Block 1 carries a coinbase so block1.postState != genesis.postState.
+        // Block 1 pays a coinbase so block1.postState != genesis.postState.
         let ts1 = now - 40_000
         let block1 = try await buildAndStoreBlock(
             previous: genesis,
-            transactions: [sign(TransactionBody(
-                accountActions: [AccountAction(owner: ownerAddr, delta: Int64(spec.rewardAtBlock(1)))],
-                actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [],
-                signers: [ownerAddr], nonce: 0, chainPath: ["Nexus"]
-            ), kp)],
-            timestamp: ts1, target: target, fetcher: fetcher
+            timestamp: ts1, target: target, rewardRecipient: ownerAddr, fetcher: fetcher
         )
+        XCTAssertNotEqual(block1.postState.rawCID, genesis.postState.rawCID)
 
         let forged = Block(
             parent: try! VolumeImpl<Block>(node: block1).removingNode(),

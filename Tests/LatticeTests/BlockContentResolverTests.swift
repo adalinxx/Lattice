@@ -117,7 +117,8 @@ final class BlockContentResolverTests: XCTestCase {
         )
 
         let txBody = TransactionBody(
-            accountActions: [AccountAction(owner: "alice", delta: 10)],
+            // Content only: a bare credit would break the fee rule.
+            accountActions: [],
             actions: [],
             depositActions: [],
             genesisActions: [],
@@ -187,7 +188,8 @@ final class BlockContentResolverTests: XCTestCase {
         )
         let genesis = try await storeBuiltBlock(genesisResult, in: source)
         let body = TransactionBody(
-            accountActions: [AccountAction(owner: "alice", delta: 10)],
+            // Content only: a bare credit would break the fee rule.
+            accountActions: [],
             actions: [],
             depositActions: [],
             genesisActions: [],

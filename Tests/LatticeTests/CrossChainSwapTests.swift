@@ -59,11 +59,15 @@ final class DepositStateTests: XCTestCase {
         let kp = CryptoUtils.generateKeyPair()
         let kpAddr = addr(kp.publicKey)
         let spec = childSpec()
-        let reward = spec.rewardAtBlock(0)
         let t = now()
 
         let genesis = try await buildAndStoreGenesis(
             spec: spec, timestamp: t - 20_000, target: UInt256(1000), fetcher: fetcher
+        )
+        // Fund the depositor through the coinbase.
+        let funded = try await buildAndStoreBlock(
+            previous: genesis, timestamp: t - 15_000, target: UInt256(1000),
+            rewardRecipient: kpAddr, fetcher: fetcher
         )
 
         let depositAmount: UInt64 = 100
@@ -71,7 +75,7 @@ final class DepositStateTests: XCTestCase {
 
         let body = TransactionBody(
             accountActions: [
-                AccountAction(owner: kpAddr, delta: Int64(reward) - Int64(depositAmount))
+                AccountAction(owner: kpAddr, delta: -Int64(depositAmount))
             ],
             actions: [], depositActions: [
                 DepositAction(nonce: depositNonce, demander: kpAddr, amountDemanded: depositAmount, amountDeposited: depositAmount)
@@ -83,7 +87,7 @@ final class DepositStateTests: XCTestCase {
         let tx = signTx(body: body, keypair: kp)
 
         let block = try await buildAndStoreBlock(
-            previous: genesis, transactions: [tx],
+            previous: funded, transactions: [tx],
             timestamp: t - 10_000, target: UInt256(1000), fetcher: fetcher
         )
 
@@ -355,8 +359,10 @@ final class NexusActionRestrictionTests: XCTestCase {
         //: chainPath is the correct ["Nexus"] so the empty-chainPath
         // rejection cannot mask the deposit rule — the rejection must come from
         // the deposit-on-root consensus check itself.
+        // The deposit is funded (debit == amountDeposited, paid from the
+        // coinbase), so the fee rule and balances hold.
         let body = TransactionBody(
-            accountActions: [],
+            accountActions: [AccountAction(owner: kpAddr, delta: -100)],
             actions: [], depositActions: [
                 DepositAction(nonce: 1, demander: kpAddr, amountDemanded: 100, amountDeposited: 100)
             ],
@@ -367,7 +373,8 @@ final class NexusActionRestrictionTests: XCTestCase {
 
         let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [tx],
-            timestamp: now() - 10_000, target: UInt256(1000), fetcher: fetcher
+            timestamp: now() - 10_000, target: UInt256(1000),
+            rewardRecipient: kpAddr, fetcher: fetcher
         )
         let valid = try await block.validateNexus(fetcher: fetcher).0
         XCTAssertFalse(valid, "Nexus must reject transactions with deposit actions")
@@ -512,9 +519,6 @@ final class AtomicSwapCycleTests: XCTestCase {
         let buyer = CryptoUtils.generateKeyPair()
         let buyerAddr = addr(buyer.publicKey)
         let cSpec = childSpec()
-        let childReward1 = cSpec.rewardAtBlock(1)
-        let childReward2 = cSpec.rewardAtBlock(2)
-        let childReward3 = cSpec.rewardAtBlock(3)
         let swapNonce: UInt128 = 42
         let swapAmount: UInt64 = 100
 
@@ -524,7 +528,7 @@ final class AtomicSwapCycleTests: XCTestCase {
 
         // Block 1: seller deposits (funded by block reward)
         let depositBody = TransactionBody(
-            accountActions: [AccountAction(owner: sellerAddr, delta: Int64(childReward1) - Int64(swapAmount))],
+            accountActions: [AccountAction(owner: sellerAddr, delta: -Int64(swapAmount))],
             actions: [],
             depositActions: [
                 DepositAction(nonce: swapNonce, demander: sellerAddr,
@@ -536,12 +540,13 @@ final class AtomicSwapCycleTests: XCTestCase {
         )
         let childBlock1 = try await buildAndStoreBlock(
             previous: childGenesis, transactions: [signTx(body: depositBody, keypair: seller)],
-            timestamp: t - 30_000, target: UInt256(1000), fetcher: fetcher
+            timestamp: t - 30_000, target: UInt256(1000),
+            rewardRecipient: sellerAddr, fetcher: fetcher
         )
 
         // Block 2: first withdrawal (valid — buyer claims deposit)
         let withdrawBody1 = TransactionBody(
-            accountActions: [AccountAction(owner: buyerAddr, delta: Int64(childReward2 + swapAmount))],
+            accountActions: [AccountAction(owner: buyerAddr, delta: Int64(swapAmount))],
             actions: [], depositActions: [],
             genesisActions: [], receiptActions: [],
             withdrawalActions: [
@@ -563,7 +568,7 @@ final class AtomicSwapCycleTests: XCTestCase {
 
         // Block 3: second withdrawal on same key — should be invalid
         let withdrawBody2 = TransactionBody(
-            accountActions: [AccountAction(owner: buyerAddr, delta: Int64(childReward3 + swapAmount))],
+            accountActions: [AccountAction(owner: buyerAddr, delta: Int64(swapAmount))],
             actions: [], depositActions: [],
             genesisActions: [], receiptActions: [],
             withdrawalActions: [
@@ -907,8 +912,6 @@ final class CrossChainFlowTests: XCTestCase {
 
         let cSpec = childSpec()
         let nSpec = nexusSpec()
-        let nexusReward = nSpec.rewardAtBlock(0)
-        let childReward = cSpec.rewardAtBlock(0)
         let depositAmount: UInt64 = 200
         let swapNonce: UInt128 = 777
 
@@ -921,9 +924,9 @@ final class CrossChainFlowTests: XCTestCase {
         let nexusGenesis = try await buildAndStoreGenesis(
             spec: nSpec, timestamp: t - 30_000, target: UInt256(1000), fetcher: fetcher
         )
-        // Withdrawer pays demander via receipt (funded by block reward)
+        // Withdrawer pays demander via receipt (funded by the coinbase)
         let receiptBody = TransactionBody(
-            accountActions: [AccountAction(owner: withdrawerAddr, delta: Int64(nexusReward))],
+            accountActions: [],
             actions: [], depositActions: [],
             genesisActions: [],
             receiptActions: [
@@ -935,12 +938,13 @@ final class CrossChainFlowTests: XCTestCase {
         )
         let nexusBlock1 = try await buildAndStoreBlock(
             previous: nexusGenesis, transactions: [signTx(body: receiptBody, keypair: withdrawer)],
-            timestamp: t - 20_000, target: UInt256(1000), fetcher: fetcher
+            timestamp: t - 20_000, target: UInt256(1000),
+            rewardRecipient: withdrawerAddr, fetcher: fetcher
         )
 
         // Attempt withdrawal without deposit — should fail
         let withdrawalBody = TransactionBody(
-            accountActions: [AccountAction(owner: withdrawerAddr, delta: Int64(childReward) + Int64(depositAmount))],
+            accountActions: [AccountAction(owner: withdrawerAddr, delta: Int64(depositAmount))],
             actions: [], depositActions: [],
             genesisActions: [], receiptActions: [],
             withdrawalActions: [

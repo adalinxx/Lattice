@@ -401,7 +401,8 @@ final class BlockMintingTests: XCTestCase {
         )
         let block1 = try await buildAndStoreBlock(
             previous: genesis, transactions: [signTransaction(body: overclaimBody, keypair: miner)],
-            timestamp: t - 10_000, target: UInt256(1000), nonce: 1, fetcher: fetcher
+            timestamp: t - 10_000, target: UInt256(1000), nonce: 1,
+            allowFeeRuleViolation: true, fetcher: fetcher
         )
 
         let valid = try await block1.validateNexus(fetcher: fetcher).0
@@ -523,7 +524,6 @@ final class CrossChainTests: XCTestCase {
         let depositorAddr = addr(depositor.publicKey)
         let childSpec = lifecycleSpec("Child")
         let premineAmount = childSpec.premineAmount()
-        let reward = childSpec.initialReward
 
         let premineBody = TransactionBody(
             accountActions: [AccountAction(owner: depositorAddr, delta: Int64(premineAmount))],
@@ -539,7 +539,7 @@ final class CrossChainTests: XCTestCase {
         let swapAmount: UInt64 = 500
         let swapBody = TransactionBody(
             accountActions: [
-                AccountAction(owner: depositorAddr, delta: Int64(premineAmount - swapAmount + reward) - Int64(premineAmount))
+                AccountAction(owner: depositorAddr, delta: -Int64(swapAmount))
             ],
             actions: [],
             depositActions: [
@@ -611,21 +611,21 @@ final class CrossChainTests: XCTestCase {
         let kp = CryptoUtils.generateKeyPair()
         let kpAddr = addr(kp.publicKey)
         let nexusSpec = noPremine("Nexus")
-        let reward = nexusSpec.rewardAtBlock(1)
 
         let nexusGenesis = try await buildAndStoreGenesis(
             spec: nexusSpec, timestamp: t - 20_000, target: UInt256(1000), fetcher: fetcher
         )
 
+        // Fund kp through the block reward, not a self-credit.
         let fundBody = TransactionBody(
-            accountActions: [AccountAction(owner: kpAddr, delta: Int64(reward))],
+            accountActions: [],
             actions: [], depositActions: [],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 0, chainPath: ["Nexus"]
         )
         let block1 = try await buildAndStoreBlock(
             previous: nexusGenesis, transactions: [signTransaction(body: fundBody, keypair: kp)],
-            timestamp: t - 15_000, nonce: 1, fetcher: fetcher
+            timestamp: t - 15_000, nonce: 1, rewardRecipient: kpAddr, fetcher: fetcher
         )
 
         //: the bodies carry the correct chainPath ["Nexus"] (so the
@@ -634,7 +634,7 @@ final class CrossChainTests: XCTestCase {
         // builder (so a retarget mismatch cannot mask it either) — the block
         // must be rejected BECAUSE it deposits on the parentless root.
         let swapBody = TransactionBody(
-            accountActions: [AccountAction(owner: kpAddr, delta: Int64(reward - 100 + nexusSpec.rewardAtBlock(2)) - Int64(reward))],
+            accountActions: [AccountAction(owner: kpAddr, delta: -100)],
             actions: [],
             depositActions: [DepositAction(nonce: 1, demander: kpAddr, amountDemanded: 100, amountDeposited: 100)],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
@@ -656,28 +656,28 @@ final class CrossChainTests: XCTestCase {
         let kp = CryptoUtils.generateKeyPair()
         let kpAddr = addr(kp.publicKey)
         let nexusSpec = noPremine("Nexus")
-        let reward = nexusSpec.rewardAtBlock(1)
 
         let nexusGenesis = try await buildAndStoreGenesis(
             spec: nexusSpec, timestamp: t - 20_000, target: UInt256(1000), fetcher: fetcher
         )
 
+        // Fund kp through the block reward, not a self-credit.
         let fundBody = TransactionBody(
-            accountActions: [AccountAction(owner: kpAddr, delta: Int64(reward))],
+            accountActions: [],
             actions: [], depositActions: [],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 0, chainPath: ["Nexus"]
         )
         let block1 = try await buildAndStoreBlock(
             previous: nexusGenesis, transactions: [signTransaction(body: fundBody, keypair: kp)],
-            timestamp: t - 15_000, nonce: 1, fetcher: fetcher
+            timestamp: t - 15_000, nonce: 1, rewardRecipient: kpAddr, fetcher: fetcher
         )
 
         // A deposit on the root (itself invalid under is the only way
         // to materialize deposit state a withdrawal could reference; build it
         // so the withdrawal block below is constructible at all.
         let depositBody = TransactionBody(
-            accountActions: [AccountAction(owner: kpAddr, delta: Int64(nexusSpec.rewardAtBlock(2)) - 100)],
+            accountActions: [AccountAction(owner: kpAddr, delta: -100)],
             actions: [],
             depositActions: [DepositAction(nonce: 1, demander: kpAddr, amountDemanded: 100, amountDeposited: 100)],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
@@ -689,7 +689,7 @@ final class CrossChainTests: XCTestCase {
         )
 
         let withdrawBody = TransactionBody(
-            accountActions: [AccountAction(owner: kpAddr, delta: Int64(nexusSpec.rewardAtBlock(3)) + 100)],
+            accountActions: [AccountAction(owner: kpAddr, delta: 100)],
             actions: [],
             depositActions: [],
             genesisActions: [], receiptActions: [],
@@ -713,15 +713,15 @@ final class CrossChainTests: XCTestCase {
         let kp = CryptoUtils.generateKeyPair()
         let kpAddr = addr(kp.publicKey)
         let nexusSpec = noPremine("Nexus")
-        let reward = nexusSpec.rewardAtBlock(0)
 
         let nexusGenesis = try await buildAndStoreGenesis(
             spec: nexusSpec, timestamp: t - 20_000, target: UInt256(1000), fetcher: fetcher
         )
 
-        // Nexus must reject transactions containing withdrawal actions
+        // Nexus must reject transactions containing withdrawal actions. The
+        // credit equals the amount withdrawn, so the fee rule holds.
         let body = TransactionBody(
-            accountActions: [AccountAction(owner: kpAddr, delta: Int64(reward))],
+            accountActions: [AccountAction(owner: kpAddr, delta: 100)],
             actions: [],
             depositActions: [],
             genesisActions: [], receiptActions: [],
@@ -733,14 +733,14 @@ final class CrossChainTests: XCTestCase {
         )
         let tx = signTransaction(body: body, keypair: kp)
 
-        do {
-            _ = try await buildAndStoreBlock(
+        await assertThrows(
+            StateErrors.conflictingActions,
+            "Nexus withdrawal actions must fail closed during block construction"
+        ) {
+            try await buildAndStoreBlock(
                 previous: nexusGenesis, transactions: [tx],
                 timestamp: t - 10_000, target: UInt256(1000), nonce: 1, fetcher: fetcher
             )
-            XCTFail("Nexus withdrawal actions must fail closed during block construction")
-        } catch StateErrors.conflictingActions {
-            // expected
         }
     }
 
@@ -876,26 +876,30 @@ final class CrossChainTests: XCTestCase {
             timestamp: t - 20_000, target: UInt256(1000), fetcher: fetcher
         )
 
-        let reward = spec.rewardAtBlock(0)
-        let stolenBody = TransactionBody(
-            accountActions: [
-                AccountAction(owner: aliceAddr, delta: -Int64(premineAmount)),
-                AccountAction(owner: bobAddr, delta: Int64(premineAmount + reward))
-            ],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
-            signers: [bobAddr], nonce: 0,
-            chainPath: ["Nexus"]
-        )
-        let stolenTx = signTransaction(body: stolenBody, keypair: bob)
+        // The same balanced transfer out of alice's premine, signed by either
+        // party: only the signer differs between the two blocks.
+        func transfer(signedBy signer: (privateKey: String, publicKey: String), nonce: UInt64) async throws -> Bool {
+            let body = TransactionBody(
+                accountActions: [
+                    AccountAction(owner: aliceAddr, delta: -Int64(premineAmount)),
+                    AccountAction(owner: bobAddr, delta: Int64(premineAmount))
+                ],
+                actions: [], depositActions: [], genesisActions: [],
+                receiptActions: [], withdrawalActions: [],
+                signers: [addr(signer.publicKey)], nonce: nonce,
+                chainPath: ["Nexus"]
+            )
+            let block = try await buildAndStoreBlock(
+                previous: genesis, transactions: [signTransaction(body: body, keypair: signer)],
+                timestamp: t - 10_000, target: UInt256(1000), nonce: 1, fetcher: fetcher
+            )
+            return try await block.validateNexus(fetcher: fetcher).0
+        }
 
-        let block = try await buildAndStoreBlock(
-            previous: genesis, transactions: [stolenTx],
-            timestamp: t - 10_000, target: UInt256(1000), nonce: 1, fetcher: fetcher
-        )
-
-        let valid = try await block.validateNexus(fetcher: fetcher).0
-        XCTAssertFalse(valid)
+        let aliceSignedValid = try await transfer(signedBy: alice, nonce: 1)
+        XCTAssertTrue(aliceSignedValid, "control: alice-signed transfer validates")
+        let bobSignedValid = try await transfer(signedBy: bob, nonce: 0)
+        XCTAssertFalse(bobSignedValid)
     }
 }
 
