@@ -96,6 +96,37 @@ final class ConformanceVectorTests: XCTestCase {
         try await Self.assertRegenerates(Self.generateProofs(), "proofs.json")
     }
 
+    /// The signed-transaction vector pinned to its RFC 8032 bytes on every
+    /// host. CryptoKit (macOS) randomizes Ed25519, so a macOS regeneration
+    /// once committed a random (valid) signature, and with it a signed
+    /// transaction whose CID no deterministic host reproduces. The pinned
+    /// signature is the RFC 8032 one (checked independently with OpenSSL);
+    /// a committed random signature fails here on macOS too, not only in
+    /// Linux CI.
+    func testSignedTransactionVectorIsPinnedToRFC8032Bytes() async throws {
+        let rfc8032Signature =
+            "4319992198c7996e615800618f14d5f8a776f3a34b58dede128c871f9e45e1f7e70f535cd729408b03114942c74d9328f02cc6d407520a72e3f3003f06684804"
+        let signedTransactionHex = "a264626f6479a166726177434944783b626166797265696836657868747a7875357266693271783674777a667573736e71667a6369347a3575336337616c367169617976627a77326a67756a7369676e61747572657381a2636b6579784465643031353030346530373430373335636530613334336435623337346235663264383333353334616133333633373232633536643865633338393635663730353135626576616c756578803433313939393231393863373939366536313538303036313866313464356638613737366633613334623538646564653132386338373166396534356531663765373066353335636437323934303862303331313439343263373464393332386630326363366434303735323061373265336633303033663036363834383034"
+        let (alice, _, _) = try Self.parties()
+        let body = try await Self.transactionBodies()[0].body
+        let envelope = TransactionSigning.preimage(body: body)
+
+        XCTAssertTrue(CryptoUtils.verify(message: envelope, signature: rfc8032Signature, publicKeyHex: alice.publicKey))
+        #if !canImport(CryptoKit)
+        XCTAssertEqual(CryptoUtils.sign(message: envelope, privateKeyHex: alice.privateKey), rfc8032Signature)
+        #endif
+        let transaction = Transaction(
+            signatures: [alice.publicKey: rfc8032Signature],
+            body: try HeaderImpl(node: body)
+        )
+        XCTAssertEqual(try DagCBOR.encode(transaction).hexString, signedTransactionHex)
+
+        let committed: SigningFile = try Self.load("signing.json", orEmpty: SigningFile.self)
+        XCTAssertEqual(committed.vectors.first { $0.name == "transaction/envelope" }?.signature, rfc8032Signature)
+        let encoding: EncodingFile = try Self.load("encoding.json", orEmpty: EncodingFile.self)
+        XCTAssertEqual(encoding.vectors.first { $0.name == "transaction/signed" }?.dagCborHex, signedTransactionHex)
+    }
+
     func testVectorsDirectoryHoldsOnlyPublishedFiles() throws {
         let present = try FileManager.default.contentsOfDirectory(atPath: Self.directory.path)
             .filter { !$0.hasPrefix(".") }
@@ -595,7 +626,12 @@ final class ConformanceVectorTests: XCTestCase {
 
     /// The RFC 8032 signature where this host signs deterministically; on a
     /// host that randomizes Ed25519 (CryptoKit), the committed signature while
-    /// Lattice still verifies it.
+    /// Lattice still verifies it. A randomizing host can never mint a new
+    /// vector signature: its random one would be committed and every
+    /// deterministic (Linux) host would then regenerate a different
+    /// signature, and so a different signed-transaction CID. When the
+    /// committed signature no longer verifies, the vector must be
+    /// regenerated on a deterministic host.
     static func canonicalSignature(message: String, signer: Party, committed: String?) throws -> String {
         let first = try XCTUnwrap(CryptoUtils.sign(message: message, privateKeyHex: signer.privateKey))
         let second = try XCTUnwrap(CryptoUtils.sign(message: message, privateKeyHex: signer.privateKey))
@@ -609,6 +645,10 @@ final class ConformanceVectorTests: XCTestCase {
         if let committed, CryptoUtils.verify(message: message, signature: committed, publicKeyHex: signer.publicKey) {
             return committed
         }
+        XCTFail(
+            "this host randomizes Ed25519 and the committed signature does not verify \(message.debugDescription); "
+                + "regenerate the vectors on a deterministic (Linux) host"
+        )
         return first
     }
 
