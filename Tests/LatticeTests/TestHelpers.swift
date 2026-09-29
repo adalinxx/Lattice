@@ -280,7 +280,7 @@ func buildAndStoreBlock(
 
 /// Asserts `operation` throws exactly `expected`, so a refusal test passes only
 /// on the rule it exercises, never on an unrelated refusal (e.g. the fee rule).
-func assertThrows<T, E: Error & Equatable>(
+func assertThrows<T: Sendable, E: Error & Equatable>(
     _ expected: E,
     _ message: String = "",
     file: StaticString = #filePath,
