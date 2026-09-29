@@ -207,12 +207,13 @@ func buildAndStoreGenesis(
 
 /// Test local-CAS policy counterpart to ``buildAndStoreGenesis``.
 ///
-/// Many validator tests need a block whose transactions break the fee rule
-/// (C + P > D + W), which `BlockBuilder` refuses to build. For those, with no
-/// recipient, this assembles the block anyway: the builder's header over no
+/// `allowFeeRuleViolation` is for fee-rule tests only: when the builder
+/// refuses transactions that break the fee rule (C + P > D + W) and there is
+/// no recipient, it assembles the block anyway: the builder's header over no
 /// transactions, then these transactions and the post-state their actions
 /// alone produce. Validation must reject it; builder refusal itself is tested
-/// against `BlockBuilder` directly (`CoinbaseTests`).
+/// against `BlockBuilder` directly (`CoinbaseTests`). Every other test must
+/// build a fee-rule-valid block so it exercises only the defect under test.
 func buildAndStoreBlock(
     previous: Block,
     transactions: [Transaction] = [],
@@ -223,6 +224,7 @@ func buildAndStoreBlock(
     nextTarget: UInt256? = nil,
     nonce: UInt64 = 0,
     rewardRecipient: String? = nil,
+    allowFeeRuleViolation: Bool = false,
     fetcher: Fetcher
 ) async throws -> Block {
     func build(_ transactions: [Transaction]) async throws -> BlockBuildResult {
@@ -242,7 +244,8 @@ func buildAndStoreBlock(
     let result: BlockBuildResult
     do {
         result = try await build(transactions)
-    } catch BlockBuilderError.invalidCoinbase(.feeRuleViolated) where rewardRecipient == nil {
+    } catch BlockBuilderError.invalidCoinbase(.feeRuleViolated)
+        where allowFeeRuleViolation && rewardRecipient == nil {
         let header = try await build([]).block
         var bodies: [TransactionBody] = []
         for transaction in transactions {
@@ -273,6 +276,26 @@ func buildAndStoreBlock(
         return result.block
     }
     return try await storeBuiltBlock(result, in: storer)
+}
+
+/// Asserts `operation` throws exactly `expected`, so a refusal test passes only
+/// on the rule it exercises, never on an unrelated refusal (e.g. the fee rule).
+func assertThrows<T, E: Error & Equatable>(
+    _ expected: E,
+    _ message: String = "",
+    file: StaticString = #filePath,
+    line: UInt = #line,
+    isolation: isolated (any Actor)? = #isolation,
+    _ operation: () async throws -> T
+) async {
+    do {
+        _ = try await operation()
+        XCTFail("expected \(expected), but it succeeded. \(message)", file: file, line: line)
+    } catch let error as E {
+        XCTAssertEqual(error, expected, message, file: file, line: line)
+    } catch {
+        XCTFail("expected \(expected), got \(error). \(message)", file: file, line: line)
+    }
 }
 
 func testAddress(publicKey: String) -> String {

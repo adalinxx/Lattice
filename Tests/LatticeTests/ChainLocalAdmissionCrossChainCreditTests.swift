@@ -245,10 +245,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
         let keyPair = CryptoUtils.generateKeyPair()
         let owner = testAddress(publicKey: keyPair.publicKey)
         let anchorBody = TransactionBody(
-            accountActions: [AccountAction(
-                owner: owner,
-                delta: Int64(chainLocalSpec().initialReward)
-            )],
+            accountActions: [],
             actions: [],
             depositActions: [],
             genesisActions: [GenesisAction(
@@ -268,6 +265,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             timestamp: 2_000,
             target: AdmissionFixture.easy,
             nonce: 2,
+            rewardRecipient: owner,
             fetcher: fetcher
         )
         XCTAssertGreaterThan(root.proofOfWorkHash(), alternate.target)

@@ -124,7 +124,8 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
             timestamp: t - 20_000, target: UInt256(1000), fetcher: fetcher
         )
         let reward = s.rewardAtBlock(0)
-        // Over-claim the reward → invalid block.
+        // Over-claim the reward: a fee-rule violation (C > D), the one defect,
+        // so the builder must be told to assemble it anyway.
         let overclaimBody = TransactionBody(
             accountActions: [AccountAction(owner: minerAddr, delta: Int64(reward + 1))],
             actions: [], depositActions: [], genesisActions: [],
@@ -136,7 +137,8 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         let tx = Transaction(signatures: [miner.publicKey: sig], body: bodyHeader)
         let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [tx],
-            timestamp: t - 10_000, target: UInt256(1000), nonce: 1, fetcher: fetcher
+            timestamp: t - 10_000, target: UInt256(1000), nonce: 1,
+            allowFeeRuleViolation: true, fetcher: fetcher
         )
         try await VolumeImpl<Block>(node: block).store(
             paths: Block.contentResolutionPaths,

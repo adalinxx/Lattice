@@ -59,9 +59,6 @@ final class DoubleClaimTests: XCTestCase {
         let kpAddr = id(kp.publicKey)
         let childSpec = s("Child")
         let nexusSpec = s("Nexus", premine: 0)
-        let premine = childSpec.premineAmount()
-        let cr = childSpec.initialReward
-        let nr = nexusSpec.rewardAtBlock(0)
         let amount: UInt64 = 500
 
         let childGenesis = try await premineGenesis(spec: childSpec, owner: kp, fetcher: fetcher, time: base)
@@ -73,7 +70,7 @@ final class DoubleClaimTests: XCTestCase {
         let childSwapKey = DepositKey(depositAction: childSwap).description
 
         let swapBody = TransactionBody(
-            accountActions: [AccountAction(owner: kpAddr, delta: Int64(premine - amount + cr) - Int64(premine))],
+            accountActions: [AccountAction(owner: kpAddr, delta: -Int64(amount))],
             actions: [],
             depositActions: [childSwap],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
@@ -84,10 +81,10 @@ final class DoubleClaimTests: XCTestCase {
             previous: childGenesis, transactions: [tx(swapBody, kp)],
             timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
-        let bal1 = premine - amount + cr
 
+        // The receipt's payment is funded by the coinbase.
         let settleBody = TransactionBody(
-            accountActions: [AccountAction(owner: kpAddr, delta: Int64(nr))],
+            accountActions: [],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: amount, directory: "Child")],
             withdrawalActions: [],
@@ -96,11 +93,12 @@ final class DoubleClaimTests: XCTestCase {
         )
         let nexusBlock1 = try await buildAndStoreBlock(
             previous: nexusGenesis, transactions: [tx(settleBody, kp)],
-            timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
+            timestamp: base + 1000, target: UInt256(1000), nonce: 1,
+            rewardRecipient: kpAddr, fetcher: fetcher
         )
 
         let c1Body = TransactionBody(
-            accountActions: [AccountAction(owner: kpAddr, delta: Int64(bal1 + amount + cr) - Int64(bal1))],
+            accountActions: [AccountAction(owner: kpAddr, delta: Int64(amount))],
             actions: [], depositActions: [],
             genesisActions: [], receiptActions: [],
             withdrawalActions: [WithdrawalAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: amount, amountWithdrawn: amount)],
@@ -113,10 +111,9 @@ final class DoubleClaimTests: XCTestCase {
             parentChainBlock: nexusBlock1,
             timestamp: base + 2000, target: UInt256(1000), nonce: 2, fetcher: fetcher
         )
-        let bal2 = bal1 + amount + cr
 
         let c2Body = TransactionBody(
-            accountActions: [AccountAction(owner: kpAddr, delta: Int64(bal2 + amount + cr) - Int64(bal2))],
+            accountActions: [AccountAction(owner: kpAddr, delta: Int64(amount))],
             actions: [], depositActions: [],
             genesisActions: [], receiptActions: [],
             withdrawalActions: [WithdrawalAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: amount, amountWithdrawn: amount)],
@@ -124,16 +121,13 @@ final class DoubleClaimTests: XCTestCase {
             chainPath: ["Nexus"]
         )
 
-        do {
-            let childBlock3 = try await buildAndStoreBlock(
+        await assertThrows(StateErrors.conflictingActions, "Second claim of same swap should fail because the deposit is marked spent") {
+            try await buildAndStoreBlock(
                 previous: childBlock2,
                 transactions: [tx(c2Body, kp)],
                 parentChainBlock: nexusBlock1,
                 timestamp: base + 3000, target: UInt256(1000), nonce: 3, fetcher: fetcher
             )
-            let valid = try await childBlock3.validateNexus(fetcher: fetcher).0
-            XCTAssertFalse(valid, "Second claim of same swap should fail because the deposit is marked spent")
-        } catch {
         }
     }
 }
@@ -219,10 +213,6 @@ final class CrossChainReplayTests: XCTestCase {
         let childASpec = s("ChildA")
         let childBSpec = s("ChildB")
         let nexusSpec = s("Nexus", premine: 0)
-        let premineA = childASpec.premineAmount()
-        let premineB = childBSpec.premineAmount()
-        let crA = childASpec.initialReward
-        let nr = nexusSpec.rewardAtBlock(0)
         let amount: UInt64 = 500
 
         let childAGenesis = try await premineGenesis(spec: childASpec, owner: kp, fetcher: fetcher, time: base)
@@ -235,7 +225,7 @@ final class CrossChainReplayTests: XCTestCase {
         let childASwapKey = DepositKey(depositAction: childASwap).description
 
         let swapBody = TransactionBody(
-            accountActions: [AccountAction(owner: kpAddr, delta: Int64(premineA - amount + crA) - Int64(premineA))],
+            accountActions: [AccountAction(owner: kpAddr, delta: -Int64(amount))],
             actions: [],
             depositActions: [childASwap],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
@@ -247,8 +237,9 @@ final class CrossChainReplayTests: XCTestCase {
             timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
         )
 
+        // The receipt's payment is funded by the coinbase.
         let settleBody = TransactionBody(
-            accountActions: [AccountAction(owner: kpAddr, delta: Int64(nr))],
+            accountActions: [],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: amount, directory: "ChildA")],
             withdrawalActions: [],
@@ -257,12 +248,12 @@ final class CrossChainReplayTests: XCTestCase {
         )
         let nexusBlock1 = try await buildAndStoreBlock(
             previous: nexusGenesis, transactions: [tx(settleBody, kp)],
-            timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
+            timestamp: base + 1000, target: UInt256(1000), nonce: 1,
+            rewardRecipient: kpAddr, fetcher: fetcher
         )
 
-        let crB = childBSpec.initialReward
         let replayBody = TransactionBody(
-            accountActions: [AccountAction(owner: kpAddr, delta: Int64(premineB + amount + crB) - Int64(premineB))],
+            accountActions: [AccountAction(owner: kpAddr, delta: Int64(amount))],
             actions: [], depositActions: [],
             genesisActions: [], receiptActions: [],
             withdrawalActions: [WithdrawalAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: amount, amountWithdrawn: amount)],
@@ -270,17 +261,14 @@ final class CrossChainReplayTests: XCTestCase {
             chainPath: ["Nexus"]
         )
 
-        do {
-            let replayBlock = try await buildAndStoreBlock(
+        // No spendable swap key exists in child B's depositState.
+        await assertThrows(StateErrors.conflictingActions, "Claim on child B using child A swap should fail — no swap exists on B") {
+            try await buildAndStoreBlock(
                 previous: childBGenesis,
                 transactions: [tx(replayBody, kp)],
                 parentChainBlock: nexusBlock1,
                 timestamp: base + 2000, target: UInt256(1000), nonce: 2, fetcher: fetcher
             )
-            let valid = try await replayBlock.validateNexus(fetcher: fetcher).0
-            XCTAssertFalse(valid, "Claim on child B using child A swap should fail — no swap exists on B")
-        } catch {
-            // No spendable swap key exists in child B's depositState.
         }
     }
 }
