@@ -1273,20 +1273,9 @@ private func classifyValidationFailure(_ error: Error) -> BlockImportError {
         }
     }
     if let policyError = error as? WasmPolicyError {
-        switch policyError {
-        case .missingModule, .resourceUnavailable:
-            // Missing module bytes, or a node-local resource guard (module size,
-            // declared memory, or table) tripping: this node cannot reach a
-            // verdict, but the policy is not proven invalid. Unavailable, never
-            // `protocolInvalid` — otherwise nodes with different limits fork on
-            // the same block.
-            return .unavailableEvidence
-        case .contextEncodingFailed:
-            return .localVerificationFailure
-        default:
-            // An unenumerated policy outcome is not a completed verdict: retry,
-            // never exclude, so a new case can never silently fork the network.
-            return .unavailableEvidence
+        switch wasmPolicyErrorVerdict(policyError) {
+        case .unavailable: return .unavailableEvidence
+        case .invalid: return .localVerificationFailure
         }
     }
     if error is StateErrors || error is ProofErrors
@@ -1296,6 +1285,43 @@ private func classifyValidationFailure(_ error: Error) -> BlockImportError {
     // Unenumerated error: not a completed deterministic check → retry, exclude
     // nothing. Enumerated deterministic producers above keep excluding.
     return .unavailableEvidence
+}
+
+/// What a Wasm policy error says about the input it was evaluated on. Block
+/// import and transaction preflight both classify through this one function,
+/// so the two paths cannot drift apart: a transaction preflight evicts is one
+/// import would exclude, and one import retries stays pooled. The switch is
+/// exhaustive with no `default`, so a new `WasmPolicyError` case fails to
+/// compile until it is given a verdict here.
+enum WasmPolicyErrorVerdict: Sendable, Equatable {
+    /// No verdict: retry, never exclude.
+    case unavailable
+    /// A completed, deterministic verdict on the input.
+    case invalid
+}
+
+func wasmPolicyErrorVerdict(_ error: WasmPolicyError) -> WasmPolicyErrorVerdict {
+    switch error {
+    case .contextEncodingFailed:
+        // The policy input itself cannot be encoded (a field past the length
+        // prefix's range, a negative action index): a property of the input,
+        // so every node reaches the same verdict.
+        return .invalid
+    case .missingModule, .resourceUnavailable:
+        // Missing module bytes, or a node-local resource guard (module size,
+        // declared memory, or table) tripping: this node cannot reach a
+        // verdict, but the policy is not proven invalid. Unavailable, never
+        // invalid, otherwise nodes with different limits fork on the same
+        // block.
+        return .unavailable
+    case .unsupportedABI, .invalidModule, .missingMemory, .missingAllocator,
+         .missingEntrypoint, .invalidFunctionSignature, .invalidAllocation,
+         .invalidReturn, .nondeterministicConstruct:
+        // A misbehaving or malformed module is not a completed verdict on the
+        // input: retry, never exclude. Genesis validates the configured
+        // modules, so these are rare after it.
+        return .unavailable
+    }
 }
 
 private func classifyDataError(_ error: DataErrors) -> BlockImportError {

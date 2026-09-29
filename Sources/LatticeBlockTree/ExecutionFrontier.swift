@@ -670,11 +670,18 @@ extension ChainState {
             .atRevision(mutationGeneration)
     }
 
-    /// One coherent canonical context for transaction preflight. Keeping the
-    /// tip and its snapshot in one actor read lets callers reject a result if
-    /// the canonical tip changes while content is being resolved.
-    package func transactionPreflightTip() -> (cid: String, snapshot: TipBlockSnapshot?) {
-        (canonicalTip, tipSnapshot)
+    /// One coherent context for transaction preflight: the named block (the
+    /// canonical tip when nil) and its snapshot. Keeping the two in one actor
+    /// read lets callers reject a result if the tip changes while content is
+    /// being resolved. The snapshot is nil unless the block is on the
+    /// executed-from-genesis frontier: a weighed block's post-state is a
+    /// declared claim, never a state to classify against.
+    package func transactionPreflightTip(
+        at blockHash: String? = nil
+    ) -> (cid: String, snapshot: TipBlockSnapshot?) {
+        let cid = blockHash ?? canonicalTip
+        guard frontier.isAnchored(cid) else { return (cid, nil) }
+        return (cid, frontier.snapshot(of: cid))
     }
 
     public func isCanonical(hash: String) -> Bool {
