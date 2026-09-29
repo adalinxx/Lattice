@@ -56,7 +56,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
                     depositActions: [], genesisActions: [], receiptActions: [],
                     withdrawalActions: [],
                     signers: [testAddress(publicKey: keyPair.publicKey)],
-                    fee: 0, nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
+                    nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
                 ),
                 by: keyPair
             )],
@@ -84,7 +84,6 @@ final class ParentStateAttestationTierTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [signer],
-            fee: 0,
             nonce: 0,
             chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
@@ -122,6 +121,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
             children: honest.children,
             height: honest.height,
             timestamp: honest.timestamp + 1,
+            rewardRecipient: nil,
             nonce: nonce
         )
     }
@@ -204,7 +204,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
                     depositActions: [], genesisActions: [], receiptActions: [],
                     withdrawalActions: [],
                     signers: [testAddress(publicKey: keyPair.publicKey)],
-                    fee: 0, nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
+                    nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
                 ),
                 by: keyPair
             )],
@@ -531,7 +531,6 @@ final class ParentStateAttestationTierTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [owner],
-            fee: 0,
             nonce: 0,
             chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
@@ -704,7 +703,6 @@ final class ParentStateAttestationTierTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [owner],
-            fee: 0,
             nonce: 0,
             chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
         )
@@ -1011,7 +1009,6 @@ final class ParentStateAttestationTierTests: XCTestCase {
                     receiptActions: [],
                     withdrawalActions: [],
                     signers: [testAddress(publicKey: keyPair.publicKey)],
-                    fee: 0,
                     nonce: 0,
                     chainPath: [DEFAULT_ROOT_DIRECTORY]
                 ),
@@ -1109,7 +1106,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
                     depositActions: [], genesisActions: [], receiptActions: [],
                     withdrawalActions: [],
                     signers: [testAddress(publicKey: keyPair.publicKey)],
-                    fee: 0, nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
+                    nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
                 ),
                 by: keyPair
             )],

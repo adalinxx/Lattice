@@ -468,3 +468,43 @@ final class ActionFuzzTests: XCTestCase {
         }
     }
 }
+
+// MARK: - Coinbase: builder and validator agree
+
+@MainActor
+final class CoinbaseAgreementFuzzTests: XCTestCase {
+
+    /// Random fee-paying blocks with a random recipient (none, fresh, a payer,
+    /// a payee): the validator accepts exactly what `BlockBuilder` built, and
+    /// supply changes by the reward when a recipient is paid, or falls by the
+    /// fees when they burn.
+    func testBuilderAndValidatorAgreeOnTheCoinbase() async throws {
+        var rng = SeededRNG(seed: 0xC01B)
+        for _ in 0..<25 {
+            let f = try await CoinbaseFixture.make()
+            let payees = (0..<3).map { _ in freshAddress() }
+            var transactions: [Transaction] = []
+            var fees: UInt64 = 0
+            for nonce in 0..<UInt64.random(in: 0...4, using: &rng) {
+                let debit = UInt64.random(in: 1...1_000, using: &rng)
+                let credit = UInt64.random(in: 0...debit, using: &rng)
+                let payee = payees[Int.random(in: 0..<payees.count, using: &rng)]
+                transactions.append(f.transfer(
+                    debit: debit, credits: credit > 0 ? [(payee, credit)] : [], nonce: nonce
+                ).transaction)
+                fees += debit - credit
+            }
+            let choices: [String?] = [nil, freshAddress(), f.payerAddress, payees[0]]
+            let recipient = choices[Int.random(in: 0..<choices.count, using: &rng)]
+
+            let block = try await f.block(transactions, recipient: recipient)
+            let (valid, _, post) = try await block.validateNexus(fetcher: f.fetcher)
+            XCTAssertTrue(valid, "recipient \(String(describing: recipient)), fees \(fees)")
+            let accountState = try await XCTUnwrap(post).accountState.resolveRecursive(fetcher: f.fetcher)
+            let accounts = try XCTUnwrap(accountState.node?.allKeysAndValues())
+            let supply = accounts.filter { !AccountStateHeader.isReservedAccountKey($0.key) }
+                .values.reduce(UInt64(0), +)
+            XCTAssertEqual(supply, recipient == nil ? f.premine - fees : f.premine + f.reward)
+        }
+    }
+}

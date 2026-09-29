@@ -1,21 +1,21 @@
 {
   "fixtures" : {
-    "badPrevState" : "bafyreih2p4ihgh6oue664lxc5gwo5ook733fj4n5njhsgrqb54fr2dm7fu",
+    "badPrevState" : "bafyreif6wsmunuzqaylfrpdj2m67nmcloswmducdw4edc2j4hbadrpnnwu",
     "carrier" : "bafyreiayo3y344iipfbh35h4npeyijrtqdavtmsytrfquhucnlpii4br5u",
     "childCandidate" : "bafyreiesnrar33xsnoxi3pujrh6q3rmwas465ozwi3e3qkenhelghwshme",
     "childGenesis" : "bafyreicpb3llce2axngr2qyl42vtmxoy6mp7l2bywxuzzxjjt4numpdldq",
-    "forgedPostState" : "bafyreidq6pwidkwcogrdrcbqp5x7irbpjmcmnlsetyfibnuch46a6kpsmi",
-    "genesis" : "bafyreiheo36qvtoiklq6juizsjvhiaxat6rte5pbna65cqjyke5ynzn4b4",
-    "grandchild" : "bafyreiaxqvmfrvcmnb7hisabum7637fftmyp6km333qazevdqnb3kd3jay",
+    "forgedPostState" : "bafyreibv37f4kxpkqe3z2uhq3mmtwxeekcjv2fnkaxnxugpufjga25gevq",
+    "genesis" : "bafyreifqxlxcs3ichftflawz4gibgebdatxtdlhjcq4npzt65iyjwybycu",
+    "grandchild" : "bafyreibvx7f5qkwpuvi2ckrqlhvs2n27ehjzsj5t5wj4wupavgecoi6oem",
     "hardChildGenesis" : "bafyreihasi35p4eed774gacwadrp4n3tgixsymt62jpbhxxkffhw6esmfe",
-    "hardGenesis" : "bafyreid2qenjch4t3oeg63h5vvnhjxyget5cwhf2qeqhwv6kogs5pyw7re",
+    "hardGenesis" : "bafyreign2akgvlpvrakvqvc3nu4hasbjpnfbiyr6sivkr7ku34pe5mfidi",
     "missCarrier" : "bafyreiejsxkwfhmakhdafjfqfzbfwfjjt3k7vtcz3iixjmqzxqgtuhsrve",
     "missedChild" : "bafyreidskkmt7irrzwscv5j5ttskkyl6ygs2rfhd2hbaqibkiqn4lqfpu4",
-    "side" : "bafyreiepnr3kkycyajgy3txkk2t4otrxoxessead2lccxhvy7ombzhigwi",
-    "tooEasy" : "bafyreignn43tak45egqha4xpotaiiqr2dqyx2gifzv335cvpma4ntwqdne",
-    "valid" : "bafyreicn3ubfmbcgfemooxmvnqww5nbqufhgraanve77yegxrw7joloaa4",
-    "wrongHeight" : "bafyreiartkkyayghomx6lsezrjnjhi7exqvyt2toizcwtz6hksiavnzeza",
-    "wrongNextTarget" : "bafyreigeqved6bcj2yohg5dpffv4r6w7aorjyj57s4qk6jpmw2mes3oxri"
+    "side" : "bafyreihkohhcxqj5f2hmfhux3sdsqt3ztlaxgszo6gxzib6unpwc3ohuia",
+    "tooEasy" : "bafyreigz75s2i64fayr5t2qxzxu5kz564t7g7ciohhusqak5pgfeoev7pu",
+    "valid" : "bafyreifht3efgmkwv2nllkileuqr226p2mwqcrnhtci4ddb7m2y5gqu3je",
+    "wrongHeight" : "bafyreifuzt53sfqqop6be6kusdfjoo7eemn4bbpnfnx4hfupavcxpol3bq",
+    "wrongNextTarget" : "bafyreia5vd45aayshrnyhyanl4h3odemshyja4vcx6cm44v2xnik6g43k4"
   },
   "steps" : [
     {

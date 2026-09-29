@@ -228,6 +228,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
             children: valid.children,
             height: height ?? valid.height,
             timestamp: valid.timestamp,
+            rewardRecipient: valid.rewardRecipient,
             nonce: valid.nonce
         ), in: fetcher)
     }

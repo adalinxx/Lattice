@@ -140,7 +140,7 @@ private struct AdmissionFixtures {
     static let recipientSeed = Data(repeating: 0x42, count: 32)
     /// Signature of `signerSeed`'s key over the fixed transfer body. `build()`
     /// fails with the replacement value if the body ever changes.
-    static let transferSignature = "100b23f8087d38114e8cf1ac895a8835988d5acc7d908b3260f9ecb19119f7ff5d8740069e145189737ed5429203186c4a5ed061a2fa0c808064a9bc5e3a9802"
+    static let transferSignature = "dae41cb8a33f1c9bfd81d2189fc8dac547fbb20ae78bfa9813c187a15e0a05d5929021f46d884f1d33012ab97526d9bb288f0942e18aae1569c3e162e133170f"
 
     let fetcher = StorableFetcher()
     /// Block boundaries and the spec only — what a node holds after weighing —
@@ -183,6 +183,7 @@ private struct AdmissionFixtures {
             children: valid.children,
             height: height ?? valid.height,
             timestamp: valid.timestamp,
+            rewardRecipient: valid.rewardRecipient,
             nonce: valid.nonce
         ), in: fetcher))
     }
@@ -195,15 +196,16 @@ private struct AdmissionFixtures {
             spec: spec, owner: (signer.privateKey, signer.publicKey),
             fetcher: fixtures.fetcher, timestamp: 1_000, target: easy
         ))
-        // A real state change: a transfer that also mints block 1's reward.
+        // A real state change: a transfer, and block 1's reward paid to the
+        // same recipient through the coinbase.
         let body = try HeaderImpl<TransactionBody>(node: TransactionBody(
             accountActions: [
                 AccountAction(owner: signer.address, delta: -10),
-                AccountAction(owner: recipient.address, delta: 10 + Int64(spec.rewardAtBlock(1))),
+                AccountAction(owner: recipient.address, delta: 10),
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [signer.address], fee: 0, nonce: 0,
+            signers: [signer.address], nonce: 0,
             chainPath: [DEFAULT_ROOT_DIRECTORY]
         ))
         guard TransactionSigning.verify(
@@ -216,10 +218,11 @@ private struct AdmissionFixtures {
         let transfer = Transaction(signatures: [signer.publicKey: transferSignature], body: body)
         let valid = try fixtures.register("valid", try await buildAndStoreBlock(
             previous: genesis, transactions: [transfer],
-            timestamp: 2_000, target: easy, nonce: 1, fetcher: fixtures.fetcher
+            timestamp: 2_000, target: easy, nonce: 1,
+            rewardRecipient: recipient.address, fetcher: fixtures.fetcher
         ))
         _ = try fixtures.register("side", try await buildAndStoreBlock(
-            previous: genesis, timestamp: 2_500, target: easy, nonce: 2, fetcher: fixtures.fetcher
+            previous: genesis, timestamp: 2_500, target: easy, nonce: 8, fetcher: fixtures.fetcher
         ))
         _ = try fixtures.register("grandchild", try await buildAndStoreBlock(
             previous: valid, timestamp: 3_000, target: easy, nonce: 3, fetcher: fixtures.fetcher
@@ -230,7 +233,7 @@ private struct AdmissionFixtures {
         _ = try await fixtures.variant("forgedPostState", of: valid, postState: genesis.postState)
 
         let hardGenesis = try fixtures.register("hardGenesis", try await buildAndStoreGenesis(
-            spec: spec, timestamp: 1_000, target: easy / UInt256(2), nonce: 7, fetcher: fixtures.fetcher
+            spec: spec, timestamp: 1_000, target: easy / UInt256(2), nonce: 9, fetcher: fixtures.fetcher
         ))
         _ = try fixtures.register("tooEasy", try await buildAndStoreBlock(
             previous: hardGenesis, timestamp: 2_000, target: easy, nonce: 1, fetcher: fixtures.fetcher

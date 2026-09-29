@@ -107,7 +107,6 @@ final class BlockBuilderParentHomesteadTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [owner],
-            fee: 0,
             nonce: nonce,
             chainPath: chainPath
         )

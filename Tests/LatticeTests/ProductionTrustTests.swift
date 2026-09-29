@@ -36,7 +36,7 @@ private func premineGenesis(
     let body = TransactionBody(
         accountActions: [AccountAction(owner: addr, delta: Int64(spec.premineAmount()))],
         actions: [], depositActions: [], genesisActions: [],
-        receiptActions: [], withdrawalActions: [], signers: [addr], fee: 0, nonce: 0,
+        receiptActions: [], withdrawalActions: [], signers: [addr], nonce: 0,
         chainPath: ["Nexus"]
     )
     return try await buildAndStoreGenesis(
@@ -251,7 +251,7 @@ final class ChildGenesisValidationTests: XCTestCase {
                 blockCID: blockCID
             )],
             receiptActions: [], withdrawalActions: [],
-            signers: [], fee: 0, nonce: 0, chainPath: chainPath
+            signers: [], nonce: 0, chainPath: chainPath
         )
     }
 
@@ -350,7 +350,7 @@ final class ClaimSecurityTests: XCTestCase {
             actions: [],
             depositActions: [childSwap],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 1,
+            signers: [kpAddr], nonce: 1,
             chainPath: ["Nexus"]
         )
         let childBlock1 = try await buildAndStoreBlock(
@@ -363,7 +363,7 @@ final class ClaimSecurityTests: XCTestCase {
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: 500, directory: "Child")],
             withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 0,
+            signers: [kpAddr], nonce: 0,
             chainPath: ["Nexus"]
         )
         let nexusBlock1 = try await buildAndStoreBlock(
@@ -379,7 +379,7 @@ final class ClaimSecurityTests: XCTestCase {
             withdrawalActions: [
                 WithdrawalAction(withdrawer: kpAddr, nonce: 99, demander: kpAddr, amountDemanded: 500, amountWithdrawn: 500)
             ],
-            signers: [kpAddr], fee: 0, nonce: 2,
+            signers: [kpAddr], nonce: 2,
             chainPath: ["Nexus"]
         )
 
@@ -420,7 +420,7 @@ final class ClaimSecurityTests: XCTestCase {
             actions: [],
             depositActions: [childSwap],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 1,
+            signers: [kpAddr], nonce: 1,
             chainPath: ["Nexus"]
         )
         let childBlock1 = try await buildAndStoreBlock(
@@ -433,7 +433,7 @@ final class ClaimSecurityTests: XCTestCase {
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: 500, directory: "Child")],
             withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 0,
+            signers: [kpAddr], nonce: 0,
             chainPath: ["Nexus"]
         )
         let nexusBlock1 = try await buildAndStoreBlock(
@@ -449,7 +449,7 @@ final class ClaimSecurityTests: XCTestCase {
             withdrawalActions: [
                 WithdrawalAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: 9999, amountWithdrawn: 9999)
             ],
-            signers: [kpAddr], fee: 0, nonce: 2,
+            signers: [kpAddr], nonce: 2,
             chainPath: ["Nexus"]
         )
 
@@ -492,22 +492,24 @@ final class FeeOnlyEconomyTests: XCTestCase {
 
         // Normal block with fee — the miner gets reward + fee
         let fee: UInt64 = 77
-        let reward = spec.rewardAtBlock(0)
+        let reward = spec.rewardAtBlock(1)
         let body = TransactionBody(
             accountActions: [
-                AccountAction(owner: payerAddr, delta: Int64(premine - fee) - Int64(premine)),
-                AccountAction(owner: minerAddr, delta: Int64(reward + fee))
+                AccountAction(owner: payerAddr, delta: Int64(premine - fee) - Int64(premine))
             ],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [payerAddr], fee: fee, nonce: 1, chainPath: ["Nexus"]
+            signers: [payerAddr], nonce: 1, chainPath: ["Nexus"]
         )
         let block = try await buildAndStoreBlock(
             previous: genesis, transactions: [tx(body, payer)],
-            timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
+            timestamp: base + 1000, target: UInt256(1000), nonce: 1,
+            rewardRecipient: minerAddr, fetcher: fetcher
         )
-        let valid = try await block.validateNexus(fetcher: fetcher).0
+        let (valid, _, postState) = try await block.validateNexus(fetcher: fetcher)
         XCTAssertTrue(valid)
+        let minerBalance: UInt64? = try postState?.accountState.node?.get(key: minerAddr)
+        XCTAssertEqual(minerBalance, reward + fee)
     }
 }
 
@@ -531,7 +533,7 @@ final class DustAttackTests: XCTestCase {
             spec: tinySpec, transactions: [tx(TransactionBody(
                 accountActions: [AccountAction(owner: funderAddr, delta: Int64(premine))],
                 actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [], signers: [funderAddr], fee: 0, nonce: 0,
+                receiptActions: [], withdrawalActions: [], signers: [funderAddr], nonce: 0,
                 chainPath: ["Nexus"]
             ), funder)],
             timestamp: base, target: UInt256(1000), fetcher: fetcher
@@ -548,7 +550,7 @@ final class DustAttackTests: XCTestCase {
             accountActions: [AccountAction(owner: funderAddr, delta: Int64(reward))],
             actions: kvActions, depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [funderAddr], fee: 0, nonce: 1,
+            signers: [funderAddr], nonce: 1,
             chainPath: ["Nexus"]
         )
         let block = try await buildAndStoreBlock(
@@ -609,8 +611,8 @@ final class CrossChainBalanceConservationTests: XCTestCase {
         let childSpec = s("Child")
         let nexusSpec = s("Nexus", premine: 0)
         let childPremine = childSpec.premineAmount()
-        let childReward = childSpec.initialReward
-        let nexusReward = nexusSpec.rewardAtBlock(0)
+        let childReward = childSpec.rewardAtBlock(1)
+        let nexusReward = nexusSpec.rewardAtBlock(1)
         let swapAmount: UInt64 = 300
 
         let childGenesis = try await premineGenesis(spec: childSpec, owner: kp, fetcher: fetcher, time: base)
@@ -623,29 +625,31 @@ final class CrossChainBalanceConservationTests: XCTestCase {
         let childSwap = DepositAction(nonce: 1, demander: kpAddr, amountDemanded: swapAmount, amountDeposited: swapAmount)
 
         let swapBody = TransactionBody(
-            accountActions: [AccountAction(owner: kpAddr, delta: Int64(childPremine - swapAmount + childReward) - Int64(childPremine))],
+            accountActions: [AccountAction(owner: kpAddr, delta: -Int64(swapAmount))],
             actions: [],
             depositActions: [childSwap],
             genesisActions: [], receiptActions: [], withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 1,
+            signers: [kpAddr], nonce: 1,
             chainPath: ["Nexus"]
         )
         let _ = try await buildAndStoreBlock(
             previous: childGenesis, transactions: [tx(swapBody, kp)],
-            timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
+            timestamp: base + 1000, target: UInt256(1000), nonce: 1,
+            rewardRecipient: kpAddr, fetcher: fetcher
         )
         let childBalanceAfterSwap = childPremine - swapAmount + childReward
 
         let settleBody = TransactionBody(
-            accountActions: [AccountAction(owner: kpAddr, delta: Int64(nexusReward))],
+            accountActions: [],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: swapAmount, directory: "Child")],
             withdrawalActions: [],
-            signers: [kpAddr], fee: 0, nonce: 0, chainPath: ["Nexus"]
+            signers: [kpAddr], nonce: 0, chainPath: ["Nexus"]
         )
         let nv = try await buildAndStoreBlock(
             previous: nexusGenesis, transactions: [tx(settleBody, kp)],
-            timestamp: base + 1000, target: UInt256(1000), nonce: 1, fetcher: fetcher
+            timestamp: base + 1000, target: UInt256(1000), nonce: 1,
+            rewardRecipient: kpAddr, fetcher: fetcher
         )
         let nexusValid = try await nv.validateNexus(fetcher: fetcher).0
         XCTAssertTrue(nexusValid)

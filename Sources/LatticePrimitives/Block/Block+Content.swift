@@ -38,11 +38,12 @@ public extension Block {
         ]
     }
 
-    /// Exact content needed to validate these transactions. The child index is
-    /// one node, fetched without resolving its independently stored child
-    /// block Volumes.
+    /// Exact content needed to validate these transactions and the block's
+    /// coinbase credit to `rewardRecipient`. The child index is one node,
+    /// fetched without resolving its independently stored child block Volumes.
     static func validationPaths(
-        transactionBodies: [TransactionBody]
+        transactionBodies: [TransactionBody],
+        rewardRecipient: String?
     ) -> [[String]: ResolutionStrategy] {
         var paths = contentResolutionPaths
         paths[[PREV_STATE_PROPERTY]] = .targeted
@@ -50,6 +51,10 @@ public extension Block {
 
         func setPrevStatePath(_ path: [String]) {
             paths[[PREV_STATE_PROPERTY] + path] = .targeted
+        }
+
+        if let rewardRecipient {
+            setPrevStatePath([ACCOUNT_STATE_PROPERTY, rewardRecipient])
         }
 
         for body in transactionBodies {
@@ -167,7 +172,10 @@ public extension VolumeImpl where NodeType == Block {
             }
             return body
         }
-        let resolutionPaths = Block.validationPaths(transactionBodies: transactionBodies)
+        let resolutionPaths = Block.validationPaths(
+            transactionBodies: transactionBodies,
+            rewardRecipient: block.rewardRecipient
+        )
         let resolved = try await content.resolve(paths: resolutionPaths, fetcher: fetcher)
         let storagePaths: [[String]: StorageStrategy] = resolutionPaths.compactMapValues {
             switch $0 {

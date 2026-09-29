@@ -235,10 +235,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let keyPair = CryptoUtils.generateKeyPair()
         let owner = testAddress(publicKey: keyPair.publicKey)
         let body = TransactionBody(
-            accountActions: [AccountAction(
-                owner: owner,
-                delta: Int64(chainLocalSpec().initialReward)
-            )],
+            accountActions: [],
             actions: [],
             depositActions: [],
             genesisActions: [GenesisAction(
@@ -248,7 +245,6 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [owner],
-            fee: 0,
             nonce: 0,
             chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
@@ -258,6 +254,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             timestamp: 3_000,
             target: AdmissionFixture.easy,
             nonce: 2,
+            rewardRecipient: owner,
             fetcher: fetcher
         )
         let orphanHeader = try BlockHeader(node: orphan)

@@ -219,7 +219,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
         let keyPair = CryptoUtils.generateKeyPair()
         let owner = testAddress(publicKey: keyPair.publicKey)
         let body = TransactionBody(
-            accountActions: [AccountAction(owner: owner, delta: Int64(chainLocalSpec().initialReward))],
+            accountActions: [],
             actions: [],
             depositActions: [],
             genesisActions: [GenesisAction(
@@ -229,7 +229,6 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [owner],
-            fee: 0,
             nonce: 0,
             chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
@@ -239,6 +238,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             timestamp: 2_000,
             target: AdmissionFixture.easy,
             nonce: 2,
+            rewardRecipient: owner,
             fetcher: fetcher
         )
         let parentLevel = AdmissionFixture.makeLevel(genesis: parentGenesis)
@@ -356,10 +356,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
         let keyPair = CryptoUtils.generateKeyPair()
         let owner = testAddress(publicKey: keyPair.publicKey)
         let anchorBody = TransactionBody(
-            accountActions: [AccountAction(
-                owner: owner,
-                delta: Int64(chainLocalSpec().initialReward)
-            )],
+            accountActions: [],
             actions: [],
             depositActions: [],
             genesisActions: [GenesisAction(
@@ -369,7 +366,6 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [owner],
-            fee: 0,
             nonce: 0,
             chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
@@ -379,6 +375,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             timestamp: 2_000,
             target: AdmissionFixture.easy,
             nonce: 2,
+            rewardRecipient: owner,
             fetcher: fetcher
         )
         let carrierHeader = try BlockHeader(node: carrier)
@@ -566,6 +563,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             children: candidate.children,
             height: candidate.height,
             timestamp: candidate.timestamp,
+            rewardRecipient: candidate.rewardRecipient,
             nonce: candidate.nonce + 1
         )
         let mismatched = await proof.verifySecuringWork(
