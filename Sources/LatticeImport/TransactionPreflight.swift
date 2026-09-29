@@ -28,7 +28,8 @@ public extension ChainLevel {
     ///
     /// `parentState` is needed only for a child-chain withdrawal; it must be the
     /// entering parent state of the carrier the caller is considering.
-    /// Block-wide reward, conservation, count, and aggregate-growth checks
+    /// A transaction with negative miner surplus (it creates value) is
+    /// `.invalid`. Block-wide conservation, count, and aggregate-growth checks
     /// remain the block builder's responsibility.
     func preflightTransaction(
         _ transaction: Transaction,
@@ -54,7 +55,10 @@ public extension ChainLevel {
                 signatures: transaction.signatures,
                 body: bodyHeader
             )
+            // A transaction that creates value (negative surplus) can never
+            // be carried alone under the fee rule, so it is refused here.
             guard try await resolved.validateTransactionForNexus(fetcher: fetcher),
+                  body.minerSurplus() != nil,
                   body.genesisActionsAreValid(),
                   body.chainPath == context.path,
                   context.path.count > 1

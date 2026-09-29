@@ -316,16 +316,22 @@ public extension Block {
             chainPath: expectedChainPath
         ) { return (false, .empty, nil) }
 
-        let allAccountActions = transactionBodies.flatMap { $0.accountActions }
+        var allAccountActions = transactionBodies.flatMap { $0.accountActions }
         let allDepositActions = transactionBodies.flatMap { $0.depositActions }
         let allWithdrawalActions = transactionBodies.flatMap { $0.withdrawalActions }
         let allReceiptActions = transactionBodies.flatMap { $0.receiptActions }
-        if try !validateBalanceChanges(
+        // The fee rule and the coinbase credit: the post-state must carry
+        // exactly the credit `coinbaseCredit` derives, so it joins the
+        // transactions' account actions before the transition is replayed.
+        guard case .success(let coinbase) = Block.coinbaseCredit(
             spec: specNode,
-            allDepositActions: allDepositActions,
-            allWithdrawalActions: allWithdrawalActions,
-            allAccountActions: allAccountActions
-        ) { return (false, .empty, nil) }
+            height: height,
+            recipient: rewardRecipient,
+            accountActions: allAccountActions,
+            depositActions: allDepositActions,
+            withdrawalActions: allWithdrawalActions
+        ) else { return (false, .empty, nil) }
+        if let coinbase { allAccountActions.append(coinbase) }
         if !validateGenesisTransactions(transactionBodies: transactionBodies) { return (false, .empty, nil) }
 
         let (postStateValid, diff, materializedPostState) = try await validatePostState(transactionBodies: transactionBodies, allAccountActions: allAccountActions, allActions: transactionBodies.flatMap { $0.actions }, allDepositActions: allDepositActions, allGenesisActions: transactionBodies.flatMap { $0.genesisActions }, allReceiptActions: allReceiptActions, allWithdrawalActions: allWithdrawalActions, fetcher: fetcher)
@@ -389,25 +395,6 @@ public extension Block {
     }
 
 
-    func validatePostState(transactionBodies: [TransactionBody], fetcher: Fetcher) async throws -> (Bool, StateDiff, LatticeState?) {
-        // Collect each action family in one pass.
-        var allAccountActions: [AccountAction] = []
-        var allActions: [Action] = []
-        var allDepositActions: [DepositAction] = []
-        var allGenesisActions: [GenesisAction] = []
-        var allReceiptActions: [ReceiptAction] = []
-        var allWithdrawalActions: [WithdrawalAction] = []
-        for body in transactionBodies {
-            allAccountActions.append(contentsOf: body.accountActions)
-            allActions.append(contentsOf: body.actions)
-            allDepositActions.append(contentsOf: body.depositActions)
-            allGenesisActions.append(contentsOf: body.genesisActions)
-            allReceiptActions.append(contentsOf: body.receiptActions)
-            allWithdrawalActions.append(contentsOf: body.withdrawalActions)
-        }
-        return try await validatePostState(transactionBodies: transactionBodies, allAccountActions: allAccountActions, allActions: allActions, allDepositActions: allDepositActions, allGenesisActions: allGenesisActions, allReceiptActions: allReceiptActions, allWithdrawalActions: allWithdrawalActions, fetcher: fetcher)
-    }
-
     func validatePostState(transactionBodies: [TransactionBody], allAccountActions: [AccountAction], allActions: [Action], allDepositActions: [DepositAction], allGenesisActions: [GenesisAction], allReceiptActions: [ReceiptAction], allWithdrawalActions: [WithdrawalAction], fetcher: Fetcher) async throws -> (Bool, StateDiff, LatticeState?) {
         guard let prevStateNode = try await prevState.resolve(fetcher: fetcher).node else {
             return (false, .empty, nil)
@@ -419,31 +406,6 @@ public extension Block {
         let expectedPostStateCID = try LatticeStateHeader(node: updatedState).rawCID
         let postStateValid = expectedPostStateCID == postState.rawCID
         return (postStateValid, diff, postStateValid ? updatedState : nil)
-    }
-
-    func validateBalanceChanges(spec: ChainSpec, allDepositActions: [DepositAction], allWithdrawalActions: [WithdrawalAction], allAccountActions: [AccountAction]) throws -> Bool {
-        let reward = spec.rewardAtBlock(height)
-        let totalDeposited = allDepositActions.reduce(WorkSum.zero) {
-            $0 + UInt256($1.amountDeposited)
-        }
-        let totalWithdrawn = allWithdrawalActions.reduce(WorkSum.zero) {
-            $0 + UInt256($1.amountWithdrawn)
-        }
-        // Fees are not independent income: transaction validation requires
-        // sender debits to include the fee, so block validation only gives
-        // miners credit for fees when those debits are present in the same
-        // action set.
-        // totalCredits <= totalDebits + totalWithdrawn + reward - totalDeposited
-        var totalCredits = WorkSum.zero
-        var totalDebits = WorkSum.zero
-        for action in allAccountActions {
-            guard action.verify() else { return false }
-            if action.isCredit { totalCredits = totalCredits + UInt256(action.absoluteAmount) }
-            if action.isDebit { totalDebits = totalDebits + UInt256(action.absoluteAmount) }
-        }
-        let grossAvailable = totalDebits + UInt256(reward) + totalWithdrawn
-        guard let available = grossAvailable.subtracting(totalDeposited) else { return false }
-        return totalCredits <= available
     }
 
     func validateBalanceChangesForGenesis(spec: ChainSpec, allAccountActions: [AccountAction]) throws -> Bool {
@@ -510,6 +472,8 @@ public extension Block {
             // block builder already use emptyHeader here.)
             && parentState.rawCID == LatticeState.emptyHeader.rawCID
             && nextTarget == target
+            // Genesis mints only its premine: there is no reward to pay.
+            && rewardRecipient == nil
     }
 
     /// Consensus timestamp rules:

@@ -75,7 +75,6 @@ final class ProtocolResourceBoundTests: XCTestCase {
                 ),
             ],
             signers: ["withdrawer"],
-            fee: 0,
             nonce: 0,
             chainPath: ["Nexus", "Child"]
         )
@@ -97,7 +96,6 @@ final class ProtocolResourceBoundTests: XCTestCase {
             ],
             withdrawalActions: body.withdrawalActions,
             signers: body.signers,
-            fee: body.fee,
             nonce: body.nonce,
             chainPath: body.chainPath
         )
@@ -153,7 +151,6 @@ final class ProtocolResourceBoundTests: XCTestCase {
                     )
                 },
                 signers: ["withdrawer"],
-                fee: 0,
                 nonce: 0,
                 chainPath: ["Nexus", "Child"]
             )
@@ -195,7 +192,6 @@ final class ProtocolResourceBoundTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [],
-            fee: 0,
             nonce: 0,
             chainPath: ["Nexus"]
         )

@@ -143,6 +143,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             children: valid.children,
             height: valid.height,
             timestamp: valid.timestamp,
+            rewardRecipient: valid.rewardRecipient,
             nonce: valid.nonce
         )
         try await storeBuiltBlock(invalid, in: fetcher)
@@ -244,10 +245,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
         let keyPair = CryptoUtils.generateKeyPair()
         let owner = testAddress(publicKey: keyPair.publicKey)
         let anchorBody = TransactionBody(
-            accountActions: [AccountAction(
-                owner: owner,
-                delta: Int64(chainLocalSpec().initialReward)
-            )],
+            accountActions: [],
             actions: [],
             depositActions: [],
             genesisActions: [GenesisAction(
@@ -257,7 +255,6 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [owner],
-            fee: 0,
             nonce: 0,
             chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
@@ -268,6 +265,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             timestamp: 2_000,
             target: AdmissionFixture.easy,
             nonce: 2,
+            rewardRecipient: owner,
             fetcher: fetcher
         )
         XCTAssertGreaterThan(root.proofOfWorkHash(), alternate.target)
@@ -631,6 +629,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             children: validMiddle.children,
             height: validMiddle.height,
             timestamp: validMiddle.timestamp,
+            rewardRecipient: validMiddle.rewardRecipient,
             nonce: validMiddle.nonce
         )
         try await storeBuiltBlock(invalidMiddle, in: fetcher)
@@ -762,6 +761,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             children: validMiddle.children,
             height: validMiddle.height,
             timestamp: validMiddle.timestamp,
+            rewardRecipient: validMiddle.rewardRecipient,
             nonce: validMiddle.nonce
         )
         try await storeBuiltBlock(invalidMiddle, in: fetcher)
@@ -905,6 +905,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             children: valid.children,
             height: valid.height + 1,
             timestamp: valid.timestamp,
+            rewardRecipient: valid.rewardRecipient,
             nonce: valid.nonce
         )
         try await storeBuiltBlock(malformedCarrier, in: fetcher)
@@ -940,6 +941,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             children: validChild.children,
             height: 1,
             timestamp: validChild.timestamp,
+            rewardRecipient: validChild.rewardRecipient,
             nonce: validChild.nonce
         )
         try await storeBuiltBlock(invalidChild, in: fetcher)

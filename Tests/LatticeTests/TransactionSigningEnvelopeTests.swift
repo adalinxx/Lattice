@@ -29,7 +29,6 @@ final class TransactionSigningEnvelopeTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [signer],
-            fee: 1,
             nonce: 4,
             chainPath: ["Nexus"]
         )
@@ -47,7 +46,6 @@ final class TransactionSigningEnvelopeTests: XCTestCase {
             receiptActions: body.receiptActions,
             withdrawalActions: body.withdrawalActions,
             signers: body.signers,
-            fee: body.fee,
             nonce: body.nonce,
             chainPath: ["Nexus", "Child"]
         )
@@ -59,7 +57,6 @@ final class TransactionSigningEnvelopeTests: XCTestCase {
             receiptActions: body.receiptActions,
             withdrawalActions: body.withdrawalActions,
             signers: body.signers,
-            fee: body.fee,
             nonce: 5,
             chainPath: body.chainPath
         )
@@ -78,7 +75,6 @@ final class TransactionSigningEnvelopeTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [signer],
-            fee: 1,
             nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -97,7 +93,6 @@ final class TransactionSigningEnvelopeTests: XCTestCase {
             receiptActions: body.receiptActions,
             withdrawalActions: body.withdrawalActions,
             signers: body.signers,
-            fee: body.fee,
             nonce: body.nonce,
             chainPath: ["Nexus", "Child"]
         )
@@ -114,7 +109,6 @@ final class TransactionSigningEnvelopeTests: XCTestCase {
             receiptActions: body.receiptActions,
             withdrawalActions: body.withdrawalActions,
             signers: body.signers,
-            fee: body.fee,
             nonce: body.nonce + 1,
             chainPath: body.chainPath
         )
@@ -139,7 +133,6 @@ final class TransactionSigningEnvelopeTests: XCTestCase {
                 CryptoUtils.createAddress(from: first.publicKey),
                 CryptoUtils.createAddress(from: second.publicKey),
             ],
-            fee: 0,
             nonce: 9,
             chainPath: ["Nexus"]
         )
@@ -170,7 +163,6 @@ final class TransactionSigningEnvelopeTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [],
-            fee: 0,
             nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -203,7 +195,6 @@ final class TransactionSigningEnvelopeTests: XCTestCase {
             receiptActions: [],
             withdrawalActions: [],
             signers: [signer],
-            fee: 0,
             nonce: 0,
             chainPath: ["Nexus"]
         )

@@ -21,11 +21,10 @@ public struct TransactionBody: Scalar {
     public let receiptActions: [ReceiptAction]
     public let withdrawalActions: [WithdrawalAction]
     public let signers: [String]
-    public let fee: UInt64
     public let nonce: UInt64
     public let chainPath: [String]
 
-    public init(accountActions: [AccountAction], actions: [Action], depositActions: [DepositAction], genesisActions: [GenesisAction], receiptActions: [ReceiptAction], withdrawalActions: [WithdrawalAction], signers: [String], fee: UInt64, nonce: UInt64, chainPath: [String]) {
+    public init(accountActions: [AccountAction], actions: [Action], depositActions: [DepositAction], genesisActions: [GenesisAction], receiptActions: [ReceiptAction], withdrawalActions: [WithdrawalAction], signers: [String], nonce: UInt64, chainPath: [String]) {
         self.accountActions = accountActions
         self.actions = actions
         self.depositActions = depositActions
@@ -33,7 +32,6 @@ public struct TransactionBody: Scalar {
         self.receiptActions = receiptActions
         self.withdrawalActions = withdrawalActions
         self.signers = signers
-        self.fee = fee
         self.nonce = nonce
         self.chainPath = chainPath
     }

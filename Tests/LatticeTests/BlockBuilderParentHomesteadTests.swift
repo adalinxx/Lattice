@@ -70,7 +70,9 @@ final class BlockBuilderParentHomesteadTests: XCTestCase {
         )
         let parentBlock = try await buildAndStoreBlock(
             previous: parentGenesis,
-            transactions: [transaction(delta: 7, nonce: 0, chainPath: ["Nexus"])],
+            // No credit (a self-credit breaks the fee rule); the signer's
+            // nonce advance alone moves the parent's post-state.
+            transactions: [transaction(delta: nil, nonce: 0, chainPath: ["Nexus"])],
             timestamp: timestamp + 1_000,
             target: UInt256.max,
             fetcher: fetcher
@@ -96,18 +98,17 @@ final class BlockBuilderParentHomesteadTests: XCTestCase {
         XCTAssertNotEqual(childBlock.parentState.rawCID, parentBlock.postState.rawCID)
     }
 
-    private func transaction(delta: Int64, nonce: UInt64, chainPath: [String]) -> Transaction {
+    private func transaction(delta: Int64?, nonce: UInt64, chainPath: [String]) -> Transaction {
         let keyPair = CryptoUtils.generateKeyPair()
         let owner = address(keyPair.publicKey)
         let body = TransactionBody(
-            accountActions: [AccountAction(owner: owner, delta: delta)],
+            accountActions: delta.map { [AccountAction(owner: owner, delta: $0)] } ?? [],
             actions: [],
             depositActions: [],
             genesisActions: [],
             receiptActions: [],
             withdrawalActions: [],
             signers: [owner],
-            fee: 0,
             nonce: nonce,
             chainPath: chainPath
         )

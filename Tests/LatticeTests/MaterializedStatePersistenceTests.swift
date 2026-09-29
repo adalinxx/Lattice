@@ -52,7 +52,7 @@ final class MaterializedStatePersistenceTests: XCTestCase {
             accountActions: [AccountAction(owner: buyerAddress, delta: 250)],
             actions: [], depositActions: [], genesisActions: [],
             receiptActions: [], withdrawalActions: [],
-            signers: [buyerAddress], fee: 0, nonce: 0,
+            signers: [buyerAddress], nonce: 0,
             chainPath: ["Nexus"]
         )
         let initial = try XCTUnwrap(LatticeState.emptyHeader.node)
@@ -82,7 +82,7 @@ final class MaterializedStatePersistenceTests: XCTestCase {
             accountActions: [], actions: [], depositActions: [],
             genesisActions: [], receiptActions: [receipt],
             withdrawalActions: [], signers: [buyerAddress],
-            fee: 0, nonce: 1, chainPath: ["Nexus"]
+            nonce: 1, chainPath: ["Nexus"]
         )
         let (settled, receiptDiff) = try await reloadedFunded.proveAndUpdateState(
             allAccountActions: [], allActions: [], allDepositActions: [],
