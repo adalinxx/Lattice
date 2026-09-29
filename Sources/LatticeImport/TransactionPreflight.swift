@@ -16,18 +16,28 @@ public struct TransactionPreflightResult: Sendable, Equatable {
 }
 
 public extension ChainLevel {
-    /// Classify one transaction against a coherent canonical-tip snapshot.
+    /// Classify one transaction as the next block on `tipCID` would carry it.
+    ///
+    /// `tipCID` names the block to build on; nil means the canonical tip. The
+    /// block must be on this chain's executed-from-genesis frontier, so its
+    /// post-state is one this node reproduced; otherwise the result is
+    /// `.unavailable`. A node that admits transactions and builds templates on
+    /// its deepest executed canonical block passes that block here, so
+    /// preflight and admission agree while the weighed canonical tip is ahead
+    /// of execution. The result's `tipCID` is the block classified against.
+    ///
     /// `parentState` is needed only for a child-chain withdrawal; it must be the
     /// entering parent state of the carrier the caller is considering.
     /// Block-wide reward, conservation, count, and aggregate-growth checks
     /// remain the block builder's responsibility.
     func preflightTransaction(
         _ transaction: Transaction,
+        at tipCID: String? = nil,
         parentState: LatticeStateHeader? = nil,
         fetcher: any Fetcher,
         validationContext: ValidationContext = .current
     ) async -> TransactionPreflightResult {
-        let tip = await chain.transactionPreflightTip()
+        let tip = await chain.transactionPreflightTip(at: tipCID)
         guard let snapshot = tip.snapshot else {
             return TransactionPreflightResult(
                 tipCID: tip.cid,
