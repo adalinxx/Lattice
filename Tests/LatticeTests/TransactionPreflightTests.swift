@@ -112,6 +112,7 @@ final class TransactionPreflightTests: XCTestCase {
         )
         let blockHeader = try BlockHeader(node: block)
         _ = await chain.submitTestBlock(blockHeader: blockHeader, block: block)
+        await chain.markValidated(blockHash: blockHeader.rawCID)
 
         let mixedStale = await level.preflightTransaction(
             transaction(signers: [alice, bob], nonce: 1),
@@ -125,6 +126,86 @@ final class TransactionPreflightTests: XCTestCase {
             fetcher: fetcher
         )
         XCTAssertEqual(mixedFuture.disposition, .future)
+    }
+
+    func testPreflightClassifiesAgainstTheExecutedTipNotTheWeighedOne() async throws {
+        // lattice-node #228: genesis -> block 1 (executed) -> block 2 (weighed
+        // only, the canonical tip). Block 2 declares Alice's nonce 1 spent, so
+        // her nonce-1 transaction is valid only on block 1's executed state.
+        let fetcher = StorableFetcher()
+        let alice = CryptoUtils.generateKeyPair()
+        let bob = CryptoUtils.generateKeyPair()
+        let (level, chain, genesis) = try await fundedLevel(
+            fetcher: fetcher,
+            alice: alice,
+            bob: bob
+        )
+        let executed = try await buildAndStoreBlock(
+            previous: genesis,
+            transactions: [],
+            timestamp: 2_000,
+            target: easy,
+            fetcher: fetcher
+        )
+        let executedHeader = try BlockHeader(node: executed)
+        _ = await chain.submitTestBlock(blockHeader: executedHeader, block: executed)
+        await chain.markValidated(blockHash: executedHeader.rawCID)
+        let weighed = try await buildAndStoreBlock(
+            previous: executed,
+            transactions: [transaction(signers: [alice], nonce: 1)],
+            timestamp: 3_000,
+            target: easy,
+            fetcher: fetcher
+        )
+        let weighedHeader = try BlockHeader(node: weighed)
+        _ = await chain.submitTestBlock(blockHeader: weighedHeader, block: weighed)
+        let canonicalTip = await chain.canonicalTip
+        XCTAssertEqual(canonicalTip, weighedHeader.rawCID)
+        let executedTipIsExecuted = await chain.hasExecutedAncestry(
+            blockHash: executedHeader.rawCID
+        )
+        let weighedTipIsExecuted = await chain.hasExecutedAncestry(
+            blockHash: weighedHeader.rawCID
+        )
+        XCTAssertTrue(executedTipIsExecuted)
+        XCTAssertFalse(weighedTipIsExecuted)
+
+        let aliceNext = transaction(signers: [alice], nonce: 1)
+        let atExecuted = await level.preflightTransaction(
+            aliceNext,
+            at: executedHeader.rawCID,
+            fetcher: fetcher
+        )
+        XCTAssertEqual(atExecuted.disposition, .ready)
+        XCTAssertEqual(atExecuted.tipCID, executedHeader.rawCID)
+        let futureAtExecuted = await level.preflightTransaction(
+            transaction(signers: [alice], nonce: 2),
+            at: executedHeader.rawCID,
+            fetcher: fetcher
+        )
+        XCTAssertEqual(futureAtExecuted.disposition, .future)
+
+        // Neither naming the weighed block nor defaulting to the canonical tip
+        // classifies against its declared state.
+        for (tip, label) in [(Optional(weighedHeader.rawCID), "named"), (nil, "default")] {
+            let result = await level.preflightTransaction(
+                aliceNext,
+                at: tip,
+                fetcher: fetcher
+            )
+            XCTAssertEqual(result.disposition, .unavailable, label)
+            XCTAssertEqual(result.tipCID, weighedHeader.rawCID, label)
+        }
+
+        // Once the weighed block is executed it is a valid tip, and its state
+        // has spent Alice's nonce 1.
+        await chain.markValidated(blockHash: weighedHeader.rawCID)
+        let afterExecution = await level.preflightTransaction(
+            aliceNext,
+            fetcher: fetcher
+        )
+        XCTAssertEqual(afterExecution.disposition, .invalid)
+        XCTAssertEqual(afterExecution.tipCID, weighedHeader.rawCID)
     }
 
     func testStateTransitionAndSignatureFailuresAreInvalid() async throws {
