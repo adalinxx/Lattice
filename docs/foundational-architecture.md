@@ -113,12 +113,11 @@ carrier may fail its own target, transition, timestamp rule, or proposed
 beats that child's target. Those carrier-local rules do not become descendant
 dependencies.
 
-A child genesis with no same-chain predecessor may still relay descendants
-after its immediate parent authorized that exact genesis CID. Child bootstrap
-returns a carrier link on a target miss, or a rejection together with that link
-when a target hit fails the local transition, without creating a runtime or
-durable local consensus fact. Nexus bootstrap never accepts a target miss, but
-the same parentless bytes may still act as a proof-only carrier for descendants.
+A child genesis must meet its own target, like a root genesis: child
+bootstrap rejects a target miss as a proof-of-work failure, and a target hit
+that fails the local transition, without creating a runtime or durable local
+consensus fact. The same bytes may still sit on a descendant's proof path: a
+grind reaches a descendant only inside that descendant's `ChildBlockProof`.
 
 The proof-derived contribution becomes ordinary same-chain work only after the
 terminal child is accepted and connected. See
@@ -150,13 +149,12 @@ an identical batch is a no-op; conflicting immutable metadata fails closed.
 Root and child bootstrap expose no runtime until the genesis batch has been
 stored, staged, and restored.
 
-A target miss returns a carrier result. It creates no local consensus fact,
-executes no local transition, and causes no implicit Lattice retention. A
-target-hit candidate can return a local rejection and a carrier link together;
-the link still creates no local consensus fact. When an explicit predecessor is
-not connected, carrier, duplicate, and rejected outcomes expose that exact typed
-backfill requirement so the node can retry link derivation. The node may retain
-the carrier or an exact child path when its availability policy calls for it.
+A target miss is a proof-of-work failure. It creates no local consensus
+fact, executes no local transition, and causes no implicit Lattice retention.
+When an explicit predecessor is not connected, duplicate and non-verdict
+rejected outcomes expose that exact typed backfill requirement so the node can
+retry. The node may retain an exact child path when its availability policy
+calls for it.
 
 ## Ownership
 

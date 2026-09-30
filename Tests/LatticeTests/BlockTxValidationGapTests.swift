@@ -97,7 +97,7 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
             materializedVolumeStorer: backing,
             stage: testAdmissionStage
         )
-        guard case .rejected(.unavailableEvidence, _, _) = unavailable else {
+        guard case .rejected(.unavailableEvidence, _) = unavailable else {
             return XCTFail("transient ancestor-resolution failure must be unavailable")
         }
         let heightWhileUnavailable = await level.chain.getHighestBlockHeight()
@@ -153,7 +153,7 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
             materializedVolumeStorer: f,
             stage: testAdmissionStage
         )
-        guard case .rejected(.protocolInvalid, _, _) = rejected else {
+        guard case .rejected(.protocolInvalid, _) = rejected else {
             return XCTFail("a fully-resolvable invalid block must be rejected")
         }
 
@@ -164,7 +164,7 @@ final class BlockHeaderDeferVsRejectGapTests: XCTestCase {
             materializedVolumeStorer: f,
             stage: testAdmissionStage
         )
-        guard case .rejected(.protocolInvalid, _, _) = rejectedAgain else {
+        guard case .rejected(.protocolInvalid, _) = rejectedAgain else {
             return XCTFail("reprocessing a fully-resolvable invalid block must stay rejected")
         }
         let finalHeight = await level.chain.getHighestBlockHeight()

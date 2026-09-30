@@ -3,41 +3,6 @@ import UInt256
 import LatticePrimitives
 import LatticePoW
 
-/// A permanent fact produced by the Lattice process responsible for
-/// `parentPath` after it verifies this exact grind's path to `carrierCID`.
-/// The node authenticates the immediate-parent process and transports or caches
-/// the value; no ancestor process identity crosses this boundary.
-public struct ParentCarrierLink: Codable, Hashable, Sendable {
-    public let parentPath: [String]
-    public let carrierCID: String
-    public let rootCID: String
-
-    package init(
-        parentPath: [String],
-        carrierCID: String,
-        rootCID: String
-    ) {
-        self.parentPath = parentPath
-        self.carrierCID = CIDIdentity.canonicalString(carrierCID) ?? carrierCID
-        self.rootCID = CIDIdentity.canonicalString(rootCID) ?? rootCID
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        parentPath = try container.decode([String].self, forKey: .parentPath)
-        let carrier = try container.decode(String.self, forKey: .carrierCID)
-        let root = try container.decode(String.self, forKey: .rootCID)
-        carrierCID = CIDIdentity.canonicalString(carrier) ?? carrier
-        rootCID = CIDIdentity.canonicalString(root) ?? root
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case parentPath
-        case carrierCID
-        case rootCID
-    }
-}
-
 /// A permanent fact derived locally from a validated parent-chain state,
 /// authorizing one genesis root for a path-defined child chain. Competing valid
 /// parent branches may produce different links for the same child path.
@@ -115,24 +80,6 @@ public struct ChildValidationPackage: Sendable {
         self.proof = proof
         self.parentGenesisLink = parentGenesisLink
         self.parentStateContinuityLink = parentStateContinuityLink
-    }
-
-    /// Verify only the structural work carrier. Parent facts are intentionally
-    /// outside this operation because they gate child admission, not relay.
-    public func verifiedCarrierLink(
-        child: Block,
-        chainPath: [String]
-    ) async -> Result<ParentCarrierLink, ChildProofVerificationFailure> {
-        await proof.verifySecuringWork(
-            child: child,
-            chainPath: chainPath
-        ).map {
-            ParentCarrierLink(
-                parentPath: chainPath,
-                carrierCID: $0.childCID,
-                rootCID: $0.grindID
-            )
-        }
     }
 }
 

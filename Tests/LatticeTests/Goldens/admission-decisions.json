@@ -11,7 +11,9 @@
     "hardGenesis" : "bafyreign2akgvlpvrakvqvc3nu4hasbjpnfbiyr6sivkr7ku34pe5mfidi",
     "missCarrier" : "bafyreiejsxkwfhmakhdafjfqfzbfwfjjt3k7vtcz3iixjmqzxqgtuhsrve",
     "missedChild" : "bafyreidskkmt7irrzwscv5j5ttskkyl6ygs2rfhd2hbaqibkiqn4lqfpu4",
+    "otherSpec" : "bafyreifkpuhwhtpihsgp7cmcny6ls4yvcfonxvu5b3bqfr3qvilzipz7su",
     "side" : "bafyreihkohhcxqj5f2hmfhux3sdsqt3ztlaxgszo6gxzib6unpwc3ohuia",
+    "staleTimestamp" : "bafyreigayn2qv5crn63vcju23ulg3qnyzufuuaesf22ozploib2xrsvy5e",
     "tooEasy" : "bafyreigz75s2i64fayr5t2qxzxu5kz564t7g7ciohhusqak5pgfeoev7pu",
     "valid" : "bafyreifht3efgmkwv2nllkileuqr226p2mwqcrnhtci4ddb7m2y5gqu3je",
     "wrongHeight" : "bafyreifuzt53sfqqop6be6kusdfjoo7eemn4bbpnfnx4hfupavcxpol3bq",
@@ -19,9 +21,21 @@
   },
   "steps" : [
     {
+      "batches" : [
+        [
+          {
+            "block" : "valid",
+            "kind" : "block"
+          },
+          {
+            "block" : "valid",
+            "grind" : "valid",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          }
+        ]
+      ],
       "candidate" : "valid",
-      "carrier" : "valid",
-      "carrierRoot" : "valid",
       "commitAdded" : [
         "valid"
       ],
@@ -30,190 +44,70 @@
       ],
       "commitRevision" : 1,
       "commitTip" : "valid",
-      "excludedAfter" : false,
-      "executedAfter" : true,
-      "materializedPostState" : true,
-      "mode" : "eager",
-      "possessedAfter" : true,
-      "result" : "accepted",
-      "scenario" : "valid",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "valid",
-              "kind" : "block"
-            },
-            {
-              "block" : "valid",
-              "grind" : "valid",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            },
-            {
-              "block" : "valid",
-              "kind" : "validation"
-            }
-          ],
-          "issuedCarrier" : "valid",
-          "issuedRoot" : "valid",
-          "parentGenesisLinks" : 0
-        }
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "valid",
-      "carrier" : "valid",
-      "carrierRoot" : "valid",
-      "commitAdded" : [
-        "valid"
-      ],
-      "commitRemoved" : [
-
-      ],
-      "commitRevision" : 1,
-      "commitTip" : "valid",
+      "excluded" : false,
       "excludedAfter" : false,
       "executedAfter" : false,
       "materializedPostState" : false,
-      "mode" : "weighed",
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
-      "result" : "accepted",
+      "result" : "applied",
       "scenario" : "valid",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "valid",
-              "kind" : "block"
-            },
-            {
-              "block" : "valid",
-              "grind" : "valid",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            }
-          ],
-          "parentGenesisLinks" : 0
-        }
-      ],
       "step" : 0
     },
     {
+      "batches" : [
+        [
+          {
+            "block" : "valid",
+            "kind" : "block"
+          },
+          {
+            "block" : "valid",
+            "grind" : "valid",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          },
+          {
+            "block" : "valid",
+            "kind" : "validation"
+          }
+        ]
+      ],
       "candidate" : "valid",
-      "carrier" : "valid",
-      "carrierRoot" : "valid",
       "commitAdded" : [
-        "valid"
+
       ],
       "commitRemoved" : [
 
       ],
-      "commitRevision" : 1,
-      "commitTip" : "valid",
+      "excluded" : false,
       "excludedAfter" : false,
       "executedAfter" : true,
       "materializedPostState" : true,
-      "mode" : "validate",
+      "operation" : "connect",
+      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
-      "result" : "accepted",
+      "result" : "applied",
       "scenario" : "valid",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "valid",
-              "kind" : "block"
-            },
-            {
-              "block" : "valid",
-              "grind" : "valid",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            },
-            {
-              "block" : "valid",
-              "kind" : "validation"
-            }
-          ],
-          "issuedCarrier" : "valid",
-          "issuedRoot" : "valid",
-          "parentGenesisLinks" : 0
-        }
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "valid",
-      "carrier" : "valid",
-      "carrierRoot" : "valid",
-      "commitAdded" : [
-        "valid"
-      ],
-      "commitRemoved" : [
-
-      ],
-      "commitRevision" : 1,
-      "commitTip" : "valid",
-      "excludedAfter" : false,
-      "executedAfter" : true,
-      "materializedPostState" : true,
-      "mode" : "eager",
-      "possessedAfter" : true,
-      "result" : "accepted",
-      "scenario" : "duplicate",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "valid",
-              "kind" : "block"
-            },
-            {
-              "block" : "valid",
-              "grind" : "valid",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            },
-            {
-              "block" : "valid",
-              "kind" : "validation"
-            }
-          ],
-          "issuedCarrier" : "valid",
-          "issuedRoot" : "valid",
-          "parentGenesisLinks" : 0
-        }
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "valid",
-      "carrier" : "valid",
-      "carrierRoot" : "valid",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : true,
-      "materializedPostState" : false,
-      "mode" : "eager",
-      "possessedAfter" : true,
-      "result" : "duplicate",
-      "scenario" : "duplicate",
-      "staged" : [
-
-      ],
       "step" : 1
     },
     {
+      "batches" : [
+        [
+          {
+            "block" : "valid",
+            "kind" : "block"
+          },
+          {
+            "block" : "valid",
+            "grind" : "valid",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          }
+        ]
+      ],
       "candidate" : "valid",
-      "carrier" : "valid",
-      "carrierRoot" : "valid",
       "commitAdded" : [
         "valid"
       ],
@@ -222,58 +116,55 @@
       ],
       "commitRevision" : 1,
       "commitTip" : "valid",
+      "excluded" : false,
       "excludedAfter" : false,
       "executedAfter" : false,
       "materializedPostState" : false,
-      "mode" : "weighed",
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
-      "result" : "accepted",
+      "result" : "applied",
       "scenario" : "duplicate",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "valid",
-              "kind" : "block"
-            },
-            {
-              "block" : "valid",
-              "grind" : "valid",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            }
-          ],
-          "parentGenesisLinks" : 0
-        }
-      ],
       "step" : 0
     },
     {
+      "batches" : [
+
+      ],
       "candidate" : "valid",
-      "carrier" : "valid",
-      "carrierRoot" : "valid",
       "commitAdded" : [
 
       ],
       "commitRemoved" : [
 
       ],
+      "excluded" : false,
       "excludedAfter" : false,
       "executedAfter" : false,
       "materializedPostState" : false,
-      "mode" : "weighed",
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
       "result" : "duplicate",
       "scenario" : "duplicate",
-      "staged" : [
-
-      ],
       "step" : 1
     },
     {
+      "batches" : [
+        [
+          {
+            "block" : "valid",
+            "kind" : "block"
+          },
+          {
+            "block" : "valid",
+            "grind" : "valid",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          }
+        ]
+      ],
       "candidate" : "valid",
-      "carrier" : "valid",
-      "carrierRoot" : "valid",
       "commitAdded" : [
         "valid"
       ],
@@ -282,128 +173,33 @@
       ],
       "commitRevision" : 1,
       "commitTip" : "valid",
+      "excluded" : false,
       "excludedAfter" : false,
-      "executedAfter" : true,
-      "materializedPostState" : true,
-      "mode" : "validate",
-      "possessedAfter" : true,
-      "result" : "accepted",
-      "scenario" : "duplicate",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "valid",
-              "kind" : "block"
-            },
-            {
-              "block" : "valid",
-              "grind" : "valid",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            },
-            {
-              "block" : "valid",
-              "kind" : "validation"
-            }
-          ],
-          "issuedCarrier" : "valid",
-          "issuedRoot" : "valid",
-          "parentGenesisLinks" : 0
-        }
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "valid",
-      "carrier" : "valid",
-      "carrierRoot" : "valid",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : true,
+      "executedAfter" : false,
       "materializedPostState" : false,
-      "mode" : "validate",
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
-      "result" : "duplicate",
-      "scenario" : "duplicate",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "valid",
-              "kind" : "block"
-            },
-            {
-              "block" : "valid",
-              "grind" : "valid",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            },
-            {
-              "block" : "valid",
-              "kind" : "validation"
-            }
-          ],
-          "issuedCarrier" : "valid",
-          "issuedRoot" : "valid",
-          "parentGenesisLinks" : 0
-        }
-      ],
-      "step" : 1
-    },
-    {
-      "candidate" : "valid",
-      "carrier" : "valid",
-      "carrierRoot" : "valid",
-      "commitAdded" : [
-        "valid"
-      ],
-      "commitRemoved" : [
-
-      ],
-      "commitRevision" : 1,
-      "commitTip" : "valid",
-      "excludedAfter" : false,
-      "executedAfter" : true,
-      "materializedPostState" : true,
-      "mode" : "eager",
-      "possessedAfter" : true,
-      "result" : "accepted",
+      "result" : "applied",
       "scenario" : "sideBlock",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "valid",
-              "kind" : "block"
-            },
-            {
-              "block" : "valid",
-              "grind" : "valid",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            },
-            {
-              "block" : "valid",
-              "kind" : "validation"
-            }
-          ],
-          "issuedCarrier" : "valid",
-          "issuedRoot" : "valid",
-          "parentGenesisLinks" : 0
-        }
-      ],
       "step" : 0
     },
     {
+      "batches" : [
+        [
+          {
+            "block" : "side",
+            "kind" : "block"
+          },
+          {
+            "block" : "side",
+            "grind" : "side",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          }
+        ]
+      ],
       "candidate" : "side",
-      "carrier" : "side",
-      "carrierRoot" : "side",
       "commitAdded" : [
 
       ],
@@ -412,80 +208,62 @@
       ],
       "commitRevision" : 2,
       "commitTip" : "valid",
+      "excluded" : false,
       "excludedAfter" : false,
-      "executedAfter" : true,
-      "materializedPostState" : true,
-      "mode" : "eager",
+      "executedAfter" : false,
+      "materializedPostState" : false,
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
-      "result" : "accepted",
+      "result" : "applied",
       "scenario" : "sideBlock",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "side",
-              "kind" : "block"
-            },
-            {
-              "block" : "side",
-              "grind" : "side",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            },
-            {
-              "block" : "side",
-              "kind" : "validation"
-            }
-          ],
-          "issuedCarrier" : "side",
-          "issuedRoot" : "side",
-          "parentGenesisLinks" : 0
-        }
-      ],
       "step" : 1
     },
     {
-      "candidate" : "valid",
-      "carrier" : "valid",
-      "carrierRoot" : "valid",
+      "batches" : [
+
+      ],
+      "candidate" : "grandchild",
       "commitAdded" : [
-        "valid"
+
       ],
       "commitRemoved" : [
 
       ],
-      "commitRevision" : 1,
-      "commitTip" : "valid",
+      "excluded" : false,
       "excludedAfter" : false,
       "executedAfter" : false,
+      "failure" : "unavailableEvidence",
       "materializedPostState" : false,
-      "mode" : "weighed",
-      "possessedAfter" : true,
-      "result" : "accepted",
-      "scenario" : "sideBlock",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "valid",
-              "kind" : "block"
-            },
-            {
-              "block" : "valid",
-              "grind" : "valid",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            }
-          ],
-          "parentGenesisLinks" : 0
-        }
-      ],
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
+      "possessedAfter" : false,
+      "result" : "rejected",
+      "scenario" : "unavailableParent",
       "step" : 0
     },
     {
-      "candidate" : "side",
-      "carrier" : "side",
-      "carrierRoot" : "side",
+      "batches" : [
+        [
+          {
+            "block" : "badPrevState",
+            "kind" : "block"
+          },
+          {
+            "block" : "badPrevState",
+            "grind" : "badPrevState",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          }
+        ],
+        [
+          {
+            "block" : "badPrevState",
+            "kind" : "exclusion"
+          }
+        ]
+      ],
+      "candidate" : "badPrevState",
       "commitAdded" : [
 
       ],
@@ -493,81 +271,67 @@
 
       ],
       "commitRevision" : 2,
-      "commitTip" : "valid",
-      "excludedAfter" : false,
+      "commitTip" : "genesis",
+      "excluded" : true,
+      "excludedAfter" : true,
       "executedAfter" : false,
       "materializedPostState" : false,
-      "mode" : "weighed",
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
-      "result" : "accepted",
-      "scenario" : "sideBlock",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "side",
-              "kind" : "block"
-            },
-            {
-              "block" : "side",
-              "grind" : "side",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            }
-          ],
-          "parentGenesisLinks" : 0
-        }
-      ],
-      "step" : 1
+      "result" : "applied",
+      "scenario" : "badPrevState",
+      "step" : 0
     },
     {
-      "candidate" : "valid",
-      "carrier" : "valid",
-      "carrierRoot" : "valid",
+      "batches" : [
+        [
+          {
+            "block" : "badPrevState",
+            "kind" : "exclusion"
+          }
+        ]
+      ],
+      "candidate" : "badPrevState",
       "commitAdded" : [
-        "valid"
+
       ],
       "commitRemoved" : [
 
       ],
-      "commitRevision" : 1,
-      "commitTip" : "valid",
-      "excludedAfter" : false,
-      "executedAfter" : true,
-      "materializedPostState" : true,
-      "mode" : "validate",
+      "excluded" : true,
+      "excludedAfter" : true,
+      "executedAfter" : false,
+      "materializedPostState" : false,
+      "operation" : "connect",
+      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
-      "result" : "accepted",
-      "scenario" : "sideBlock",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "valid",
-              "kind" : "block"
-            },
-            {
-              "block" : "valid",
-              "grind" : "valid",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            },
-            {
-              "block" : "valid",
-              "kind" : "validation"
-            }
-          ],
-          "issuedCarrier" : "valid",
-          "issuedRoot" : "valid",
-          "parentGenesisLinks" : 0
-        }
-      ],
-      "step" : 0
+      "result" : "applied",
+      "scenario" : "badPrevState",
+      "step" : 1
     },
     {
-      "candidate" : "side",
-      "carrier" : "side",
-      "carrierRoot" : "side",
+      "batches" : [
+        [
+          {
+            "block" : "staleTimestamp",
+            "kind" : "block"
+          },
+          {
+            "block" : "staleTimestamp",
+            "grind" : "staleTimestamp",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          }
+        ],
+        [
+          {
+            "block" : "staleTimestamp",
+            "kind" : "exclusion"
+          }
+        ]
+      ],
+      "candidate" : "staleTimestamp",
       "commitAdded" : [
 
       ],
@@ -575,348 +339,121 @@
 
       ],
       "commitRevision" : 2,
-      "commitTip" : "valid",
-      "excludedAfter" : false,
-      "executedAfter" : true,
-      "materializedPostState" : true,
-      "mode" : "validate",
+      "commitTip" : "genesis",
+      "excluded" : true,
+      "excludedAfter" : true,
+      "executedAfter" : false,
+      "materializedPostState" : false,
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
-      "result" : "accepted",
-      "scenario" : "sideBlock",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "side",
-              "kind" : "block"
-            },
-            {
-              "block" : "side",
-              "grind" : "side",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            },
-            {
-              "block" : "side",
-              "kind" : "validation"
-            }
-          ],
-          "issuedCarrier" : "side",
-          "issuedRoot" : "side",
-          "parentGenesisLinks" : 0
-        }
-      ],
-      "step" : 1
+      "result" : "applied",
+      "scenario" : "staleTimestamp",
+      "step" : 0
     },
     {
-      "candidate" : "grandchild",
-      "carrier" : "grandchild",
-      "carrierRoot" : "grandchild",
+      "batches" : [
+        [
+          {
+            "block" : "otherSpec",
+            "kind" : "block"
+          },
+          {
+            "block" : "otherSpec",
+            "grind" : "otherSpec",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          }
+        ],
+        [
+          {
+            "block" : "otherSpec",
+            "kind" : "exclusion"
+          }
+        ]
+      ],
+      "candidate" : "otherSpec",
       "commitAdded" : [
 
       ],
       "commitRemoved" : [
 
       ],
-      "excludedAfter" : false,
+      "commitRevision" : 2,
+      "commitTip" : "genesis",
+      "excluded" : true,
+      "excludedAfter" : true,
       "executedAfter" : false,
-      "failure" : "unavailableEvidence",
       "materializedPostState" : false,
-      "mode" : "eager",
-      "possessedAfter" : false,
-      "predecessor" : "valid",
-      "predecessorOf" : "grandchild",
-      "result" : "rejected",
-      "scenario" : "unavailableParent",
-      "staged" : [
-
-      ],
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
+      "possessedAfter" : true,
+      "result" : "applied",
+      "scenario" : "otherSpec",
       "step" : 0
     },
     {
-      "candidate" : "grandchild",
-      "carrier" : "grandchild",
-      "carrierRoot" : "grandchild",
-      "commitAdded" : [
+      "batches" : [
 
       ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "unavailableEvidence",
-      "materializedPostState" : false,
-      "mode" : "weighed",
-      "possessedAfter" : false,
-      "predecessor" : "valid",
-      "predecessorOf" : "grandchild",
-      "result" : "rejected",
-      "scenario" : "unavailableParent",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "grandchild",
-      "carrier" : "grandchild",
-      "carrierRoot" : "grandchild",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "unavailableEvidence",
-      "materializedPostState" : false,
-      "mode" : "validate",
-      "possessedAfter" : false,
-      "predecessor" : "valid",
-      "predecessorOf" : "grandchild",
-      "result" : "rejected",
-      "scenario" : "unavailableParent",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "badPrevState",
-      "carrier" : "badPrevState",
-      "carrierRoot" : "badPrevState",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "protocolInvalid",
-      "materializedPostState" : false,
-      "mode" : "eager",
-      "possessedAfter" : false,
-      "result" : "rejected",
-      "scenario" : "badPrevState",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "badPrevState",
-      "carrier" : "badPrevState",
-      "carrierRoot" : "badPrevState",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "protocolInvalid",
-      "materializedPostState" : false,
-      "mode" : "weighed",
-      "possessedAfter" : false,
-      "result" : "rejected",
-      "scenario" : "badPrevState",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "badPrevState",
-      "carrier" : "badPrevState",
-      "carrierRoot" : "badPrevState",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "notYetAdmissible",
-      "materializedPostState" : false,
-      "mode" : "validate",
-      "possessedAfter" : false,
-      "result" : "rejected",
-      "scenario" : "badPrevState",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
       "candidate" : "wrongNextTarget",
-      "carrier" : "wrongNextTarget",
-      "carrierRoot" : "wrongNextTarget",
       "commitAdded" : [
 
       ],
       "commitRemoved" : [
 
       ],
+      "excluded" : false,
       "excludedAfter" : false,
       "executedAfter" : false,
-      "failure" : "protocolInvalid",
+      "failure" : "proofOfWorkInvalid",
       "materializedPostState" : false,
-      "mode" : "eager",
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
       "possessedAfter" : false,
       "result" : "rejected",
       "scenario" : "wrongNextTarget",
-      "staged" : [
-
-      ],
       "step" : 0
     },
     {
-      "candidate" : "wrongNextTarget",
-      "carrier" : "wrongNextTarget",
-      "carrierRoot" : "wrongNextTarget",
+      "batches" : [
+
+      ],
+      "candidate" : "wrongHeight",
       "commitAdded" : [
 
       ],
       "commitRemoved" : [
 
       ],
+      "excluded" : false,
       "excludedAfter" : false,
       "executedAfter" : false,
       "failure" : "protocolInvalid",
       "materializedPostState" : false,
-      "mode" : "weighed",
-      "possessedAfter" : false,
-      "result" : "rejected",
-      "scenario" : "wrongNextTarget",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "wrongNextTarget",
-      "carrier" : "wrongNextTarget",
-      "carrierRoot" : "wrongNextTarget",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "notYetAdmissible",
-      "materializedPostState" : false,
-      "mode" : "validate",
-      "possessedAfter" : false,
-      "result" : "rejected",
-      "scenario" : "wrongNextTarget",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "wrongHeight",
-      "carrier" : "wrongHeight",
-      "carrierRoot" : "wrongHeight",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "protocolInvalid",
-      "materializedPostState" : false,
-      "mode" : "eager",
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
       "possessedAfter" : false,
       "result" : "rejected",
       "scenario" : "wrongHeight",
-      "staged" : [
-
-      ],
       "step" : 0
     },
     {
-      "candidate" : "wrongHeight",
-      "carrier" : "wrongHeight",
-      "carrierRoot" : "wrongHeight",
-      "commitAdded" : [
-
+      "batches" : [
+        [
+          {
+            "block" : "forgedPostState",
+            "kind" : "block"
+          },
+          {
+            "block" : "forgedPostState",
+            "grind" : "forgedPostState",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          }
+        ]
       ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "protocolInvalid",
-      "materializedPostState" : false,
-      "mode" : "weighed",
-      "possessedAfter" : false,
-      "result" : "rejected",
-      "scenario" : "wrongHeight",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "wrongHeight",
-      "carrier" : "wrongHeight",
-      "carrierRoot" : "wrongHeight",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "notYetAdmissible",
-      "materializedPostState" : false,
-      "mode" : "validate",
-      "possessedAfter" : false,
-      "result" : "rejected",
-      "scenario" : "wrongHeight",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
       "candidate" : "forgedPostState",
-      "carrier" : "forgedPostState",
-      "carrierRoot" : "forgedPostState",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "protocolInvalid",
-      "materializedPostState" : false,
-      "mode" : "eager",
-      "possessedAfter" : false,
-      "result" : "rejected",
-      "scenario" : "forgedPostState",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "forgedPostState",
-      "carrier" : "forgedPostState",
-      "carrierRoot" : "forgedPostState",
       "commitAdded" : [
         "forgedPostState"
       ],
@@ -925,648 +462,27 @@
       ],
       "commitRevision" : 1,
       "commitTip" : "forgedPostState",
+      "excluded" : false,
       "excludedAfter" : false,
       "executedAfter" : false,
       "materializedPostState" : false,
-      "mode" : "weighed",
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
-      "result" : "accepted",
+      "result" : "applied",
       "scenario" : "forgedPostState",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "forgedPostState",
-              "kind" : "block"
-            },
-            {
-              "block" : "forgedPostState",
-              "grind" : "forgedPostState",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            }
-          ],
-          "parentGenesisLinks" : 0
-        }
-      ],
       "step" : 0
     },
     {
+      "batches" : [
+        [
+          {
+            "block" : "forgedPostState",
+            "kind" : "exclusion"
+          }
+        ]
+      ],
       "candidate" : "forgedPostState",
-      "carrier" : "forgedPostState",
-      "carrierRoot" : "forgedPostState",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "notYetAdmissible",
-      "materializedPostState" : false,
-      "mode" : "validate",
-      "possessedAfter" : false,
-      "result" : "rejected",
-      "scenario" : "forgedPostState",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "tooEasy",
-      "carrier" : "tooEasy",
-      "carrierRoot" : "tooEasy",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "protocolInvalid",
-      "materializedPostState" : false,
-      "mode" : "eager",
-      "possessedAfter" : false,
-      "result" : "rejected",
-      "scenario" : "targetEasierThanSchedule",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "tooEasy",
-      "carrier" : "tooEasy",
-      "carrierRoot" : "tooEasy",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "protocolInvalid",
-      "materializedPostState" : false,
-      "mode" : "weighed",
-      "possessedAfter" : false,
-      "result" : "rejected",
-      "scenario" : "targetEasierThanSchedule",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "tooEasy",
-      "carrier" : "tooEasy",
-      "carrierRoot" : "tooEasy",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "notYetAdmissible",
-      "materializedPostState" : false,
-      "mode" : "validate",
-      "possessedAfter" : false,
-      "result" : "rejected",
-      "scenario" : "targetEasierThanSchedule",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "hardGenesis",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "protocolInvalid",
-      "materializedPostState" : false,
-      "mode" : "eager",
-      "possessedAfter" : false,
-      "result" : "rejected",
-      "scenario" : "rivalGenesis",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "hardGenesis",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "protocolInvalid",
-      "materializedPostState" : false,
-      "mode" : "weighed",
-      "possessedAfter" : false,
-      "result" : "rejected",
-      "scenario" : "rivalGenesis",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "hardGenesis",
-      "carrier" : "hardGenesis",
-      "carrierRoot" : "hardGenesis",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "notYetAdmissible",
-      "materializedPostState" : false,
-      "mode" : "validate",
-      "possessedAfter" : false,
-      "result" : "rejected",
-      "scenario" : "rivalGenesis",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "childCandidate",
-      "carrier" : "childCandidate",
-      "carrierRoot" : "carrier",
-      "commitAdded" : [
-        "childCandidate"
-      ],
-      "commitRemoved" : [
-
-      ],
-      "commitRevision" : 1,
-      "commitTip" : "childCandidate",
-      "excludedAfter" : false,
-      "executedAfter" : true,
-      "materializedPostState" : true,
-      "mode" : "eager",
-      "possessedAfter" : true,
-      "result" : "accepted",
-      "scenario" : "carriedChild",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "childCandidate",
-              "kind" : "block"
-            },
-            {
-              "block" : "childCandidate",
-              "grind" : "carrier",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            },
-            {
-              "block" : "childCandidate",
-              "kind" : "validation"
-            }
-          ],
-          "issuedCarrier" : "childCandidate",
-          "issuedRoot" : "carrier",
-          "parentGenesisLinks" : 0
-        }
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "childCandidate",
-      "carrier" : "childCandidate",
-      "carrierRoot" : "carrier",
-      "commitAdded" : [
-        "childCandidate"
-      ],
-      "commitRemoved" : [
-
-      ],
-      "commitRevision" : 1,
-      "commitTip" : "childCandidate",
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "materializedPostState" : false,
-      "mode" : "weighed",
-      "possessedAfter" : true,
-      "result" : "accepted",
-      "scenario" : "carriedChild",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "childCandidate",
-              "kind" : "block"
-            },
-            {
-              "block" : "childCandidate",
-              "grind" : "carrier",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            }
-          ],
-          "parentGenesisLinks" : 0
-        }
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "childCandidate",
-      "carrier" : "childCandidate",
-      "carrierRoot" : "carrier",
-      "commitAdded" : [
-        "childCandidate"
-      ],
-      "commitRemoved" : [
-
-      ],
-      "commitRevision" : 1,
-      "commitTip" : "childCandidate",
-      "excludedAfter" : false,
-      "executedAfter" : true,
-      "materializedPostState" : true,
-      "mode" : "validate",
-      "possessedAfter" : true,
-      "result" : "accepted",
-      "scenario" : "carriedChild",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "childCandidate",
-              "kind" : "block"
-            },
-            {
-              "block" : "childCandidate",
-              "grind" : "carrier",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            },
-            {
-              "block" : "childCandidate",
-              "kind" : "validation"
-            }
-          ],
-          "issuedCarrier" : "childCandidate",
-          "issuedRoot" : "carrier",
-          "parentGenesisLinks" : 0
-        }
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "childCandidate",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "crossChainEvidenceRequired.childProof",
-      "failureCIDs" : [
-        "childCandidate"
-      ],
-      "failurePath" : [
-        "Nexus",
-        "Child"
-      ],
-      "materializedPostState" : false,
-      "mode" : "eager",
-      "possessedAfter" : false,
-      "result" : "rejected",
-      "scenario" : "carriedChildWithoutProof",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "childCandidate",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "crossChainEvidenceRequired.childProof",
-      "failureCIDs" : [
-        "childCandidate"
-      ],
-      "failurePath" : [
-        "Nexus",
-        "Child"
-      ],
-      "materializedPostState" : false,
-      "mode" : "weighed",
-      "possessedAfter" : false,
-      "result" : "rejected",
-      "scenario" : "carriedChildWithoutProof",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "childCandidate",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "crossChainEvidenceRequired.childProof",
-      "failureCIDs" : [
-        "childCandidate"
-      ],
-      "failurePath" : [
-        "Nexus",
-        "Child"
-      ],
-      "materializedPostState" : false,
-      "mode" : "validate",
-      "possessedAfter" : false,
-      "result" : "rejected",
-      "scenario" : "carriedChildWithoutProof",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "missedChild",
-      "carrier" : "missedChild",
-      "carrierRoot" : "missCarrier",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "materializedPostState" : false,
-      "mode" : "eager",
-      "possessedAfter" : false,
-      "result" : "carrier",
-      "scenario" : "targetMissCarrier",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "missedChild",
-      "carrier" : "missedChild",
-      "carrierRoot" : "missCarrier",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "materializedPostState" : false,
-      "mode" : "weighed",
-      "possessedAfter" : false,
-      "result" : "carrier",
-      "scenario" : "targetMissCarrier",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "missedChild",
-      "carrier" : "missedChild",
-      "carrierRoot" : "missCarrier",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "materializedPostState" : false,
-      "mode" : "validate",
-      "possessedAfter" : false,
-      "result" : "carrier",
-      "scenario" : "targetMissCarrier",
-      "staged" : [
-
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "valid",
-      "carrier" : "valid",
-      "carrierRoot" : "valid",
-      "commitAdded" : [
-        "valid"
-      ],
-      "commitRemoved" : [
-
-      ],
-      "commitRevision" : 1,
-      "commitTip" : "valid",
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "materializedPostState" : false,
-      "mode" : "sequence",
-      "possessedAfter" : true,
-      "result" : "accepted",
-      "scenario" : "weighedThenValidateWithoutBody",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "valid",
-              "kind" : "block"
-            },
-            {
-              "block" : "valid",
-              "grind" : "valid",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            }
-          ],
-          "parentGenesisLinks" : 0
-        }
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "valid",
-      "carrier" : "valid",
-      "carrierRoot" : "valid",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "failure" : "unavailableEvidence",
-      "materializedPostState" : false,
-      "mode" : "sequence",
-      "possessedAfter" : true,
-      "result" : "rejected",
-      "scenario" : "weighedThenValidateWithoutBody",
-      "staged" : [
-
-      ],
-      "step" : 1
-    },
-    {
-      "candidate" : "valid",
-      "carrier" : "valid",
-      "carrierRoot" : "valid",
-      "commitAdded" : [
-        "valid"
-      ],
-      "commitRemoved" : [
-
-      ],
-      "commitRevision" : 1,
-      "commitTip" : "valid",
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "materializedPostState" : false,
-      "mode" : "sequence",
-      "possessedAfter" : true,
-      "result" : "accepted",
-      "scenario" : "weighedThenValidate",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "valid",
-              "kind" : "block"
-            },
-            {
-              "block" : "valid",
-              "grind" : "valid",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            }
-          ],
-          "parentGenesisLinks" : 0
-        }
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "valid",
-      "carrier" : "valid",
-      "carrierRoot" : "valid",
-      "commitAdded" : [
-
-      ],
-      "commitRemoved" : [
-
-      ],
-      "excludedAfter" : false,
-      "executedAfter" : true,
-      "materializedPostState" : false,
-      "mode" : "sequence",
-      "possessedAfter" : true,
-      "result" : "duplicate",
-      "scenario" : "weighedThenValidate",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "valid",
-              "kind" : "block"
-            },
-            {
-              "block" : "valid",
-              "grind" : "valid",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            },
-            {
-              "block" : "valid",
-              "kind" : "validation"
-            }
-          ],
-          "issuedCarrier" : "valid",
-          "issuedRoot" : "valid",
-          "parentGenesisLinks" : 0
-        }
-      ],
-      "step" : 1
-    },
-    {
-      "candidate" : "forgedPostState",
-      "carrier" : "forgedPostState",
-      "carrierRoot" : "forgedPostState",
-      "commitAdded" : [
-        "forgedPostState"
-      ],
-      "commitRemoved" : [
-
-      ],
-      "commitRevision" : 1,
-      "commitTip" : "forgedPostState",
-      "excludedAfter" : false,
-      "executedAfter" : false,
-      "materializedPostState" : false,
-      "mode" : "sequence",
-      "possessedAfter" : true,
-      "result" : "accepted",
-      "scenario" : "weighedThenValidateForged",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "forgedPostState",
-              "kind" : "block"
-            },
-            {
-              "block" : "forgedPostState",
-              "grind" : "forgedPostState",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            }
-          ],
-          "parentGenesisLinks" : 0
-        }
-      ],
-      "step" : 0
-    },
-    {
-      "candidate" : "forgedPostState",
-      "carrier" : "forgedPostState",
-      "carrierRoot" : "forgedPostState",
       "commitAdded" : [
 
       ],
@@ -1575,32 +491,167 @@
       ],
       "commitRevision" : 2,
       "commitTip" : "genesis",
+      "excluded" : true,
       "excludedAfter" : true,
       "executedAfter" : false,
       "materializedPostState" : false,
-      "mode" : "sequence",
+      "operation" : "connect",
+      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
-      "result" : "accepted",
-      "scenario" : "weighedThenValidateForged",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "forgedPostState",
-              "kind" : "exclusion"
-            }
-          ],
-          "issuedCarrier" : "forgedPostState",
-          "issuedRoot" : "forgedPostState",
-          "parentGenesisLinks" : 0
-        }
-      ],
+      "result" : "applied",
+      "scenario" : "forgedPostState",
       "step" : 1
     },
     {
+      "batches" : [
+
+      ],
+      "candidate" : "tooEasy",
+      "commitAdded" : [
+
+      ],
+      "commitRemoved" : [
+
+      ],
+      "excluded" : false,
+      "excludedAfter" : false,
+      "executedAfter" : false,
+      "failure" : "proofOfWorkInvalid",
+      "materializedPostState" : false,
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
+      "possessedAfter" : false,
+      "result" : "rejected",
+      "scenario" : "targetEasierThanSchedule",
+      "step" : 0
+    },
+    {
+      "batches" : [
+
+      ],
+      "candidate" : "hardGenesis",
+      "commitAdded" : [
+
+      ],
+      "commitRemoved" : [
+
+      ],
+      "excluded" : false,
+      "excludedAfter" : false,
+      "executedAfter" : false,
+      "failure" : "protocolInvalid",
+      "materializedPostState" : false,
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
+      "possessedAfter" : false,
+      "result" : "rejected",
+      "scenario" : "rivalGenesis",
+      "step" : 0
+    },
+    {
+      "batches" : [
+        [
+          {
+            "block" : "childCandidate",
+            "kind" : "block"
+          },
+          {
+            "block" : "childCandidate",
+            "grind" : "carrier",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          }
+        ]
+      ],
+      "candidate" : "childCandidate",
+      "commitAdded" : [
+        "childCandidate"
+      ],
+      "commitRemoved" : [
+
+      ],
+      "commitRevision" : 1,
+      "commitTip" : "childCandidate",
+      "excluded" : false,
+      "excludedAfter" : false,
+      "executedAfter" : false,
+      "materializedPostState" : false,
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
+      "possessedAfter" : true,
+      "result" : "applied",
+      "scenario" : "carriedChild",
+      "step" : 0
+    },
+    {
+      "batches" : [
+
+      ],
+      "candidate" : "childCandidate",
+      "commitAdded" : [
+
+      ],
+      "commitRemoved" : [
+
+      ],
+      "excluded" : false,
+      "excludedAfter" : false,
+      "executedAfter" : false,
+      "failure" : "crossChainEvidenceRequired.childProof",
+      "failureCIDs" : [
+        "childCandidate"
+      ],
+      "failurePath" : [
+        "Nexus",
+        "Child"
+      ],
+      "materializedPostState" : false,
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
+      "possessedAfter" : false,
+      "result" : "rejected",
+      "scenario" : "carriedChildWithoutProof",
+      "step" : 0
+    },
+    {
+      "batches" : [
+
+      ],
+      "candidate" : "missedChild",
+      "commitAdded" : [
+
+      ],
+      "commitRemoved" : [
+
+      ],
+      "excluded" : false,
+      "excludedAfter" : false,
+      "executedAfter" : false,
+      "failure" : "proofOfWorkInvalid",
+      "materializedPostState" : false,
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
+      "possessedAfter" : false,
+      "result" : "rejected",
+      "scenario" : "targetMissCarrier",
+      "step" : 0
+    },
+    {
+      "batches" : [
+        [
+          {
+            "block" : "valid",
+            "kind" : "block"
+          },
+          {
+            "block" : "valid",
+            "grind" : "valid",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          }
+        ]
+      ],
       "candidate" : "valid",
-      "carrier" : "valid",
-      "carrierRoot" : "valid",
       "commitAdded" : [
         "valid"
       ],
@@ -1609,36 +660,91 @@
       ],
       "commitRevision" : 1,
       "commitTip" : "valid",
+      "excluded" : false,
       "excludedAfter" : false,
       "executedAfter" : false,
       "materializedPostState" : false,
-      "mode" : "sequence",
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
-      "result" : "accepted",
-      "scenario" : "weighedThenExtend",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "valid",
-              "kind" : "block"
-            },
-            {
-              "block" : "valid",
-              "grind" : "valid",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            }
-          ],
-          "parentGenesisLinks" : 0
-        }
-      ],
+      "result" : "applied",
+      "scenario" : "weighedThenValidateWithoutBody",
       "step" : 0
     },
     {
+      "batches" : [
+
+      ],
+      "candidate" : "valid",
+      "commitAdded" : [
+
+      ],
+      "commitRemoved" : [
+
+      ],
+      "excluded" : false,
+      "excludedAfter" : false,
+      "executedAfter" : false,
+      "failure" : "unavailableEvidence",
+      "materializedPostState" : false,
+      "operation" : "connect",
+      "parentGenesisLinks" : 0,
+      "possessedAfter" : true,
+      "result" : "rejected",
+      "scenario" : "weighedThenValidateWithoutBody",
+      "step" : 1
+    },
+    {
+      "batches" : [
+        [
+          {
+            "block" : "valid",
+            "kind" : "block"
+          },
+          {
+            "block" : "valid",
+            "grind" : "valid",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          }
+        ]
+      ],
+      "candidate" : "valid",
+      "commitAdded" : [
+        "valid"
+      ],
+      "commitRemoved" : [
+
+      ],
+      "commitRevision" : 1,
+      "commitTip" : "valid",
+      "excluded" : false,
+      "excludedAfter" : false,
+      "executedAfter" : false,
+      "materializedPostState" : false,
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
+      "possessedAfter" : true,
+      "result" : "applied",
+      "scenario" : "weighedThenExtend",
+      "step" : 0
+    },
+    {
+      "batches" : [
+        [
+          {
+            "block" : "grandchild",
+            "kind" : "block"
+          },
+          {
+            "block" : "grandchild",
+            "grind" : "grandchild",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          }
+        ]
+      ],
       "candidate" : "grandchild",
-      "carrier" : "grandchild",
-      "carrierRoot" : "grandchild",
       "commitAdded" : [
         "grandchild"
       ],
@@ -1647,30 +753,15 @@
       ],
       "commitRevision" : 2,
       "commitTip" : "grandchild",
+      "excluded" : false,
       "excludedAfter" : false,
       "executedAfter" : false,
       "materializedPostState" : false,
-      "mode" : "sequence",
+      "operation" : "header",
+      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
-      "result" : "accepted",
+      "result" : "applied",
       "scenario" : "weighedThenExtend",
-      "staged" : [
-        {
-          "facts" : [
-            {
-              "block" : "grandchild",
-              "kind" : "block"
-            },
-            {
-              "block" : "grandchild",
-              "grind" : "grandchild",
-              "kind" : "work",
-              "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-            }
-          ],
-          "parentGenesisLinks" : 0
-        }
-      ],
       "step" : 1
     }
   ]

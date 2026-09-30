@@ -244,8 +244,9 @@ directory because their full paths differ.
 
 One validator process owns one absolute chain path, one accepted same-chain
 forest, and one canonical projection. It contains no child validators. A target
-miss at the current level yields only a carrier result; the node may route the
-corresponding sparse proof to a separately supervised descendant process.
+miss at the current level is not admitted at that level; the grind reaches a
+descendant only inside that descendant's `ChildBlockProof`, which the node may
+route to a separately supervised descendant process.
 
 ## 5. Block Validation
 
@@ -325,6 +326,10 @@ A non-genesis nexus block `B` with previous block `P` is valid if and only if:
 6. `B.target <= P.nextTarget` (as hard or harder than scheduled, never easier),
    and `B.nextTarget` equals section 5.5's absolute schedule computed from the
    branch's height-1 anchor and `B`
+
+Rules 2–6 are the header rules; how a failure of each is treated when a block
+is admitted from its header — weighed and excluded, a proof-of-work failure,
+dropped, or held — is section 9.9's header admission.
 7. All transactions pass `validateTransactionForNexus()`:
    - Signatures are valid over the `lattice-tx-v1` envelope
    - Signers match signature public keys
@@ -1006,10 +1011,11 @@ conflicting immutable metadata is rejected. Storage or durability failure leaves
 the accepted graph unchanged, and genesis bootstrap exposes no runtime until its
 facts are durable and restored.
 
-A current-level target miss returns a carrier result without executing its
-transition, inserting it, or implicitly retaining it for this chain. A node may
-explicitly retain a carrier or an exact child-link path as availability policy;
-Lattice does not enumerate an attacker-sized child index. Unresolved same-chain
+A current-level target miss is a proof-of-work failure at this level: it is
+not executed, inserted, or retained for this chain, and it returns no relay
+result — its grind reaches a descendant only inside the descendant's
+`ChildBlockProof`. A node may explicitly retain an exact child-link path as
+availability policy; Lattice does not enumerate an attacker-sized child index. Unresolved same-chain
 predecessors (absent or accepted-but-unconnected) are derived from the accepted
 graph, including after recovery, and must enter this same import boundary. A
 target miss never triggers predecessor backfill because connectivity cannot make
@@ -1197,6 +1203,32 @@ recorded fact recovery could not replay would make restart order-dependent.
 
 Deferral and exclusion are one mechanism: a node MUST NOT let unexecuted weight
 be acted upon without the ability to exclude a subtree it later proves invalid.
+
+**Header admission.** A block enters the weighed graph from its header when
+its parent is held (excluded or not) and its work verifies: securing work
+(9.5) yields a contribution — for a root block, its own hash meets its own
+target — and its target is on the schedule, `B.target <= P.nextTarget` with
+`B.nextTarget` the schedule of 5.5. The schedule is part of the proof of work;
+it is computed from the chain's own spec. Of the header rules of 5.2, exactly
+three are validity, recorded as an exclusion of that same block the moment it
+is weighed: `B.spec != P.spec`, `B.prevState != P.postState`, and
+`B.timestamp <= P.timestamp`. Such a block weighs its work, is never selected,
+and its descendants weigh and are never selected, exactly as for an execution
+verdict. Every other outcome records no fact:
+
+- **Proof-of-work failure** — no contribution, a target off the schedule, or
+  bytes that do not decode or match their CID. The only header failure that
+  blames its sender.
+- **Dropped** — a wrong version or height (including an unrepresentable one),
+  a child index that does not match the block's `children` CID, a malformed
+  reward recipient, a genesis, or a child whose `parentState` is not its
+  carrier's `prevState`. No weight, no blame.
+- **Held** — a timestamp after the node's `now`, an unknown parent, or a
+  difficulty anchor not in hand. Retried; never a verdict.
+
+Weighed headers are never evicted. The exclusion is a separate batch from the
+block's own (a batch carries an exclusion alone), and replay applies both in any
+order.
 
 ### 9.10 Parent-Attributed Run Work
 

@@ -350,6 +350,11 @@ public struct ChainTree: Sendable {
     /// its blocks need. Nil for a tree made without one (the actor path,
     /// which carries its context on `ChainLevel`).
     public private(set) var context: ChainRuntimeContext?
+    /// The chain's spec — its genesis's, bound by CID when the tree is made.
+    /// Header admission computes the target schedule from it and compares
+    /// each block's spec CID with its parent's. Nil for a tree made without
+    /// one, which admits no header.
+    public private(set) var spec: ChainSpec?
     var indexToBlockHash: [UInt64: Set<String>]
     /// The block tree: records, child edges, work facts, anchors and the
     /// diagnostic totals (BlockGraph.swift).
@@ -468,7 +473,8 @@ public struct ChainTree: Sendable {
 
     package static func fromGenesis(
         block: Block,
-        context: ChainRuntimeContext? = nil
+        context: ChainRuntimeContext? = nil,
+        spec: ChainSpec? = nil
     ) -> ChainTree {
         let blockHeader = try! BlockHeader(node: block)
         var tree = fromVerifiedGenesis(
@@ -479,7 +485,13 @@ public struct ChainTree: Sendable {
             )
         )
         tree.context = context
+        tree.spec = spec.flatMap { Self.binds($0, to: block.spec.rawCID) ? $0 : nil }
         return tree
+    }
+
+    /// Whether `spec` is the one `specCID` names.
+    private static func binds(_ spec: ChainSpec, to specCID: String) -> Bool {
+        (try? VolumeImpl<ChainSpec>(node: spec).rawCID) == specCID
     }
 
     package static func fromVerifiedGenesis(
@@ -544,7 +556,8 @@ public struct ChainTree: Sendable {
     public static func restore(
         replaying batches: [BlockImportBatch],
         revisionFloor: UInt64 = 0,
-        context: ChainRuntimeContext? = nil
+        context: ChainRuntimeContext? = nil,
+        spec: ChainSpec? = nil
     ) throws -> ChainTree {
         let genesis = batches.compactMap(TrustedImportBatch.init).filter {
             $0.block?.parentBlockHash == nil && $0.block?.blockHeight == 0
@@ -569,6 +582,13 @@ public struct ChainTree: Sendable {
         chain.completeReplayProjectionDeferral()
         chain.sealRecovery(revisionFloor: revisionFloor)
         chain.context = context
+        if let spec {
+            // The spec must be the genesis's own.
+            guard binds(spec, to: input.snapshot.specCID) else {
+                throw ChainStateRestoreError.corruptConsensusGraph
+            }
+            chain.spec = spec
+        }
         return chain
     }
 
