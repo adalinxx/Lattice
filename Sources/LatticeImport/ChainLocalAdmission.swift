@@ -11,6 +11,9 @@ public enum BlockImportError: Error, Sendable, Equatable {
     case providerMalformedEvidence
     case crossChainEvidenceRequired(CrossChainEvidenceRequirement)
     case protocolInvalid
+    /// This node failed to encode, hash or decrypt while verifying: a fault
+    /// of the node, not a property of the block. Retried, never excluded, or
+    /// a node-local fault would fork this node onto a lighter branch.
     case localVerificationFailure
     case notYetValid
     case notAcceptedAtCurrentChain
@@ -988,15 +991,16 @@ enum BlockImport {
     }
 
     /// A failure is a validity verdict only when execution completed and the
-    /// block is provably invalid. Availability, ordering and capacity failures
-    /// are transient: they must be retried, never recorded as an exclusion.
+    /// block is provably invalid. Availability, ordering, capacity and
+    /// node-local failures are transient: they must be retried, never recorded
+    /// as an exclusion.
     static func isDeterministicInvalidity(_ failure: BlockImportError) -> Bool {
         switch failure {
-        case .protocolInvalid, .localVerificationFailure, .proofOfWorkInvalid:
+        case .protocolInvalid, .proofOfWorkInvalid:
             return true
         case .unavailableEvidence, .providerMalformedEvidence,
-             .crossChainEvidenceRequired, .notYetValid,
-             .notAcceptedAtCurrentChain, .revisionExhausted:
+             .crossChainEvidenceRequired, .localVerificationFailure,
+             .notYetValid, .notAcceptedAtCurrentChain, .revisionExhausted:
             return false
         }
     }
@@ -1347,7 +1351,7 @@ func classifyValidationFailure(_ error: Error) -> BlockImportError {
     if let policyError = error as? WasmPolicyError {
         switch wasmPolicyErrorVerdict(policyError) {
         case .unavailable: return .unavailableEvidence
-        case .invalid: return .localVerificationFailure
+        case .invalid: return .protocolInvalid
         }
     }
     if error is StateErrors || error is ProofErrors
@@ -1404,8 +1408,13 @@ private func classifyDataError(_ error: DataErrors) -> BlockImportError {
         return .providerMalformedEvidence
     case .missingDeclaredChild:
         return .protocolInvalid
-    case .serializationFailed, .cidCreationFailed, .encryptionFailed,
-         .decryptionFailed, .invalidIV:
+    case .cidCreationFailed:
+        // Thrown only when a CID the content names carries no usable
+        // multihash (unknown algorithm, empty digest): a property of the
+        // CID string, so every node reaches the same verdict.
+        return .protocolInvalid
+    case .serializationFailed, .encryptionFailed, .decryptionFailed, .invalidIV:
+        // This node's own encoder or cipher failed: no verdict on the block.
         return .localVerificationFailure
     }
 }
