@@ -148,7 +148,8 @@ state proof supplied for its own candidate. It does not query a canonical parent
 tip or infer a parent block from the state root.
 
 That equality is a structural check on the committed path — it does NOT
-establish that the state is real. A carrier need not be imported, connected,
+establish that the state is real. A child header whose proof fails it is
+dropped without blame and weighs nothing (spec §9.9 header admission). A carrier need not be imported, connected,
 valid or canonical, so both sides of it may be chosen by the same party. What
 makes `parentState` trustworthy is import: every block proves its
 `parentState` by continuity at every height including block 1, rooted in the

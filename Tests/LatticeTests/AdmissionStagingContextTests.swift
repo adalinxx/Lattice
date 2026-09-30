@@ -23,7 +23,7 @@ private actor StagingContextRecorder {
 }
 
 final class AdmissionStagingContextTests: XCTestCase {
-    func testRootBootstrapStagesItsVerifiedCarrierLink() async throws {
+    func testRootBootstrapStagesItsHierarchyIssuance() async throws {
         let fetcher = StorableFetcher()
         let spec = ChainSpec.test()
         let genesis = try await buildAndStoreGenesis(
@@ -34,7 +34,7 @@ final class AdmissionStagingContextTests: XCTestCase {
         )
         let recorder = StagingContextRecorder()
 
-        let bootstrapped = try await ChainLevel.bootstrap(
+        _ = try await ChainLevel.bootstrap(
             context: testChainContext(),
             genesisHeader: try BlockHeader(node: genesis),
             fetcher: fetcher,
@@ -48,7 +48,7 @@ final class AdmissionStagingContextTests: XCTestCase {
         let contexts = await recorder.snapshot()
         let context = try XCTUnwrap(contexts.first)
         XCTAssertEqual(contexts.count, 1)
-        XCTAssertEqual(context.issuedCarrierLink, bootstrapped.parentCarrierLink)
+        XCTAssertTrue(context.issuesHierarchyFacts)
         XCTAssertTrue(context.parentGenesisLinks.isEmpty)
         // block + work + validation: the eager tier weighs and validates in
         // one gate, so it records execution alongside possession.

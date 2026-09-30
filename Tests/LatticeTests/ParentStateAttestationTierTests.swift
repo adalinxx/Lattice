@@ -23,8 +23,8 @@ import UInt256
 private actor StagedIssuanceRecorder {
     private var contexts: [BlockImportStagingContext] = []
     func record(_ context: BlockImportStagingContext) { contexts.append(context) }
-    func issuedCarrierLinks() -> Int {
-        contexts.filter { $0.issuedCarrierLink != nil }.count
+    func issuedHierarchyFacts() -> Int {
+        contexts.filter { $0.issuesHierarchyFacts }.count
     }
     func genesisLinkCount() -> Int {
         contexts.reduce(0) { $0 + $1.parentGenesisLinks.count }
@@ -240,7 +240,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
             validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
             mode: .execution, stage: testAdmissionStage
         )
-        if case .rejected(let failure, _, _) = validated {
+        if case .rejected(let failure, _) = validated {
             return XCTFail("validate tier must not reject an honest block: \(failure)")
         }
         let afterValidation = await level.chain.hasStateContinuity(
@@ -746,12 +746,12 @@ final class ParentStateAttestationTierTests: XCTestCase {
             )
         }
 
-        let issued = await recorder.issuedCarrierLinks()
+        let issued = await recorder.issuedHierarchyFacts()
         let genesisLinks = await recorder.genesisLinkCount()
         XCTAssertEqual(
             issued, 0,
             """
-            An unexecuted block issued a carrier link through the evidence \
+            An unexecuted block issued hierarchy facts through the evidence \
             path. Extra work on a block says nothing about whether its \
             transition is valid.
             """
@@ -844,7 +844,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
             validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
             mode: .execution, stage: testAdmissionStage
         )
-        guard case .rejected(let failure, _, _) = outcome else {
+        guard case .rejected(let failure, _) = outcome else {
             return XCTFail(
                 """
                 A block inherited its anchor from an UNVERIFIED predecessor. \
@@ -1060,7 +1060,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         // Block 1 must be made to prove its anchor. Demanding the continuity
         // evidence is retriable and correct; silently accepting an unanchored
         // parentState is not.
-        guard case .rejected(let failure, _, _) = outcome else {
+        guard case .rejected(let failure, _) = outcome else {
             return XCTFail(
                 """
                 Block 1 was admitted with a parentState anchored to nothing but \

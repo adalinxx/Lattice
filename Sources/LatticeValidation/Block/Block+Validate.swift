@@ -23,6 +23,22 @@ public struct AnchorUnavailable: Error, Sendable, Equatable {
     public init() {}
 }
 
+/// What header admission decides for a block whose work verified and whose
+/// parent is held (`Block.headerAdmission`, spec §9.9).
+public enum HeaderAdmission: Sendable, Equatable {
+    /// Weighed, and selectable as far as its header goes.
+    case linked
+    /// Weighed with its work, and excluded: never selected. Only
+    /// `spec != parent.spec` and `prevState != parent.postState`.
+    case excluded
+    /// A structural fault (version, height): dropped, no weight, no blame.
+    case malformed
+    /// Off the schedule — `timestamp <= parent.timestamp`, `target >
+    /// parent.nextTarget`, or a `nextTarget` that is not the ASERT schedule:
+    /// a proof-of-work failure.
+    case offSchedule
+}
+
 /// The fields of a parent block that header linkage reads. Resolved parent
 /// content and a block tree's recorded entry both supply them, so the same
 /// rules decide linkage whichever one the caller holds.
@@ -326,35 +342,47 @@ public extension Block {
         return nil
     }
 
-    /// The complete header-linkage rule set, synchronously, against a parent
-    /// the caller already holds (a block tree's recorded entry) and the
-    /// block's own resolved spec — the same rules, in the same order, as
-    /// ``validateHeaderLinkage(fetcher:chain:reportTemporalFailure:validationContext:)``.
-    /// `inheritedAnchor` answers the parent's inherited difficulty anchor and
-    /// is asked only above height 2; nil there is `AnchorUnavailable`.
-    func validateHeaderLinkage(
+    /// Header admission (§9.9) against a parent the caller already holds (a
+    /// block tree's recorded entry, excluded or not) and the chain's own spec.
+    /// Work weighs and validity selects, so a header rule decides one of four
+    /// things. Throws `BlockValidationError.notYetValid` for a block from this
+    /// node's future and `AnchorUnavailable` when the difficulty anchor is not
+    /// in hand: both are held and retried, never a verdict. `inheritedAnchor`
+    /// answers the parent's inherited difficulty anchor and is asked only above
+    /// height 2.
+    func headerAdmission(
         parent: HeaderLinkageParent,
         spec: ChainSpec,
         inheritedAnchor: () -> DifficultyAnchor?,
-        reportTemporalFailure: Bool,
         validationContext: ValidationContext
-    ) throws -> Bool {
-        if version != Block.currentVersion { return false }
-        if !validateSpec(parent: parent) { return false }
-        if !validateState(parent: parent) { return false }
-        if !validateHeight(parent: parent) { return false }
-        guard try validateTimestampLinkage(
-            parent: parent,
-            reportTemporalFailure: reportTemporalFailure,
-            validationContext: validationContext
-        ) else { return false }
+    ) throws -> HeaderAdmission {
+        // Structural: the header cannot sit where it claims to.
+        if version != Block.currentVersion { return .malformed }
+        if !validateHeight(parent: parent) { return .malformed }
+        // The schedule is part of the proof of work: a header whose target is
+        // easier than scheduled, or whose committed `nextTarget` departs from
+        // it, proves no work the chain asked for. The timestamp is the
+        // schedule's input — height 1 anchors it — so a timestamp at or
+        // before the parent's fails the same way: an old anchor would make
+        // every descendant cheap. Block 1's anchor timestamp is bounded below
+        // only by `genesis.timestamp`, so a genesis MUST carry its real
+        // launch time.
+        if parent.timestamp >= timestamp { return .offSchedule }
+        if !validationContext.permits(timestamp: timestamp) {
+            throw BlockValidationError.notYetValid
+        }
         guard let anchor = immediateDifficultyAnchor(parent: parent)
             ?? inheritedAnchor() else {
             throw AnchorUnavailable()
         }
-        return validateNextTarget(
+        guard validateNextTarget(
             spec: spec, parent: parent, difficultyAnchor: anchor
-        )
+        ) else { return .offSchedule }
+        // Validity: deterministic rules against the parent's agreed state.
+        if !validateSpec(parent: parent) || !validateState(parent: parent) {
+            return .excluded
+        }
+        return .linked
     }
 
     /// Validate block structure: parent linkage, spec, height, timestamp,
