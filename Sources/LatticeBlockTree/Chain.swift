@@ -334,7 +334,17 @@ private struct TrustedImportBatch {
     }
 }
 
-public actor ChainState {
+/// One chain's block tree as a synchronous value: the weighed graph
+/// (`BlockGraph`), GHOST weights and excluded roots (`ForkChoice`), the
+/// canonical projection and executed set (`ExecutionFrontier`), and parent
+/// run attribution (`RunAttribution`).
+///
+/// Every consensus mutation of a chain is a method on this value; the
+/// `ChainState` actor only wraps one, so there is one implementation. The
+/// four fact kinds are its durable form: `replay` rebuilds it from them, and
+/// the admission operations (`insertHeader`, `addWork`, `applyConnect`) emit
+/// exactly the facts they apply.
+public struct ChainTree: Sendable {
     var indexToBlockHash: [UInt64: Set<String>]
     /// The block tree: records, child edges, work facts, anchors and the
     /// diagnostic totals (BlockGraph.swift).
@@ -452,7 +462,7 @@ public actor ChainState {
 
     package static func fromGenesis(
         block: Block
-    ) -> ChainState {
+    ) -> ChainTree {
         let blockHeader = try! BlockHeader(node: block)
         return fromVerifiedGenesis(
             block: block,
@@ -466,7 +476,7 @@ public actor ChainState {
     package static func fromVerifiedGenesis(
         block: Block,
         contribution: VerifiedWorkContribution
-    ) -> ChainState {
+    ) -> ChainTree {
         // Known-valid local node; CID computation cannot fail (no Float/Double fields).
         let blockHash = try! BlockHeader(node: block).rawCID
         let meta = BlockMeta(
@@ -477,7 +487,7 @@ public actor ChainState {
             workContributions: [contribution],
             cumulativeWork: WorkSum(contribution.work)
         )
-        return try! ChainState(
+        return try! ChainTree(
             canonicalTip: blockHash,
             canonicalHashes: Set([blockHash]),
             indexToBlockHash: [0: Set([blockHash])],
@@ -491,7 +501,7 @@ public actor ChainState {
         input: ConsensusBlockInput,
         contribution: VerifiedWorkContribution,
         mutationGeneration: UInt64 = 0
-    ) throws -> ChainState {
+    ) throws -> ChainTree {
         // Genesis, like every block, must carry positive work: it must satisfy its
         // own committed target, so a zero-work genesis is not admissible.
         guard input.parentBlockHash == nil,
@@ -508,7 +518,7 @@ public actor ChainState {
             cumulativeWork: WorkSum(contribution.work),
             childCommitments: input.childCommitments
         )
-        return try ChainState(
+        return try ChainTree(
             canonicalTip: input.blockHash,
             canonicalHashes: [input.blockHash],
             indexToBlockHash: [0: [input.blockHash]],
@@ -525,7 +535,7 @@ public actor ChainState {
     public static func restore(
         replaying batches: [BlockImportBatch],
         revisionFloor: UInt64 = 0
-    ) async throws -> ChainState {
+    ) throws -> ChainTree {
         let genesis = batches.compactMap(TrustedImportBatch.init).filter {
             $0.block?.parentBlockHash == nil && $0.block?.blockHeight == 0
         }.sorted {
@@ -534,7 +544,7 @@ public actor ChainState {
         guard let trusted = genesis, let input = trusted.block else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
-        let chain = try fromTrustedGenesis(
+        var chain = try fromTrustedGenesis(
             input: input,
             contribution: trusted.contribution,
             mutationGeneration: 0
@@ -544,18 +554,18 @@ public actor ChainState {
         // The projection is a derived cache and no replay step reads it, so it
         // is deferred across the whole replay and computed exactly once —
         // replay is O(batches), not O(batches × chain length).
-        await chain.beginReplayProjectionDeferral()
-        try await replay(batches[...], onto: chain)
-        await chain.completeReplayProjectionDeferral()
-        await chain.sealRecovery(revisionFloor: revisionFloor)
+        chain.beginReplayProjectionDeferral()
+        try replay(batches[...], onto: &chain)
+        chain.completeReplayProjectionDeferral()
+        chain.sealRecovery(revisionFloor: revisionFloor)
         return chain
     }
 
-    private func sealRecovery(revisionFloor: UInt64) {
+    private mutating func sealRecovery(revisionFloor: UInt64) {
         mutationGeneration = max(mutationGeneration, revisionFloor)
     }
 
-    private func beginReplayProjectionDeferral() {
+    private mutating func beginReplayProjectionDeferral() {
         deferProjectionForReplay = true
     }
 
@@ -563,7 +573,7 @@ public actor ChainState {
     /// `forceFull` because replay deliberately maintains no projection to
     /// truncate against — there is no trustworthy canonical path until this
     /// runs.
-    private func completeReplayProjectionDeferral() {
+    private mutating func completeReplayProjectionDeferral() {
         deferProjectionForReplay = false
         _ = projectCanonicalChain(forceFull: true)
         frontier.refreshTipSnapshot()
@@ -571,8 +581,8 @@ public actor ChainState {
 
     private static func replay(
         _ batches: ArraySlice<BlockImportBatch>,
-        onto chain: ChainState
-    ) async throws {
+        onto chain: inout ChainTree
+    ) throws {
         // Sort keys are derived from immutable batch content, so authenticate
         // each batch ONCE and sort ONCE: the old per-comparison
         // `TrustedImportBatch` construction re-decoded both operands' block
@@ -589,7 +599,7 @@ public actor ChainState {
             var completed = false
             for entry in pending {
                 do {
-                    _ = try await chain.replay(entry.batch)
+                    _ = try chain.replay(entry.batch)
                     completed = true
                 } catch ChainStateRestoreError.missingBlockFact {
                     deferred.append(entry)
@@ -738,7 +748,7 @@ public actor ChainState {
         )
     }
 
-    public func getConsensusBlock(hash: String) -> BlockMeta? {
+    public mutating func getConsensusBlock(hash: String) -> BlockMeta? {
         guard graph.contains(hash) else { return nil }
         materializeLocalWorkCachesIfNeeded()
         return graph.meta(of: hash)
@@ -768,7 +778,7 @@ public actor ChainState {
     ///
     /// The result is a pure function of the block's ancestry either way; the
     /// cache only decides how much of that ancestry has to be re-read.
-    public func difficultyAnchor(forBlockHash hash: String) -> DifficultyAnchor? {
+    public mutating func difficultyAnchor(forBlockHash hash: String) -> DifficultyAnchor? {
         var unresolved: [String] = []
         var current: String? = hash
         var resolved: DifficultyAnchor?
@@ -790,7 +800,7 @@ public actor ChainState {
 
     // MARK: - Block Submission
 
-    func submitBlock(
+    mutating func submitBlock(
         blockHeader: BlockHeader,
         block: Block,
         contribution: VerifiedWorkContribution
@@ -801,7 +811,7 @@ public actor ChainState {
         )
     }
 
-    private func submitBlock(
+    private mutating func submitBlock(
         input: ConsensusBlockInput,
         contribution: VerifiedWorkContribution
     ) -> SubmissionResult {
@@ -857,7 +867,7 @@ public actor ChainState {
 
     // MARK: - Insert
 
-    private func insertBlock(
+    private mutating func insertBlock(
         input: ConsensusBlockInput,
         contributions: [VerifiedWorkContribution],
         addedContribution: Bool,
@@ -952,7 +962,7 @@ public actor ChainState {
         )
     }
 
-    nonisolated private static func hasUniqueWorkLocations(
+    private static func hasUniqueWorkLocations(
         in blocks: BlockGraph
     ) -> Bool {
         var locationByGrind: [String: String] = [:]
@@ -975,7 +985,7 @@ public actor ChainState {
 
     // MARK: - Additional proof facts
 
-    func addWorkContribution(
+    mutating func addWorkContribution(
         _ contribution: VerifiedWorkContribution,
         to blockHash: String,
         attributedRun: AttributedRunIdentity? = nil
@@ -1026,7 +1036,7 @@ public actor ChainState {
     /// Apply one already-durable, locally authenticated admission batch. Live
     /// admission and recovery share this reducer so staging is the only
     /// linearization point.
-    func applyStaged(_ batch: BlockImportBatch) throws -> SubmissionResult? {
+    mutating func applyStaged(_ batch: BlockImportBatch) throws -> SubmissionResult? {
         if let excluded = Self.exclusionTarget(of: batch) {
             return try applyExclusion(blockHash: excluded)
         }
@@ -1131,7 +1141,7 @@ public actor ChainState {
     /// Record a proven-invalid subtree root. The block must already be present:
     /// a not-yet-connected exclusion defers exactly like a work fact whose block
     /// has not arrived, so replay retries it once the subtree exists.
-    private func applyExclusion(blockHash: String) throws -> SubmissionResult? {
+    private mutating func applyExclusion(blockHash: String) throws -> SubmissionResult? {
         guard graph.contains(blockHash) else {
             throw ChainStateRestoreError.missingBlockFact
         }
@@ -1182,25 +1192,25 @@ public actor ChainState {
 
     /// Rebuild one already-durable admission fact during recovery. Callers must
     /// authenticate and persist the fact before invoking this public seam.
-    public func replay(_ batch: BlockImportBatch) throws -> ChainCommit? {
+    public mutating func replay(_ batch: BlockImportBatch) throws -> ChainCommit? {
         try applyStaged(batch)?.commit
     }
 
     /// Reserve one distinct U64 commit revision before the node stages a batch.
     /// Other actor mutations must leave this capacity available until the batch
     /// either fails staging or consumes the reservation synchronously.
-    package func reserveImportRevision() -> Bool {
+    package mutating func reserveImportRevision() -> Bool {
         guard hasUnreservedMutationCapacity else { return false }
         reservedImportRevisions += 1
         return true
     }
 
-    package func releaseImportRevision() {
+    package mutating func releaseImportRevision() {
         precondition(reservedImportRevisions > 0)
         reservedImportRevisions -= 1
     }
 
-    package func applyReservedStaged(
+    package mutating func applyReservedStaged(
         _ batch: BlockImportBatch
     ) throws -> SubmissionResult? {
         guard reservedImportRevisions > 0 else {
@@ -1226,7 +1236,7 @@ public actor ChainState {
                 || meta.childCommitments == input.childCommitments)
     }
 
-    private func hydrateMetadata(from input: ConsensusBlockInput) {
+    private mutating func hydrateMetadata(from input: ConsensusBlockInput) {
         indexStateTransition(input.snapshot, blockHash: input.blockHash)
         // The index above just recorded `input.snapshot` for this block.
         if canonicalTip == input.blockHash {
@@ -1241,7 +1251,7 @@ public actor ChainState {
     /// the block was already settled as a non-committer in a served directory
     /// it now commits into, that directory's runs are re-settled from scratch:
     /// O(N), exact, and reachable only at the upgrade boundary.
-    private func adoptChildCommitments(_ commitments: [String: String], at hash: String) {
+    private mutating func adoptChildCommitments(_ commitments: [String: String], at hash: String) {
         guard let meta = graph[hash], meta.childCommitments == nil else { return }
         graph.adoptChildCommitments(commitments, at: hash)
         guard forkChoice.isRouted(hash) else { return }
@@ -1266,7 +1276,7 @@ public actor ChainState {
         return forkChoice.isRouted(parentHash)
     }
 
-    func addToBlockIndex(hash: String, blockHeight: UInt64) {
+    mutating func addToBlockIndex(hash: String, blockHeight: UInt64) {
         indexToBlockHash[blockHeight, default: []].insert(hash)
     }
 
@@ -1278,4 +1288,3 @@ public actor ChainState {
 
 }
 
-extension ChainState: DifficultyAnchorSource {}

@@ -250,8 +250,8 @@ struct BlockGraph: Sendable {
     }
 
     /// Rebuild the diagnostic prefix and subtree totals; see
-    /// `ChainState.recomputeWorkCaches`.
+    /// `ChainTree.recomputeWorkCaches`.
     mutating func recomputeWorkCaches() {
-        diagnosticsByHash = ChainState.recomputeWorkCaches(in: self)
+        diagnosticsByHash = ChainTree.recomputeWorkCaches(in: self)
     }
 }
