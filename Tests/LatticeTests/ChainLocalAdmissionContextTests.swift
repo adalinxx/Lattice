@@ -80,7 +80,8 @@ final class ChainLocalAdmissionContextTests: XCTestCase {
         // Every `ValidationErrors` case classifies to exactly one side of the
         // availability/verdict partition: an unresolved input is retryable,
         // a serialization failure is this node's own fault and never a
-        // consensus verdict. Neither side may drift into `.protocolInvalid`.
+        // consensus verdict, so it is retried too. Neither may drift into
+        // `.protocolInvalid`.
         let cases: [ValidationErrors] = [
             .transactionNotResolved,
             .prevStateNotResolved,
@@ -93,10 +94,9 @@ final class ChainLocalAdmissionContextTests: XCTestCase {
                 : .unavailableEvidence
             let classified = ChainLevel.classifyValidationFailureForTesting(error)
             XCTAssertEqual(classified, expected, "\(error)")
-            XCTAssertEqual(
+            XCTAssertFalse(
                 ChainLevel.isDeterministicInvalidityForTesting(classified),
-                error == .serializationError,
-                "\(error) is a verdict only when it is this node's own failure"
+                "\(error) is never a verdict"
             )
         }
     }
@@ -107,7 +107,7 @@ final class ChainLocalAdmissionContextTests: XCTestCase {
         // failures are transient and must never record an exclusion.
         for failure in [
             BlockImportError.protocolInvalid,
-            .localVerificationFailure,
+            .proofOfWorkInvalid,
         ] {
             XCTAssertTrue(
                 ChainLevel.isDeterministicInvalidityForTesting(failure),
@@ -117,6 +117,7 @@ final class ChainLocalAdmissionContextTests: XCTestCase {
         for failure in [
             BlockImportError.unavailableEvidence,
             .providerMalformedEvidence,
+            .localVerificationFailure,
             .crossChainEvidenceRequired(.childProof(chainPath: [], childCID: "x")),
             .notYetValid,
             .notAcceptedAtCurrentChain,
