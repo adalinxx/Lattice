@@ -635,7 +635,7 @@ struct ExecutionFrontier: Sendable {
     }
 }
 
-extension ChainState {
+extension ChainTree {
     // Forwarders onto `frontier`, kept so callers and tests read the actor
     // exactly as before.
 
@@ -654,7 +654,7 @@ extension ChainState {
 
     /// Recompute canonical projection after local simulation/test mutation.
     @discardableResult
-    public func reevaluateForkChoice() -> ChainCommit? {
+    public mutating func reevaluateForkChoice() -> ChainCommit? {
         guard hasUnreservedMutationCapacity else { return nil }
         // No graph or weight fact has changed since the projection was last
         // brought current, so re-projection is provably a no-op: a duplicate
@@ -696,7 +696,7 @@ extension ChainState {
 #if DEBUG
     /// Test-only seam for asserting that a no-reorg update did not materialize
     /// the unchanged unary canonical path.
-    func resetFullCanonicalProjectionCount() {
+    mutating func resetFullCanonicalProjectionCount() {
         frontier.resetFullCanonicalProjectionCount()
     }
 
@@ -721,7 +721,7 @@ extension ChainState {
 
     /// Project the canonical path after one fork-choice mutation; see
     /// `ExecutionFrontier.project`.
-    func projectCanonicalChain(
+    mutating func projectCanonicalChain(
         forceFull: Bool = false,
         monotoneIncreaseAt mutatedAt: String? = nil
     ) -> ChainCommit? {
@@ -755,7 +755,7 @@ extension ChainState {
     /// nodes by local policy. Serving RATE is a node's choice; the ANSWER is
     /// not. The block-1 shape — the one whose cost grew with chain height — is
     /// answered from the anchored frontier in O(1).
-    public func hasStateContinuity(
+    public mutating func hasStateContinuity(
         from fromStateCID: String,
         to toStateCID: String
     ) -> Bool {
@@ -778,7 +778,7 @@ extension ChainState {
     /// One deterministic accepted-block path proving forward state continuity.
     /// The returned CIDs are hints for acquiring ordinary block Volumes; a
     /// receiver must still validate those blocks before trusting the path.
-    public func stateContinuityPath(
+    public mutating func stateContinuityPath(
         from fromStateCID: String,
         to toStateCID: String
     ) -> [String]? {
@@ -791,7 +791,7 @@ extension ChainState {
     }
 
     /// Record that a possessed block's transition was executed.
-    func markValidated(blockHash: String) {
+    mutating func markValidated(blockHash: String) {
         guard graph.contains(blockHash) else { return }
         frontier.markValidated(
             blockHash,
@@ -811,11 +811,11 @@ extension ChainState {
         }
     }
 
-    func unanchor(subtreeRootedAt rootHash: String) {
+    mutating func unanchor(subtreeRootedAt rootHash: String) {
         frontier.unanchor(subtreeRootedAt: rootHash, in: graph)
     }
 
-    func indexStateTransition(
+    mutating func indexStateTransition(
         _ snapshot: TipBlockSnapshot,
         blockHash: String
     ) {

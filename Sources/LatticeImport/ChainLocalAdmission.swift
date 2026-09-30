@@ -176,7 +176,7 @@ public enum ChildChainBootstrapResult: Sendable {
     }
 }
 
-fileprivate struct PreparedImport: Sendable {
+struct PreparedImport: Sendable {
     enum Kind: Sendable {
         /// `validated` records whether the transition was EXECUTED. It is stated
         /// per tier rather than inferred from the materialized state, because a
@@ -221,45 +221,13 @@ fileprivate struct PreparedImport: Sendable {
     var childCommitments: [String: String]? = nil
 
     var facts: BlockImportBatch {
-        // An exclusion is a standalone verdict: exactly one `.exclusion` fact,
-        // no block or work fact (both already durable from the weighed tier).
-        if case .exclusion = kind {
-            return BlockImportBatch.staged([
-                .exclusion(ChainExclusionFact(blockHash: resolvedHeader.rawCID)),
-            ])
-        }
-        var facts: [ChainFact] = []
-        switch kind {
-        case .block(let stateDiff, _, _):
-            facts.append(.block(ChainBlockFact(
-                blockHash: resolvedHeader.rawCID,
-                parentBlockHash: block.parent?.rawCID,
-                blockHeight: block.height,
-                postStateCID: block.postState.rawCID,
-                prevStateCID: block.prevState.rawCID,
-                specCID: block.spec.rawCID,
-                target: block.target.toHexString(),
-                nextTarget: block.nextTarget.toHexString(),
-                timestamp: block.timestamp,
-                stateDiff: stateDiff,
-                childCommitments: childCommitments
-            )))
-        case .evidence, .exclusion:
-            break
-        }
-        facts.append(.work(ChainWorkFact(
+        BlockImport.admissionFacts(
             blockHash: resolvedHeader.rawCID,
-            contribution: contribution
-        )))
-        // Last: execution is the newest judgment in the batch, and keeping the
-        // block/work prefix stable leaves existing batch-shape expectations
-        // positionally intact.
-        if case .block(_, _, true) = kind {
-            facts.append(.validation(ChainValidationFact(
-                blockHash: resolvedHeader.rawCID
-            )))
-        }
-        return BlockImportBatch.staged(facts)
+            block: block,
+            contribution: contribution,
+            kind: kind,
+            childCommitments: childCommitments
+        )
     }
 
     /// Store the immutable validation Volumes before the node takes its
@@ -414,7 +382,7 @@ public enum BlockImportPreflightResult: Sendable {
     case ready(PreparedBlockImport)
 }
 
-private func parentGenesisLinks(
+func parentGenesisLinks(
     in header: BlockHeader,
     parentPath: [String],
     fetcher: any Fetcher
@@ -446,7 +414,7 @@ private func parentGenesisLinks(
     }
 }
 
-private enum BlockImport {
+enum BlockImport {
     static func verifyChildProof(
         _ package: ChildValidationPackage,
         child: Block,
@@ -458,23 +426,74 @@ private enum BlockImport {
         ).mapError(mapProofFailure)
     }
 
+    /// The parent-chain facts a child package carries, answered as lookups:
+    /// a link the package holds either is the one asked for or is malformed,
+    /// and a link it should not hold at all is malformed too.
+    static func parentFactLookup(
+        _ package: ChildValidationPackage
+    ) -> ParentFactLookup {
+        { query in
+            switch query {
+            case .genesis(let expected):
+                guard package.parentStateContinuityLink == nil else { return .malformed }
+                guard let link = package.parentGenesisLink else { return .absent }
+                return link == expected ? .present : .malformed
+            case .continuity(let expected):
+                guard package.parentGenesisLink == nil else { return .malformed }
+                guard let link = package.parentStateContinuityLink else { return .absent }
+                return link == expected ? .present : .malformed
+            case .none:
+                return package.parentGenesisLink == nil
+                    && package.parentStateContinuityLink == nil ? .absent : .malformed
+            }
+        }
+    }
+
+    /// The parent-chain facts a parent level's executed set answers: a
+    /// genesis link its executed blocks recorded, and a state its executed
+    /// set produced on any branch. A level holds no wrong link, so nothing it
+    /// answers is malformed.
+    static func parentFactLookup(
+        _ facts: (any ParentChainFacts)?
+    ) -> ParentFactLookup {
+        { query in
+            switch query {
+            case .genesis(let expected):
+                return facts?.recordsGenesis(expected) == true ? .present : .absent
+            case .continuity(let expected):
+                return facts?.hasContinuity(expected) == true ? .present : .absent
+            case .none:
+                return .absent
+            }
+        }
+    }
+
     static func validateParentFacts(
-        _ package: ChildValidationPackage,
+        _ lookup: ParentFactLookup,
         child: Block,
         childCID: String,
-        context: ChainRuntimeContext,
-        fetcher: any Fetcher
-    ) async -> BlockImportError? {
+        context: ChainRuntimeContext
+    ) -> BlockImportError? {
         let parentPath = Array(context.path.dropLast())
         if child.parent == nil {
             guard child.hasGenesisShape() else {
                 return .protocolInvalid
             }
-            guard package.parentStateContinuityLink == nil,
-                  let directory = context.path.last else {
+            guard let directory = context.path.last else {
                 return .providerMalformedEvidence
             }
-            guard let genesis = package.parentGenesisLink else {
+            let expected = ParentGenesisLink(
+                parentPath: parentPath,
+                directory: directory,
+                childGenesisCID: childCID,
+                parentStateCID: child.parentState.rawCID
+            )
+            switch lookup(.genesis(expected)) {
+            case .present:
+                return nil
+            case .malformed:
+                return .providerMalformedEvidence
+            case .absent:
                 return .crossChainEvidenceRequired(.parentGenesis(
                     parentPath: parentPath,
                     directory: directory,
@@ -482,20 +501,8 @@ private enum BlockImport {
                     parentStateCID: child.parentState.rawCID
                 ))
             }
-            guard genesis == ParentGenesisLink(
-                parentPath: parentPath,
-                directory: directory,
-                childGenesisCID: childCID,
-                parentStateCID: child.parentState.rawCID
-            ) else {
-                return .providerMalformedEvidence
-            }
-            return nil
         }
 
-        guard package.parentGenesisLink == nil, child.parent != nil else {
-            return .providerMalformedEvidence
-        }
         // Block 1 proves its anchor exactly like every other height (§5.3 step
         // 6, which carries no height-1 exemption). A genesis's `parentState` is
         // `emptyHeader` and every genesis's `prevState` is `emptyHeader` too, so
@@ -529,11 +536,8 @@ private enum BlockImport {
         let toStateCID = child.parentState.rawCID
         if fromStateCID == toStateCID {
             // The block commits no parent state at all; there is nothing to
-            // anchor.
-            guard package.parentStateContinuityLink == nil else {
-                return .providerMalformedEvidence
-            }
-            return nil
+            // anchor, and no parent fact may be offered for it.
+            return lookup(.none) == .absent ? nil : .providerMalformedEvidence
         }
 
         let expected = ParentStateContinuityLink(
@@ -541,20 +545,21 @@ private enum BlockImport {
             fromStateCID: fromStateCID,
             toStateCID: toStateCID
         )
-        guard let link = package.parentStateContinuityLink else {
+        switch lookup(.continuity(expected)) {
+        case .present:
+            return nil
+        case .malformed:
+            return .providerMalformedEvidence
+        case .absent:
             return .crossChainEvidenceRequired(.parentStateContinuity(
                 parentPath: parentPath,
                 fromStateCID: fromStateCID,
                 toStateCID: toStateCID
             ))
         }
-        guard link == expected else {
-            return .providerMalformedEvidence
-        }
-        return nil
     }
 
-    static func prepare(
+    fileprivate static func prepare(
         level: ChainLevel,
         blockHeader: BlockHeader,
         fetcher: any Fetcher,
@@ -581,14 +586,8 @@ private enum BlockImport {
             guard childPackage == nil else {
                 return .result(rejection(.protocolInvalid))
             }
-            let rootHash = block.proofOfWorkHash()
             grindID = blockHash
-            contribution = block.validateProofOfWork(nexusHash: rootHash)
-                ? VerifiedWorkContribution(
-                    id: blockHash,
-                    work: workForTarget(block.target)
-                )
-                : nil
+            contribution = rootWork(of: block, blockHash: blockHash)
         } else {
             guard let childPackage else {
                 return .result(rejection(.crossChainEvidenceRequired(.childProof(
@@ -786,7 +785,7 @@ private enum BlockImport {
             blockHash: blockHash,
             fetcher: fetcher,
             chain: level.chain,
-            childPackage: childPackage,
+            parentFacts: childPackage.map(parentFactLookup),
             context: context,
             validationContext: validationContext
         ) {
@@ -883,7 +882,7 @@ private enum BlockImport {
             blockHash: blockHash,
             fetcher: fetcher,
             chain: level.chain,
-            childPackage: childPackage,
+            parentFacts: childPackage.map(parentFactLookup),
             context: context,
             validationContext: validationContext
         ) {
@@ -921,6 +920,77 @@ private enum BlockImport {
                 childCommitments: commitments
             ))
         }
+    }
+
+    /// The one construction of an admission batch, whichever API admits the
+    /// block: a block fact (with its child commitments) and its work, the
+    /// validation last when the transition was executed; a work fact alone
+    /// for another grind; the exclusion alone for a proven-invalid block.
+    static func admissionFacts(
+        blockHash: String,
+        block: Block,
+        contribution: VerifiedWorkContribution,
+        kind: PreparedImport.Kind,
+        childCommitments: [String: String]?
+    ) -> BlockImportBatch {
+        // An exclusion is a standalone verdict: exactly one `.exclusion` fact,
+        // no block or work fact (both already durable from the weighed tier).
+        if case .exclusion = kind {
+            return exclusionFacts(blockHash: blockHash)
+        }
+        var facts: [ChainFact] = []
+        switch kind {
+        case .block(let stateDiff, _, _):
+            facts.append(.block(ChainBlockFact(
+                blockHash: blockHash,
+                parentBlockHash: block.parent?.rawCID,
+                blockHeight: block.height,
+                postStateCID: block.postState.rawCID,
+                prevStateCID: block.prevState.rawCID,
+                specCID: block.spec.rawCID,
+                target: block.target.toHexString(),
+                nextTarget: block.nextTarget.toHexString(),
+                timestamp: block.timestamp,
+                stateDiff: stateDiff,
+                childCommitments: childCommitments
+            )))
+        case .evidence, .exclusion:
+            break
+        }
+        facts.append(.work(ChainWorkFact(
+            blockHash: blockHash,
+            contribution: contribution
+        )))
+        // Last: execution is the newest judgment in the batch, and keeping the
+        // block/work prefix stable leaves existing batch-shape expectations
+        // positionally intact.
+        if case .block(_, _, true) = kind {
+            facts.append(.validation(ChainValidationFact(
+                blockHash: blockHash
+            )))
+        }
+        return BlockImportBatch.staged(facts)
+    }
+
+    static func exclusionFacts(blockHash: String) -> BlockImportBatch {
+        BlockImportBatch.staged([
+            .exclusion(ChainExclusionFact(blockHash: blockHash)),
+        ])
+    }
+
+    /// A root block's own grind: its proof-of-work against its own target,
+    /// credited under its own CID. Nil when the hash misses the target.
+    static func rootWork(
+        of block: Block,
+        blockHash: String
+    ) -> VerifiedWorkContribution? {
+        let rootHash = block.proofOfWorkHash()
+        return block.validateProofOfWork(nexusHash: rootHash)
+            ? VerifiedWorkContribution(
+                id: blockHash,
+                work: workForTarget(block.target)
+            )
+            : nil
     }
 
     /// A proven-invalid block asks the node for nothing: its predecessor must
@@ -1044,8 +1114,8 @@ private enum BlockImport {
         block: Block,
         blockHash: String,
         fetcher: any Fetcher,
-        chain: ChainState?,
-        childPackage: ChildValidationPackage?,
+        chain: (any DifficultyAnchorSource)?,
+        parentFacts: ParentFactLookup?,
         context: ChainRuntimeContext,
         validationContext: ValidationContext
     ) async -> Result<ExecutedTransition, BlockImportError> {
@@ -1071,13 +1141,12 @@ private enum BlockImport {
             return .failure(classifyValidationFailure(error))
         }
         guard validation.0 else { return .failure(.protocolInvalid) }
-        if !context.isRoot, let childPackage,
-           let failure = await validateParentFacts(
-               childPackage,
+        if !context.isRoot, let parentFacts,
+           let failure = validateParentFacts(
+               parentFacts,
                child: block,
                childCID: blockHash,
-               context: context,
-               fetcher: fetcher
+               context: context
            ) {
             return .failure(failure)
         }
@@ -1141,6 +1210,68 @@ private enum BlockImport {
             return linked ? nil : .protocolInvalid
         } catch {
             return classifyValidationFailure(error)
+        }
+    }
+
+    enum GenesisPreparation {
+        case unresolved(BlockImportError)
+        case notGenesis
+        case unauthorized
+        case noWork
+        case invalid(BlockImportError)
+        case ready(
+            (header: BlockHeader, block: Block),
+            VerifiedWorkContribution,
+            ExecutedTransition
+        )
+    }
+
+    /// The one genesis admission sequence every bootstrap runs: resolve, the
+    /// genesis position, a child genesis's shape and parent authorization
+    /// (`authorizes` is asked for exactly the link that would authorize it),
+    /// its own proof-of-work, then execution.
+    static func prepareGenesis(
+        context: ChainRuntimeContext,
+        genesisHeader: BlockHeader,
+        fetcher: any Fetcher,
+        authorizes: (ParentGenesisLink) -> Bool,
+        validationContext: ValidationContext
+    ) async -> GenesisPreparation {
+        let resolved: (header: BlockHeader, block: Block)
+        switch await resolveBlock(genesisHeader, fetcher: fetcher) {
+        case .failure(let failure): return .unresolved(failure)
+        case .success(let value): resolved = value
+        }
+        guard resolved.block.parent == nil, resolved.block.height == 0 else {
+            return .notGenesis
+        }
+        let blockHash = resolved.header.rawCID
+        if !context.isRoot {
+            guard resolved.block.hasGenesisShape(),
+                  let directory = context.path.last,
+                  authorizes(ParentGenesisLink(
+                      parentPath: Array(context.path.dropLast()),
+                      directory: directory,
+                      childGenesisCID: blockHash,
+                      parentStateCID: LatticeState.emptyHeader.rawCID
+                  )) else {
+                return .unauthorized
+            }
+        }
+        guard let contribution = rootWork(of: resolved.block, blockHash: blockHash) else {
+            return .noWork
+        }
+        switch await executeTransition(
+            block: resolved.block,
+            blockHash: blockHash,
+            fetcher: fetcher,
+            chain: nil,
+            parentFacts: nil,
+            context: context,
+            validationContext: validationContext
+        ) {
+        case .failure(let failure): return .invalid(failure)
+        case .success(let transition): return .ready(resolved, contribution, transition)
         }
     }
 
@@ -1231,7 +1362,7 @@ private enum BlockImport {
     }
 }
 
-private func classifyResolutionFailure(_ error: Error) -> BlockImportError {
+func classifyResolutionFailure(_ error: Error) -> BlockImportError {
     if error is FetcherError { return .unavailableEvidence }
     if let dataError = error as? DataErrors { return classifyDataError(dataError) }
     if error is CashewDecodingError || error is ResolutionErrors {
@@ -1254,7 +1385,7 @@ private func mapProofFailure(
     }
 }
 
-private func classifyValidationFailure(_ error: Error) -> BlockImportError {
+func classifyValidationFailure(_ error: Error) -> BlockImportError {
     if error is BlockValidationError { return .notYetValid }
     // The difficulty anchor is not resolvable from the graph: the block parks
     // on its predecessor and is retried when that connects, never excluded.
@@ -1609,42 +1740,32 @@ public extension ChainLevel {
     ) {
         guard context.isRoot else { throw BlockImportError.protocolInvalid }
         let resolved: (header: BlockHeader, block: Block)
-        switch await BlockImport.resolveBlock(genesisHeader, fetcher: fetcher) {
-        case .failure(let failure): throw failure
-        case .success(let value): resolved = value
-        }
-        guard resolved.block.parent == nil, resolved.block.height == 0 else {
-            throw BlockImportError.protocolInvalid
-        }
+        let contribution: VerifiedWorkContribution
+        let transition: BlockImport.ExecutedTransition
+        switch await BlockImport.prepareGenesis(
+            context: context,
+            genesisHeader: genesisHeader,
+            fetcher: fetcher,
+            authorizes: { _ in true },
+            validationContext: validationContext
+        ) {
+        case .unresolved(let failure), .invalid(let failure): throw failure
+        case .notGenesis, .unauthorized: throw BlockImportError.protocolInvalid
         // Genesis must satisfy its own declared target like any block: a target-0
         // (or otherwise target-miss) genesis is rejected here, matching child
         // bootstrap, which only makes a child genesis live once a parent grind
         // confirms it. The canonical max-target genesis passes trivially.
-        let rootHash = resolved.block.proofOfWorkHash()
-        guard resolved.block.validateProofOfWork(nexusHash: rootHash) else {
-            throw BlockImportError.notAcceptedAtCurrentChain
-        }
-        let transition: BlockImport.ExecutedTransition
-        switch await BlockImport.executeTransition(
-            block: resolved.block,
-            blockHash: resolved.header.rawCID,
-            fetcher: fetcher,
-            chain: nil,
-            childPackage: nil,
-            context: context,
-            validationContext: validationContext
-        ) {
-        case .failure(let failure): throw failure
-        case .success(let value): transition = value
+        case .noWork: throw BlockImportError.notAcceptedAtCurrentChain
+        case .ready(let readyResolved, let readyContribution, let readyTransition):
+            resolved = readyResolved
+            contribution = readyContribution
+            transition = readyTransition
         }
         return try await BlockImport.finishBootstrap(
             context: context,
             resolved: resolved,
             fetcher: fetcher,
-            contribution: VerifiedWorkContribution(
-                id: resolved.header.rawCID,
-                work: workForTarget(resolved.block.target)
-            ),
+            contribution: contribution,
             carrierLink: ParentCarrierLink(
                 parentPath: context.path,
                 carrierCID: resolved.header.rawCID,
@@ -1670,15 +1791,7 @@ public extension ChainLevel {
         stage: @Sendable (BlockImportStagingContext) async throws -> Void
     ) async throws -> ChildChainBootstrapResult {
         guard !context.isRoot else { throw BlockImportError.protocolInvalid }
-        let resolved: (header: BlockHeader, block: Block)
-        switch await BlockImport.resolveBlock(genesisHeader, fetcher: fetcher) {
-        case .failure(let failure): throw failure
-        case .success(let value): resolved = value
-        }
-        guard resolved.block.parent == nil, resolved.block.height == 0 else {
-            throw BlockImportError.protocolInvalid
-        }
-        let childCID = resolved.header.rawCID
+        let childCID = genesisHeader.rawCID
         // A child genesis is self-contained and SELF-mined, exactly like a root
         // genesis — it is never co-mined via a carrier proof. Its grind root and
         // carrier are itself.
@@ -1687,46 +1800,37 @@ public extension ChainLevel {
             carrierCID: childCID,
             rootCID: childCID
         )
+        let resolved: (header: BlockHeader, block: Block)
+        let contribution: VerifiedWorkContribution
+        let transition: BlockImport.ExecutedTransition
         // Record gate: the parent must have RECORDED this genesis for this
         // directory (a plain GenesisAction → genesisState). The caller supplies
         // the ParentGenesisLink derived from its own validated parent state; here
         // we confirm it authorizes exactly this self-contained genesis (empty
         // parentState). This is the sole authorization — there is no carrier proof.
-        guard resolved.block.hasGenesisShape(),
-              let directory = context.path.last,
-              parentGenesisLink == ParentGenesisLink(
-                  parentPath: Array(context.path.dropLast()),
-                  directory: directory,
-                  childGenesisCID: childCID,
-                  parentStateCID: LatticeState.emptyHeader.rawCID
-              ) else {
+        switch await BlockImport.prepareGenesis(
+            context: context,
+            genesisHeader: genesisHeader,
+            fetcher: fetcher,
+            authorizes: { $0 == parentGenesisLink },
+            validationContext: validationContext
+        ) {
+        case .unresolved(let failure): throw failure
+        case .notGenesis: throw BlockImportError.protocolInvalid
+        case .unauthorized:
             return .rejected(
                 .providerMalformedEvidence, parentCarrierLink: carrierLink
             )
-        }
         // Self-PoW: the genesis must satisfy its own declared target, like a root
         // genesis. A target-miss yields no work and is deferred (retriable).
-        let rootHash = resolved.block.proofOfWorkHash()
-        guard resolved.block.validateProofOfWork(nexusHash: rootHash) else {
+        case .noWork:
             return .carrier(carrierLink)
-        }
-        let contribution = VerifiedWorkContribution(
-            id: childCID,
-            work: workForTarget(resolved.block.target)
-        )
-        let transition: BlockImport.ExecutedTransition
-        switch await BlockImport.executeTransition(
-            block: resolved.block,
-            blockHash: childCID,
-            fetcher: fetcher,
-            chain: nil,
-            childPackage: nil,
-            context: context,
-            validationContext: validationContext
-        ) {
-        case .failure(let failure):
+        case .invalid(let failure):
             return .rejected(failure, parentCarrierLink: carrierLink)
-        case .success(let value): transition = value
+        case .ready(let readyResolved, let readyContribution, let readyTransition):
+            resolved = readyResolved
+            contribution = readyContribution
+            transition = readyTransition
         }
         let accepted = try await BlockImport.finishBootstrap(
             context: context,
