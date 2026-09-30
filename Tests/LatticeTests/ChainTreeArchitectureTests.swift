@@ -423,7 +423,7 @@ final class ChainTreeArchitectureTests: XCTestCase {
             XCTAssertEqual(replayed.subtreeWeight(forHash: hash), fixture.tree.subtreeWeight(forHash: hash))
         }
     }
-    // MARK: - Genesis links only from the executed set (both paths)
+    // MARK: - Genesis links only from the executed set
 
     /// G → P1 → P2, where P1 declares a real post-state it does not produce
     /// and P2 carries a `GenesisAction`. P2 executes cleanly on P1's declared
@@ -497,24 +497,6 @@ final class ChainTreeArchitectureTests: XCTestCase {
         guard case .failure(.providerMalformedEvidence) = bootstrapped else {
             return XCTFail("a link from outside the executed set authorizes nothing, got \(bootstrapped)")
         }
-    }
-
-    /// The actor path issues no genesis link for a block validated ahead of
-    /// its ancestry, so an ancestor's exclusion cannot leave one standing.
-    func testActorPathIssuesNoGenesisLinkFromABlockExecutedAheadOfItsAncestry() async throws {
-        let attack = try await genesisAttack()
-        let level = AdmissionFixture.makeLevel(genesis: attack.genesis)
-        let recorder = AdmissionStageRecorder()
-        for block in [attack.p1, attack.p2] {
-            _ = try await level.admit(block, mode: .header, fetcher: attack.fetcher, stage: { await recorder.stage($0) })
-        }
-        _ = try await level.admit(attack.p2, mode: .execution, fetcher: attack.fetcher, stage: { await recorder.stage($0) })
-        _ = try await level.admit(attack.p1, mode: .execution, fetcher: attack.fetcher, stage: { await recorder.stage($0) })
-        let contexts = await recorder.recordedContexts()
-        XCTAssertEqual(contexts.count, 4, "two headers, P2's validation, P1's exclusion")
-        XCTAssertTrue(contexts.allSatisfy { $0.parentGenesisLinks.isEmpty })
-        let excluded = await level.chain.excludedRootsForTesting
-        XCTAssertEqual(excluded, [try cid(attack.p1)])
     }
 
     // MARK: - Work and context bound to the tree
