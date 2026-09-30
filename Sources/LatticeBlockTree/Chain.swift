@@ -345,6 +345,11 @@ private struct TrustedImportBatch {
 /// the admission operations (`insertHeader`, `addWork`, `applyConnect`) emit
 /// exactly the facts they apply.
 public struct ChainTree: Sendable {
+    /// The chain this tree is, fixed when the tree is made: its path decides
+    /// whether work is a root grind or a child proof and which parent facts
+    /// its blocks need. Nil for a tree made without one (the actor path,
+    /// which carries its context on `ChainLevel`).
+    public private(set) var context: ChainRuntimeContext?
     var indexToBlockHash: [UInt64: Set<String>]
     /// The block tree: records, child edges, work facts, anchors and the
     /// diagnostic totals (BlockGraph.swift).
@@ -414,6 +419,7 @@ public struct ChainTree: Sendable {
         }) else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
+        self.context = nil
         self.graph = BlockGraph(hashToBlock)
         self.forkChoice = ForkChoice()
         self.localWorkCachesDirty = true
@@ -461,16 +467,19 @@ public struct ChainTree: Sendable {
     }
 
     package static func fromGenesis(
-        block: Block
+        block: Block,
+        context: ChainRuntimeContext? = nil
     ) -> ChainTree {
         let blockHeader = try! BlockHeader(node: block)
-        return fromVerifiedGenesis(
+        var tree = fromVerifiedGenesis(
             block: block,
             contribution: VerifiedWorkContribution(
                 id: blockHeader.rawCID,
                 work: workForTarget(block.target)
             )
         )
+        tree.context = context
+        return tree
     }
 
     package static func fromVerifiedGenesis(
@@ -534,7 +543,8 @@ public struct ChainTree: Sendable {
     /// lower bound, applied after replay so restarts do not create revisions.
     public static func restore(
         replaying batches: [BlockImportBatch],
-        revisionFloor: UInt64 = 0
+        revisionFloor: UInt64 = 0,
+        context: ChainRuntimeContext? = nil
     ) throws -> ChainTree {
         let genesis = batches.compactMap(TrustedImportBatch.init).filter {
             $0.block?.parentBlockHash == nil && $0.block?.blockHeight == 0
@@ -558,6 +568,7 @@ public struct ChainTree: Sendable {
         try replay(batches[...], onto: &chain)
         chain.completeReplayProjectionDeferral()
         chain.sealRecovery(revisionFloor: revisionFloor)
+        chain.context = context
         return chain
     }
 

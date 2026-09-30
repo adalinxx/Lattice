@@ -283,7 +283,10 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let orphanContexts = await recorder.recordedContexts()
         let orphanContext = try XCTUnwrap(orphanContexts.first)
         XCTAssertNil(orphanContext.issuedCarrierLink)
-        XCTAssertEqual(orphanContext.parentGenesisLinks.count, 1)
+        // Executed ahead of its ancestry, the orphan is not in the executed
+        // set, so it issues no genesis link yet; the duplicate below issues it
+        // once the ancestry connects and executes.
+        XCTAssertEqual(orphanContext.parentGenesisLinks.count, 0)
 
         _ = try await level.admit(missingParent, fetcher: fetcher)
         let replay = try await level.preflightBlockImport(

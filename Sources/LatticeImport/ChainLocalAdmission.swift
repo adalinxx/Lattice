@@ -461,8 +461,7 @@ enum BlockImport {
             case .genesis(let expected):
                 return facts?.recordsGenesis(expected) == true ? .present : .absent
             case .continuity(let expected):
-                return facts?.executedSetProduced(stateCID: expected.toStateCID) == true
-                    ? .present : .absent
+                return facts?.hasContinuity(expected) == true ? .present : .absent
             case .none:
                 return .absent
             }
@@ -1621,7 +1620,7 @@ public extension ChainLevel {
                 )
             }
         }
-        let stagingContext: BlockImportStagingContext
+        var stagingContext: BlockImportStagingContext
         if preflight.stagingContext.issuedCarrierLink != nil {
             stagingContext = preflight.stagingContext
         } else if !prepared.defersHierarchyIssuance,
@@ -1639,6 +1638,20 @@ public extension ChainLevel {
             )
         } else {
             stagingContext = preflight.stagingContext
+        }
+        // A genesis link binds a child to a state this chain EXECUTED, so it
+        // is issued only by a block that joins the executed set: one whose
+        // parent is executed from genesis (or a root). A block executed ahead
+        // of its ancestry issues none; re-offering it once it is anchored
+        // issues them through the duplicate path, which gates the same way.
+        if !stagingContext.parentGenesisLinks.isEmpty,
+           let parentCID = prepared.block.parent?.rawCID,
+           !(await chain.hasExecutedAncestry(blockHash: parentCID)) {
+            stagingContext = BlockImportStagingContext(
+                batch: stagingContext.batch,
+                issuedCarrierLink: stagingContext.issuedCarrierLink,
+                parentGenesisLinks: []
+            )
         }
         do {
             try await stage(stagingContext)
