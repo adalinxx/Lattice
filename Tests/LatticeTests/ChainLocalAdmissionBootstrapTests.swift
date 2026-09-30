@@ -515,7 +515,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             )
             XCTFail("a target miss cannot bootstrap the root")
         } catch let failure as BlockImportError {
-            XCTAssertEqual(failure, .notAcceptedAtCurrentChain)
+            XCTAssertEqual(failure, .proofOfWorkInvalid)
         }
         let targetMissStoreCalls = await durable.storeCallCount()
         let targetMissBatches = await recorder.recordedBatches()

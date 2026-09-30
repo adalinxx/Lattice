@@ -1207,18 +1207,20 @@ be acted upon without the ability to exclude a subtree it later proves invalid.
 **Header admission.** A block enters the weighed graph from its header when
 its parent is held (excluded or not) and its work verifies: securing work
 (9.5) yields a contribution — for a root block, its own hash meets its own
-target — and its target is on the schedule, `B.target <= P.nextTarget` with
-`B.nextTarget` the schedule of 5.5. The schedule is part of the proof of work;
-it is computed from the chain's own spec. Of the header rules of 5.2, exactly
-three are validity, recorded as an exclusion of that same block the moment it
-is weighed: `B.spec != P.spec`, `B.prevState != P.postState`, and
-`B.timestamp <= P.timestamp`. Such a block weighs its work, is never selected,
-and its descendants weigh and are never selected, exactly as for an execution
-verdict. Every other outcome records no fact:
+target — and the block is on the schedule: `B.timestamp > P.timestamp`,
+`B.target <= P.nextTarget`, and `B.nextTarget` the schedule of 5.5, computed
+from the chain's own spec. The schedule is part of the proof of work, and the
+timestamp is its input at every height (height 1 anchors it): an old timestamp
+would make every descendant's target easy. Of the header rules of 5.2, exactly
+two are validity, recorded as an exclusion of that same block the moment it is
+weighed: `B.spec != P.spec` and `B.prevState != P.postState`. Such a block
+weighs its work, is never selected, and its descendants weigh and are never
+selected, exactly as for an execution verdict. Every other outcome records no
+fact:
 
-- **Proof-of-work failure** — no contribution, a target off the schedule, or
-  bytes that do not decode or match their CID. The only header failure that
-  blames its sender.
+- **Proof-of-work failure** — no contribution, off the schedule, or bytes that
+  do not decode or match their CID. The only header failure that blames its
+  sender.
 - **Dropped** — a wrong version or height (including an unrepresentable one),
   a child index that does not match the block's `children` CID, a malformed
   reward recipient, a genesis, or a child whose `parentState` is not its
@@ -1227,8 +1229,8 @@ verdict. Every other outcome records no fact:
   difficulty anchor not in hand. Retried; never a verdict.
 
 Weighed headers are never evicted. The exclusion is a separate batch from the
-block's own (a batch carries an exclusion alone), and replay applies both in any
-order.
+block's own (a batch carries an exclusion alone); the node MUST make both
+durable in one transaction, and replay applies them in any order.
 
 ### 9.10 Parent-Attributed Run Work
 

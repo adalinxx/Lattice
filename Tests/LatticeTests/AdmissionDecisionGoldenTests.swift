@@ -297,7 +297,7 @@ private struct AdmissionFixtures {
     }
 
     func tree(genesis: String, path: [String] = [DEFAULT_ROOT_DIRECTORY]) throws -> ChainTree {
-        ChainTree.fromGenesis(
+        try ChainTree.fromGenesis(
             block: try XCTUnwrap(blocks[genesis], "no fixture named \(genesis)"),
             context: testChainContext(path: path),
             spec: Self.spec

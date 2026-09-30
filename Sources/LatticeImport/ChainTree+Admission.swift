@@ -87,11 +87,12 @@ typealias ParentFactLookup = @Sendable (ParentFactQuery) -> ParentFactAnswer
 public struct ChainTreeUpdate: Sendable {
     /// The block the batches are about.
     public let blockHash: String
-    /// The batches the tree applied, in order. Durable storage of every one
-    /// is the caller's; `ChainTree.restore` rebuilds the tree from them in
-    /// any order. One batch, except a header that lands excluded: its block
-    /// and work, then its exclusion (a batch carries at most one exclusion
-    /// and nothing beside it).
+    /// The batches the tree applied, in order. The caller MUST persist all of
+    /// them in one transaction — a restart must see both or neither;
+    /// `ChainTree.restore` rebuilds the tree from them in any order. One
+    /// batch, except a header that lands excluded: its block and work, then
+    /// its exclusion (a batch carries at most one exclusion and nothing
+    /// beside it).
     public let batches: [BlockImportBatch]
     /// Whether this operation excluded the block: a header admitted with its
     /// work but failing a validity rule (§9.9), or an execution that proved
@@ -228,10 +229,7 @@ extension ChainTree {
     /// work of a verified child proof of exactly this block
     /// (`ChildBlockProof.verifySecuringWork` for this chain's path). See
     /// `insertHeader`. The proof is verified by the caller, and its failures
-    /// classify like this function's: `.malformedEvidence` (a CID or byte
-    /// mismatch, an undecodable path) is a proof-of-work failure and blames;
-    /// `.protocolInvalid` (the child's `parentState` is not its carrier's
-    /// `prevState`) is structural and drops without blame. Evidence whose
+    /// classify by `headerFailure`. Evidence whose
     /// grind meets no target on the path yields no contribution: a
     /// proof-of-work failure here.
     public mutating func insertChildHeader(
@@ -253,6 +251,21 @@ extension ChainTree {
         )
     }
 
+    /// How header admission treats a failed `verifySecuringWork`: a CID or
+    /// byte mismatch, or an undecodable path, is a proof-of-work failure
+    /// (blame); a child `parentState` that is not its carrier's `prevState`
+    /// is structural (drop, no blame).
+    public static func headerFailure(
+        _ failure: ChildProofVerificationFailure
+    ) -> BlockImportError {
+        switch failure {
+        case .malformedEvidence: .proofOfWorkInvalid
+        case .protocolInvalid: .protocolInvalid
+        case .crossChainEvidenceRequired(let requirement):
+            .crossChainEvidenceRequired(requirement)
+        }
+    }
+
     /// Weigh one block from its header, synchronously (§9.9 header
     /// admission). `childIndex` is the block's own (bound by CID): run
     /// attribution reads what it does NOT commit. `work` is its verified
@@ -263,10 +276,10 @@ extension ChainTree {
     /// - Weighed: the block fact (declared post-state, empty diff, child
     ///   commitments) and its work fact.
     /// - Weighed and excluded: the same, then its exclusion — for
-    ///   `spec != parent.spec`, `prevState != parent.postState` or
-    ///   `timestamp <= parent.timestamp`. Its work weighs; it is never
-    ///   selected.
-    /// - `.proofOfWorkInvalid` (blame): no work, or a target off the schedule.
+    ///   `spec != parent.spec` or `prevState != parent.postState`. Its work
+    ///   weighs; it is never selected.
+    /// - `.proofOfWorkInvalid` (blame): no work, or off the schedule
+    ///   (`timestamp <= parent.timestamp`, or the target).
     /// - `.notYetValid` / `.unavailableEvidence` (hold): a timestamp in this
     ///   node's future, an unknown parent, or a difficulty anchor not in hand.
     /// - Anything else (drop, no blame): version, height, the child-index
@@ -543,7 +556,7 @@ extension ChainTree {
         case .unauthorized:
             return .failure(.providerMalformedEvidence)
         case .noWork:
-            return .failure(.notAcceptedAtCurrentChain)
+            return .failure(.proofOfWorkInvalid)
         case .ready(let resolved, let contribution, let transition):
             guard let spec = try? await resolved.block.spec.resolve(
                 fetcher: fetcher
@@ -586,6 +599,11 @@ extension ChainTree {
         materializedPostState: LatticeState? = nil,
         parentGenesisLinks: [ParentGenesisLink] = []
     ) -> ChainTreeAdmission {
+        // All or nothing: every batch here is one consensus mutation, so the
+        // capacity for all of them is checked before the first is applied.
+        guard hasMutationCapacity(for: UInt64(batches.count)) else {
+            return .rejected(.revisionExhausted)
+        }
         var commit: ChainCommit?
         for facts in batches {
             let submission: SubmissionResult?

@@ -29,13 +29,13 @@ public enum HeaderAdmission: Sendable, Equatable {
     /// Weighed, and selectable as far as its header goes.
     case linked
     /// Weighed with its work, and excluded: never selected. Only
-    /// `spec != parent.spec`, `prevState != parent.postState` and
-    /// `timestamp <= parent.timestamp`.
+    /// `spec != parent.spec` and `prevState != parent.postState`.
     case excluded
     /// A structural fault (version, height): dropped, no weight, no blame.
     case malformed
-    /// The target misses the schedule (`target > parent.nextTarget`, or a
-    /// `nextTarget` that is not the ASERT schedule): a proof-of-work failure.
+    /// Off the schedule — `timestamp <= parent.timestamp`, `target >
+    /// parent.nextTarget`, or a `nextTarget` that is not the ASERT schedule:
+    /// a proof-of-work failure.
     case offSchedule
 }
 
@@ -359,12 +359,16 @@ public extension Block {
         // Structural: the header cannot sit where it claims to.
         if version != Block.currentVersion { return .malformed }
         if !validateHeight(parent: parent) { return .malformed }
+        // The schedule is part of the proof of work: a header whose target is
+        // easier than scheduled, or whose committed `nextTarget` departs from
+        // it, proves no work the chain asked for. The timestamp is the
+        // schedule's input — height 1 anchors it — so a timestamp at or
+        // before the parent's fails the same way: an old anchor would make
+        // every descendant cheap.
+        if parent.timestamp >= timestamp { return .offSchedule }
         if !validationContext.permits(timestamp: timestamp) {
             throw BlockValidationError.notYetValid
         }
-        // The target schedule is part of the proof of work: a header whose
-        // target is easier than scheduled, or whose committed `nextTarget`
-        // departs from the schedule, proves no work the chain asked for.
         guard let anchor = immediateDifficultyAnchor(parent: parent)
             ?? inheritedAnchor() else {
             throw AnchorUnavailable()
@@ -373,9 +377,7 @@ public extension Block {
             spec: spec, parent: parent, difficultyAnchor: anchor
         ) else { return .offSchedule }
         // Validity: deterministic rules against the parent's agreed state.
-        if !validateSpec(parent: parent)
-            || !validateState(parent: parent)
-            || parent.timestamp >= timestamp {
+        if !validateSpec(parent: parent) || !validateState(parent: parent) {
             return .excluded
         }
         return .linked

@@ -66,7 +66,8 @@ enum TreeDriver {
         fetcher: any Fetcher
     ) async throws -> ChainTree {
         let spec = try await genesis.spec.resolve(fetcher: fetcher).node
-        return ChainTree.fromGenesis(
+        guard let context else { return ChainTree.fromGenesis(block: genesis) }
+        return try ChainTree.fromGenesis(
             block: genesis, context: context, spec: try XCTUnwrap(spec)
         )
     }
