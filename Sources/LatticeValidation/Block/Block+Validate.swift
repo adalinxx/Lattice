@@ -23,6 +23,45 @@ public struct AnchorUnavailable: Error, Sendable, Equatable {
     public init() {}
 }
 
+/// The fields of a parent block that header linkage reads. Resolved parent
+/// content and a block tree's recorded entry both supply them, so the same
+/// rules decide linkage whichever one the caller holds.
+public struct HeaderLinkageParent: Sendable, Equatable {
+    public let height: UInt64
+    public let timestamp: Int64
+    public let target: UInt256
+    public let nextTarget: UInt256
+    public let postStateCID: String
+    public let specCID: String
+
+    public init(
+        height: UInt64,
+        timestamp: Int64,
+        target: UInt256,
+        nextTarget: UInt256,
+        postStateCID: String,
+        specCID: String
+    ) {
+        self.height = height
+        self.timestamp = timestamp
+        self.target = target
+        self.nextTarget = nextTarget
+        self.postStateCID = postStateCID
+        self.specCID = specCID
+    }
+
+    public init(_ block: Block) {
+        self.init(
+            height: block.height,
+            timestamp: block.timestamp,
+            target: block.target,
+            nextTarget: block.nextTarget,
+            postStateCID: block.postState.rawCID,
+            specCID: block.spec.rawCID
+        )
+    }
+}
+
 public struct ValidationContext: Sendable, Equatable {
     public let nowMilliseconds: Int64
     /// Node-local WASM policy resource guard, carried alongside the clock because
@@ -135,16 +174,12 @@ public extension Block {
         // building a mining template — 120 sequential block resolutions per
         // request, redone every round for a list that changes by one entry per
         // block.
-        let (_, heightOverflow) = parent.height.addingReportingOverflow(1)
-        guard !heightOverflow else { return false }
-        if !validationContext.permits(timestamp: timestamp) {
-            if reportTemporalFailure { throw BlockValidationError.notYetValid }
-            return false
-        }
-        if !validateTimestamp(
-            parent: parent,
+        let linkageParent = HeaderLinkageParent(parent)
+        guard try validateTimestampLinkage(
+            parent: linkageParent,
+            reportTemporalFailure: reportTemporalFailure,
             validationContext: validationContext
-        ) { return false }
+        ) else { return false }
         // Resolve the schedule's origin: the height-1 ancestor of this block.
         // Chain state carries it, inherited at admission in O(1). With a chain,
         // it is answered from what is already in hand or in the graph, or not
@@ -152,17 +187,8 @@ public extension Block {
         // the SAME walk the builder uses, so the two can never disagree about
         // which block anchors the schedule.
         let anchor: DifficultyAnchor?
-        if parent.height == 0 {
-            // This block is height 1: it anchors itself, and its own committed
-            // target is where the schedule begins.
-            anchor = DifficultyAnchor(
-                blockHeight: 1, timestamp: timestamp, target: target
-            )
-        } else if parent.height == 1 {
-            // The parent, already in hand, is the anchor.
-            anchor = DifficultyAnchor(
-                blockHeight: 1, timestamp: parent.timestamp, target: parent.target
-            )
+        if let inHand = immediateDifficultyAnchor(parent: linkageParent) {
+            anchor = inHand
         } else if let chain {
             // The anchor is inherited, so the parent's or the grandparent's is
             // this block's. The grandparent CID comes from the parent header
@@ -254,6 +280,80 @@ public extension Block {
             chain: chain,
             reportTemporalFailure: reportTemporalFailure,
             validationContext: validationContext
+        )
+    }
+
+    /// The timestamp rules of header linkage, before the difficulty anchor is
+    /// needed: the child height must be representable, a block from this
+    /// node's future defers (`notYetValid` when `reportTemporalFailure`), and
+    /// the timestamp must pass `validateTimestamp`.
+    func validateTimestampLinkage(
+        parent: HeaderLinkageParent,
+        reportTemporalFailure: Bool,
+        validationContext: ValidationContext
+    ) throws -> Bool {
+        let (_, heightOverflow) = parent.height.addingReportingOverflow(1)
+        guard !heightOverflow else { return false }
+        if !validationContext.permits(timestamp: timestamp) {
+            if reportTemporalFailure { throw BlockValidationError.notYetValid }
+            return false
+        }
+        return validateTimestamp(
+            parent: parent,
+            validationContext: validationContext
+        )
+    }
+
+    /// The schedule's origin when it is in hand without a lookup: a height-1
+    /// block anchors itself, and a height-1 parent is the anchor. Nil above
+    /// that, where the anchor is inherited through the block graph.
+    func immediateDifficultyAnchor(
+        parent: HeaderLinkageParent
+    ) -> DifficultyAnchor? {
+        if parent.height == 0 {
+            // This block is height 1: it anchors itself, and its own committed
+            // target is where the schedule begins.
+            return DifficultyAnchor(
+                blockHeight: 1, timestamp: timestamp, target: target
+            )
+        }
+        if parent.height == 1 {
+            // The parent, already in hand, is the anchor.
+            return DifficultyAnchor(
+                blockHeight: 1, timestamp: parent.timestamp, target: parent.target
+            )
+        }
+        return nil
+    }
+
+    /// The complete header-linkage rule set, synchronously, against a parent
+    /// the caller already holds (a block tree's recorded entry) and the
+    /// block's own resolved spec — the same rules, in the same order, as
+    /// ``validateHeaderLinkage(fetcher:chain:reportTemporalFailure:validationContext:)``.
+    /// `inheritedAnchor` answers the parent's inherited difficulty anchor and
+    /// is asked only above height 2; nil there is `AnchorUnavailable`.
+    func validateHeaderLinkage(
+        parent: HeaderLinkageParent,
+        spec: ChainSpec,
+        inheritedAnchor: () -> DifficultyAnchor?,
+        reportTemporalFailure: Bool,
+        validationContext: ValidationContext
+    ) throws -> Bool {
+        if version != Block.currentVersion { return false }
+        if !validateSpec(parent: parent) { return false }
+        if !validateState(parent: parent) { return false }
+        if !validateHeight(parent: parent) { return false }
+        guard try validateTimestampLinkage(
+            parent: parent,
+            reportTemporalFailure: reportTemporalFailure,
+            validationContext: validationContext
+        ) else { return false }
+        guard let anchor = immediateDifficultyAnchor(parent: parent)
+            ?? inheritedAnchor() else {
+            throw AnchorUnavailable()
+        }
+        return validateNextTarget(
+            spec: spec, parent: parent, difficultyAnchor: anchor
         )
     }
 
@@ -419,7 +519,11 @@ public extension Block {
     }
 
     func validateSpec(parent: Block) -> Bool {
-        return parent.spec.rawCID == spec.rawCID
+        validateSpec(parent: HeaderLinkageParent(parent))
+    }
+
+    func validateSpec(parent: HeaderLinkageParent) -> Bool {
+        return parent.specCID == spec.rawCID
     }
 
     /// Pure and synchronous on purpose: the caller does the I/O of resolving
@@ -429,6 +533,18 @@ public extension Block {
     func validateNextTarget(
         spec: ChainSpec,
         parent: Block,
+        difficultyAnchor: DifficultyAnchor
+    ) -> Bool {
+        validateNextTarget(
+            spec: spec,
+            parent: HeaderLinkageParent(parent),
+            difficultyAnchor: difficultyAnchor
+        )
+    }
+
+    func validateNextTarget(
+        spec: ChainSpec,
+        parent: HeaderLinkageParent,
         difficultyAnchor: DifficultyAnchor
     ) -> Bool {
         // A block's target need not equal the scheduled `parent.nextTarget` — it
@@ -451,10 +567,18 @@ public extension Block {
     }
 
     func validateState(parent: Block) -> Bool {
-        return parent.postState.rawCID == prevState.rawCID
+        validateState(parent: HeaderLinkageParent(parent))
+    }
+
+    func validateState(parent: HeaderLinkageParent) -> Bool {
+        return parent.postStateCID == prevState.rawCID
     }
 
     func validateHeight(parent: Block) -> Bool {
+        validateHeight(parent: HeaderLinkageParent(parent))
+    }
+
+    func validateHeight(parent: HeaderLinkageParent) -> Bool {
         let (expected, overflow) = parent.height.addingReportingOverflow(1)
         return !overflow && expected == height
     }
@@ -492,6 +616,16 @@ public extension Block {
     /// sync, so only the future side is gated.
     func validateTimestamp(
         parent: Block,
+        validationContext: ValidationContext = .current
+    ) -> Bool {
+        validateTimestamp(
+            parent: HeaderLinkageParent(parent),
+            validationContext: validationContext
+        )
+    }
+
+    func validateTimestamp(
+        parent: HeaderLinkageParent,
         validationContext: ValidationContext = .current
     ) -> Bool {
         if parent.timestamp >= timestamp { return false }

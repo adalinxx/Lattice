@@ -13,6 +13,7 @@ final class GoldenInventoryTests: XCTestCase {
         ("AdmissionDecisionGoldenTests", AdmissionDecisionGoldenTests.goldenName),
         ("AdmissionBatchEncodingGoldenTests", AdmissionBatchEncodingGoldenTests.goldenName),
         ("WorkTableGoldenTests", WorkTableGoldenTests.goldenName),
+        ("ChainTreeFactEquivalenceGoldenTests", ChainTreeFactEquivalenceGoldenTests.goldenName),
     ]
 
     func testEveryGoldenFileExistsAndIsJSON() async throws {
