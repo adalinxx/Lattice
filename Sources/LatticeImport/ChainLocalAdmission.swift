@@ -23,10 +23,11 @@ public enum BlockImportError: Error, Sendable, Equatable {
 
 /// Which admission tier `prepare` produces.
 ///
-/// This actor path keeps the pre-40 header rules (a linkage failure is a
-/// rejection, never an exclusion). Consensus header admission is
-/// `ChainTree.insertRootHeader`/`insertChildHeader` (spec §9.9); this path is
-/// slated for deletion once the node has switched.
+/// SUPERSEDED: this actor path does not implement spec §9.9 header
+/// admission and MUST NOT be used on the flag-day network. Consensus
+/// admission is `ChainTree.insertRootHeader`/`insertChildHeader` and
+/// `connectJob`/`connect`/`applyConnect`; this path is deleted once the node
+/// has moved to them.
 ///
 /// - `.full` (default, unchanged behaviour): execute the state transition and
 ///   emit a block fact carrying the materialized post-state and its `stateDiff`
@@ -1684,7 +1685,7 @@ public extension ChainLevel {
         // (or otherwise target-miss) genesis is rejected here, matching child
         // bootstrap, which only makes a child genesis live once a parent grind
         // confirms it. The canonical max-target genesis passes trivially.
-        case .noWork: throw BlockImportError.notAcceptedAtCurrentChain
+        case .noWork: throw BlockImportError.proofOfWorkInvalid
         case .ready(let readyResolved, let readyContribution, let readyTransition):
             resolved = readyResolved
             contribution = readyContribution

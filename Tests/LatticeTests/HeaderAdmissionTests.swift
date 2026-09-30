@@ -41,6 +41,7 @@ final class HeaderAdmissionTests: XCTestCase {
         of template: Block,
         spec: VolumeImpl<ChainSpec>? = nil,
         prevState: LatticeStateHeader? = nil,
+        parentState: LatticeStateHeader? = nil,
         timestamp: Int64? = nil,
         height: UInt64? = nil,
         nextTarget: UInt256? = nil,
@@ -54,7 +55,7 @@ final class HeaderAdmissionTests: XCTestCase {
             target: template.target,
             nextTarget: nextTarget ?? template.nextTarget,
             spec: spec ?? template.spec,
-            parentState: template.parentState,
+            parentState: parentState ?? template.parentState,
             prevState: prevState ?? template.prevState,
             postState: template.postState,
             children: template.children,
@@ -65,7 +66,7 @@ final class HeaderAdmissionTests: XCTestCase {
         ), in: fetcher)
     }
 
-    /// The three linkage failures, each a height-1 sibling of `valid`.
+    /// The two linkage failures, each a height-1 sibling of `valid`.
     private func linkageFailures(
         of valid: Block,
         genesis: Block,
@@ -79,7 +80,6 @@ final class HeaderAdmissionTests: XCTestCase {
                 of: valid, prevState: LatticeStateHeader(rawCID: testCID("not-the-parent-post")),
                 fetcher: fetcher
             )),
-            ("timestamp", try await variant(of: valid, timestamp: genesis.timestamp, fetcher: fetcher)),
         ]
     }
 
@@ -105,7 +105,7 @@ final class HeaderAdmissionTests: XCTestCase {
             XCTAssertFalse(tree.hasExecutedAncestry(blockHash: try cid(block)), rule)
         }
 
-        // A valid sibling is selected over three excluded ones.
+        // A valid sibling is selected over two excluded ones.
         _ = try await TreeDriver.insert(valid, into: &tree, fetcher: fetcher)
         XCTAssertEqual(tree.canonicalTip, try cid(valid))
     }
@@ -170,7 +170,8 @@ final class HeaderAdmissionTests: XCTestCase {
                 try testAdmissionBatch(for: genesis), try testAdmissionBatch(for: rival),
                 .validation(blockHash: try cid(genesis)), .validation(blockHash: try cid(rival)),
             ],
-            context: rootContext
+            context: rootContext,
+            spec: chainLocalSpec()
         )
         let excluded = two.applyConnect(ConnectVerdict(blockHash: genesisCID, outcome: .invalid(isGenesis: true)))
         XCTAssertEqual(excluded.update?.excluded, true)
@@ -217,7 +218,7 @@ final class HeaderAdmissionTests: XCTestCase {
         let inserted = try await TreeDriver.insert(valid, into: &tree, fetcher: fetcher)
         emitted += try XCTUnwrap(inserted.update).batches
 
-        let restored = try ChainTree.restore(replaying: emitted.reversed(), context: rootContext)
+        let restored = try ChainTree.restore(replaying: emitted.reversed(), context: rootContext, spec: chainLocalSpec())
         XCTAssertEqual(restored.canonicalTip, tree.canonicalTip)
         XCTAssertFalse(restored.contains(blockHash: try cid(wrongHeight)))
     }
@@ -299,8 +300,9 @@ final class HeaderAdmissionTests: XCTestCase {
         let onExcluded = try await AdmissionFixture.makeChild(of: failures[1], fetcher: fetcher, timestamp: 3_100, nonce: 4)
         let onExcluded2 = try await AdmissionFixture.makeChild(of: onExcluded, fetcher: fetcher, timestamp: 4_100, nonce: 5)
         headers += [onExcluded, onExcluded2]
-        // Never weighed: a structural drop and a target off the schedule.
+        // Never weighed: a structural drop and headers off the schedule.
         headers.append(try await variant(of: a, height: 7, fetcher: fetcher))
+        headers.append(try await variant(of: a, timestamp: genesis.timestamp, fetcher: fetcher))
         headers.append(try await variant(of: b, nextTarget: b.nextTarget - UInt256(1), fetcher: fetcher))
 
         var reference: [String]?
@@ -325,7 +327,9 @@ final class HeaderAdmissionTests: XCTestCase {
                 pending = retry
             }
             let live = try digest(&tree, over: [genesis] + headers)
-            var restored = try ChainTree.restore(replaying: emitted.shuffled(using: &rng), context: rootContext)
+            var restored = try ChainTree.restore(
+                replaying: emitted.shuffled(using: &rng), context: rootContext, spec: chainLocalSpec()
+            )
             XCTAssertEqual(try digest(&restored, over: [genesis] + headers), live, "restore reaches the same digest")
             if let reference {
                 XCTAssertEqual(live, reference, "insert order decides nothing")
@@ -396,20 +400,207 @@ final class HeaderAdmissionTests: XCTestCase {
 
     // MARK: - The chain's spec
 
-    /// Restore binds the held spec to the genesis's own; a tree without one
-    /// admits no header.
+    /// Restore and `fromGenesis` bind the held spec to the genesis's own, and
+    /// a tree on a chain must hold one: none is ever silently deaf.
     func testTheHeldSpecIsTheGenesisSpec() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
         let block = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
         let seed = try testAdmissionBatch(for: genesis)
-        XCTAssertThrowsError(try ChainTree.restore(
-            replaying: [seed], context: rootContext, spec: ChainSpec.test(premine: 7)
-        ))
-        var specless = try ChainTree.restore(replaying: [seed], context: rootContext)
+        let wrong = ChainSpec.test(premine: 7)
+        XCTAssertThrowsError(try ChainTree.restore(replaying: [seed], context: rootContext, spec: wrong))
+        XCTAssertThrowsError(try ChainTree.restore(replaying: [seed], context: rootContext), "a chain needs its spec")
+        XCTAssertThrowsError(try ChainTree.fromGenesis(block: genesis, context: rootContext, spec: wrong))
         let inputs = try await TreeDriver.headerInputs(block, fetcher: fetcher)
-        XCTAssertEqual(specless.insertRootHeader(block, childIndex: inputs.childIndex).failure, .notAcceptedAtCurrentChain)
-        var held = try ChainTree.restore(replaying: [seed], context: rootContext, spec: inputs.spec)
+        var held = try ChainTree.restore(replaying: [seed], context: rootContext, spec: chainLocalSpec())
         XCTAssertNotNil(held.insertRootHeader(block, childIndex: inputs.childIndex).update)
+    }
+
+    // MARK: - Round-1 review
+
+    /// The attack decision M1 closes: height 1 anchors ASERT, so an old
+    /// timestamp there — weighed and merely excluded — would saturate every
+    /// descendant's target. An old timestamp is off the schedule at every
+    /// height, and an excluded height-1 block still binds its descendants to
+    /// the schedule.
+    func testAnOldOrExcludedHeightOneBlockCannotMakeDescendantsCheap() async throws {
+        let fetcher = StorableFetcher()
+        let hard = easy / UInt256(2)
+        let genesis = try await buildAndStoreGenesis(
+            spec: chainLocalSpec(), timestamp: 1_000, target: hard, nonce: 9, fetcher: fetcher
+        )
+        var tree = try await TreeDriver.tree(genesis: genesis, context: rootContext, fetcher: fetcher)
+        let template = try await buildAndStoreBlock(
+            previous: genesis, timestamp: 2_000, target: hard, nonce: 1, fetcher: fetcher
+        )
+        func mined(_ build: (UInt64) async throws -> Block) async throws -> Block {
+            for nonce in UInt64(100)..<UInt64(400) {
+                let block = try await build(nonce)
+                if block.proofOfWorkHash() <= block.target { return block }
+            }
+            throw XCTSkip("no grind found")
+        }
+        for oldTimestamp: Int64 in [0, genesis.timestamp] {
+            let old = try await mined { try await self.variant(of: template, timestamp: oldTimestamp, nonce: $0, fetcher: fetcher) }
+            let refused = try await TreeDriver.insert(old, into: &tree, fetcher: fetcher)
+            XCTAssertEqual(refused.failure, .proofOfWorkInvalid, "timestamp \(oldTimestamp)")
+            XCTAssertFalse(tree.contains(blockHash: try cid(old)))
+            let descendant = try await buildAndStoreBlock(
+                previous: old, timestamp: 3_000, target: easy, nonce: 1, fetcher: fetcher
+            )
+            let orphan = try await TreeDriver.insert(descendant, into: &tree, fetcher: fetcher)
+            XCTAssertEqual(orphan.failure, .unavailableEvidence, "nothing to build on")
+        }
+
+        let excluded = try await mined {
+            try await self.variant(
+                of: template, prevState: LatticeStateHeader(rawCID: testCID("forged-anchor-prev")),
+                nonce: $0, fetcher: fetcher
+            )
+        }
+        let excludedInsert = try await TreeDriver.insert(excluded, into: &tree, fetcher: fetcher)
+        XCTAssertEqual(excludedInsert.update?.excluded, true)
+        let cheap = try await buildAndStoreBlock(
+            previous: excluded, timestamp: 3_000, target: easy, nonce: 1, fetcher: fetcher
+        )
+        XCTAssertGreaterThan(cheap.target, excluded.nextTarget)
+        let cheapInsert = try await TreeDriver.insert(cheap, into: &tree, fetcher: fetcher)
+        XCTAssertEqual(cheapInsert.failure, .proofOfWorkInvalid)
+        XCTAssertFalse(tree.contains(blockHash: try cid(cheap)))
+    }
+
+    /// Both batches of an excluded header land, or neither.
+    func testAnExcludedHeaderIsAppliedAllOrNothing() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let valid = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
+        let excluded = try await variant(
+            of: valid, prevState: LatticeStateHeader(rawCID: testCID("forged-prev-capacity")), fetcher: fetcher
+        )
+        // Room for exactly one more mutation.
+        var tree = try ChainTree.restore(
+            replaying: [try testAdmissionBatch(for: genesis)], revisionFloor: UInt64.max - 1,
+            context: rootContext, spec: chainLocalSpec()
+        )
+        let refused = try await TreeDriver.insert(excluded, into: &tree, fetcher: fetcher)
+        XCTAssertEqual(refused.failure, .revisionExhausted)
+        XCTAssertFalse(tree.contains(blockHash: try cid(excluded)), "no half-applied header")
+        let linked = try await TreeDriver.insert(valid, into: &tree, fetcher: fetcher)
+        XCTAssertEqual(kinds(linked.update?.batches), [["block", "work"]], "one batch still fits")
+    }
+
+    /// A genesis that misses its own target is a proof-of-work failure at
+    /// bootstrap, on both admission paths.
+    func testAGenesisTargetMissIsAProofOfWorkFailureAtBootstrap() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await buildAndStoreGenesis(
+            spec: chainLocalSpec(), timestamp: 1_000, target: UInt256(1), nonce: 3, fetcher: fetcher
+        )
+        XCTAssertGreaterThan(genesis.proofOfWorkHash(), UInt256(1))
+        let header = try BlockHeader(node: genesis)
+        guard case .failure(let failure) = await ChainTree.bootstrap(
+            genesis: header, fetcher: fetcher, context: rootContext
+        ) else {
+            return XCTFail("a target miss bootstraps nothing")
+        }
+        XCTAssertEqual(failure, .proofOfWorkInvalid)
+        do {
+            _ = try await ChainLevel.bootstrap(
+                context: rootContext, genesisHeader: header, fetcher: fetcher,
+                validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
+                stage: testAdmissionStage
+            )
+            XCTFail("a target miss bootstraps nothing")
+        } catch let error as BlockImportError {
+            XCTAssertEqual(error, .proofOfWorkInvalid)
+        }
+    }
+
+    /// Nexus → Middle → Leaf, with one share: its hash misses Nexus's and
+    /// Middle's targets and clears Leaf's. Only Leaf weighs it.
+    private struct DepthTwo {
+        let fetcher: StorableFetcher
+        let nexusGenesis: Block
+        let middleGenesis: Block
+        let leafGenesis: Block
+        let middle: Block
+        let leaf: Block
+        let root: Block
+        let proof: ChildBlockProof
+    }
+
+    private let middleContext = testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Middle"])
+    private let leafContext = testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Middle", "Leaf"])
+
+    private func depthTwo(middleParentState: LatticeStateHeader? = nil) async throws -> DepthTwo {
+        let fetcher = StorableFetcher()
+        let hard = UInt256(1)
+        let nexusGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let middleGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let leafGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 2)
+        let middleTemplate = try await AdmissionFixture.makeChild(of: middleGenesis, fetcher: fetcher, timestamp: 2_000, nonce: 8)
+        let leaf = try await AdmissionFixture.makeChild(
+            of: leafGenesis, fetcher: fetcher, timestamp: 2_000, nonce: 1, parentChainBlock: middleTemplate
+        )
+        let nexusTemplate = try await AdmissionFixture.makeChild(of: nexusGenesis, fetcher: fetcher, timestamp: 2_000, nonce: 9)
+        var middle = try await buildAndStoreBlock(
+            previous: middleGenesis, children: ["Leaf": leaf], parentChainBlock: nexusTemplate,
+            timestamp: 2_500, target: hard, nonce: 2, fetcher: fetcher
+        )
+        if let middleParentState {
+            middle = try await variant(of: middle, parentState: middleParentState, fetcher: fetcher)
+        }
+        let root = try await buildAndStoreBlock(
+            previous: nexusGenesis, children: ["Middle": middle],
+            timestamp: 3_000, target: hard, nonce: 3, fetcher: fetcher
+        )
+        XCTAssertGreaterThan(root.proofOfWorkHash(), hard, "the share misses Nexus and Middle")
+        let proof = try await ChildBlockProof.generate(
+            rootHeader: try BlockHeader(node: root), childDirectory: "Middle", fetcher: fetcher
+        ).composing(hop: try await ChildBlockProof.generate(
+            rootHeader: try BlockHeader(node: middle), childDirectory: "Leaf", fetcher: fetcher
+        ))
+        return DepthTwo(
+            fetcher: fetcher, nexusGenesis: nexusGenesis, middleGenesis: middleGenesis,
+            leafGenesis: leafGenesis, middle: middle, leaf: leaf, root: root, proof: proof
+        )
+    }
+
+    func testADepthTwoShareWeighsOnlyTheGrandchildItClears() async throws {
+        let f = try await depthTwo()
+        let evidence = try await f.proof.verifySecuringWork(child: f.leaf, chainPath: leafContext.path).get()
+        var leafTree = try await TreeDriver.tree(genesis: f.leafGenesis, context: leafContext, fetcher: f.fetcher)
+        let inserted = try await TreeDriver.insert(f.leaf, into: &leafTree, fetcher: f.fetcher, evidence: evidence)
+        XCTAssertEqual(kinds(inserted.update?.batches), [["block", "work"]])
+        XCTAssertEqual(leafTree.canonicalTip, try cid(f.leaf))
+
+        let middleHop = try await ChildBlockProof.generate(
+            rootHeader: try BlockHeader(node: f.root), childDirectory: "Middle", fetcher: f.fetcher
+        )
+        let middleEvidence = try await middleHop.verifySecuringWork(child: f.middle, chainPath: middleContext.path).get()
+        XCTAssertNil(middleEvidence.contribution, "the share misses Middle")
+        var middleTree = try await TreeDriver.tree(genesis: f.middleGenesis, context: middleContext, fetcher: f.fetcher)
+        let middleInserted = try await TreeDriver.insert(f.middle, into: &middleTree, fetcher: f.fetcher, evidence: middleEvidence)
+        XCTAssertEqual(middleInserted.failure, .proofOfWorkInvalid)
+        XCTAssertFalse(middleTree.contains(blockHash: try cid(f.middle)))
+
+        var nexus = try await TreeDriver.tree(genesis: f.nexusGenesis, context: rootContext, fetcher: f.fetcher)
+        let rootInsert = try await TreeDriver.insert(f.root, into: &nexus, fetcher: f.fetcher)
+        XCTAssertEqual(rootInsert.failure, .proofOfWorkInvalid)
+        XCTAssertFalse(nexus.contains(blockHash: try cid(f.root)))
+    }
+
+    /// An intermediate carrier whose `parentState` is not its own carrier's
+    /// `prevState` breaks the path structurally: a drop, not blame.
+    func testAnIntermediateCarrierParentStateMismatchIsADropNotBlame() async throws {
+        let f = try await depthTwo(middleParentState: LatticeStateHeader(rawCID: testCID("not-the-carrier-prev")))
+        guard case .failure(let failure) = await f.proof.verifySecuringWork(
+            child: f.leaf, chainPath: leafContext.path
+        ) else {
+            return XCTFail("a broken path secures nothing")
+        }
+        XCTAssertEqual(failure, .protocolInvalid)
+        XCTAssertEqual(ChainTree.headerFailure(failure), .protocolInvalid, "dropped without blame")
+        XCTAssertEqual(ChainTree.headerFailure(.malformedEvidence), .proofOfWorkInvalid, "a byte mismatch blames")
     }
 }

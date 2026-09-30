@@ -471,21 +471,31 @@ public struct ChainTree: Sendable {
         self.runs = RunAttribution()
     }
 
-    package static func fromGenesis(
-        block: Block,
-        context: ChainRuntimeContext? = nil,
-        spec: ChainSpec? = nil
-    ) -> ChainTree {
+    /// A tree made without a chain: it admits no header and executes nothing.
+    package static func fromGenesis(block: Block) -> ChainTree {
         let blockHeader = try! BlockHeader(node: block)
-        var tree = fromVerifiedGenesis(
+        return fromVerifiedGenesis(
             block: block,
             contribution: VerifiedWorkContribution(
                 id: blockHeader.rawCID,
                 work: workForTarget(block.target)
             )
         )
+    }
+
+    /// A tree on `context`, holding the genesis's own `spec`: a mismatched
+    /// spec fails, so a chain never runs deaf to its headers.
+    package static func fromGenesis(
+        block: Block,
+        context: ChainRuntimeContext,
+        spec: ChainSpec
+    ) throws -> ChainTree {
+        guard binds(spec, to: block.spec.rawCID) else {
+            throw ChainStateRestoreError.corruptConsensusGraph
+        }
+        var tree = fromGenesis(block: block)
         tree.context = context
-        tree.spec = spec.flatMap { Self.binds($0, to: block.spec.rawCID) ? $0 : nil }
+        tree.spec = spec
         return tree
     }
 
@@ -582,9 +592,10 @@ public struct ChainTree: Sendable {
         chain.completeReplayProjectionDeferral()
         chain.sealRecovery(revisionFloor: revisionFloor)
         chain.context = context
-        if let spec {
-            // The spec must be the genesis's own.
-            guard binds(spec, to: input.snapshot.specCID) else {
+        // A tree on a chain holds that chain's spec — the genesis's own — so
+        // it can admit headers; one without a context holds none.
+        if context != nil || spec != nil {
+            guard let spec, binds(spec, to: input.snapshot.specCID) else {
                 throw ChainStateRestoreError.corruptConsensusGraph
             }
             chain.spec = spec
@@ -1252,7 +1263,13 @@ public struct ChainTree: Sendable {
     }
 
     var hasUnreservedMutationCapacity: Bool {
-        reservedImportRevisions < UInt64.max - mutationGeneration
+        hasMutationCapacity(for: 1)
+    }
+
+    /// Whether `count` more consensus mutations fit before revisions run out.
+    package func hasMutationCapacity(for count: UInt64) -> Bool {
+        let (needed, overflow) = reservedImportRevisions.addingReportingOverflow(count)
+        return !overflow && needed <= UInt64.max - mutationGeneration
     }
 
     private func matchesGraph(_ meta: BlockRecord, input: ConsensusBlockInput) -> Bool {

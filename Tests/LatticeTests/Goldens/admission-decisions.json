@@ -312,24 +312,7 @@
     },
     {
       "batches" : [
-        [
-          {
-            "block" : "staleTimestamp",
-            "kind" : "block"
-          },
-          {
-            "block" : "staleTimestamp",
-            "grind" : "staleTimestamp",
-            "kind" : "work",
-            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
-          }
-        ],
-        [
-          {
-            "block" : "staleTimestamp",
-            "kind" : "exclusion"
-          }
-        ]
+
       ],
       "candidate" : "staleTimestamp",
       "commitAdded" : [
@@ -338,16 +321,15 @@
       "commitRemoved" : [
 
       ],
-      "commitRevision" : 2,
-      "commitTip" : "genesis",
-      "excluded" : true,
-      "excludedAfter" : true,
+      "excluded" : false,
+      "excludedAfter" : false,
       "executedAfter" : false,
+      "failure" : "proofOfWorkInvalid",
       "materializedPostState" : false,
       "operation" : "header",
       "parentGenesisLinks" : 0,
-      "possessedAfter" : true,
-      "result" : "applied",
+      "possessedAfter" : false,
+      "result" : "rejected",
       "scenario" : "staleTimestamp",
       "step" : 0
     },
