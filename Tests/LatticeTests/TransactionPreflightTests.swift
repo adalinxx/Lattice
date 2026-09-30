@@ -439,7 +439,7 @@ final class TransactionPreflightTests: XCTestCase {
             if case .contextEncodingFailed = error { isVerdict = true } else { isVerdict = false }
             XCTAssertEqual(
                 imported,
-                isVerdict ? .localVerificationFailure : .unavailableEvidence,
+                isVerdict ? .protocolInvalid : .unavailableEvidence,
                 "import: \(error)"
             )
             XCTAssertEqual(preflightUnavailable, !isVerdict, "preflight: \(error)")
