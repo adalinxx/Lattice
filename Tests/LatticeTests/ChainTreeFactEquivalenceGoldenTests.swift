@@ -57,6 +57,13 @@ final class ChainTreeFactEquivalenceGoldenTests: XCTestCase {
         try batch.map { try encoder().encode($0).map { String(format: "%02x", $0) }.joined() }
     }
 
+    /// The one batch an update applied; the corpus never lands a header
+    /// excluded (that emits two).
+    private static func onlyBatch(_ update: ChainTreeUpdate) -> BlockImportBatch? {
+        XCTAssertEqual(update.batches.count, 1, "\(update.blockHash)")
+        return update.batches.first
+    }
+
     /// One admission step on both paths.
     private final class Pair {
         let level: ChainLevel
@@ -100,7 +107,7 @@ final class ChainTreeFactEquivalenceGoldenTests: XCTestCase {
             )
             let old = await stagedSince(before)
             let new = try await TreeDriver.insert(block, into: &tree, fetcher: fetcher, evidence: evidence)
-            try record("\(name)/header", old: old, new: new.update?.facts)
+            try record("\(name)/header", old: old, new: new.update.flatMap(ChainTreeFactEquivalenceGoldenTests.onlyBatch))
         }
 
         func execute(_ name: String, _ block: Block, package: ChildValidationPackage? = nil, parentFacts: (any ParentChainFacts)? = nil, grind: String? = nil) async throws {
@@ -115,7 +122,7 @@ final class ChainTreeFactEquivalenceGoldenTests: XCTestCase {
                 try BlockHeader(node: block).rawCID, on: &tree,
                 fetcher: fetcher, parentFacts: parentFacts, grind: grind
             )
-            try record("\(name)/execution", old: old, new: new.update?.facts)
+            try record("\(name)/execution", old: old, new: new.update.flatMap(ChainTreeFactEquivalenceGoldenTests.onlyBatch))
         }
 
         func assertSameEnd(_ hashes: [String], file: StaticString = #filePath, line: UInt = #line) async {
@@ -213,7 +220,7 @@ final class ChainTreeFactEquivalenceGoldenTests: XCTestCase {
         ), in: fetcher)
         let x1 = try await buildAndStoreBlock(previous: x, timestamp: 3_300, target: easy, nonce: 8, rewardRecipient: reward("x1"), fetcher: fetcher)
 
-        var parent = ChainTree.fromGenesis(block: parentGenesis, context: rootContext)
+        var parent = try await TreeDriver.tree(genesis: parentGenesis, context: rootContext, fetcher: fetcher)
         var facts = ParentLevelFacts(tree: parent)
         for block in [a, a2, a3, side, issuer, x, x1] {
             _ = try await TreeDriver.insert(block, into: &parent, fetcher: fetcher)
@@ -343,7 +350,7 @@ final class ChainTreeFactEquivalenceGoldenTests: XCTestCase {
 
             let pair = Pair(
                 level: AdmissionFixture.makeLevel(genesis: genesis),
-                tree: ChainTree.fromGenesis(block: genesis, context: testChainContext()),
+                tree: try await TreeDriver.tree(genesis: genesis, context: testChainContext(), fetcher: fetcher),
                 fetcher: fetcher
             )
             // Headers-first: each header after its parent.

@@ -139,7 +139,7 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
             stage: { _ in await stagedCounter.bump() }
         )
         let staged = await stagedCounter.count
-        guard case .rejected(let failure, _, _) = result else {
+        guard case .rejected(let failure, _) = result else {
             return XCTFail("a root exclusion with nothing to stand on must be parked, got \(result)")
         }
         XCTAssertEqual(failure, .notYetValid, "a non-verdict, retried — never a written fact")

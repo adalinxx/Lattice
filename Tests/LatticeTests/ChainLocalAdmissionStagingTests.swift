@@ -179,12 +179,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let contexts = await recorder.recordedContexts()
         XCTAssertEqual(contexts.count, 2)
         XCTAssertEqual(contexts[1].batch, batches[1])
-        XCTAssertEqual(
-            contexts[1].issuedCarrierLink?.parentPath,
-            [DEFAULT_ROOT_DIRECTORY, "Child"]
-        )
-        XCTAssertEqual(contexts[1].issuedCarrierLink?.carrierCID, header.rawCID)
-        XCTAssertEqual(contexts[1].issuedCarrierLink?.rootCID, alternateProof.rootCID)
+        XCTAssertTrue(contexts[1].issuesHierarchyFacts)
         XCTAssertTrue(contexts[1].parentGenesisLinks.isEmpty)
     }
 
@@ -279,10 +274,9 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             )
         )
         XCTAssertNil(result.crossChainEvidenceRequirement)
-        XCTAssertEqual(result.parentCarrierLink?.carrierCID, orphanHeader.rawCID)
         let orphanContexts = await recorder.recordedContexts()
         let orphanContext = try XCTUnwrap(orphanContexts.first)
-        XCTAssertNil(orphanContext.issuedCarrierLink)
+        XCTAssertFalse(orphanContext.issuesHierarchyFacts)
         XCTAssertEqual(orphanContext.parentGenesisLinks.count, 1)
 
         _ = try await level.admit(missingParent, fetcher: fetcher)
@@ -296,10 +290,6 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         }
         let promoted = try await level.resolveDuplicatePreflight(preflight)
         XCTAssertNil(promoted.result.sameChainPredecessor)
-        XCTAssertEqual(
-            promoted.result.parentCarrierLink?.carrierCID,
-            orphanHeader.rawCID
-        )
         XCTAssertEqual(
             promoted.parentGenesisLinks.first?.childGenesisCID,
             childCID
@@ -541,8 +531,6 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             stage: { batch in await recorder.stage(batch) }
         )
         XCTAssertEqual(exhausted.failure, .revisionExhausted)
-        let exhaustedLink = try XCTUnwrap(exhausted.parentCarrierLink)
-        XCTAssertEqual(exhaustedLink.carrierCID, siblingHeader.rawCID)
         XCTAssertNil(exhausted.sameChainPredecessor)
         let siblingStageCount = await recorder.count(for: siblingHeader.rawCID)
         XCTAssertEqual(siblingStageCount, 0)
@@ -567,10 +555,6 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             stage: { batch in await recorder.stage(batch) }
         )
         XCTAssertEqual(orphanExhausted.failure, .revisionExhausted)
-        XCTAssertEqual(
-            orphanExhausted.parentCarrierLink?.carrierCID,
-            orphanHeader.rawCID
-        )
         XCTAssertEqual(
             orphanExhausted.sameChainPredecessor,
             SameChainPredecessorRequirement(
@@ -759,7 +743,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         XCTAssertTrue(containsSibling)
     }
 
-    func testPreflightCommitPromotesCarrierLinkAfterPredecessorConnects() async throws {
+    func testPreflightCommitPromotesIssuanceAfterPredecessorConnects() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
         let predecessor = try await AdmissionFixture.makeChild(
@@ -796,17 +780,13 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         )
 
         XCTAssertNotNil(committed.commit)
-        XCTAssertNotNil(committed.parentCarrierLink)
         XCTAssertNil(committed.sameChainPredecessor)
         let stagedContexts = await recorder.recordedContexts()
         let stagedContext = try XCTUnwrap(stagedContexts.first)
-        XCTAssertEqual(
-            stagedContext.issuedCarrierLink,
-            committed.parentCarrierLink
-        )
+        XCTAssertTrue(stagedContext.issuesHierarchyFacts)
     }
 
-    func testDuplicatePreflightPromotesCarrierLinkAfterPredecessorConnectsWithoutStaging() async throws {
+    func testDuplicatePreflightPromotesIssuanceAfterPredecessorConnectsWithoutStaging() async throws {
         let backing = StorableFetcher()
         let genesis = try await AdmissionFixture.makeGenesis(fetcher: backing, timestamp: 1_000)
         let predecessor = try await AdmissionFixture.makeChild(
@@ -849,10 +829,9 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         await source.denyAll()
         let resolved = try await level.resolveDuplicatePreflight(duplicate)
 
-        guard case .duplicate(let link, let predecessor, _) = resolved.result else {
+        guard case .duplicate(let predecessor, _) = resolved.result else {
             return XCTFail("resolved token must remain duplicate")
         }
-        XCTAssertEqual(link?.carrierCID, orphanHeader.rawCID)
         XCTAssertNil(predecessor)
         XCTAssertEqual(resolved.parentGenesisLinks, [])
         let orphanStageCount = await recorder.count(for: orphanHeader.rawCID)
@@ -925,10 +904,10 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let results = try await (firstResult, siblingResult)
 
         XCTAssertEqual(arrivals, 2, "independent verification should not wait behind a global gate")
-        if case .rejected(let failure, _, _) = results.0 {
+        if case .rejected(let failure, _) = results.0 {
             return XCTFail("first sibling was rejected: \(failure)")
         }
-        if case .rejected(let failure, _, _) = results.1 {
+        if case .rejected(let failure, _) = results.1 {
             return XCTFail("second sibling was rejected: \(failure)")
         }
         let containsFirst = await level.chain.contains(blockHash: firstHeader.rawCID)

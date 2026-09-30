@@ -85,12 +85,18 @@ typealias ParentFactLookup = @Sendable (ParentFactQuery) -> ParentFactAnswer
 
 /// What one admission operation applied to a `ChainTree`.
 public struct ChainTreeUpdate: Sendable {
-    /// The block the batch is about.
+    /// The block the batches are about.
     public let blockHash: String
-    /// The batch the tree applied: the same fact bytes the actor admission
-    /// path stages for the same block. Durable storage of it is the caller's;
-    /// `ChainTree.replay` rebuilds the tree from it.
-    public let facts: BlockImportBatch
+    /// The batches the tree applied, in order. Durable storage of every one
+    /// is the caller's; `ChainTree.restore` rebuilds the tree from them in
+    /// any order. One batch, except a header that lands excluded: its block
+    /// and work, then its exclusion (a batch carries at most one exclusion
+    /// and nothing beside it).
+    public let batches: [BlockImportBatch]
+    /// Whether this operation excluded the block: a header admitted with its
+    /// work but failing a validity rule (§9.9), or an execution that proved
+    /// it invalid. Its work still weighs; it is never selected.
+    public let excluded: Bool
     /// The canonical change, when the projection moved.
     public let commit: ChainCommit?
     /// The executed post-state (`applyConnect` of a valid block only).
@@ -109,7 +115,9 @@ public enum ChainTreeAdmission: Sendable {
     /// re-emits its validation batch, as the actor path re-stages it, and
     /// replaying that batch is a no-op.)
     case duplicate(promotedCommit: ChainCommit?)
-    /// Refused: no fact was emitted and the tree is unchanged.
+    /// Refused: no fact was emitted and the tree is unchanged. For a header,
+    /// only `.proofOfWorkInvalid` blames its sender; `.notYetValid` and
+    /// `.unavailableEvidence` are held and retried; anything else is dropped.
     case rejected(BlockImportError)
 
     public var update: ChainTreeUpdate? {
@@ -191,16 +199,16 @@ extension ChainTree {
     }
 
     /// Weigh one block of a ROOT chain from its header, credited with its
-    /// own proof-of-work (`rootWork`). See `insertHeader`.
+    /// own proof-of-work (`rootWork`): its hash meets its own target. See
+    /// `insertHeader`.
     public mutating func insertRootHeader(
         _ block: Block,
-        spec: ChainSpec,
         childIndex: ChildIndex,
         validationContext: ValidationContext = .current
     ) -> ChainTreeAdmission {
         guard let context else { return .rejected(.notAcceptedAtCurrentChain) }
         guard let blockHash = try? BlockHeader(node: block).rawCID else {
-            return .rejected(.localVerificationFailure)
+            return .rejected(.proofOfWorkInvalid)
         }
         guard context.isRoot else {
             return .rejected(.crossChainEvidenceRequired(.childProof(
@@ -208,10 +216,10 @@ extension ChainTree {
             )))
         }
         guard let work = BlockImport.rootWork(of: block, blockHash: blockHash) else {
-            return .rejected(.notAcceptedAtCurrentChain)
+            return .rejected(.proofOfWorkInvalid)
         }
         return insertHeader(
-            block, blockHash: blockHash, spec: spec, childIndex: childIndex,
+            block, blockHash: blockHash, childIndex: childIndex,
             work: work, validationContext: validationContext
         )
     }
@@ -219,73 +227,87 @@ extension ChainTree {
     /// Weigh one block of a CHILD chain from its header, credited with the
     /// work of a verified child proof of exactly this block
     /// (`ChildBlockProof.verifySecuringWork` for this chain's path). See
-    /// `insertHeader`.
+    /// `insertHeader`. The proof is verified by the caller, and its failures
+    /// classify like this function's: `.malformedEvidence` (a CID or byte
+    /// mismatch, an undecodable path) is a proof-of-work failure and blames;
+    /// `.protocolInvalid` (the child's `parentState` is not its carrier's
+    /// `prevState`) is structural and drops without blame. Evidence whose
+    /// grind meets no target on the path yields no contribution: a
+    /// proof-of-work failure here.
     public mutating func insertChildHeader(
         _ block: Block,
-        spec: ChainSpec,
         childIndex: ChildIndex,
         evidence: VerifiedChildEvidence,
         validationContext: ValidationContext = .current
     ) -> ChainTreeAdmission {
         guard let context else { return .rejected(.notAcceptedAtCurrentChain) }
         guard !context.isRoot else { return .rejected(.protocolInvalid) }
-        guard let blockHash = try? BlockHeader(node: block).rawCID else {
-            return .rejected(.localVerificationFailure)
-        }
-        guard CIDIdentity.canonicalString(evidence.childCID) == blockHash else {
-            return .rejected(.providerMalformedEvidence)
-        }
-        guard let work = evidence.contribution else {
-            return .rejected(.notAcceptedAtCurrentChain)
+        guard let blockHash = try? BlockHeader(node: block).rawCID,
+              CIDIdentity.canonicalString(evidence.childCID) == blockHash,
+              let work = evidence.contribution else {
+            return .rejected(.proofOfWorkInvalid)
         }
         return insertHeader(
-            block, blockHash: blockHash, spec: spec, childIndex: childIndex,
+            block, blockHash: blockHash, childIndex: childIndex,
             work: work, validationContext: validationContext
         )
     }
 
-    /// Weigh one block from its header: the `.header` admission tier as a
-    /// synchronous mutation. `spec` and `childIndex` are the block's own
-    /// (bound by CID); `work` is its verified grind. Linkage reads the parent
-    /// from this tree, so the parent must be held. A block already held takes
-    /// `addWork`. Emits the block fact (declared post-state, empty diff, child
-    /// commitments) and its work fact — no validation, and no cross-chain
-    /// fact: a weighed-only block issues none.
+    /// Weigh one block from its header, synchronously (§9.9 header
+    /// admission). `childIndex` is the block's own (bound by CID): run
+    /// attribution reads what it does NOT commit. `work` is its verified
+    /// grind. Linkage reads the parent from this tree — excluded or not — and
+    /// the target schedule from the chain's spec. A block already held takes
+    /// `addWork`.
+    ///
+    /// - Weighed: the block fact (declared post-state, empty diff, child
+    ///   commitments) and its work fact.
+    /// - Weighed and excluded: the same, then its exclusion — for
+    ///   `spec != parent.spec`, `prevState != parent.postState` or
+    ///   `timestamp <= parent.timestamp`. Its work weighs; it is never
+    ///   selected.
+    /// - `.proofOfWorkInvalid` (blame): no work, or a target off the schedule.
+    /// - `.notYetValid` / `.unavailableEvidence` (hold): a timestamp in this
+    ///   node's future, an unknown parent, or a difficulty anchor not in hand.
+    /// - Anything else (drop, no blame): version, height, the child-index
+    ///   binding, a malformed reward recipient, a genesis.
+    ///
+    /// No validation and no cross-chain fact: a weighed-only block issues
+    /// none.
     private mutating func insertHeader(
         _ block: Block,
         blockHash: String,
-        spec: ChainSpec,
         childIndex: ChildIndex,
         work contribution: VerifiedWorkContribution,
         validationContext: ValidationContext
     ) -> ChainTreeAdmission {
+        guard contribution.work > .zero else {
+            return .rejected(.proofOfWorkInvalid)
+        }
         guard block.hasWellFormedRewardRecipient else {
             return .rejected(.protocolInvalid)
         }
         if contains(blockHash: blockHash) {
             return addWork(contribution, to: blockHash)
         }
-        guard contribution.work > .zero else {
-            return .rejected(.notAcceptedAtCurrentChain)
-        }
         guard acceptsWorkLocation(of: contribution.id, at: blockHash) else {
             return .rejected(.providerMalformedEvidence)
         }
+        guard let spec else { return .rejected(.notAcceptedAtCurrentChain) }
         // A genesis is never weighed: only bootstrap admits one.
-        guard let parentHash = block.parent?.rawCID,
-              block.version == Block.currentVersion else {
+        guard let parentHash = block.parent?.rawCID else {
             return .rejected(.protocolInvalid)
         }
         guard let parent = headerSnapshot(of: parentHash) else {
             return .rejected(.unavailableEvidence)
         }
-        guard (try? VolumeImpl<ChainSpec>(node: spec).rawCID) == block.spec.rawCID,
-              (try? HeaderImpl<ChildIndex>(node: childIndex).rawCID)
-                  == block.children.rawCID else {
-            return .rejected(.providerMalformedEvidence)
+        guard (try? HeaderImpl<ChildIndex>(node: childIndex).rawCID)
+                == block.children.rawCID else {
+            return .rejected(.protocolInvalid)
         }
+        let admission: HeaderAdmission
         do {
-            let linked = try block.validateHeaderLinkage(
+            admission = try block.headerAdmission(
                 parent: HeaderLinkageParent(
                     height: parent.tipHeight,
                     timestamp: parent.timestamp,
@@ -296,20 +318,29 @@ extension ChainTree {
                 ),
                 spec: spec,
                 inheritedAnchor: { difficultyAnchor(forBlockHash: parentHash) },
-                reportTemporalFailure: true,
                 validationContext: validationContext
             )
-            guard linked else { return .rejected(.protocolInvalid) }
         } catch {
             return .rejected(classifyValidationFailure(error))
         }
-        return applyAdmission(BlockImport.admissionFacts(
+        let weighed = BlockImport.admissionFacts(
             blockHash: blockHash,
             block: block,
             contribution: contribution,
             kind: .block(.empty, nil, validated: false),
             childCommitments: childIndex.entries.mapValues(\.rawCID)
-        ), of: blockHash)
+        )
+        switch admission {
+        case .malformed: return .rejected(.protocolInvalid)
+        case .offSchedule: return .rejected(.proofOfWorkInvalid)
+        case .linked: return applyAdmission([weighed], of: blockHash)
+        case .excluded:
+            return applyAdmission(
+                [weighed, BlockImport.exclusionFacts(blockHash: blockHash)],
+                of: blockHash,
+                excluded: true
+            )
+        }
     }
 
     /// Credit another grind to a held block (the `.evidence` tier). A grind
@@ -334,9 +365,9 @@ extension ChainTree {
         guard acceptsWorkLocation(of: contribution.id, at: hash) else {
             return .rejected(.providerMalformedEvidence)
         }
-        return applyAdmission(BlockImportBatch.staged([
+        return applyAdmission([BlockImportBatch.staged([
             .work(ChainWorkFact(blockHash: hash, contribution: contribution)),
-        ]), of: hash)
+        ])], of: hash)
     }
 
     /// Capture what executing a held block needs, so `connect` can run off
@@ -471,14 +502,16 @@ extension ChainTree {
                 return .rejected(.notYetValid)
             }
             return applyAdmission(
-                BlockImport.exclusionFacts(blockHash: blockHash), of: blockHash
+                [BlockImport.exclusionFacts(blockHash: blockHash)],
+                of: blockHash,
+                excluded: true
             )
         case .valid(let facts, let materializedPostState, let genesisLinks):
             guard contains(blockHash: blockHash) else {
                 return .rejected(.notYetValid)
             }
             return applyAdmission(
-                facts,
+                [facts],
                 of: blockHash,
                 materializedPostState: materializedPostState,
                 parentGenesisLinks: genesisLinks
@@ -512,6 +545,11 @@ extension ChainTree {
         case .noWork:
             return .failure(.notAcceptedAtCurrentChain)
         case .ready(let resolved, let contribution, let transition):
+            guard let spec = try? await resolved.block.spec.resolve(
+                fetcher: fetcher
+            ).node else {
+                return .failure(.unavailableEvidence)
+            }
             let facts = BlockImport.admissionFacts(
                 blockHash: resolved.header.rawCID,
                 block: resolved.block,
@@ -524,7 +562,7 @@ extension ChainTree {
                 childCommitments: nil
             )
             guard let tree = try? ChainTree.restore(
-                replaying: [facts], context: context
+                replaying: [facts], context: context, spec: spec
             ) else {
                 return .failure(.localVerificationFailure)
             }
@@ -537,28 +575,60 @@ extension ChainTree {
         }
     }
 
-    /// Apply a batch this API derived, reporting what it emitted. A batch
-    /// that changed no weight (a validation of a held block) still re-projects,
-    /// since execution can make a heavier candidate selectable.
+    /// Apply the batches this API derived, in order, reporting what they
+    /// emitted and the net canonical change. A batch that changed no weight
+    /// (a validation of a held block) still re-projects, since execution can
+    /// make a heavier candidate selectable.
     private mutating func applyAdmission(
-        _ facts: BlockImportBatch,
+        _ batches: [BlockImportBatch],
         of blockHash: String,
+        excluded: Bool = false,
         materializedPostState: LatticeState? = nil,
         parentGenesisLinks: [ParentGenesisLink] = []
     ) -> ChainTreeAdmission {
-        let submission: SubmissionResult?
-        do {
-            submission = try apply(facts)
-        } catch {
-            return .rejected(.localVerificationFailure)
+        var commit: ChainCommit?
+        for facts in batches {
+            let submission: SubmissionResult?
+            do {
+                submission = try apply(facts)
+            } catch {
+                return .rejected(.localVerificationFailure)
+            }
+            let next = submission == nil ? reevaluateForkChoice() : submission?.commit
+            commit = ChainCommit.composing(commit, then: next)
         }
-        let commit = submission == nil ? reevaluateForkChoice() : submission?.commit
         return .applied(ChainTreeUpdate(
             blockHash: blockHash,
-            facts: facts,
+            batches: batches,
+            excluded: excluded,
             commit: commit,
             materializedPostState: materializedPostState,
             parentGenesisLinks: parentGenesisLinks
         ))
+    }
+}
+
+extension ChainCommit {
+    /// The net change of `first` then `second` against the projection before
+    /// `first`: a block one added and the other removed moved nowhere.
+    static func composing(_ first: ChainCommit?, then second: ChainCommit?) -> ChainCommit? {
+        guard let first else { return second }
+        guard let second else { return first }
+        var added = first.canonicalBlocksAdded.filter {
+            !second.canonicalBlocksRemoved.contains($0.key)
+        }
+        for (hash, height) in second.canonicalBlocksAdded
+        where !first.canonicalBlocksRemoved.contains(hash) {
+            added[hash] = height
+        }
+        let removed = first.canonicalBlocksRemoved
+            .subtracting(second.canonicalBlocksAdded.keys)
+            .union(second.canonicalBlocksRemoved.subtracting(first.canonicalBlocksAdded.keys))
+        return ChainCommit(
+            revision: second.revision,
+            tipHash: second.tipHash,
+            canonicalBlocksAdded: added,
+            canonicalBlocksRemoved: removed
+        )
     }
 }

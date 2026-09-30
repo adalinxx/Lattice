@@ -34,13 +34,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         )
         XCTAssertGreaterThan(targetMiss.proofOfWorkHash(), targetMiss.target)
         let missResult = try await level.admit(targetMiss, fetcher: fetcher)
-        guard case .carrier = missResult else {
-            return XCTFail("a parentless target miss is carrier data only")
-        }
-        XCTAssertEqual(
-            missResult.parentCarrierLink?.carrierCID,
-            try BlockHeader(node: targetMiss).rawCID
-        )
+        XCTAssertEqual(missResult.failure, .proofOfWorkInvalid)
     }
 
     func testPublicBootstrapRequiresVerifiedGenesisAndStorage() async throws {
@@ -81,7 +75,6 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             stage: testAdmissionStage
         )
         XCTAssertEqual(wrongFact.failure, .providerMalformedEvidence)
-        XCTAssertEqual(wrongFact.parentCarrierLink.carrierCID, header.rawCID)
 
         do {
             _ = try await ChainLevel.bootstrap(
@@ -442,7 +435,6 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             stage: testAdmissionStage
         )
         XCTAssertNil(result.failure)
-        XCTAssertEqual(result.parentCarrierLink.carrierCID, childHeader.rawCID)
     }
 
     func testGenesisDifficultySeedIsValidatedBeforeStorageOrStaging() async throws {
@@ -531,7 +523,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         XCTAssertTrue(targetMissBatches.isEmpty)
     }
 
-    func testBootstrapDoesNotStageCarrierOnCurrentChainTargetMiss() async throws {
+    func testBootstrapDoesNotStageOnCurrentChainTargetMiss() async throws {
         let fetcher = StorableFetcher()
         let childGenesis = try await buildAndStoreGenesis(
             spec: chainLocalSpec(),
@@ -556,12 +548,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             materializedVolumeStorer: fetcher,
             stage: { record in await recorder.stage(record) }
         )
-        guard case .carrier(let link) = result else {
-            return XCTFail("a target-miss child genesis must remain a carrier")
-        }
-        XCTAssertEqual(link.parentPath, [DEFAULT_ROOT_DIRECTORY, "Child"])
-        XCTAssertEqual(link.carrierCID, header.rawCID)
-        XCTAssertEqual(link.rootCID, header.rawCID)
+        XCTAssertEqual(result.failure, .proofOfWorkInvalid)
         let stageCount = await recorder.count(for: header.rawCID)
         XCTAssertEqual(stageCount, 0)
     }
