@@ -11,10 +11,11 @@ import UInt256
 import cashew
 
 /// The "Lattice architecture preserved" checklist, one test per item, driven
-/// only through the `ChainTree` value API: `insertHeader`, `addWork`,
+/// only through the `ChainTree` value API: `insertRootHeader`/`insertChildHeader`, `addWork`,
 /// `connectJob`/`connect`/`applyConnect`, `bootstrap` and `replay`.
 final class ChainTreeArchitectureTests: XCTestCase {
     private let easy = AdmissionFixture.easy
+    private let rootContext = testChainContext()
     private let childContext = testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
 
     private func cid(_ block: Block) throws -> String {
@@ -84,7 +85,7 @@ final class ChainTreeArchitectureTests: XCTestCase {
         let x2 = try await forgedChild(of: x1, like: t3, fetcher: fetcher)
         var fixture = ForkedRoot(
             fetcher: fetcher, genesis: genesis, a: a, a2: a2, x: x, x1: x1, x2: x2,
-            tree: ChainTree.fromGenesis(block: genesis)
+            tree: ChainTree.fromGenesis(block: genesis, context: rootContext)
         )
         for block in [a, a2, x, x1, x2] {
             let inserted = try await TreeDriver.insert(block, into: &fixture.tree, fetcher: fetcher)
@@ -209,7 +210,7 @@ final class ChainTreeArchitectureTests: XCTestCase {
         XCTAssertNotEqual(side.postState.rawCID, a.postState.rawCID)
         let onSide = try await AdmissionFixture.makeChild(of: side, fetcher: fetcher, timestamp: 3_100, nonce: 4)
 
-        var parent = ChainTree.fromGenesis(block: parentGenesis)
+        var parent = ChainTree.fromGenesis(block: parentGenesis, context: rootContext)
         for block in [a, a2, side] {
             let inserted = try await TreeDriver.insert(block, into: &parent, fetcher: fetcher)
             XCTAssertNotNil(inserted.update)
@@ -222,14 +223,14 @@ final class ChainTreeArchitectureTests: XCTestCase {
             of: childGenesis, fetcher: fetcher, timestamp: 2_000, nonce: 1, parentChainBlock: onSide
         )
         XCTAssertEqual(childBlock.parentState.rawCID, side.postState.rawCID)
-        var child = ChainTree.fromGenesis(block: childGenesis)
+        var child = ChainTree.fromGenesis(block: childGenesis, context: childContext)
         let childWork = VerifiedWorkContribution(id: testCID("child-grind"), work: UInt256(1))
         let childInserted = try await TreeDriver.insert(childBlock, into: &child, fetcher: fetcher, work: childWork)
         XCTAssertNotNil(childInserted.update)
 
         // The side branch is weighed, not executed: no continuity.
         let unanchored = try await TreeDriver.connect(
-            try cid(childBlock), on: &child, context: childContext, fetcher: fetcher,
+            try cid(childBlock), on: &child, fetcher: fetcher,
             parentFacts: ParentLevelFacts(tree: parent)
         )
         guard case .rejected(.crossChainEvidenceRequired(.parentStateContinuity(_, _, let toState))) = unanchored else {
@@ -245,8 +246,17 @@ final class ChainTreeArchitectureTests: XCTestCase {
         XCTAssertFalse(parent.isCanonical(hash: try cid(side)))
         XCTAssertTrue(parent.executedSetProduced(stateCID: side.postState.rawCID))
 
+        // Facts answer only for the parent chain the link names.
+        let wrongPath = try await TreeDriver.connect(
+            try cid(childBlock), on: &child, fetcher: fetcher,
+            parentFacts: ParentLevelFacts(tree: parent, path: [DEFAULT_ROOT_DIRECTORY, "Other"])
+        )
+        guard case .rejected(.crossChainEvidenceRequired(.parentStateContinuity)) = wrongPath else {
+            return XCTFail("another chain's facts answer nothing, got \(wrongPath)")
+        }
+
         let anchored = try await TreeDriver.connect(
-            try cid(childBlock), on: &child, context: childContext, fetcher: fetcher,
+            try cid(childBlock), on: &child, fetcher: fetcher,
             parentFacts: ParentLevelFacts(tree: parent)
         )
         XCTAssertEqual(kinds(anchored.update?.facts), ["block", "work", "validation"])
@@ -276,7 +286,7 @@ final class ChainTreeArchitectureTests: XCTestCase {
             previous: parentGenesis, transactions: [signedTestTransaction(body, by: keyPair)],
             timestamp: 2_100, target: easy, nonce: 3, rewardRecipient: owner, fetcher: fetcher
         )
-        var parent = ChainTree.fromGenesis(block: parentGenesis)
+        var parent = ChainTree.fromGenesis(block: parentGenesis, context: rootContext)
         for block in [a, a2] {
             _ = try await TreeDriver.insert(block, into: &parent, fetcher: fetcher)
         }
@@ -288,14 +298,17 @@ final class ChainTreeArchitectureTests: XCTestCase {
 
         let refused = await ChainTree.bootstrap(
             genesis: try BlockHeader(node: childGenesis), fetcher: fetcher, context: childContext,
-            parentFacts: ParentLevelFacts(tree: parent, genesisLinks: Set(weighedUpdate.parentGenesisLinks))
+            parentFacts: ParentLevelFacts(tree: parent)
         )
         guard case .failure(.providerMalformedEvidence) = refused else {
             return XCTFail("no executed parent block recorded the genesis, got \(refused)")
         }
 
         let connected = try await TreeDriver.connect(try cid(side), on: &parent, fetcher: fetcher)
-        let links = try XCTUnwrap(connected.update).parentGenesisLinks
+        let connectedUpdate = try XCTUnwrap(connected.update)
+        let links = connectedUpdate.parentGenesisLinks
+        var parentFacts = ParentLevelFacts(tree: parent)
+        parentFacts.record(connectedUpdate)
         let expected = ParentGenesisLink(
             parentPath: [DEFAULT_ROOT_DIRECTORY], directory: "Child",
             childGenesisCID: childCID, parentStateCID: LatticeState.emptyHeader.rawCID
@@ -305,7 +318,7 @@ final class ChainTreeArchitectureTests: XCTestCase {
 
         let bootstrapped = await ChainTree.bootstrap(
             genesis: try BlockHeader(node: childGenesis), fetcher: fetcher, context: childContext,
-            parentFacts: ParentLevelFacts(tree: parent, genesisLinks: Set(links))
+            parentFacts: parentFacts
         )
         let child = try bootstrapped.get()
         XCTAssertEqual(child.tree.canonicalTip, childCID)
@@ -328,7 +341,7 @@ final class ChainTreeArchitectureTests: XCTestCase {
             timestamp: 2_000, target: easy, nonce: 1, fetcher: fetcher
         )
         let runBlock = try await AdmissionFixture.makeChild(of: committer, fetcher: fetcher, timestamp: 3_000, nonce: 2)
-        var parent = ChainTree.fromGenesis(block: parentGenesis)
+        var parent = ChainTree.fromGenesis(block: parentGenesis, context: rootContext)
         for block in [committer, runBlock] {
             let inserted = try await TreeDriver.insert(block, into: &parent, fetcher: fetcher)
             XCTAssertNotNil(inserted.update)
@@ -340,7 +353,7 @@ final class ChainTreeArchitectureTests: XCTestCase {
 
         // The committer's grind secures the child block.
         let grind = VerifiedWorkContribution(id: committerCID, work: UInt256(1))
-        var child = ChainTree.fromGenesis(block: childGenesis)
+        var child = ChainTree.fromGenesis(block: childGenesis, context: childContext)
         let childCID = try cid(childBlock)
         let childInserted = try await TreeDriver.insert(childBlock, into: &child, fetcher: fetcher, work: grind)
         XCTAssertNotNil(childInserted.update)
@@ -378,7 +391,7 @@ final class ChainTreeArchitectureTests: XCTestCase {
     func testRootExclusionRuleIsUnchanged() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        var tree = ChainTree.fromGenesis(block: genesis)
+        var tree = ChainTree.fromGenesis(block: genesis, context: rootContext)
         let result = try await TreeDriver.connect(try cid(genesis), on: &tree, fetcher: fetcher)
         XCTAssertEqual(result.failure, .notYetValid)
         XCTAssertFalse(tree.isExcludedRoot(try cid(genesis)))
@@ -409,5 +422,135 @@ final class ChainTreeArchitectureTests: XCTestCase {
             XCTAssertEqual(replayed.isExcludedRoot(hash), fixture.tree.isExcludedRoot(hash))
             XCTAssertEqual(replayed.subtreeWeight(forHash: hash), fixture.tree.subtreeWeight(forHash: hash))
         }
+    }
+    // MARK: - Genesis links only from the executed set (both paths)
+
+    /// G → P1 → P2, where P1 declares a real post-state it does not produce
+    /// and P2 carries a `GenesisAction`. P2 executes cleanly on P1's declared
+    /// state, ahead of P1.
+    private struct GenesisAttack {
+        let fetcher: StorableFetcher
+        let genesis: Block
+        let p1: Block
+        let p2: Block
+        let childGenesis: Block
+    }
+
+    private func genesisAttack() async throws -> GenesisAttack {
+        let fetcher = StorableFetcher()
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let childGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let rewarded = try await buildAndStoreBlock(
+            previous: genesis, timestamp: 2_000, target: easy, nonce: 1,
+            rewardRecipient: testAddress(publicKey: "attack-reward"), fetcher: fetcher
+        )
+        let empty = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_100, nonce: 2)
+        let p1 = try await storeBuiltBlock(Block(
+            version: empty.version, parent: empty.parent, transactions: empty.transactions,
+            target: empty.target, nextTarget: empty.nextTarget, spec: empty.spec,
+            parentState: empty.parentState, prevState: empty.prevState,
+            postState: rewarded.postState, children: empty.children,
+            height: empty.height, timestamp: empty.timestamp,
+            rewardRecipient: empty.rewardRecipient, nonce: empty.nonce
+        ), in: fetcher)
+        let keyPair = CryptoUtils.generateKeyPair()
+        let owner = testAddress(publicKey: keyPair.publicKey)
+        let body = TransactionBody(
+            accountActions: [], actions: [], depositActions: [],
+            genesisActions: [GenesisAction(directory: "Child", blockCID: try cid(childGenesis))],
+            receiptActions: [], withdrawalActions: [],
+            signers: [owner], nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
+        )
+        let p2 = try await buildAndStoreBlock(
+            previous: p1, transactions: [signedTestTransaction(body, by: keyPair)],
+            timestamp: 3_000, target: easy, nonce: 3, rewardRecipient: owner, fetcher: fetcher
+        )
+        return GenesisAttack(fetcher: fetcher, genesis: genesis, p1: p1, p2: p2, childGenesis: childGenesis)
+    }
+
+    /// Executing P2 before P1, then excluding P1, must not authorize the
+    /// child genesis: P2 never joins the executed set.
+    func testGenesisLinkFromABlockExecutedAheadOfAnExcludedAncestryAuthorizesNothing() async throws {
+        let attack = try await genesisAttack()
+        var parent = ChainTree.fromGenesis(block: attack.genesis, context: rootContext)
+        for block in [attack.p1, attack.p2] {
+            let inserted = try await TreeDriver.insert(block, into: &parent, fetcher: attack.fetcher)
+            XCTAssertNotNil(inserted.update)
+        }
+        var facts = ParentLevelFacts(tree: parent)
+        let ahead = try await TreeDriver.connect(try cid(attack.p2), on: &parent, fetcher: attack.fetcher)
+        let aheadUpdate = try XCTUnwrap(ahead.update, "\(ahead)")
+        XCTAssertFalse(aheadUpdate.parentGenesisLinks.isEmpty, "P2's execution reports its link")
+        facts.record(aheadUpdate)
+        XCTAssertFalse(parent.hasExecutedAncestry(blockHash: try cid(attack.p2)))
+
+        let excluded = try await TreeDriver.connect(try cid(attack.p1), on: &parent, fetcher: attack.fetcher)
+        XCTAssertEqual(kinds(excluded.update?.facts), ["exclusion"])
+        facts.tree = parent
+
+        let link = try XCTUnwrap(aheadUpdate.parentGenesisLinks.first)
+        XCTAssertFalse(facts.recordsGenesis(link))
+        let bootstrapped = await ChainTree.bootstrap(
+            genesis: try BlockHeader(node: attack.childGenesis), fetcher: attack.fetcher,
+            context: childContext, parentFacts: facts
+        )
+        guard case .failure(.providerMalformedEvidence) = bootstrapped else {
+            return XCTFail("a link from outside the executed set authorizes nothing, got \(bootstrapped)")
+        }
+    }
+
+    /// The actor path issues no genesis link for a block validated ahead of
+    /// its ancestry, so an ancestor's exclusion cannot leave one standing.
+    func testActorPathIssuesNoGenesisLinkFromABlockExecutedAheadOfItsAncestry() async throws {
+        let attack = try await genesisAttack()
+        let level = AdmissionFixture.makeLevel(genesis: attack.genesis)
+        let recorder = AdmissionStageRecorder()
+        for block in [attack.p1, attack.p2] {
+            _ = try await level.admit(block, mode: .header, fetcher: attack.fetcher, stage: { await recorder.stage($0) })
+        }
+        _ = try await level.admit(attack.p2, mode: .execution, fetcher: attack.fetcher, stage: { await recorder.stage($0) })
+        _ = try await level.admit(attack.p1, mode: .execution, fetcher: attack.fetcher, stage: { await recorder.stage($0) })
+        let contexts = await recorder.recordedContexts()
+        XCTAssertEqual(contexts.count, 4, "two headers, P2's validation, P1's exclusion")
+        XCTAssertTrue(contexts.allSatisfy { $0.parentGenesisLinks.isEmpty })
+        let excluded = await level.chain.excludedRootsForTesting
+        XCTAssertEqual(excluded, [try cid(attack.p1)])
+    }
+
+    // MARK: - Work and context bound to the tree
+
+    /// Work is bound to its block, and the tree's own chain decides which
+    /// kind of work it takes: a child tree takes only a child proof of the
+    /// same block, a root tree only root work.
+    func testWorkIsBoundToTheBlockAndTheTreeContext() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let block = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
+        let other = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_100, nonce: 2)
+        let inputs = try await TreeDriver.headerInputs(block, fetcher: fetcher)
+        let work = VerifiedWorkContribution(id: testCID("grind"), work: UInt256(1))
+
+        var child = ChainTree.fromGenesis(block: genesis, context: childContext)
+        let wrongBlock = child.insertChildHeader(
+            block, spec: inputs.spec, childIndex: inputs.childIndex,
+            evidence: try TreeDriver.evidence(for: other, work: work)
+        )
+        XCTAssertEqual(wrongBlock.failure, .providerMalformedEvidence, "another block's work is refused")
+        guard case .crossChainEvidenceRequired(.childProof) = child.insertRootHeader(
+            block, spec: inputs.spec, childIndex: inputs.childIndex
+        ).failure else {
+            return XCTFail("a child tree takes no root work")
+        }
+        XCTAssertFalse(child.contains(blockHash: try cid(block)))
+
+        var root = ChainTree.fromGenesis(block: genesis, context: rootContext)
+        XCTAssertEqual(root.insertChildHeader(
+            block, spec: inputs.spec, childIndex: inputs.childIndex,
+            evidence: try TreeDriver.evidence(for: block, work: work)
+        ).failure, .protocolInvalid, "a root tree takes no child proof")
+        XCTAssertNotNil(root.insertRootHeader(block, spec: inputs.spec, childIndex: inputs.childIndex).update)
+
+        var unbound = ChainTree.fromGenesis(block: genesis)
+        XCTAssertNil(unbound.connectJob(for: try cid(genesis)), "no context, no execution")
     }
 }

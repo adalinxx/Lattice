@@ -12,7 +12,7 @@ import cashew
 
 /// Drives a `ChainTree` through its value API the way a core would: the
 /// block's own spec and child index resolved first, then one synchronous
-/// `insertHeader`; `connectJob` → `connect` → `applyConnect` for execution.
+/// `insertRootHeader`/`insertChildHeader`; `connectJob` → `connect` → `applyConnect` for execution.
 enum TreeDriver {
     static func headerInputs(
         _ block: Block,
@@ -23,31 +23,53 @@ enum TreeDriver {
         return (try XCTUnwrap(spec), try XCTUnwrap(childIndex))
     }
 
-    /// `insertHeader` with the block's own root work unless `work` is given.
+    /// Test-built evidence of `work` securing exactly `block`.
+    static func evidence(
+        for block: Block,
+        work: VerifiedWorkContribution
+    ) throws -> VerifiedChildEvidence {
+        VerifiedChildEvidence(
+            grindID: work.id,
+            rootHash: .zero,
+            creditedAncestorWork: work.work,
+            childCID: try BlockHeader(node: block).rawCID,
+            terminalCarrierCID: work.id,
+            contribution: work
+        )
+    }
+
+    /// `insertRootHeader` on a root tree; `insertChildHeader` on a child
+    /// tree, with `evidence`, or test evidence of `work` for this block.
     static func insert(
         _ block: Block,
         into tree: inout ChainTree,
         fetcher: any Fetcher,
+        evidence: VerifiedChildEvidence? = nil,
         work: VerifiedWorkContribution? = nil
     ) async throws -> ChainTreeAdmission {
         let inputs = try await headerInputs(block, fetcher: fetcher)
-        let contribution = try XCTUnwrap(work ?? ChainTree.rootWork(of: block))
-        return tree.insertHeader(
-            block,
-            spec: inputs.spec,
-            childIndex: inputs.childIndex,
-            work: contribution
+        if tree.context?.isRoot == true {
+            return tree.insertRootHeader(
+                block, spec: inputs.spec, childIndex: inputs.childIndex
+            )
+        }
+        let childEvidence = try evidence ?? self.evidence(
+            for: block, work: try XCTUnwrap(work, "a child block needs work")
+        )
+        return tree.insertChildHeader(
+            block, spec: inputs.spec, childIndex: inputs.childIndex,
+            evidence: childEvidence
         )
     }
 
     static func connect(
         _ blockHash: String,
         on tree: inout ChainTree,
-        context: ChainRuntimeContext = testChainContext(),
         fetcher: any Fetcher,
-        parentFacts: (any ParentChainFacts)? = nil
+        parentFacts: (any ParentChainFacts)? = nil,
+        grind: String? = nil
     ) async throws -> ChainTreeAdmission {
-        let job = try XCTUnwrap(tree.connectJob(for: blockHash, context: context))
+        let job = try XCTUnwrap(tree.connectJob(for: blockHash, grind: grind))
         let verdict = await ChainTree.connect(
             job, fetcher: fetcher, parentFacts: parentFacts
         )
