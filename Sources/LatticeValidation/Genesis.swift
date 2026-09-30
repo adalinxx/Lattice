@@ -5,15 +5,15 @@ import LatticePrimitives
 
 public struct GenesisConfig: Sendable {
     public let spec: ChainSpec
+    /// The chain's real launch time (a child deploy: the current time). It
+    /// is the only lower bound on block 1's timestamp, which anchors the
+    /// difficulty schedule, so it has no default: an early genesis would let
+    /// block 1 anchor the schedule in the past and saturate every target.
     public let timestamp: Int64
 
     public init(spec: ChainSpec, timestamp: Int64) {
         self.spec = spec
         self.timestamp = timestamp
-    }
-
-    public static func standard(spec: ChainSpec) -> GenesisConfig {
-        GenesisConfig(spec: spec, timestamp: 0)
     }
 }
 

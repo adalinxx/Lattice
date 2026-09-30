@@ -162,10 +162,6 @@ final class ChainLocalAdmissionResolutionTests: XCTestCase {
             descendantCID: candidateCID,
             predecessorCID: parentCID
         ))
-        XCTAssertEqual(
-            result.parentCarrierLink?.carrierCID,
-            candidateCID
-        )
     }
 
     func testMissingPolicyModuleIsUnavailableEvidence() async throws {

@@ -40,7 +40,7 @@ private func makeRuntimeGenesis(
 final class GenesisCeremonyTests: XCTestCase {
 
     func testCreateDeterministicGenesis() async throws {
-        let config = GenesisConfig.standard(spec: ChainSpec.test(halfLife: 10))
+        let config = GenesisConfig(spec: ChainSpec.test(halfLife: 10), timestamp: 500)
 
         let result1 = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
         let result2 = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
@@ -106,7 +106,7 @@ final class GenesisCeremonyTests: XCTestCase {
     }
 
     func testGenesisChainStateIsUsable() async throws {
-        let config = GenesisConfig.standard(spec: ChainSpec.test(halfLife: 10))
+        let config = GenesisConfig(spec: ChainSpec.test(halfLife: 10), timestamp: 500)
         let result = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
 
         let height = await result.chainState.getHighestBlockHeight()
@@ -136,7 +136,7 @@ final class GenesisCeremonyTests: XCTestCase {
 final class BlockReceptionTests: XCTestCase {
 
     func testReceivedBlockDataIsStoredAndResolvable() async throws {
-        let config = GenesisConfig.standard(spec: ChainSpec.test(halfLife: 10))
+        let config = GenesisConfig(spec: ChainSpec.test(halfLife: 10), timestamp: 500)
 
         let storableFetcher = StorableFetcher()
 
@@ -165,7 +165,7 @@ final class BlockReceptionTests: XCTestCase {
     }
 
     func testSubmitBlockAfterStoringData() async throws {
-        let config = GenesisConfig.standard(spec: ChainSpec.test(halfLife: 10))
+        let config = GenesisConfig(spec: ChainSpec.test(halfLife: 10), timestamp: 500)
         let result = try await makeRuntimeGenesis(config: config, fetcher: fetcher)
 
         let block1 = try await buildAndStoreBlock(
@@ -191,7 +191,7 @@ final class GenesisToBlockE2ETests: XCTestCase {
 
     func testFullCycle() async throws {
         let spec = ChainSpec.test(halfLife: 10)
-        let genesisConfig = GenesisConfig.standard(spec: spec)
+        let genesisConfig = GenesisConfig(spec: spec, timestamp: 500)
         let genesis = try await makeRuntimeGenesis(config: genesisConfig, fetcher: fetcher)
 
         XCTAssertTrue(GenesisCeremony.verify(block: genesis.block, config: genesisConfig))
@@ -229,7 +229,7 @@ final class GenesisToBlockE2ETests: XCTestCase {
 
     func testTwoNodesSameGenesis() async throws {
         let spec = ChainSpec.test(halfLife: 10)
-        let genesisConfig = GenesisConfig.standard(spec: spec)
+        let genesisConfig = GenesisConfig(spec: spec, timestamp: 500)
 
         let nodeA = try await makeRuntimeGenesis(config: genesisConfig, fetcher: fetcher)
         let nodeB = try await makeRuntimeGenesis(config: genesisConfig, fetcher: fetcher)
@@ -259,7 +259,7 @@ final class GenesisToBlockE2ETests: XCTestCase {
 
     func testTwoNodesReachConsensusAfterFork() async throws {
         let spec = ChainSpec.test(halfLife: 10)
-        let genesisConfig = GenesisConfig.standard(spec: spec)
+        let genesisConfig = GenesisConfig(spec: spec, timestamp: 500)
         let nodeA = try await makeRuntimeGenesis(config: genesisConfig, fetcher: fetcher)
         let nodeB = try await makeRuntimeGenesis(config: genesisConfig, fetcher: fetcher)
 

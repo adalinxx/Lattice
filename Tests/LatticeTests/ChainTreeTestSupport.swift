@@ -11,7 +11,7 @@ import UInt256
 import cashew
 
 /// Drives a `ChainTree` through its value API the way a core would: the
-/// block's own spec and child index resolved first, then one synchronous
+/// block's own child index resolved first, then one synchronous
 /// `insertRootHeader`/`insertChildHeader`; `connectJob` → `connect` → `applyConnect` for execution.
 enum TreeDriver {
     static func headerInputs(
@@ -49,16 +49,26 @@ enum TreeDriver {
     ) async throws -> ChainTreeAdmission {
         let inputs = try await headerInputs(block, fetcher: fetcher)
         if tree.context?.isRoot == true {
-            return tree.insertRootHeader(
-                block, spec: inputs.spec, childIndex: inputs.childIndex
-            )
+            return tree.insertRootHeader(block, childIndex: inputs.childIndex)
         }
         let childEvidence = try evidence ?? self.evidence(
             for: block, work: try XCTUnwrap(work, "a child block needs work")
         )
         return tree.insertChildHeader(
-            block, spec: inputs.spec, childIndex: inputs.childIndex,
-            evidence: childEvidence
+            block, childIndex: inputs.childIndex, evidence: childEvidence
+        )
+    }
+
+    /// A tree seeded by `genesis`, holding its spec as bootstrap would.
+    static func tree(
+        genesis: Block,
+        context: ChainRuntimeContext?,
+        fetcher: any Fetcher
+    ) async throws -> ChainTree {
+        let spec = try await genesis.spec.resolve(fetcher: fetcher).node
+        guard let context else { return ChainTree.fromGenesis(block: genesis) }
+        return try ChainTree.fromGenesis(
+            block: genesis, context: context, spec: try XCTUnwrap(spec)
         )
     }
 

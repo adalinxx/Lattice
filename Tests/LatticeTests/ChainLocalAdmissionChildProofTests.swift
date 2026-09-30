@@ -31,7 +31,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             fetcher: fixture.fetcher,
             childPackage: fixture.package
         )
-        if case .rejected(let failure, _, _) = admitted {
+        if case .rejected(let failure, _) = admitted {
             return XCTFail("expected child admission, got \(failure)")
         }
         XCTAssertNotNil(admitted.materializedPostState)
@@ -243,7 +243,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
         )
         let parentLevel = AdmissionFixture.makeLevel(genesis: parentGenesis)
         let admission = try await parentLevel.admit(anchor, fetcher: fetcher)
-        if case .rejected(let failure, _, _) = admission {
+        if case .rejected(let failure, _) = admission {
             return XCTFail("parent anchor should validate: \(failure)")
         }
 
@@ -317,9 +317,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             diff = try XCTUnwrap(acceptance.stateDiff)
         case .duplicate:
             return XCTFail("second root must not be a duplicate")
-        case .carrier:
-            return XCTFail("second root must execute its genesis transition")
-        case .rejected(let failure, _, _):
+        case .rejected(let failure, _):
             return XCTFail("expected second child root admission, got \(failure)")
         }
         XCTAssertNotNil(result.materializedPostState)
@@ -381,14 +379,9 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
         let carrierHeader = try BlockHeader(node: carrier)
 
         let admission = try await parentLevel.admit(carrierHeader, fetcher: fetcher)
-        if case .rejected(let failure, _, _) = admission {
+        if case .rejected(let failure, _) = admission {
             return XCTFail("same-carrier parent candidate should admit: \(failure)")
         }
-
-        let carrierLink = try XCTUnwrap(admission.parentCarrierLink)
-        XCTAssertEqual(carrierLink.parentPath, [DEFAULT_ROOT_DIRECTORY])
-        XCTAssertEqual(carrierLink.carrierCID, carrierHeader.rawCID)
-        XCTAssertEqual(carrierLink.rootCID, carrierHeader.rawCID)
 
         let genesisLink = ParentGenesisLink(
             parentPath: [DEFAULT_ROOT_DIRECTORY],
@@ -505,7 +498,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             fetcher: fetcher,
             childPackage: package
         )
-        if case .rejected(let failure, _, _) = accepted {
+        if case .rejected(let failure, _) = accepted {
             return XCTFail("the complete path should verify: \(failure)")
         }
         let containsCandidate = await exactPath.chain.contains(blockHash: candidateHeader.rawCID)
@@ -527,19 +520,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             evidence.childCID,
             try BlockHeader(node: candidate).rawCID
         )
-        let carrier = await fixture.package.verifiedCarrierLink(
-            child: candidate,
-            chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
-        )
-        guard case .success(let carrierLink) = carrier else {
-            return XCTFail("verified proof must expose its relay link")
-        }
-        XCTAssertEqual(
-            carrierLink.parentPath,
-            [DEFAULT_ROOT_DIRECTORY, "Child"]
-        )
-        XCTAssertEqual(carrierLink.carrierCID, evidence.childCID)
-        XCTAssertEqual(carrierLink.rootCID, proof.rootCID)
+        XCTAssertEqual(evidence.grindID, proof.rootCID)
 
         let alternateRoot = await proof.verifySecuringWork(
             child: candidate,

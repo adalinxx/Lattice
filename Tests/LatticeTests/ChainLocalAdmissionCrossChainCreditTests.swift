@@ -113,7 +113,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
         )
     }
 
-    func testTargetHitInvalidTransitionStillIssuesCarrierLink() async throws {
+    func testTargetHitInvalidTransitionIsRejectedWithoutPredecessor() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await AdmissionFixture.makeGenesis(
             fetcher: fetcher,
@@ -153,14 +153,10 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
         let result = try await AdmissionFixture.makeLevel(genesis: genesis)
             .admit(header, fetcher: fetcher, stage: { batch in await recorder.stage(batch) })
 
-        guard case .rejected(let failure, let link, _) = result else {
+        guard case .rejected(let failure, _) = result else {
             return XCTFail("local invalidity must remain visible")
         }
         XCTAssertEqual(failure, .protocolInvalid)
-        let issued = try XCTUnwrap(link)
-        XCTAssertEqual(issued.parentPath, [DEFAULT_ROOT_DIRECTORY])
-        XCTAssertEqual(issued.carrierCID, header.rawCID)
-        XCTAssertEqual(issued.rootCID, header.rawCID)
         let stageCount = await recorder.count(for: header.rawCID)
         XCTAssertEqual(stageCount, 0)
 
@@ -172,62 +168,9 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
         let disconnected = try await AdmissionFixture.makeLevel(genesis: otherGenesis)
             .admit(header, fetcher: fetcher)
         XCTAssertEqual(disconnected.failure, .protocolInvalid)
-        XCTAssertEqual(disconnected.parentCarrierLink?.carrierCID, header.rawCID)
-        // The carrier relay survives a proven invalidity; a predecessor
-        // requirement does not — a verdict asks the node to acquire nothing
+        // A predecessor requirement does not survive a proven invalidity — a verdict asks the node to acquire nothing
         // (see testProvenInvalidBlockRequestsNoPredecessor).
         XCTAssertNil(disconnected.sameChainPredecessor)
-    }
-
-    func testTargetMissIntermediateStillRelaysDescendantWork() async throws {
-        let fetcher = StorableFetcher()
-        let nexusGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let middleGenesis = try await AdmissionFixture.makeGenesis(
-            fetcher: fetcher,
-            timestamp: 1_000,
-            nonce: 1
-        )
-        let forgedTarget = AdmissionFixture.easy / UInt256(16)
-        let forgedMiddle = try await buildAndStoreBlock(
-            previous: middleGenesis,
-            parentChainBlock: nexusGenesis,
-            timestamp: 2_000,
-            target: forgedTarget,
-            nextTarget: forgedTarget,
-            nonce: 2,
-            fetcher: fetcher
-        )
-        let root = try await buildAndStoreBlock(
-            previous: nexusGenesis,
-            children: ["Middle": forgedMiddle],
-            timestamp: 3_000,
-            target: AdmissionFixture.easy,
-            nonce: 3,
-            fetcher: fetcher
-        )
-
-        let proof = try await ChildBlockProof.generate(
-            rootHeader: try BlockHeader(node: root),
-            childDirectory: "Middle",
-            fetcher: fetcher
-        )
-        let middleLevel = ChainLevel(
-            chain: ChainState.fromGenesis(block: middleGenesis),
-            context: testChainContext(
-                path: [DEFAULT_ROOT_DIRECTORY, "Middle"]
-            )
-        )
-        let result = try await middleLevel.admit(
-            forgedMiddle,
-            fetcher: fetcher,
-            childPackage: ChildValidationPackage(proof: proof)
-        )
-
-        XCTAssertNil(result.failure)
-        XCTAssertEqual(
-            result.parentCarrierLink?.carrierCID,
-            try BlockHeader(node: forgedMiddle).rawCID
-        )
     }
 
     func testActiveChildRelaysAuthenticatedAlternateGenesisTargetMiss() async throws {
@@ -302,13 +245,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             )
         )
 
-        guard case .carrier(let link, _) = result else {
-            return XCTFail("authenticated alternate root must remain a carrier")
-        }
-        let issued = try XCTUnwrap(link)
-        XCTAssertEqual(issued.parentPath, [DEFAULT_ROOT_DIRECTORY, "Child"])
-        XCTAssertEqual(issued.carrierCID, alternateHeader.rawCID)
-        XCTAssertEqual(issued.rootCID, rootHeader.rawCID)
+        XCTAssertEqual(result.failure, .proofOfWorkInvalid)
         let stored = await activeLevel.chain.contains(blockHash: alternateHeader.rawCID)
         XCTAssertFalse(stored)
     }
@@ -350,14 +287,14 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             childPackage: package
         )
 
-        if case .rejected(let failure, _, _) = result {
+        if case .rejected(let failure, _) = result {
             return XCTFail("an ancestor target miss must not invalidate its child: \(failure)")
         }
         let containsCandidate = await level.chain.contains(blockHash: candidateHeader.rawCID)
         XCTAssertTrue(containsCandidate)
     }
 
-    func testCurrentChainTargetMissReturnsCarrierWithoutMutation() async throws {
+    func testCurrentChainTargetMissIsAProofOfWorkFailureWithoutMutation() async throws {
         let fetcher = StorableFetcher()
         let hardTarget = UInt256(1)
         let parentTemplate = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 500)
@@ -416,13 +353,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             stage: { record in await recorder.stage(record) }
         )
 
-        guard case .carrier = result else {
-            return XCTFail("a current-level target miss must remain a descendant carrier")
-        }
-        let link = try XCTUnwrap(result.parentCarrierLink)
-        XCTAssertEqual(link.parentPath, [DEFAULT_ROOT_DIRECTORY, "Child"])
-        XCTAssertEqual(link.carrierCID, candidateHeader.rawCID)
-        XCTAssertEqual(link.rootCID, proof.rootCID)
+        XCTAssertEqual(result.failure, .proofOfWorkInvalid)
         let stageCount = await recorder.count(for: candidateHeader.rawCID)
         let containsCarrier = await level.chain.contains(blockHash: candidateHeader.rawCID)
         XCTAssertEqual(stageCount, 0)
@@ -487,13 +418,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             childPackage: candidatePackage
         )
 
-        guard case .carrier = result else {
-            return XCTFail("a valid target miss remains a carrier")
-        }
-        XCTAssertEqual(
-            result.parentCarrierLink?.carrierCID,
-            candidateHeader.rawCID
-        )
+        XCTAssertEqual(result.failure, .proofOfWorkInvalid)
         XCTAssertNil(result.sameChainPredecessor)
     }
 
@@ -550,9 +475,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
         )
-        guard case .carrier = middleResult else {
-            return XCTFail("the target-miss intermediate must not require a runtime")
-        }
+        XCTAssertEqual(middleResult.failure, .proofOfWorkInvalid)
 
         let leafHop = try await ChildBlockProof.generate(
             rootHeader: try BlockHeader(node: middle),
@@ -572,7 +495,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             childPackage: ChildValidationPackage(proof: leafProof)
         )
 
-        if case .rejected(let failure, _, _) = admitted {
+        if case .rejected(let failure, _) = admitted {
             return XCTFail("grandchild must accept through target-miss parent: \(failure)")
         }
         let containsLeaf = await leafLevel.chain.contains(
@@ -663,11 +586,10 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             materializedVolumeStorer: fetcher,
             stage: { batch in await recorder.stage(batch) }
         )
-        guard case .rejected(let failure, let middleLink) = middleResult else {
+        guard case .rejected(let failure) = middleResult else {
             return XCTFail("the invalid intermediate must report local rejection")
         }
         XCTAssertEqual(failure, .protocolInvalid)
-        XCTAssertEqual(middleLink.carrierCID, middleHeader.rawCID)
         let stagedMiddle = await recorder.count(for: middleHeader.rawCID)
         XCTAssertEqual(stagedMiddle, 0)
 
@@ -849,10 +771,6 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
                     + String(describing: middleResult.failure)
             )
         }
-        XCTAssertEqual(
-            middleResult.parentCarrierLink?.carrierCID,
-            middleHeader.rawCID
-        )
 
         let leafHop = try await ChildBlockProof.generate(
             rootHeader: middleHeader,
@@ -916,13 +834,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             fetcher: fetcher
         )
 
-        guard case .carrier(let link, _) = result else {
-            return XCTFail("invalid same-chain structure must not erase real work")
-        }
-        XCTAssertEqual(
-            link?.carrierCID,
-            try BlockHeader(node: malformedCarrier).rawCID
-        )
+        XCTAssertEqual(result.failure, .proofOfWorkInvalid)
     }
 
     func testInvalidTerminalGenesisIsRejectedBeforeParentEvidenceRequest() async throws {

@@ -1136,7 +1136,7 @@ final class StateRootValidationTests: XCTestCase {
             stage: testAdmissionStage
         )
 
-        guard case .rejected(.protocolInvalid, _, _) = result else {
+        guard case .rejected(.protocolInvalid, _) = result else {
             return XCTFail("block with tampered postState must be rejected")
         }
         let tip = await level.chain.getHighestBlockHeight()
@@ -1195,7 +1195,7 @@ final class StateRootValidationTests: XCTestCase {
             stage: testAdmissionStage
         )
 
-        guard case .rejected(.protocolInvalid, _, _) = rejected else {
+        guard case .rejected(.protocolInvalid, _) = rejected else {
             return XCTFail("tampered block must be rejected")
         }
     }
@@ -1228,7 +1228,7 @@ final class StateRootValidationTests: XCTestCase {
             stage: testAdmissionStage
         )
 
-        guard case .rejected(.unavailableEvidence, _, _) = unavailable else {
+        guard case .rejected(.unavailableEvidence, _) = unavailable else {
             return XCTFail("a block whose parent data is unavailable must not be admitted")
         }
         let unavailableHeight = await level.chain.getHighestBlockHeight()
@@ -1290,10 +1290,10 @@ final class StateRootValidationTests: XCTestCase {
             stage: testAdmissionStage
         )
 
-        guard case .rejected(.protocolInvalid, _, _) = rejected else {
+        guard case .rejected(.protocolInvalid, _) = rejected else {
             return XCTFail("fully-resolvable invalid blocks must reject")
         }
-        guard case .rejected(.protocolInvalid, _, _) = rejectedAgain else {
+        guard case .rejected(.protocolInvalid, _) = rejectedAgain else {
             return XCTFail("reprocessing complete invalid data must not become accepted")
         }
         let rejectedHeight = await level.chain.getHighestBlockHeight()
@@ -1359,7 +1359,7 @@ final class StateRootValidationTests: XCTestCase {
             stage: testAdmissionStage
         )
 
-        guard case .rejected(.protocolInvalid, _, _) = result else {
+        guard case .rejected(.protocolInvalid, _) = result else {
             return XCTFail("tampered child block must be rejected")
         }
         let childTip = await childLevel.chain.getHighestBlockHeight()

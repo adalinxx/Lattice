@@ -472,7 +472,6 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
             )
             XCTAssertEqual(result.failure, .protocolInvalid, "\(mode)")
             XCTAssertNil(result.sameChainPredecessor, "\(mode)")
-            XCTAssertEqual(result.parentCarrierLink?.carrierCID, header.rawCID, "\(mode)")
         }
     }
 
@@ -731,7 +730,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         // must issue NO carrier link and NO parent-genesis link, because a child
         // consuming such a fact would bind to unvalidated — possibly invalid or
         // soon-reorged — parent state. The identical EAGER admission issues both
-        // (see testPreflightCommitPromotesCarrierLinkAfterPredecessorConnects),
+        // (see testPreflightCommitPromotesIssuanceAfterPredecessorConnects),
         // so this pins the suppression that gates issuance to the validated tier.
         let fetcher = StorableFetcher()
         let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
@@ -772,9 +771,9 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         XCTAssertNotNil(committed.commit)
         let stagedContexts = await recorder.recordedContexts()
         let stagedContext = try XCTUnwrap(stagedContexts.first)
-        XCTAssertNil(
-            stagedContext.issuedCarrierLink,
-            "weighed admission must not issue a carrier link"
+        XCTAssertFalse(
+            stagedContext.issuesHierarchyFacts,
+            "weighed admission must not issue hierarchy facts"
         )
         XCTAssertTrue(
             stagedContext.parentGenesisLinks.isEmpty,
