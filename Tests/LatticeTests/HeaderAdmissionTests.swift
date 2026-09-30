@@ -469,6 +469,32 @@ final class HeaderAdmissionTests: XCTestCase {
         XCTAssertFalse(tree.contains(blockHash: try cid(cheap)))
     }
 
+    /// Genesis carries its real launch time `T`, the only lower bound on
+    /// block 1's anchor timestamp: a block 1 at or before `T` is a
+    /// proof-of-work failure, one after it is weighed.
+    func testABlockOneAtOrBeforeTheGenesisLaunchTimeIsAProofOfWorkFailure() async throws {
+        let fetcher = StorableFetcher()
+        let launch: Int64 = 1_700_000_000_000
+        let genesis = try await GenesisCeremony.create(
+            config: GenesisConfig(spec: chainLocalSpec(), timestamp: launch), fetcher: fetcher
+        ).block
+        try await storeBuiltBlock(genesis, in: fetcher)
+        var tree = try await TreeDriver.tree(genesis: genesis, context: rootContext, fetcher: fetcher)
+        for timestamp in [0, launch - 1, launch] {
+            let early = try await buildAndStoreBlock(
+                previous: genesis, timestamp: timestamp, target: easy, nonce: 1, fetcher: fetcher
+            )
+            let refused = try await TreeDriver.insert(early, into: &tree, fetcher: fetcher)
+            XCTAssertEqual(refused.failure, .proofOfWorkInvalid, "timestamp \(timestamp)")
+            XCTAssertFalse(tree.contains(blockHash: try cid(early)))
+        }
+        let onTime = try await buildAndStoreBlock(
+            previous: genesis, timestamp: launch + 1, target: easy, nonce: 1, fetcher: fetcher
+        )
+        let weighed = try await TreeDriver.insert(onTime, into: &tree, fetcher: fetcher)
+        XCTAssertEqual(kinds(weighed.update?.batches), [["block", "work"]])
+    }
+
     /// Both batches of an excluded header land, or neither.
     func testAnExcludedHeaderIsAppliedAllOrNothing() async throws {
         let fetcher = StorableFetcher()
