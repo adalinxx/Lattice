@@ -230,7 +230,7 @@ extension ChainTree {
     /// (`ChildBlockProof.verifySecuringWork` for this chain's path). See
     /// `insertHeader`. The proof is verified by the caller, and its failures
     /// classify by `headerFailure`. Evidence whose
-    /// grind meets no target on the path yields no contribution: a
+    /// grind misses the child's own target yields no contribution: a
     /// proof-of-work failure here.
     public mutating func insertChildHeader(
         _ block: Block,

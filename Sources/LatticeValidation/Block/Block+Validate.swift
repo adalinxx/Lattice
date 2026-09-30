@@ -364,7 +364,9 @@ public extension Block {
         // it, proves no work the chain asked for. The timestamp is the
         // schedule's input — height 1 anchors it — so a timestamp at or
         // before the parent's fails the same way: an old anchor would make
-        // every descendant cheap.
+        // every descendant cheap. Block 1's anchor timestamp is bounded below
+        // only by `genesis.timestamp`, so a genesis MUST carry its real
+        // launch time.
         if parent.timestamp >= timestamp { return .offSchedule }
         if !validationContext.permits(timestamp: timestamp) {
             throw BlockValidationError.notYetValid

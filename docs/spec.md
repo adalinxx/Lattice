@@ -534,10 +534,13 @@ last intervals as state, so a stretch of unusual block times
 keeps steering difficulty long after it has passed, and a window perturbed at one
 end oscillates as it drains. This reads only the anchor and the present block, so
 it has nothing to drain: a disturbance stops mattering the moment it stops
-happening. It is also why the genesis timestamp cannot poison the schedule — a
-window reaching back to genesis reads the gap before block 1 as one colossal
-solve time, and on a chain stamping genesis at epoch 0 that gap is decades.
-Anchored at block 1, genesis is never read.
+happening. A window reaching back to genesis would also read the gap before block 1 as one
+colossal solve time. Anchored at block 1, the schedule never reads that gap —
+but block 1's own timestamp is the anchor, and the only lower bound on it is
+`genesis.timestamp` (it must exceed its parent's, §9.9). A genesis MUST
+therefore carry its chain's real launch time (a child deploy: the time of
+deployment): a genesis stamped at epoch 0 lets block 1 anchor the schedule
+decades in the past and saturate every later target.
 
 `spec.halfLife` is the chain's committed responsiveness, in blocks: one
 half-life of block time of drift is one doubling. It is the only difficulty
