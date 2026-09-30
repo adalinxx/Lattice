@@ -249,7 +249,7 @@ struct RunAttribution: Sendable {
     }
 }
 
-extension ChainState {
+extension ChainTree {
 #if DEBUG
     var runAttributionUpdateCount: UInt64 { runs.updateCount }
 #endif
@@ -264,11 +264,12 @@ extension ChainState {
     /// The served set is NOT persisted: the node must call this for every
     /// directory it hosts after every restart, and it runs synchronously on
     /// the actor — one whole-graph walk per directory.
-    public func serveRuns(for directory: String) {
+    public mutating func serveRuns(for directory: String) {
+        let forkChoice = self.forkChoice
         runs.serve(directory, in: graph, isRouted: { forkChoice.isRouted($0) })
     }
 
-    func connectForRunAttribution(rootedAt rootHash: String) {
+    mutating func connectForRunAttribution(rootedAt rootHash: String) {
         runs.connect(rootedAt: rootHash, in: graph)
     }
 

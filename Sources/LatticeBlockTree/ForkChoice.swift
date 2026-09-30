@@ -407,7 +407,7 @@ struct ForkChoice: Sendable {
     }
 }
 
-extension ChainState {
+extension ChainTree {
     // Forwarders onto `forkChoice`, kept so callers and tests read the actor
     // exactly as before.
 
@@ -436,21 +436,21 @@ extension ChainState {
     }
 
     /// Exact total proof-of-work from genesis to the current chain tip.
-    public func getTipCumulativeWork() -> WorkSum {
+    public mutating func getTipCumulativeWork() -> WorkSum {
         materializeLocalWorkCachesIfNeeded()
         return graph.cumulativeWork(of: canonicalTip) ?? .zero
     }
 
     /// Exact genesis-relative cumulative work at a specific block, or nil if the
     /// block is unknown.
-    public func getCumulativeWork(forHash hash: String) -> WorkSum? {
+    public mutating func getCumulativeWork(forHash hash: String) -> WorkSum? {
         guard graph.contains(hash) else { return nil }
         materializeLocalWorkCachesIfNeeded()
         return graph.cumulativeWork(of: hash)
     }
 
     /// The same-chain subtree measure of `hash`, deduplicated by grind identity.
-    public func subtreeWeight(forHash hash: String) -> WorkSum? {
+    public mutating func subtreeWeight(forHash hash: String) -> WorkSum? {
         guard graph.contains(hash) else { return nil }
         // Pure work, excluded subtrees included: validity never subtracts weight.
         materializeLocalWorkCachesIfNeeded()
@@ -473,7 +473,7 @@ extension ChainState {
     /// Rebuild exact local prefix and subtree measures after a graph or work-fact
     /// mutation without retaining an identity map at every block. Returns the
     /// graph's diagnostic table with every recomputed total written into it.
-    nonisolated static func recomputeWorkCaches(
+    static func recomputeWorkCaches(
         in graph: BlockGraph
     ) -> [String: BlockDiagnostics] {
         var result = graph.diagnosticsByHash
@@ -604,7 +604,7 @@ extension ChainState {
     /// base. There are no runs any more, so none of that survives — a block is a
     /// leaf inside its parent's range either way, and the range structure needs
     /// nothing above the insertion point told about it.
-    func routeBlock(for blockHash: String) -> Bool {
+    mutating func routeBlock(for blockHash: String) -> Bool {
         guard let block = graph[blockHash] else { return false }
         guard let parentHash = block.parentBlockHash else {
             guard block.blockHeight == 0 else { return false }
@@ -620,7 +620,7 @@ extension ChainState {
     /// Route one newly connected orphan component without touching unrelated
     /// history. Its blocks are toured once and spliced into the parent's range
     /// in one operation, so nothing above the graft point is updated.
-    func graftConnectedComponent(rootedAt rootHash: String) -> Bool {
+    mutating func graftConnectedComponent(rootedAt rootHash: String) -> Bool {
         var pending = [rootHash]
         var componentHashes = Set<String>()
         while let hash = pending.popLast() {
@@ -701,7 +701,7 @@ extension ChainState {
         )
     }
 
-    func applyLocalContribution(
+    mutating func applyLocalContribution(
         _ contribution: VerifiedWorkContribution,
         to blockHash: String,
         attributed: Bool
@@ -716,7 +716,7 @@ extension ChainState {
 
     /// Rebuild non-consensus diagnostic totals lazily. Fork choice always uses
     /// the identity-aware Euler work index (`weights`) instead.
-    func materializeLocalWorkCachesIfNeeded() {
+    mutating func materializeLocalWorkCachesIfNeeded() {
         guard localWorkCachesDirty else { return }
         graph.recomputeWorkCaches()
         localWorkCachesDirty = false
