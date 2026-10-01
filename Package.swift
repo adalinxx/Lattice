@@ -133,6 +133,17 @@ let package = Package(
         .executableTarget(
             name: "LatticeSim",
             dependencies: ["LatticeSimulation"]),
+        // Restore-replay benchmark (not a product): `swift run -c release
+        // LatticeReplayBench <blocks>`.
+        .executableTarget(
+            name: "LatticeReplayBench",
+            dependencies: [
+                "LatticePrimitives",
+                "LatticePoW",
+                "LatticeBlockTree",
+                .product(name: "cashew", package: "cashew"),
+                .product(name: "UInt256", package: "UInt256"),
+            ]),
         .testTarget(
             name: "LatticeTests",
             dependencies: [
@@ -145,6 +156,7 @@ let package = Package(
                 "LatticeImport",
                 "LatticeSimulation",
                 "DeterminismGoldens",
+                .product(name: "CID", package: "swift-cid"),
                 .product(name: "WasmParser", package: "WasmKit"),
                 .product(name: "WAT", package: "WasmKit"),
             ],
