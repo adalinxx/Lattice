@@ -405,6 +405,18 @@ final class MultiRootGenesisTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? ChainStateRestoreError, .unpinnedRootGenesis)
         }
+        // The pin sits at the reducer: replay onto a tree on the root chain
+        // refuses a foreign genesis too, empty or restored.
+        var empty = ChainTree.empty(context: pinned)
+        XCTAssertThrowsError(try empty.replay(preFlagDay[0])) {
+            XCTAssertEqual($0 as? ChainStateRestoreError, .unpinnedRootGenesis)
+        }
+        XCTAssertFalse(empty.contains(blockHash: try cid(old)))
+        var restored = try ChainTree.restore(replaying: [try testAdmissionBatch(for: pinnedGenesis)], context: pinned)
+        XCTAssertThrowsError(try restored.replay(preFlagDay[0])) {
+            XCTAssertEqual($0 as? ChainStateRestoreError, .unpinnedRootGenesis)
+        }
+
         let level = try await ChainLevel.restore(
             replaying: [try testAdmissionBatch(for: pinnedGenesis)], context: pinned
         )

@@ -219,6 +219,10 @@ public actor ChainState {
         tree.isExcludedRoot(blockHash)
     }
 
+    package func holdSpec(_ spec: ChainSpec, for specCID: String) {
+        _ = tree.holdSpec(spec, for: specCID)
+    }
+
     public func hasExecutedAncestry(blockHash: String) -> Bool {
         tree.hasExecutedAncestry(blockHash: blockHash)
     }

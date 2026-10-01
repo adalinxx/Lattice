@@ -186,6 +186,9 @@ struct PreparedImport: Sendable {
     /// (evidence, exclusion) and for the bootstrap genesis, which commits
     /// nothing by convention; never mutated.
     var childCommitments: [String: String]? = nil
+    /// A weighed genesis's spec, bound by CID: held once its batch applies,
+    /// as `insertGenesis` holds it. Never mutated.
+    var genesisSpec: ChainSpec? = nil
 
     var facts: BlockImportBatch {
         BlockImport.admissionFacts(
@@ -660,8 +663,8 @@ enum BlockImport {
         context: ChainRuntimeContext,
         predecessor: SameChainPredecessorRequirement?
     ) async -> Preparation {
-        guard !context.isRoot, block.height == 0, block.nextTarget > .zero,
-              block.parentState.rawCID != LatticeState.emptyHeader.rawCID else {
+        guard !context.isRoot,
+              genesisAdmissible(block, blockHash: blockHash, context: context) else {
             return .result(rejection(.protocolInvalid))
         }
         guard let spec = try? await block.spec.resolve(fetcher: fetcher).node else {
@@ -678,8 +681,28 @@ enum BlockImport {
             chainPath: context.path,
             sameChainPredecessor: predecessor,
             kind: .block(StateDiff.empty, nil, validated: false),
-            defersBodyStore: true
+            defersBodyStore: true,
+            genesisSpec: spec
         ))
+    }
+
+    /// The structural admission rules every genesis path shares
+    /// (`ChainTree.insertGenesis`, the actor path's `weighedGenesis`): a
+    /// parentless height-0 block with a well-formed recipient and a positive
+    /// `nextTarget`; on the root chain only the configured genesis; on a
+    /// child chain a real parent state (§5.1 rule 4). A met target — the
+    /// work each path checks — is positive too.
+    static func genesisAdmissible(
+        _ block: Block,
+        blockHash: String,
+        context: ChainRuntimeContext
+    ) -> Bool {
+        block.parent == nil
+            && block.height == 0
+            && block.nextTarget > .zero
+            && block.hasWellFormedRewardRecipient
+            && context.admitsGenesis(blockHash)
+            && (context.isRoot || block.parentState.rawCID != LatticeState.emptyHeader.rawCID)
     }
 
     /// Execute a previously-weighed block and produce a validity verdict. A
@@ -1465,6 +1488,9 @@ public extension ChainLevel {
             throw error
         }
         let submission = try await chain.applyReservedStaged(prepared.facts)
+        if let spec = prepared.genesisSpec {
+            await chain.holdSpec(spec, for: prepared.block.spec.rawCID)
+        }
         let requirement = await chain.sameChainPredecessorRequirement(
             for: prepared.resolvedHeader.rawCID
         )
