@@ -88,7 +88,9 @@ final class ConsensusGraphRecoveryTests: XCTestCase {
         let restoredTip = await restored.canonicalTip
 
         let restoredRevision = await restored.currentRevision()
-        XCTAssertEqual(restoredRevision, revision)
+        // Replay counts the genesis insert as a mutation; the live chain here
+        // was seeded by the test-only `fromGenesis` at revision 0.
+        XCTAssertEqual(restoredRevision, revision + 1)
         for hash in expectedHashes {
             let contains = await restored.contains(blockHash: hash)
             XCTAssertTrue(contains)
