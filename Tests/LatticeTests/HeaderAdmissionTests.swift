@@ -202,6 +202,48 @@ final class HeaderAdmissionTests: XCTestCase {
         XCTAssertEqual(tree.canonicalTip, try cid(block))
     }
 
+    /// The schedule is checked before the clock: a future-dated header off
+    /// the schedule is a proof-of-work failure (blame), never held, so a
+    /// zero-cost header cannot make a node hold it. A future-dated header on
+    /// the schedule is still held.
+    func testAFutureTimestampOffTheScheduleIsAProofOfWorkFailureNotAHold() async throws {
+        let fetcher = StorableFetcher()
+        let early = ValidationContext(nowMilliseconds: 1_999)
+
+        let hardGenesis = try await buildAndStoreGenesis(
+            spec: chainLocalSpec(), timestamp: 1_000, target: easy / UInt256(2), nonce: 9, fetcher: fetcher
+        )
+        let maxTarget = try await buildAndStoreBlock(
+            previous: hardGenesis, timestamp: 2_000, target: .max, nonce: 1, fetcher: fetcher
+        )
+        XCTAssertGreaterThan(maxTarget.target, hardGenesis.nextTarget)
+        var hard = try await TreeDriver.tree(genesis: hardGenesis, context: rootContext, fetcher: fetcher)
+        let maxInputs = try await TreeDriver.headerInputs(maxTarget, fetcher: fetcher)
+        let tooEasy = hard.insertRootHeader(
+            maxTarget, childIndex: maxInputs.childIndex, validationContext: early
+        )
+        XCTAssertEqual(tooEasy.failure, .proofOfWorkInvalid)
+        XCTAssertFalse(hard.contains(blockHash: try cid(maxTarget)))
+
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let valid = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
+        let offSchedule = try await variant(of: valid, nextTarget: valid.nextTarget - UInt256(1), fetcher: fetcher)
+        var tree = try await TreeDriver.tree(genesis: genesis, context: rootContext, fetcher: fetcher)
+        let offInputs = try await TreeDriver.headerInputs(offSchedule, fetcher: fetcher)
+        let offScheduleInsert = tree.insertRootHeader(
+            offSchedule, childIndex: offInputs.childIndex, validationContext: early
+        )
+        XCTAssertEqual(offScheduleInsert.failure, .proofOfWorkInvalid)
+        XCTAssertFalse(tree.contains(blockHash: try cid(offSchedule)))
+
+        let validInputs = try await TreeDriver.headerInputs(valid, fetcher: fetcher)
+        let held = tree.insertRootHeader(
+            valid, childIndex: validInputs.childIndex, validationContext: early
+        )
+        XCTAssertEqual(held.failure, .notYetValid)
+        XCTAssertFalse(tree.contains(blockHash: try cid(valid)), "no fact for a held header")
+    }
+
     // MARK: 5. A structural fault is dropped
 
     func testAWrongHeightProducesNoFactAndRestoreMatches() async throws {
