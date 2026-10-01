@@ -120,11 +120,10 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
         XCTAssertEqual(recordedAfter, recordedMap, "the recorded map is what the validate tier carried")
     }
 
-    /// A root exclusion may stand only on another EXECUTED root (§9.9). On the
-    /// only deployed shape — one root — the validate tier's verdict on a
-    /// parentless block is therefore parked as a non-verdict at the PRODUCER:
-    /// nothing is staged, nothing is excluded, and recovery has no fact whose
-    /// replay could depend on order.
+    /// An executed root is never excluded (§9.9: execution is never revoked).
+    /// The validate tier's invalid verdict on the executed root is refused at
+    /// the PRODUCER as a local fault: nothing is staged, nothing is excluded,
+    /// and recovery has no fact whose replay could depend on order.
     func testValidateTierParksARootExclusionWithNoOtherExecutedRoot() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
@@ -142,7 +141,7 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
         guard case .rejected(let failure, _) = result else {
             return XCTFail("a root exclusion with nothing to stand on must be parked, got \(result)")
         }
-        XCTAssertEqual(failure, .notYetValid, "a non-verdict, retried — never a written fact")
+        XCTAssertEqual(failure, .localVerificationFailure, "a local fault — never a written fact")
         XCTAssertEqual(staged, 0, "nothing is made durable")
         let roots = await level.chain.excludedRootsForTesting
         XCTAssertTrue(roots.isEmpty)

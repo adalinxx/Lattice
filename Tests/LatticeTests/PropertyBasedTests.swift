@@ -738,10 +738,10 @@ final class BlockStructurePropertyTests: XCTestCase {
         XCTAssertEqual(state1.rawCID, state2.rawCID)
     }
 
-    // Property: LatticeState has exactly 5 properties
+    // Property: LatticeState has exactly 4 properties
     func testLatticeStatePropertyCount() {
         let state = LatticeState.emptyState()
-        XCTAssertEqual(state.properties().count, 5)
+        XCTAssertEqual(state.properties().count, 4)
     }
 
     // Property: All 4 sub-state property names are distinct
