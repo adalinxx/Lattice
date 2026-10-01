@@ -1,5 +1,6 @@
 import XCTest
 import UInt256
+import CID
 @testable import Lattice
 @testable import LatticePrimitives
 @testable import LatticePoW
@@ -41,6 +42,56 @@ final class CIDIdentityTests: XCTestCase {
 
         XCTAssertEqual(Set(work.entries.keys), [canonicalCID])
         XCTAssertEqual(work.total, WorkSum(UInt256(11)))
+    }
+
+    /// The proven-canonical memo answers byte-for-byte as the parser does,
+    /// cold or warm — including for a spelling that only Unicode canonical
+    /// equivalence (KELVIN SIGN for "K") makes equal to a remembered CID.
+    func testRememberedCanonicalFormsAnswerExactlyAsTheParserDoes() throws {
+        let v0 = "QmUo6yRfuCzKY9tJDCLEH8ytTh3Y9jbCG5RbbYgnt1JFWQ"
+        let kelvin = v0.replacingOccurrences(of: "K", with: "\u{212A}")
+        XCTAssertEqual(kelvin, v0, "Swift String equality treats the two as one")
+        let inputs = [v0, kelvin, alternateCID, testCID("memo")]
+        func answers() -> [[UInt8]?] {
+            inputs.map { CIDIdentity.canonicalString($0).map { Array($0.utf8) } }
+        }
+        CIDIdentity.forgetProvenCanonical()
+        let cold = answers()
+        let warm = answers()
+        XCTAssertEqual(cold, warm)
+        XCTAssertEqual(cold[0], Array(v0.utf8), "the v0 CID must be canonical and so remembered")
+    }
+
+    /// The local base32 encoder is the library's v1 text form, byte for byte,
+    /// across every tail length (bytes mod 5): CIDs spelled in base16 with
+    /// codec and hash shapes whose binary lengths are 24, 25, 36, 37, 68, 69.
+    func testBase32MultibaseMatchesTheLibraryEncoder() throws {
+        // (codec varint, hash code, digest length): raw / dag-json codecs over
+        // sha1, sha2-256 and sha2-512.
+        let shapes: [([UInt8], UInt8, Int)] = [
+            ([0x55], 0x11, 20), ([0xa9, 0x02], 0x11, 20),
+            ([0x55], 0x12, 32), ([0xa9, 0x02], 0x12, 32),
+            ([0x55], 0x13, 64), ([0xa9, 0x02], 0x13, 64),
+        ]
+        for (codec, hash, length) in shapes {
+            let digest = (0..<length).map { _ in UInt8.random(in: 0...255) }
+            let bytes: [UInt8] = [0x01] + codec + [hash, UInt8(length)] + digest
+            let hex = "f" + bytes.map { String(format: "%02x", $0) }.joined()
+            let parsed = try CID(hex)
+            // The library's own v1 text form: a CID rebuilt from its parts.
+            let cid = try CID(version: parsed.version, codec: parsed.codec, multihash: parsed.multihash)
+            XCTAssertEqual(cid.rawBuffer, bytes)
+            XCTAssertEqual(
+                Array(CIDIdentity.base32Multibase(cid.rawBuffer).utf8),
+                Array(cid.toBaseEncodedString.utf8),
+                "\(bytes.count) bytes"
+            )
+            XCTAssertEqual(CIDIdentity.canonicalString(hex), cid.toBaseEncodedString)
+        }
+        for seed in 0..<64 {
+            let cid = try CID(testCID("base32-\(seed)"))
+            XCTAssertEqual(CIDIdentity.base32Multibase(cid.rawBuffer), cid.toBaseEncodedString)
+        }
     }
 
 }

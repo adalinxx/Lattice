@@ -684,17 +684,16 @@ public struct ChainTree: Sendable {
         // facts on every comparison, making a cold-start restore
         // O(N log N x decode) per round — hours of CPU on a long chain. A
         // sorted array's deferred subsequence keeps its relative order, so
-        // later rounds never need re-sorting either.
-        var pending = batches.map { batch in
-            (batch: batch, key: TrustedImportBatch(batch))
-        }
+        // later rounds never need re-sorting either. The authenticated key is
+        // handed to the reducer too, so no batch is authenticated twice.
+        var pending = batches.map(ReplayEntry.init)
         pending.sort { replayPrecedes($0, $1) }
         while !pending.isEmpty {
-            var deferred: [(batch: BlockImportBatch, key: TrustedImportBatch?)] = []
+            var deferred: [ReplayEntry] = []
             var completed = false
             for entry in pending {
                 do {
-                    _ = try chain.replay(entry.batch)
+                    _ = try chain.applyStaged(entry.batch, authenticated: entry.key)
                     completed = true
                 } catch ChainStateRestoreError.missingBlockFact {
                     deferred.append(entry)
@@ -712,10 +711,7 @@ public struct ChainTree: Sendable {
     /// validations by their target. A batch with no key must still compare
     /// consistently — a key that compared "equal" to everything would let the
     /// sort leave it wherever enumeration put it.
-    private static func replayPrecedes(
-        _ left: (batch: BlockImportBatch, key: TrustedImportBatch?),
-        _ right: (batch: BlockImportBatch, key: TrustedImportBatch?)
-    ) -> Bool {
+    private static func replayPrecedes(_ left: ReplayEntry, _ right: ReplayEntry) -> Bool {
         switch (left.key, right.key) {
         case let (leftKey?, rightKey?):
             return replayPrecedes(leftKey, rightKey)
@@ -724,13 +720,26 @@ public struct ChainTree: Sendable {
         case (nil, _?):
             return false
         case (nil, nil):
-            // Validations before exclusions: a root exclusion waits on the other
-            // root's validation, so this order settles it in the same round.
-            let l = exclusionTarget(of: left.batch).map { ("x", $0) }
-                ?? validationTarget(of: left.batch).map { ("v", $0) } ?? ("z", "")
-            let r = exclusionTarget(of: right.batch).map { ("x", $0) }
-                ?? validationTarget(of: right.batch).map { ("v", $0) } ?? ("z", "")
+            let l = left.factTarget, r = right.factTarget
             return l.0 != r.0 ? l.0 < r.0 : l.1 < r.1
+        }
+    }
+
+    /// A batch with its sort keys, derived once: comparisons must not
+    /// re-canonicalize CIDs, which dominates an O(N log N) sort.
+    private struct ReplayEntry {
+        let batch: BlockImportBatch
+        let key: TrustedImportBatch?
+        /// The order of a batch with no key. Validations before exclusions: a
+        /// root exclusion waits on the other root's validation, so this order
+        /// settles it in the same round.
+        let factTarget: (String, String)
+
+        init(_ batch: BlockImportBatch) {
+            self.batch = batch
+            key = TrustedImportBatch(batch)
+            factTarget = ChainTree.exclusionTarget(of: batch).map { ("x", $0) }
+                ?? ChainTree.validationTarget(of: batch).map { ("v", $0) } ?? ("z", "")
         }
     }
 
@@ -1140,6 +1149,15 @@ public struct ChainTree: Sendable {
     /// admission and recovery share this reducer so staging is the only
     /// linearization point.
     mutating func applyStaged(_ batch: BlockImportBatch) throws -> SubmissionResult? {
+        try applyStaged(batch, authenticated: TrustedImportBatch(batch))
+    }
+
+    /// `authenticated` is `TrustedImportBatch(batch)`, which replay derives
+    /// once for sorting and passes in rather than re-deriving.
+    private mutating func applyStaged(
+        _ batch: BlockImportBatch,
+        authenticated: @autoclosure () -> TrustedImportBatch?
+    ) throws -> SubmissionResult? {
         if let excluded = Self.exclusionTarget(of: batch) {
             return try applyExclusion(blockHash: excluded)
         }
@@ -1161,7 +1179,7 @@ public struct ChainTree: Sendable {
             markValidated(blockHash: validated)
             return nil
         }
-        guard let trusted = TrustedImportBatch(batch) else {
+        guard let trusted = authenticated() else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
         // Applied only once the batch has landed: `defer` would also run on the

@@ -1,4 +1,5 @@
 import CID
+import Synchronization
 
 /// Normalizes textual CID input before it becomes a consensus identity key.
 public enum CIDIdentity {
@@ -8,7 +9,39 @@ public enum CIDIdentity {
     // parse work on untrusted input to what the wire can represent.
     static let maximumTextBytes = Int(UInt16.max)
 
+    /// Strings already proven canonical. The check is a pure function of the
+    /// string but costs a full multibase parse, and the same
+    /// identity recurs across a block's facts and its successors' (hash,
+    /// parent, state, spec), so each is proven once. A canonical string is its
+    /// own canonical form, so membership is the whole answer. Bounded: the set
+    /// is dropped when full, so distinct inputs cost at most one set of memory.
+    ///
+    /// ASCII only: `String` equality is Unicode canonical equivalence, under
+    /// which a non-ASCII spelling (U+212A KELVIN SIGN for "K") would match a
+    /// remembered ASCII CID that the parser itself refuses. Between ASCII
+    /// strings equality is byte equality.
+    private static let provenCanonical = Mutex<Set<String>>([])
+    static let provenCanonicalCapacity = 1 << 16
+
     public static func canonicalString(_ value: String) -> String? {
+        let ascii = value.utf8.allSatisfy { $0 < 0x80 }
+        if ascii, provenCanonical.withLock({ $0.contains(value) }) { return value }
+        guard let canonical = parseCanonicalString(value) else { return nil }
+        if ascii, canonical == value {
+            provenCanonical.withLock {
+                if $0.count >= provenCanonicalCapacity { $0.removeAll(keepingCapacity: true) }
+                $0.insert(value)
+            }
+        }
+        return canonical
+    }
+
+    /// Start from an empty set, so a measurement sees cold-cache cost.
+    package static func forgetProvenCanonical() {
+        provenCanonical.withLock { $0.removeAll() }
+    }
+
+    private static func parseCanonicalString(_ value: String) -> String? {
         guard !value.isEmpty,
               value.utf8.count <= maximumTextBytes,
               let parsed = try? CID(value),
@@ -18,7 +51,33 @@ public enum CIDIdentity {
                 multihash: parsed.multihash
               )
         else { return nil }
-        return canonical.toBaseEncodedString
+        guard canonical.version == .v1 else { return canonical.toBaseEncodedString }
+        return base32Multibase(canonical.rawBuffer)
+    }
+
+    private static let base32Alphabet = Array("abcdefghijklmnopqrstuvwxyz234567".utf8)
+
+    /// Multibase base32 — "b" then RFC 4648 lowercase, unpadded: the text
+    /// `CID.toBaseEncodedString` gives every v1 CID. Encoded here because the
+    /// library's generic encoder was most of the identity check's cost; a test
+    /// pins this to the library's output.
+    static func base32Multibase(_ bytes: [UInt8]) -> String {
+        var text = [UInt8(ascii: "b")]
+        text.reserveCapacity(1 + (bytes.count * 8 + 4) / 5)
+        var buffer: UInt32 = 0
+        var bits = 0
+        for byte in bytes {
+            buffer = buffer << 8 | UInt32(byte)
+            bits += 8
+            while bits >= 5 {
+                bits -= 5
+                text.append(base32Alphabet[Int(buffer >> UInt32(bits) & 31)])
+            }
+        }
+        if bits > 0 {
+            text.append(base32Alphabet[Int(buffer << UInt32(5 - bits) & 31)])
+        }
+        return String(decoding: text, as: UTF8.self)
     }
 
     public static func isCanonical(_ value: String) -> Bool {
