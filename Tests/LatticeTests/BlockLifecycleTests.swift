@@ -93,12 +93,14 @@ final class BlockMintingTests: XCTestCase {
 
     func testGenesisValidationRequiresAnAbsoluteNexusPath() async throws {
         let fetcher = makeFetcher()
-        let genesis = try await buildAndStoreGenesis(
+        // A child genesis commits a real parent state (§5.1 rule 4).
+        let genesis = try await storeBuiltBlock(try await BlockBuilder.buildChildGenesis(
             spec: noPremine("Payments"),
+            parentState: LatticeStateHeader(rawCID: testCID("payments-parent-state")),
             timestamp: now() - 10_000,
             target: UInt256.max,
             fetcher: fetcher
-        )
+        ), in: fetcher)
 
         let rootRelative = try await genesis.validateGenesis(
             fetcher: fetcher,

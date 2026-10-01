@@ -608,8 +608,13 @@ final class CrossChainFlowTests: XCTestCase {
         let depositAmount: UInt64 = 200
         let swapNonce: UInt128 = 999
 
+        // A child genesis commits a real parent state (§5.1 rule 4).
         let nexusGenesis = try await buildAndStoreGenesis(
-            spec: nSpec, timestamp: t - 30_000, target: .max, fetcher: fetcher
+            spec: nSpec,
+            transactions: [AdmissionFixture.unsignedStateChangingGenesisTransaction(
+                key: "swap-parent-state", chainPath: [DEFAULT_ROOT_DIRECTORY]
+            )],
+            timestamp: t - 30_000, target: .max, fetcher: fetcher
         )
         let childGenesis = try await BlockBuilder.buildChildGenesis(
             spec: cSpec,
@@ -768,8 +773,13 @@ final class CrossChainFlowTests: XCTestCase {
         let depositAmount: UInt64 = 200
         let swapNonce: UInt128 = 888
 
+        // A child genesis commits a real parent state (§5.1 rule 4).
         let nexusGenesis = try await buildAndStoreGenesis(
-            spec: nSpec, timestamp: t - 30_000, target: .max, fetcher: fetcher
+            spec: nSpec,
+            transactions: [AdmissionFixture.unsignedStateChangingGenesisTransaction(
+                key: "swap-parent-state", chainPath: [DEFAULT_ROOT_DIRECTORY]
+            )],
+            timestamp: t - 30_000, target: .max, fetcher: fetcher
         )
         let childGenesis = try await BlockBuilder.buildChildGenesis(
             spec: cSpec,
