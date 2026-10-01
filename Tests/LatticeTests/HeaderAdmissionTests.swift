@@ -160,7 +160,7 @@ final class HeaderAdmissionTests: XCTestCase {
         // The only root, weighed but not executed: its exclusion is refused.
         var tree = ChainTree.empty(context: childContext)
         let genesisEvidence = try await carriedGenesisEvidence(genesis, fetcher: fetcher)
-        XCTAssertNotNil(tree.insertGenesis(genesis, spec: spec, evidence: genesisEvidence).update)
+        XCTAssertNotNil(tree.insertGenesis(genesis, spec: spec, childIndex: testChildIndex(genesis), evidence: genesisEvidence).update)
         let refused = tree.applyConnect(ConnectVerdict(blockHash: genesisCID, outcome: .invalid(isGenesis: true)))
         XCTAssertEqual(refused.failure, .notYetValid, "a chain's only root cannot be excluded")
         XCTAssertFalse(tree.isExcludedRoot(genesisCID))
@@ -175,7 +175,7 @@ final class HeaderAdmissionTests: XCTestCase {
         XCTAssertFalse(tree.contains(blockHash: rivalCID))
 
         // With another executed root standing, the exclusion is recorded.
-        XCTAssertNotNil(tree.insertGenesis(rival, spec: spec, evidence: rivalEvidence).update)
+        XCTAssertNotNil(tree.insertGenesis(rival, spec: spec, childIndex: testChildIndex(rival), evidence: rivalEvidence).update)
         let rivalExecuted = try await TreeDriver.connect(
             rivalCID, on: &tree, fetcher: fetcher, parentFacts: try await testParentFacts(fetcher: fetcher)
         )
@@ -200,8 +200,8 @@ final class HeaderAdmissionTests: XCTestCase {
         let rival = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 5)
         let pinned = testChainContext(genesis: genesis)
         var tree = ChainTree.empty(context: pinned)
-        XCTAssertEqual(tree.insertGenesis(rival, spec: chainLocalSpec()).failure, .protocolInvalid)
-        XCTAssertNotNil(tree.insertGenesis(genesis, spec: chainLocalSpec()).update)
+        XCTAssertEqual(tree.insertGenesis(rival, spec: chainLocalSpec(), childIndex: testChildIndex(rival)).failure, .protocolInvalid)
+        XCTAssertNotNil(tree.insertGenesis(genesis, spec: chainLocalSpec(), childIndex: testChildIndex(genesis)).update)
         XCTAssertThrowsError(try ChainTree.restore(
             replaying: [try testAdmissionBatch(for: genesis), try testAdmissionBatch(for: rival)],
             context: pinned

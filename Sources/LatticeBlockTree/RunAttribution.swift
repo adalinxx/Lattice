@@ -56,6 +56,10 @@ struct RunAttribution: Sendable {
     /// Read by the child (`applyParentRun`); never a fork-choice input on
     /// THIS chain.
     private(set) var runWork: [String: [String: WorkSum]] = [:]
+    /// The inverse of the commitments behind `runWork`: directory → child
+    /// block → the connected blocks committing it, settled with them. The
+    /// key set of each inner map's values is exactly `runWork[directory]`'s.
+    private(set) var committers: [String: [String: Set<String>]] = [:]
     /// Block → directory → the nearest block at or above that block, by
     /// parent pointer, that commits into that directory — the block itself
     /// where it commits. Held only for the directories this node SERVES runs
@@ -127,6 +131,11 @@ struct RunAttribution: Sendable {
         var nearest = nearestCarrier[hash] ?? [:]
         var credited: [String: String] = [:]
         for directory in directories {
+            if let child = meta.childCommitments[directory] {
+                committers[directory, default: [:]][
+                    CIDIdentity.canonicalString(child) ?? child, default: []
+                ].insert(hash)
+            }
             let committer = meta.childCommitments[directory] != nil ? hash : inherited[directory]
             guard let committer else { continue }
             nearest[directory] = committer
@@ -203,21 +212,34 @@ extension ChainTree {
     ///
     /// `parent` must serve `directory` (`serveRuns(for:)`); a host applies
     /// parent levels first, so a run attributed at `P` by ITS parent is in
-    /// `runWork(P, d)` and reaches the next level down. `committers` limits
-    /// the derivation to those parent blocks (the ones a step touched); nil
-    /// derives every run. Returns the blocks credited, in order, and the
-    /// canonical change, if the projection moved.
+    /// `runWork(P, d)` and reaches the next level down.
+    ///
+    /// A step names what it changed, and the derivation covers exactly the
+    /// runs that change can move: the run of every `parentBlocks` entry (a
+    /// parent block weighed, connected or strengthened — every block of a
+    /// grafted component included), and every committer of every `held`
+    /// block (a block of THIS chain that became held, whichever carrier
+    /// brought it). With `parentBlocks` nil every run is derived, as restore
+    /// does. Returns the blocks credited, in order, and the canonical change,
+    /// if the projection moved.
     @discardableResult
     public mutating func applyParentRun(
         from parent: ChainTree,
         directory: String,
-        committers: Set<String>? = nil
+        parentBlocks: Set<String>? = nil,
+        held: Set<String> = []
     ) -> (raised: [String], commit: ChainCommit?) {
         guard let parentRuns = parent.runs.runWork[directory] else { return ([], nil) }
+        var scope = Set(parentRuns.keys)
+        if let parentBlocks {
+            let carriers = parentBlocks.compactMap { parent.runs.nearestCarrier[$0]?[directory] }
+            let committersOfHeld = held.flatMap { parent.runs.committers[directory]?[$0] ?? [] }
+            scope = Set(carriers).union(committersOfHeld)
+        }
         let deferred = deferProjectionForReplay
         deferProjectionForReplay = true
         var raised: [String] = []
-        for committer in (committers.map(Array.init) ?? Array(parentRuns.keys)).sorted() {
+        for committer in scope.sorted() {
             guard let run = parentRuns[committer],
                   let childBlock = parent.graph[committer]?.childCommitments[directory],
                   let hash = CIDIdentity.canonicalString(childBlock),
@@ -231,7 +253,14 @@ extension ChainTree {
             let submission = addWorkContribution(
                 VerifiedWorkContribution(id: id, work: value), to: hash, attributed: true
             )
-            if submission.addedContribution { raised.append(hash) }
+            // A strict increase at a held block, at the one location its ID
+            // can have, is refused only when revisions are exhausted: never
+            // drop a derivation silently.
+            precondition(
+                submission.addedContribution,
+                "attributed run \(id) at \(hash) refused: mutation revisions exhausted"
+            )
+            raised.append(hash)
         }
         deferProjectionForReplay = deferred
         guard !deferred, !raised.isEmpty else { return (raised, nil) }

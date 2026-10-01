@@ -399,7 +399,7 @@ final class ChainTreeArchitectureTests: XCTestCase {
         let spec = chainLocalSpec()
         var tree = ChainTree.empty(context: childContext)
         let evidence = try await carriedGenesisEvidence(invalid, fetcher: fetcher)
-        XCTAssertNotNil(tree.insertGenesis(invalid, spec: spec, evidence: evidence).update)
+        XCTAssertNotNil(tree.insertGenesis(invalid, spec: spec, childIndex: testChildIndex(invalid), evidence: evidence).update)
         let result = try await TreeDriver.connect(try cid(invalid), on: &tree, fetcher: fetcher)
         XCTAssertEqual(result.failure, .notYetValid)
         XCTAssertFalse(tree.isExcludedRoot(try cid(invalid)))

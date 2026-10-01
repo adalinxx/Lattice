@@ -653,7 +653,7 @@ enum BlockImport {
 
     /// A child genesis weighed with `ChainTree.insertGenesis`'s semantics:
     /// its proof's work (already verified), its spec bound by CID, and the
-    /// block fact alone — no execution, no commitments recorded.
+    /// block fact with its commitments, like any block — no execution.
     private static func weighedGenesis(
         resolvedHeader: BlockHeader,
         block: Block,
@@ -673,6 +673,11 @@ enum BlockImport {
         guard ChainTree.binds(spec, to: block.spec.rawCID) else {
             return .result(rejection(.providerMalformedEvidence))
         }
+        let commitments: [String: String]
+        switch await childCommitments(of: resolvedHeader, fetcher: fetcher) {
+        case .success(let enumerated): commitments = enumerated
+        case .failure(let failure): return .result(rejection(failure, sameChainPredecessor: predecessor))
+        }
         return .ready(PreparedImport(
             resolvedHeader: resolvedHeader,
             block: block,
@@ -682,6 +687,7 @@ enum BlockImport {
             sameChainPredecessor: predecessor,
             kind: .block(StateDiff.empty, nil, validated: false),
             defersBodyStore: true,
+            childCommitments: commitments,
             genesisSpec: spec
         ))
     }
@@ -1158,6 +1164,7 @@ enum BlockImport {
         materializedPostState: LatticeState?,
         commit: ChainCommit
     ) {
+        let commitments = try await childCommitments(of: resolved.header, fetcher: fetcher).get()
         let prepared = PreparedImport(
             resolvedHeader: resolved.header,
             block: resolved.block,
@@ -1169,7 +1176,8 @@ enum BlockImport {
                 transition.stateDiff,
                 transition.materializedPostState,
                 validated: true
-            )
+            ),
+            childCommitments: commitments
         )
         try await prepared.cacheValidationContent(to: validationContentStorer)
         let stagingContext = prepared.stagingContext

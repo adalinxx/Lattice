@@ -515,9 +515,10 @@ final class ParentRunAttributionTests: XCTestCase {
     /// Derive `child`'s attributed runs from `parent`'s tree; the blocks raised.
     @discardableResult
     private func derive(_ child: ChainState, from parent: ChainState,
-                        committers: Set<String>? = nil) async -> [String] {
+                        parentBlocks: Set<String>? = nil, held: Set<String> = []) async -> [String] {
         await child.applyParentRun(
-            from: await parent.tree, directory: d, committers: committers.map { Set($0.map(h)) }
+            from: await parent.tree, directory: d,
+            parentBlocks: parentBlocks.map { Set($0.map(h)) }, held: Set(held.map(h))
         ).raised
     }
 
@@ -623,7 +624,7 @@ final class ParentRunAttributionTests: XCTestCase {
         let before = await derive(child, from: parent)
         XCTAssertEqual(before, [], "C is not held: nothing to credit")
         _ = try await child.replay(batch("c", parent: "cg", height: 1, work: 5))
-        let after = await derive(child, from: parent, committers: ["p1"])
+        let after = await derive(child, from: parent, parentBlocks: [], held: ["c"])
         XCTAssertEqual(after, [h("c")])
         let extra = await attributed(child)
         XCTAssertEqual(extra, UInt256(10))
@@ -690,6 +691,125 @@ final class ParentRunAttributionTests: XCTestCase {
         let wb = await child.subtreeWeight(forHash: h("b"))
         XCTAssertEqual(wa, sum(5))
         XCTAssertEqual(wb, sum(45))
+    }
+
+    /// A committed block held only after its committer's run has CLOSED (a
+    /// later committer took the descendants) and brought by another carrier
+    /// is credited live exactly as a restore credits it: the derivation is a
+    /// function of the graph, whichever step made it reachable. Every
+    /// interleaving of the two levels' facts, each step deriving only what it
+    /// changed, ends where the restore does.
+    func testABlockHeldAfterItsRunClosedIsCreditedLiveAsOnRestore() async throws {
+        let parentFacts: [(String, BlockImportBatch)] = [
+            ("g", batch("g", parent: nil, height: 0, work: 1)),
+            ("p1", batch("p1", parent: "g", height: 1, work: 5, commits: [d: h("c")])),
+            ("p1x", batch("p1x", parent: "p1", height: 2, work: 4)),
+            ("p2", batch("p2", parent: "p1x", height: 3, work: 3, commits: [d: h("c2")])),
+            ("q", batch("q", parent: "p2", height: 4, work: 6)),
+        ]
+        // c is credited under its own grind, none of p1's: another carrier.
+        let childFacts: [(String, BlockImportBatch)] = [
+            ("cg", batch("cg", parent: nil, height: 0, work: 1)),
+            ("c", batch("c", parent: "cg", height: 1, work: 2)),
+            ("c2", batch("c2", parent: "c", height: 2, work: 2)),
+        ]
+        let context = testChainContext(path: [DEFAULT_ROOT_DIRECTORY, d])
+        var parentTree = try ChainTree.restoreWithoutContext(replaying: parentFacts.map(\.1))
+        parentTree.serveRuns(for: d)
+        let restored = try ChainTree.restore(replaying: childFacts.map(\.1), context: context, parent: parentTree)
+        XCTAssertEqual(weight(restored, "c"), sum(2, 4, 2, 6),
+                       "fixture: c + p1's closed run (p1x) + c2 + p2's run (q)")
+
+        var rng = SeededRNG(seed: 0xC1_05ED)
+        // The exact trigger first — the whole parent, then the child — then
+        // random merges of the two orders.
+        var orders = [Array(repeating: 0, count: parentFacts.count) + Array(repeating: 1, count: childFacts.count)]
+        for _ in 0..<10 { orders.append(orders[0].shuffled(using: &rng)) }
+        for (trial, order) in orders.enumerated() {
+            let parent = try await ChainState.restoreWithoutContext(replaying: [parentFacts[0].1])
+            await parent.serveRuns(for: d)
+            let child = try await ChainState.restoreWithoutContext(replaying: [childFacts[0].1])
+            var next = [1, 1]
+            for level in order {
+                let facts = level == 0 ? parentFacts : childFacts
+                guard next[level] < facts.count else { continue }
+                let (name, fact) = facts[next[level]]
+                next[level] += 1
+                if level == 0 {
+                    _ = try await parent.replay(fact)
+                    await derive(child, from: parent, parentBlocks: [name])
+                } else {
+                    _ = try await child.replay(fact)
+                    await derive(child, from: parent, parentBlocks: [], held: [name])
+                }
+            }
+            for name in ["cg", "c", "c2"] {
+                let live = await child.subtreeWeight(forHash: h(name))
+                XCTAssertEqual(live, weight(restored, name), "trial \(trial): \(name)")
+            }
+        }
+    }
+
+    /// A genesis is just a block: a child-root genesis committing a
+    /// grandchild records that commitment on every admission path — weighed
+    /// and executed in one step (value and actor bootstraps) or weighed
+    /// first — so the grandchild weighs the same whichever path its node
+    /// took.
+    func testAGenesisCommittingAGrandchildWeighsTheSameEagerOrWeighedFirst() async throws {
+        let fetcher = StorableFetcher()
+        let grandchild = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 21)
+        let grandchildCID = try BlockHeader(node: grandchild).rawCID
+        let anchor = try await testAnchorParentGenesis(fetcher: fetcher)
+        let genesis = try await storeBuiltBlock(try await BlockBuilder.buildChildGenesis(
+            spec: chainLocalSpec(), parentState: anchor.postState, children: [directoryB: grandchild],
+            timestamp: 1_000, target: UInt256.max, nonce: 1, fetcher: fetcher
+        ), in: fetcher)
+        let genesisCID = try BlockHeader(node: genesis).rawCID
+        let context = testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
+        let package = try await carriedGenesisPackage(genesis, fetcher: fetcher)
+        let evidence = try await package.proof.verifySecuringWork(child: genesis, chainPath: context.path).get()
+
+        let eager = try await ChainTree.bootstrap(
+            genesis: try BlockHeader(node: genesis), evidence: evidence, fetcher: fetcher,
+            context: context, parentFacts: try await testParentFacts(fetcher: fetcher)
+        ).get().tree
+        let actorResult = try await ChainLevel.bootstrap(
+            context: context, genesisHeader: try BlockHeader(node: genesis), fetcher: fetcher,
+            childPackage: package, validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
+            stage: testAdmissionStage
+        )
+        guard case .accepted(let accepted) = actorResult else { return XCTFail("actor bootstrap: \(actorResult)") }
+        let actor = await accepted.level.chain.tree
+        var weighed = ChainTree.empty(context: context)
+        let resolvedIndex = try await genesis.children.resolve(fetcher: fetcher).node
+        XCTAssertNotNil(weighed.insertGenesis(
+            genesis, spec: chainLocalSpec(), childIndex: try XCTUnwrap(resolvedIndex), evidence: evidence
+        ).update)
+        XCTAssertFalse(weighed.hasExecutedAncestry(blockHash: genesisCID), "weighed only")
+
+        // One child-level block under the genesis, so its run exceeds its grind.
+        let below = BlockImportBatch(facts: [
+            .block(ChainBlockFact(
+                blockHash: h("a1"), parentBlockHash: genesisCID, blockHeight: 1,
+                postStateCID: testCID("post:a1"), prevStateCID: testCID("prev:a1"),
+                specCID: testCID("spec"), target: "1", nextTarget: "1",
+                timestamp: 2_000, stateDiff: .empty
+            )),
+            .work(ChainWorkFact(blockHash: h("a1"), contribution: VerifiedWorkContribution(id: grind("a1"), work: UInt256(7)))),
+        ])
+        var weights: [WorkSum?] = []
+        for (label, tree) in [("eager", eager), ("actor eager", actor), ("weighed first", weighed)] {
+            XCTAssertEqual(tree.recordedChildCommitments(of: genesisCID), [directoryB: grandchildCID], label)
+            var level = tree
+            _ = try level.replay(below)
+            level.serveRuns(for: directoryB)
+            var lower = try ChainTree.restoreWithoutContext(replaying: [try testAdmissionBatch(for: grandchild)])
+            let raised = lower.applyParentRun(from: level, directory: directoryB).raised
+            XCTAssertEqual(raised, [grandchildCID], label)
+            weights.append(lower.subtreeWeight(forHash: grandchildCID))
+        }
+        XCTAssertEqual(weights[0], weights[1], "eager value and actor paths agree")
+        XCTAssertEqual(weights[0], weights[2], "eager and weighed-first agree")
     }
 
     // MARK: - Recursion: Nexus → A → B
