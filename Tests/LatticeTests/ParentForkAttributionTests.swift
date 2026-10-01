@@ -20,9 +20,8 @@ import UInt256
 /// child block, because every child block's subtree total is a fork-choice
 /// input.
 ///
-/// Nothing here goes through the wire: the parent serves `parentRunReport`,
-/// the child mints through `strengthenFromParentReport` and applies the batch,
-/// exactly as the node will.
+/// The child derives its attributed runs from the parent tree
+/// (`applyParentRun`), one committer at a time, exactly as a host does.
 final class ParentForkAttributionTests: XCTestCase {
 
     // MARK: - Scenario model
@@ -132,8 +131,8 @@ final class ParentForkAttributionTests: XCTestCase {
     }
 
     /// Build the parent by replay in `order`, the child by construction, then
-    /// serve every committer's report and mint it at the child — each report
-    /// applied `passes` times, in `order`, so idempotence is exercised too.
+    /// derive every committer's run at the child — each `passes` times, in
+    /// `order`, so idempotence is exercised too.
     private func run(
         _ s: Scenario, order: [Int], passes: Int = 2
     ) async throws -> (parent: ChainState, child: ChainState, strengthened: Int) {
@@ -170,21 +169,12 @@ final class ParentForkAttributionTests: XCTestCase {
         })
 
         var strengthened = 0
+        let parentTree = await parent.tree
         for _ in 0..<passes {
-            for i in order {
-                let p = s.parent[i]
-                guard let target = p.commits[s.directory] else { continue }
-                guard let report = await parent.parentRunReport(at: h(p.name), directory: s.directory) else {
-                    XCTFail("connected committer \(p.name) must be served")
-                    continue
-                }
-                let outcome = await child.strengthenFromParentReport(
-                    child: h(target), directory: s.directory, report: report
-                )
-                if case .strengthened(let batch) = outcome {
-                    _ = try await child.replay(batch)
-                    strengthened += 1
-                }
+            for i in order where s.parent[i].commits[s.directory] != nil {
+                strengthened += await child.applyParentRun(
+                    from: parentTree, directory: s.directory, committers: [h(s.parent[i].name)]
+                ).raised.count
             }
         }
         return (parent, child, strengthened)
@@ -449,8 +439,8 @@ final class ParentForkAttributionTests: XCTestCase {
         }
     }
 
-    /// The child's own restart: the attributed batches the child made durable
-    /// rebuild the same weights from a cold restore, in any order.
+    /// The child's own restart: its facts are observations only, and a cold
+    /// restore in any order re-derives the same weights from the parent.
     func testChildColdRestoreReproducesAttributedWeights() async throws {
         let s = Scenario(directory: d, parent: [
             ParentBlock(name: "g", parent: nil, work: 1),
@@ -465,9 +455,9 @@ final class ParentForkAttributionTests: XCTestCase {
             ChildBlock(name: "c1", parent: "cg", price: 2),
             ChildBlock(name: "c2", parent: "c1", price: 2),
         ])
-        // Child facts: block batches (carrier grind at the child's price) and
-        // the attributed work-only batches, exactly as the node persists them.
-        let parent = try await run(s, order: Array(s.parent.indices)).parent
+        // Child facts: block batches (carrier grind at the child's price) —
+        // observations only; no attributed run is ever a fact.
+        let parent = await (try await run(s, order: Array(s.parent.indices)).parent).tree
         func childBatch(_ name: String, parentName: String?, height: UInt64, grindID: String, price: UInt64) -> BlockImportBatch {
             BlockImportBatch(facts: [
                 .block(ChainBlockFact(
@@ -479,7 +469,7 @@ final class ParentForkAttributionTests: XCTestCase {
                 .work(ChainWorkFact(blockHash: h(name), contribution: VerifiedWorkContribution(id: grindID, work: UInt256(price)))),
             ])
         }
-        var facts = [
+        let facts = [
             childBatch("cg", parentName: nil, height: 0, grindID: grind("cg"), price: 1),
             childBatch("c1", parentName: "cg", height: 1, grindID: grind("p1"), price: 2),
             childBatch("c2", parentName: "c1", height: 2, grindID: grind("p2"), price: 2),
@@ -489,26 +479,21 @@ final class ParentForkAttributionTests: XCTestCase {
         ]
         let live = try await ChainState.restoreWithoutContext(replaying: [facts[0]])
         for f in facts.dropFirst() { _ = try await live.replay(f) }
-        for (committer, target) in [("p1", "c1"), ("p2", "c2"), ("x1", "c2")] {
-            let served = await parent.parentRunReport(at: h(committer), directory: d)
-            let report = try XCTUnwrap(served)
-            guard case .strengthened(let batch) = await live.strengthenFromParentReport(
-                child: h(target), directory: d, report: report
-            ) else { return XCTFail("\(committer) must strengthen") }
-            _ = try await live.replay(batch)
-            facts.append(batch)
-        }
+        let raised = await live.applyParentRun(from: parent, directory: d).raised
+        XCTAssertEqual(Set(raised), [h("c1"), h("c2")])
         let expected = oracle(s)
         for c in s.child {
             let w = await live.subtreeWeight(forHash: h(c.name))
             XCTAssertEqual(w, expected[c.name], "live \(c.name)")
         }
+        let context = testChainContext(path: [DEFAULT_ROOT_DIRECTORY, d])
         var rng = SeededRNG(seed: 0xC01D)
         for trial in 0..<6 {
-            let cold = try await ChainState.restoreWithoutContext(replaying: facts.shuffled(using: &rng))
+            var cold = try ChainTree.restore(
+                replaying: facts.shuffled(using: &rng), context: context, parent: parent
+            )
             for c in s.child {
-                let w = await cold.subtreeWeight(forHash: h(c.name))
-                XCTAssertEqual(w, expected[c.name], "cold \(trial) \(c.name)")
+                XCTAssertEqual(cold.subtreeWeight(forHash: h(c.name)), expected[c.name], "cold \(trial) \(c.name)")
             }
         }
     }
