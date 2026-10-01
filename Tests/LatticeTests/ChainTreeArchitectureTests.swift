@@ -395,7 +395,7 @@ final class ChainTreeArchitectureTests: XCTestCase {
     /// executed root stands. A chain's only root, proven invalid, is refused.
     func testRootExclusionRuleIsUnchanged() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let genesis = try await makeChildGenesis(fetcher: fetcher)
         let invalid = try await TreeDriver.forgedPostState(of: genesis, seed: "only-root", fetcher: fetcher)
         let spec = chainLocalSpec()
         var tree = ChainTree.empty(context: childContext)
