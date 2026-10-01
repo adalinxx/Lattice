@@ -4,8 +4,8 @@ import UInt256
 // MARK: - State-trie key grammar (consensus)
 //
 // The grammar for every semantic atom used as a state-trie key, enforced on the
-// block-validation path (`TransactionBody.stateAtomsAreValid` /
-// `genesisActionsAreValid`, chain-path construction, account-state reads).
+// block-validation path (`TransactionBody.stateAtomsAreValid`, chain-path
+// construction in `ChainRuntimeContext`, account-state reads).
 //
 // There is intentionally NO length/count limit here — key size is a node
 // storage concern, not a protocol rule. Two structural constraints remain, and
@@ -55,13 +55,22 @@ public enum ChainRuntimeContextError: Error, Sendable, Equatable {
     case invalidDirectory
     case directoryTooLong
     case pathTooDeep
+    /// A root chain names its one genesis: the configured Nexus CID.
+    case rootGenesisRequired
+    /// Only the root chain pins a genesis; a child chain's roots compete.
+    case childGenesisPinned
+    case invalidGenesisCID
 }
 
 /// Immutable Nexus-rooted identity for one chain process.
 public struct ChainRuntimeContext: Sendable, Equatable {
     public let path: [String]
+    /// The root chain's configured genesis CID — the only genesis a root
+    /// chain admits (§5.1). Nil for a child chain, whose genesis roots
+    /// compete by fork choice.
+    public let genesisCID: String?
 
-    public init(path: [String]) throws {
+    public init(path: [String], genesisCID: String? = nil) throws {
         guard !path.isEmpty else { throw ChainRuntimeContextError.emptyPath }
         guard path.allSatisfy({ !$0.isEmpty }) else {
             throw ChainRuntimeContextError.emptyDirectory
@@ -86,7 +95,23 @@ public struct ChainRuntimeContext: Sendable, Equatable {
         guard path.allSatisfy(isValidDirectoryAtom) else {
             throw ChainRuntimeContextError.invalidDirectory
         }
+        if path.count == 1 {
+            guard let genesisCID else { throw ChainRuntimeContextError.rootGenesisRequired }
+            guard let canonical = CIDIdentity.canonicalString(genesisCID) else {
+                throw ChainRuntimeContextError.invalidGenesisCID
+            }
+            self.genesisCID = canonical
+        } else {
+            guard genesisCID == nil else { throw ChainRuntimeContextError.childGenesisPinned }
+            self.genesisCID = nil
+        }
         self.path = path
+    }
+
+    /// Whether `blockHash` may be a genesis root of this chain: on the root
+    /// chain only the configured genesis; on a child chain, any.
+    public func admitsGenesis(_ blockHash: String) -> Bool {
+        genesisCID.map { $0 == blockHash } ?? true
     }
 
     public var isRoot: Bool { path.count == 1 }

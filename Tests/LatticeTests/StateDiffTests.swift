@@ -271,8 +271,7 @@ final class StateDiffTests: XCTestCase {
         let owner = try! HeaderImpl<PublicKey>(node: PublicKey(key: kp.publicKey)).rawCID
         let body = TransactionBody(
             accountActions: [AccountAction(owner: owner, delta: 100)],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [owner], nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -299,8 +298,7 @@ final class StateDiffTests: XCTestCase {
 
         let state = try AccountStateHeader(node: AccountState())
         let transaction = TransactionBody(
-            accountActions: [], actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["owner"], nonce: .max,
+            accountActions: [], actions: [], depositActions: [], receiptActions: [], withdrawalActions: [], signers: ["owner"], nonce: .max,
             chainPath: ["Nexus"]
         )
         do {
@@ -330,7 +328,6 @@ final class StateDiffTests: XCTestCase {
             allAccountActions: [AccountAction(owner: owner, delta: 100)],
             allActions: [Action(key: "foo", oldValue: nil, newValue: "bar")],
             allDepositActions: [],
-            allGenesisActions: [],
             allReceiptActions: [],
             allWithdrawalActions: [],
             transactionBodies: [],
@@ -356,7 +353,6 @@ final class StateDiffTests: XCTestCase {
             allAccountActions: [],
             allActions: [],
             allDepositActions: [],
-            allGenesisActions: [],
             allReceiptActions: [],
             allWithdrawalActions: [],
             transactionBodies: [],

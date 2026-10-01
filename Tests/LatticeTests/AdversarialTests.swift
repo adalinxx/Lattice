@@ -52,8 +52,7 @@ final class DoubleSpendAdversarialTests: XCTestCase {
                 AccountAction(owner: aliceAddr, delta: -Int64(premine)),
                 AccountAction(owner: bobAddr, delta: Int64(premine))
             ],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [aliceAddr], nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -62,8 +61,7 @@ final class DoubleSpendAdversarialTests: XCTestCase {
                 AccountAction(owner: aliceAddr, delta: -Int64(premine)),
                 AccountAction(owner: charlieAddr, delta: Int64(premine))
             ],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [aliceAddr], nonce: 1,
             chainPath: ["Nexus"]
         )
@@ -94,8 +92,7 @@ final class DoubleSpendAdversarialTests: XCTestCase {
                 AccountAction(owner: aliceAddr, delta: -Int64(premine)),
                 AccountAction(owner: bobAddr, delta: Int64(premine))
             ],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [aliceAddr], nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -111,8 +108,7 @@ final class DoubleSpendAdversarialTests: XCTestCase {
                 AccountAction(owner: aliceAddr, delta: -1),
                 AccountAction(owner: bobAddr, delta: 1)
             ],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [aliceAddr], nonce: 1,
             chainPath: ["Nexus"]
         )
@@ -147,8 +143,7 @@ final class FeeAccountingValidationTests: XCTestCase {
         try await storeBuiltBlock(genesis, in: fetcher)
         let body = TransactionBody(
             accountActions: [AccountAction(owner: minerAddr, delta: Int64(reward + fee))],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [minerAddr], nonce: 0, chainPath: ["Nexus"]
         )
         let block = try await buildAndStoreBlock(
@@ -177,8 +172,7 @@ final class FeeAccountingValidationTests: XCTestCase {
             accountActions: [
                 AccountAction(owner: payerAddr, delta: -Int64(fee))
             ],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [payerAddr], nonce: 0, chainPath: ["Nexus"]
         )
         let block = try await buildAndStoreBlock(
@@ -202,8 +196,7 @@ final class FeeAccountingValidationTests: XCTestCase {
         let fee: UInt64 = 50
         let body = TransactionBody(
             accountActions: [AccountAction(owner: minerAddr, delta: Int64(fee))],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [minerAddr], nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -238,8 +231,7 @@ final class SignatureSecurityTests: XCTestCase {
                 AccountAction(owner: ownerAddr, delta: -100),
                 AccountAction(owner: cid(CryptoUtils.generateKeyPair().publicKey), delta: 100)
             ],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [ownerAddr], nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -312,7 +304,7 @@ final class SignatureSecurityTests: XCTestCase {
 
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [], nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -345,8 +337,7 @@ final class SignatureSecurityTests: XCTestCase {
                     AccountAction(owner: aliceAddr, delta: -Int64(premine)),
                     AccountAction(owner: thiefAddr, delta: Int64(premine))
                 ],
-                actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [],
+                actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
                 signers: [signerAddr], nonce: 0,
                 chainPath: ["Nexus"]
             )
@@ -383,8 +374,7 @@ final class BalanceOverflowTests: XCTestCase {
 
         let body = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(reward + 1))],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -407,8 +397,7 @@ final class BalanceOverflowTests: XCTestCase {
 
         let body = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(premine + 1))],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [kpAddr], nonce: 0,
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [], signers: [kpAddr], nonce: 0,
             chainPath: ["Nexus"]
         )
 
@@ -455,7 +444,7 @@ final class CrossChainSecurityTests: XCTestCase {
                 DepositAction(nonce: 1, demander: kpAddr, amountDemanded: 100, amountDeposited: 100),
                 DepositAction(nonce: 1, demander: kpAddr, amountDemanded: 100, amountDeposited: 100)
             ],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -484,7 +473,7 @@ final class CrossChainSecurityTests: XCTestCase {
             depositActions: [
                 DepositAction(nonce: 1, demander: kpAddr, amountDemanded: 0, amountDeposited: 0)
             ],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -559,8 +548,7 @@ final class EconomicInvariantAdversarialTests: XCTestCase {
             accountActions: [
                 AccountAction(owner: payerAddr, delta: Int64(premine - fee) - Int64(premine))
             ],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [payerAddr], nonce: 0, chainPath: ["Nexus"]
         )
         let block = try await buildAndStoreBlock(
@@ -627,8 +615,7 @@ final class EconomicInvariantAdversarialTests: XCTestCase {
 
         let body = TransactionBody(
             accountActions: [AccountAction(owner: ownerAddr, delta: Int64(premine))],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [ownerAddr], nonce: 0,
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [], signers: [ownerAddr], nonce: 0,
             chainPath: ["Nexus"]
         )
         let tx = sign(body, kp)
@@ -769,7 +756,7 @@ final class BlockLimitTests: XCTestCase {
             let kp = CryptoUtils.generateKeyPair()
             let body = TransactionBody(
                 accountActions: [], actions: [], depositActions: [],
-                genesisActions: [], receiptActions: [], withdrawalActions: [],
+                receiptActions: [], withdrawalActions: [],
                 signers: [], nonce: i,
                 chainPath: ["Nexus"]
             )

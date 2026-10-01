@@ -29,9 +29,6 @@ extension TransactionBody {
             && depositActions.allSatisfy {
                 isValidAccountAtom($0.demander)
             }
-            && genesisActions.allSatisfy {
-                isValidDirectoryAtom($0.directory)
-            }
             && receiptActions.allSatisfy {
                 isValidAccountAtom($0.withdrawer)
                     && isValidAccountAtom($0.demander)
@@ -132,39 +129,6 @@ extension TransactionBody {
         async let proofOfDeposits = prevState.depositState.proveExistenceOfCorrespondingDeposit(withdrawalActions: withdrawalActions, fetcher: fetcher)
         async let proofOfReceipts = parentState.receiptState.proveExistenceAndVerifyWithdrawers(directory: directory, withdrawalActions: withdrawalActions, fetcher: fetcher)
         let (_, _) = try await (proofOfDeposits, proofOfReceipts)
-        return true
-    }
-
-    /// THE consensus shape rule for genesis actions: an anchor must fit the
-    /// child-proof wire format and name a canonical genesis block CID. The
-    /// parent only RECORDS the anchor (directory → genesis CID); the genesis
-    /// block's CONTENT is validated by its child chain during admission.
-    /// Consumed by block validation and by node-side admission — one definition
-    /// so the two cannot drift.
-    ///
-    /// The directory must not contain DIRECTORY_KEY_SEPARATOR ("/"): a chain's
-    /// directory is a free-text field of the `/`-separated `ReceiptKey`, so a
-    /// directory containing the separator would break receipt-key injectivity
-    /// (distinct (directory, demander) pairs encoding to the same key), letting a
-    /// withdrawal settle against the wrong chain's receipt. Rejecting it here —
-    /// the single consensus entry point for new directory names — keeps every
-    /// directory in any chainPath separator-free.
-    public func genesisActionsAreValid() -> Bool {
-        if !genesisActions.isEmpty,
-           chainPath.count > ChildProofWireLimits.maximumDepth {
-            return false
-        }
-        for genesisAction in genesisActions {
-            if !isValidDirectoryAtom(genesisAction.directory) { return false }
-            // Structural: the directory is length-prefixed with a UInt16 in the
-            // child-proof wire format, so an anchor whose directory cannot be
-            // encoded there is unprovable and must be rejected. This is the wire's
-            // capacity, not a policy cap.
-            if genesisAction.directory.utf8.count > ChildProofWireLimits.maximumDirectoryBytes {
-                return false
-            }
-            if !CIDIdentity.isCanonical(genesisAction.blockCID) { return false }
-        }
         return true
     }
 
@@ -269,7 +233,6 @@ extension TransactionBody {
         for a in accountActions { try add(a.stateDelta()) }
         for a in actions { try add(a.stateDelta()) }
         for a in depositActions { try add(a.stateDelta()) }
-        for a in genesisActions { try add(a.stateDelta()) }
         for a in receiptActions { try add(a.stateDelta()) }
         for a in withdrawalActions { try add(a.stateDelta()) }
         return delta

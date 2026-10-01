@@ -3,48 +3,6 @@ import UInt256
 import LatticePrimitives
 import LatticePoW
 
-/// A permanent fact derived locally from a validated parent-chain state,
-/// authorizing one genesis root for a path-defined child chain. Competing valid
-/// parent branches may produce different links for the same child path.
-public struct ParentGenesisLink: Codable, Hashable, Sendable {
-    public let parentPath: [String]
-    public let directory: String
-    public let childGenesisCID: String
-    public let parentStateCID: String
-
-    public init(
-        parentPath: [String],
-        directory: String,
-        childGenesisCID: String,
-        parentStateCID: String
-    ) {
-        self.parentPath = parentPath
-        self.directory = directory
-        self.childGenesisCID =
-            CIDIdentity.canonicalString(childGenesisCID) ?? childGenesisCID
-        self.parentStateCID =
-            CIDIdentity.canonicalString(parentStateCID) ?? parentStateCID
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        parentPath = try container.decode([String].self, forKey: .parentPath)
-        directory = try container.decode(String.self, forKey: .directory)
-        let child = try container.decode(String.self, forKey: .childGenesisCID)
-        childGenesisCID = CIDIdentity.canonicalString(child) ?? child
-        let parentState = try container.decode(String.self, forKey: .parentStateCID)
-        parentStateCID =
-            CIDIdentity.canonicalString(parentState) ?? parentState
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case parentPath
-        case directory
-        case childGenesisCID
-        case parentStateCID
-    }
-}
-
 /// A local fact derived from one chain's validated, connected block graph.
 /// Equality is reflexive and needs no fact.
 public struct ParentStateContinuityLink: Hashable, Sendable {
@@ -69,16 +27,13 @@ public struct ParentStateContinuityLink: Hashable, Sendable {
 /// verdicts to decode.
 public struct ChildValidationPackage: Sendable {
     public let proof: ChildBlockProof
-    public let parentGenesisLink: ParentGenesisLink?
     public let parentStateContinuityLink: ParentStateContinuityLink?
 
     public init(
         proof: ChildBlockProof,
-        parentGenesisLink: ParentGenesisLink? = nil,
         parentStateContinuityLink: ParentStateContinuityLink? = nil
     ) {
         self.proof = proof
-        self.parentGenesisLink = parentGenesisLink
         self.parentStateContinuityLink = parentStateContinuityLink
     }
 }
@@ -88,12 +43,6 @@ public struct ChildValidationPackage: Sendable {
 /// state-validity fact locally before constructing this package.
 public enum CrossChainEvidenceRequirement: Sendable, Equatable {
     case childProof(chainPath: [String], childCID: String)
-    case parentGenesis(
-        parentPath: [String],
-        directory: String,
-        childGenesisCID: String,
-        parentStateCID: String
-    )
     case parentStateContinuity(
         parentPath: [String],
         fromStateCID: String,

@@ -80,7 +80,7 @@ final class DepositStateTests: XCTestCase {
             actions: [], depositActions: [
                 DepositAction(nonce: depositNonce, demander: kpAddr, amountDemanded: depositAmount, amountDeposited: depositAmount)
             ],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -109,7 +109,7 @@ final class DepositStateTests: XCTestCase {
             actions: [], depositActions: [
                 DepositAction(nonce: 1, demander: kpAddr, amountDemanded: 100, amountDeposited: 50)
             ],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -125,7 +125,7 @@ final class DepositStateTests: XCTestCase {
             actions: [], depositActions: [
                 DepositAction(nonce: 1, demander: kpAddr, amountDemanded: 0, amountDeposited: 0)
             ],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -143,7 +143,7 @@ final class DepositStateTests: XCTestCase {
             actions: [], depositActions: [
                 DepositAction(nonce: 1, demander: otherAddr, amountDemanded: 100, amountDeposited: 100)
             ],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -185,7 +185,6 @@ final class ReceiptStateTests: XCTestCase {
         let bodyMissing = TransactionBody(
             accountActions: [],
             actions: [], depositActions: [],
-            genesisActions: [],
             receiptActions: [
                 ReceiptAction(withdrawer: withdrawerAddr, nonce: 1, demander: demanderAddr, amountDemanded: 100, directory: "Child")
             ],
@@ -200,7 +199,6 @@ final class ReceiptStateTests: XCTestCase {
         let bodyValid = TransactionBody(
             accountActions: [],
             actions: [], depositActions: [],
-            genesisActions: [],
             receiptActions: [
                 ReceiptAction(withdrawer: withdrawerAddr, nonce: 1, demander: demanderAddr, amountDemanded: 100, directory: "Child")
             ],
@@ -272,7 +270,7 @@ final class WithdrawalValidationTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [],
             actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [],
+            receiptActions: [],
             withdrawalActions: [
                 WithdrawalAction(withdrawer: kpAddr, nonce: 1, demander: "someone", amountDemanded: 100, amountWithdrawn: 50)
             ],
@@ -289,7 +287,7 @@ final class WithdrawalValidationTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [],
             actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [],
+            receiptActions: [],
             withdrawalActions: [
                 WithdrawalAction(withdrawer: kpAddr, nonce: 1, demander: "someone", amountDemanded: 0, amountWithdrawn: 0)
             ],
@@ -308,7 +306,7 @@ final class WithdrawalValidationTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [],
             actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [],
+            receiptActions: [],
             withdrawalActions: [
                 WithdrawalAction(withdrawer: otherAddr, nonce: 1, demander: kpAddr, amountDemanded: 100, amountWithdrawn: 100)
             ],
@@ -366,7 +364,7 @@ final class NexusActionRestrictionTests: XCTestCase {
             actions: [], depositActions: [
                 DepositAction(nonce: 1, demander: kpAddr, amountDemanded: 100, amountDeposited: 100)
             ],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 0, chainPath: ["Nexus"]
         )
         let tx = signTx(body: body, keypair: kp)
@@ -393,7 +391,7 @@ final class NexusActionRestrictionTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [],
             actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [],
+            receiptActions: [],
             withdrawalActions: [
                 WithdrawalAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: 100, amountWithdrawn: 100)
             ],
@@ -429,7 +427,6 @@ final class NexusActionRestrictionTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [],
             actions: [], depositActions: [],
-            genesisActions: [],
             receiptActions: [
                 ReceiptAction(withdrawer: withdrawerAddr, nonce: 1, demander: demanderAddr, amountDemanded: 100, directory: "Child")
             ],
@@ -480,7 +477,6 @@ final class AtomicSwapCycleTests: XCTestCase {
         let receiptBody = TransactionBody(
             accountActions: [],
             actions: [], depositActions: [],
-            genesisActions: [],
             receiptActions: [
                 ReceiptAction(withdrawer: buyerAddr, nonce: swapNonce,
                               demander: sellerAddr, amountDemanded: swapAmount, directory: "Child")
@@ -534,7 +530,7 @@ final class AtomicSwapCycleTests: XCTestCase {
                 DepositAction(nonce: swapNonce, demander: sellerAddr,
                               amountDemanded: swapAmount, amountDeposited: swapAmount)
             ],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [sellerAddr], nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -548,7 +544,7 @@ final class AtomicSwapCycleTests: XCTestCase {
         let withdrawBody1 = TransactionBody(
             accountActions: [AccountAction(owner: buyerAddr, delta: Int64(swapAmount))],
             actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [],
+            receiptActions: [],
             withdrawalActions: [
                 WithdrawalAction(withdrawer: buyerAddr, nonce: swapNonce,
                                  demander: sellerAddr, amountDemanded: swapAmount, amountWithdrawn: swapAmount)
@@ -570,7 +566,7 @@ final class AtomicSwapCycleTests: XCTestCase {
         let withdrawBody2 = TransactionBody(
             accountActions: [AccountAction(owner: buyerAddr, delta: Int64(swapAmount))],
             actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [],
+            receiptActions: [],
             withdrawalActions: [
                 WithdrawalAction(withdrawer: buyerAddr, nonce: swapNonce,
                                  demander: sellerAddr, amountDemanded: swapAmount, amountWithdrawn: swapAmount)
@@ -638,7 +634,7 @@ final class CrossChainFlowTests: XCTestCase {
             depositActions: [
                 DepositAction(nonce: swapNonce, demander: demanderAddr, amountDemanded: depositAmount, amountDeposited: depositAmount)
             ],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [demanderAddr], nonce: 0,
             chainPath: ["Nexus", "Child"]
         )
@@ -667,7 +663,6 @@ final class CrossChainFlowTests: XCTestCase {
         let receiptBody = TransactionBody(
             accountActions: [],
             actions: [], depositActions: [],
-            genesisActions: [],
             receiptActions: [
                 ReceiptAction(withdrawer: withdrawerAddr, nonce: swapNonce, demander: demanderAddr, amountDemanded: depositAmount, directory: "Child")
             ],
@@ -718,7 +713,7 @@ final class CrossChainFlowTests: XCTestCase {
                 )
             ],
             actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [],
+            receiptActions: [],
             withdrawalActions: [
                 WithdrawalAction(withdrawer: withdrawerAddr, nonce: swapNonce, demander: demanderAddr, amountDemanded: depositAmount, amountWithdrawn: depositAmount)
             ],
@@ -789,7 +784,7 @@ final class CrossChainFlowTests: XCTestCase {
             actions: [], depositActions: [
                 DepositAction(nonce: swapNonce, demander: demanderAddr, amountDemanded: depositAmount, amountDeposited: depositAmount)
             ],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [demanderAddr], nonce: 0,
             chainPath: ["Nexus", "Child"]
         )
@@ -809,7 +804,6 @@ final class CrossChainFlowTests: XCTestCase {
         let receiptBody = TransactionBody(
             accountActions: [],
             actions: [], depositActions: [],
-            genesisActions: [],
             receiptActions: [
                 ReceiptAction(withdrawer: withdrawerAddr, nonce: swapNonce, demander: demanderAddr, amountDemanded: depositAmount, directory: "Child")
             ],
@@ -833,7 +827,7 @@ final class CrossChainFlowTests: XCTestCase {
         let attackBody = TransactionBody(
             accountActions: [AccountAction(owner: attackerAddr, delta: Int64(depositAmount))],
             actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [],
+            receiptActions: [],
             withdrawalActions: [
                 WithdrawalAction(withdrawer: attackerAddr, nonce: swapNonce, demander: demanderAddr, amountDemanded: depositAmount, amountWithdrawn: depositAmount)
             ],
@@ -889,7 +883,6 @@ final class CrossChainFlowTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [],
             actions: [], depositActions: [],
-            genesisActions: [],
             receiptActions: [
                 ReceiptAction(withdrawer: attackerAddr, nonce: 1, demander: legitimateAddr, amountDemanded: 100, directory: "Child")
             ],
@@ -928,7 +921,6 @@ final class CrossChainFlowTests: XCTestCase {
         let receiptBody = TransactionBody(
             accountActions: [],
             actions: [], depositActions: [],
-            genesisActions: [],
             receiptActions: [
                 ReceiptAction(withdrawer: withdrawerAddr, nonce: swapNonce, demander: demanderAddr, amountDemanded: depositAmount, directory: "Child")
             ],
@@ -946,7 +938,7 @@ final class CrossChainFlowTests: XCTestCase {
         let withdrawalBody = TransactionBody(
             accountActions: [AccountAction(owner: withdrawerAddr, delta: Int64(depositAmount))],
             actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [],
+            receiptActions: [],
             withdrawalActions: [
                 WithdrawalAction(withdrawer: withdrawerAddr, nonce: swapNonce, demander: demanderAddr, amountDemanded: depositAmount, amountWithdrawn: depositAmount)
             ],

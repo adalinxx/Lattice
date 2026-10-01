@@ -191,10 +191,10 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             fetcher: fetcher,
             childPackage: ChildValidationPackage(
                 proof: proof,
-                parentGenesisLink: testParentGenesisLink(
-                    directory: "Other",
-                    childGenesisCID: try BlockHeader(node: childGenesis).rawCID,
-                    parentStateCID: childGenesis.parentState.rawCID
+                parentStateContinuityLink: ParentStateContinuityLink(
+                    parentPath: [DEFAULT_ROOT_DIRECTORY],
+                    fromStateCID: LatticeState.emptyHeader.rawCID,
+                    toStateCID: testCID("surplus-parent-state")
                 )
             )
         )
@@ -209,53 +209,6 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             return XCTFail("proof-derived work should admit without a carrier fact")
         }
         XCTAssertNil(missing.sameChainPredecessor)
-    }
-
-    func testValidatedGenesisActionUpdatesParentState() async throws {
-        let fetcher = StorableFetcher()
-        let parentGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let childGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
-        let childCID = try BlockHeader(node: childGenesis).rawCID
-        let keyPair = CryptoUtils.generateKeyPair()
-        let owner = testAddress(publicKey: keyPair.publicKey)
-        let body = TransactionBody(
-            accountActions: [],
-            actions: [],
-            depositActions: [],
-            genesisActions: [GenesisAction(
-                directory: "Child",
-                blockCID: childCID
-            )],
-            receiptActions: [],
-            withdrawalActions: [],
-            signers: [owner],
-            nonce: 0,
-            chainPath: [DEFAULT_ROOT_DIRECTORY]
-        )
-        let anchor = try await buildAndStoreBlock(
-            previous: parentGenesis,
-            transactions: [signedTestTransaction(body, by: keyPair)],
-            timestamp: 2_000,
-            target: AdmissionFixture.easy,
-            nonce: 2,
-            rewardRecipient: owner,
-            fetcher: fetcher
-        )
-        let parentLevel = AdmissionFixture.makeLevel(genesis: parentGenesis)
-        let admission = try await parentLevel.admit(anchor, fetcher: fetcher)
-        if case .rejected(let failure, _) = admission {
-            return XCTFail("parent anchor should validate: \(failure)")
-        }
-
-        let resolvedState = try await anchor.postState.resolve(
-            paths: [[GENESIS_STATE_PROPERTY, "Child"]: .targeted],
-            fetcher: fetcher
-        )
-        let storedChildCID = try XCTUnwrap(
-            resolvedState.node?.genesisState.node?.get(key: "Child")
-        )
-        XCTAssertEqual(storedChildCID, childCID)
-
     }
 
     func testSecondChildRootPinsItsMaterializedVolumes() async throws {
@@ -294,15 +247,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             fetcher: fetcher
         )
         let secondHeader = try BlockHeader(node: secondRoot)
-        let package = try await childValidationPackage(
-            proof: proof,
-            fetcher: fetcher,
-            parentGenesisLink: testParentGenesisLink(
-                directory: "Child",
-                childGenesisCID: secondHeader.rawCID,
-                parentStateCID: secondRoot.parentState.rawCID
-            )
-        )
+        let package = try await childValidationPackage(proof: proof, fetcher: fetcher)
 
         let result = try await childLevel.admit(
             secondHeader,
@@ -333,13 +278,16 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
         XCTAssertTrue(containsSecondRoot)
     }
 
-    func testSameCarrierChildDeploymentBootstrapsFromParentIssuedFacts() async throws {
+    /// A child genesis is deployed by being carried: a real parent block
+    /// commits it in its child index, and its proof alone weighs it. No
+    /// parent record authorizes it.
+    func testACarriedChildGenesisBootstrapsFromItsProofAlone() async throws {
         let fetcher = StorableFetcher()
         let parentGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
         let parentLevel = AdmissionFixture.makeLevel(genesis: parentGenesis)
         let childGenesis = try await BlockBuilder.buildChildGenesis(
             spec: chainLocalSpec(),
-            parentState: LatticeState.emptyHeader,
+            parentState: parentGenesis.postState,
             transactions: [AdmissionFixture.unsignedStateChangingGenesisTransaction(
                 key: "child-genesis",
                 chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
@@ -351,56 +299,40 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
         try await storeBuiltBlock(childGenesis, in: fetcher)
         let childHeader = try BlockHeader(node: childGenesis)
 
-        let keyPair = CryptoUtils.generateKeyPair()
-        let owner = testAddress(publicKey: keyPair.publicKey)
-        let anchorBody = TransactionBody(
-            accountActions: [],
-            actions: [],
-            depositActions: [],
-            genesisActions: [GenesisAction(
-                directory: "Child",
-                blockCID: childHeader.rawCID
-            )],
-            receiptActions: [],
-            withdrawalActions: [],
-            signers: [owner],
-            nonce: 0,
-            chainPath: [DEFAULT_ROOT_DIRECTORY]
-        )
         let carrier = try await buildAndStoreBlock(
             previous: parentGenesis,
-            transactions: [signedTestTransaction(anchorBody, by: keyPair)],
+            children: ["Child": childGenesis],
             timestamp: 2_000,
             target: AdmissionFixture.easy,
             nonce: 2,
-            rewardRecipient: owner,
             fetcher: fetcher
         )
-        let carrierHeader = try BlockHeader(node: carrier)
-
-        let admission = try await parentLevel.admit(carrierHeader, fetcher: fetcher)
+        let admission = try await parentLevel.admit(try BlockHeader(node: carrier), fetcher: fetcher)
         if case .rejected(let failure, _) = admission {
-            return XCTFail("same-carrier parent candidate should admit: \(failure)")
+            return XCTFail("the carrier should admit on the parent: \(failure)")
         }
-
-        let genesisLink = ParentGenesisLink(
-            parentPath: [DEFAULT_ROOT_DIRECTORY],
-            directory: "Child",
-            childGenesisCID: childHeader.rawCID,
-            parentStateCID: LatticeState.emptyHeader.rawCID
+        let proof = try await ChildBlockProof.generate(
+            rootHeader: try BlockHeader(node: carrier),
+            childDirectory: "Child",
+            fetcher: fetcher
         )
-
+        let parentState = childGenesis.parentState.rawCID
+        let link = parentState == LatticeState.emptyHeader.rawCID ? nil : ParentStateContinuityLink(
+            parentPath: [DEFAULT_ROOT_DIRECTORY],
+            fromStateCID: LatticeState.emptyHeader.rawCID,
+            toStateCID: parentState
+        )
         let childBootstrapResult = try await ChainLevel.bootstrap(
             context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"]),
             genesisHeader: childHeader,
             fetcher: fetcher,
-            parentGenesisLink: genesisLink,
+            childPackage: ChildValidationPackage(proof: proof, parentStateContinuityLink: link),
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
         )
         guard case .accepted(let childBootstrap) = childBootstrapResult else {
-            return XCTFail("same-carrier deployment must bootstrap the child")
+            return XCTFail("a carried genesis must bootstrap the child: \(childBootstrapResult)")
         }
         let childTip = await childBootstrap.level.chain.canonicalTip
         XCTAssertEqual(childTip, childHeader.rawCID)
@@ -474,14 +406,12 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             return XCTFail("the exact proof path should need no carrier fact")
         }
 
-        let surplusEvidence = try await childValidationPackage(
+        let surplusEvidence = ChildValidationPackage(
             proof: proof,
-            fetcher: fetcher,
-            parentGenesisLink: testParentGenesisLink(
-                directory: "Leaf",
-                childGenesisCID: candidateHeader.rawCID,
-                parentStateCID: candidate.parentState.rawCID,
-                parentPath: [DEFAULT_ROOT_DIRECTORY, "Middle"]
+            parentStateContinuityLink: ParentStateContinuityLink(
+                parentPath: [DEFAULT_ROOT_DIRECTORY, "Middle"],
+                fromStateCID: LatticeState.emptyHeader.rawCID,
+                toStateCID: testCID("surplus-parent-state")
             )
         )
         let duplicateWithSurplusEvidence = try await exactPath.admit(

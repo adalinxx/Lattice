@@ -59,7 +59,6 @@ public extension ChainLevel {
             // be carried alone under the fee rule, so it is refused here.
             guard try await resolved.validateTransactionForNexus(fetcher: fetcher),
                   body.minerSurplus() != nil,
-                  body.genesisActionsAreValid(),
                   body.chainPath == context.path,
                   context.path.count > 1
                     || (body.depositActions.isEmpty
@@ -131,7 +130,6 @@ public extension ChainLevel {
                 allAccountActions: body.accountActions,
                 allActions: body.actions,
                 allDepositActions: body.depositActions,
-                allGenesisActions: body.genesisActions,
                 allReceiptActions: body.receiptActions,
                 allWithdrawalActions: body.withdrawalActions,
                 transactionBodies: [body],

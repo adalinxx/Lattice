@@ -219,7 +219,7 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
             depositActions: [
                 DepositAction(nonce: swapNonce, demander: demanderAddr, amountDemanded: depositAmount, amountDeposited: depositAmount)
             ],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [demanderAddr], nonce: 0, chainPath: ["Nexus", "Payments"]
         )
         let childGenesis = try await buildAndStoreGenesis(
@@ -236,7 +236,6 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
             let receiptBody = TransactionBody(
                 accountActions: [],
                 actions: [], depositActions: [],
-                genesisActions: [],
                 receiptActions: [
                     ReceiptAction(withdrawer: withdrawerAddr, nonce: swapNonce, demander: demanderAddr, amountDemanded: depositAmount, directory: "Payments")
                 ],
@@ -265,7 +264,7 @@ final class WithdrawalReceiptDeferredCheckGapTests: XCTestCase {
         let withdrawalBody = TransactionBody(
             accountActions: [AccountAction(owner: withdrawerAddr, delta: Int64(depositAmount))],
             actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [],
+            receiptActions: [],
             withdrawalActions: [
                 WithdrawalAction(withdrawer: withdrawerAddr, nonce: swapNonce, demander: demanderAddr, amountDemanded: depositAmount, amountWithdrawn: depositAmount)
             ],

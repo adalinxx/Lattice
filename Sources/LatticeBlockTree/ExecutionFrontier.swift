@@ -290,21 +290,6 @@ struct ExecutionFrontier: Sendable {
         }
     }
 
-    /// Remove a proven-invalid root and everything below it from the executed
-    /// frontier. Bounded by the excluded subtree; a root that was never
-    /// anchored has no anchored descendants, so the walk stops at once.
-    mutating func unanchor(
-        subtreeRootedAt rootHash: String,
-        in graph: BlockGraph
-    ) {
-        var pending = [rootHash]
-        while let hash = pending.popLast() {
-            guard anchored.remove(hash) != nil,
-                  graph.contains(hash) else { continue }
-            pending.append(contentsOf: graph.children(of: hash))
-        }
-    }
-
     mutating func indexTransition(
         _ snapshot: TipBlockSnapshot,
         blockHash: String
@@ -840,10 +825,6 @@ extension ChainTree {
                 && graph.parent(of: $0) == nil
                 && frontier.isAnchored($0)
         }
-    }
-
-    mutating func unanchor(subtreeRootedAt rootHash: String) {
-        frontier.unanchor(subtreeRootedAt: rootHash, in: graph)
     }
 
     mutating func indexStateTransition(

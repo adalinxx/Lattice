@@ -35,8 +35,7 @@ private func premineGenesis(
     let addr = id(kp.publicKey)
     let body = TransactionBody(
         accountActions: [AccountAction(owner: addr, delta: Int64(spec.premineAmount()))],
-        actions: [], depositActions: [], genesisActions: [],
-        receiptActions: [], withdrawalActions: [], signers: [addr], nonce: 0,
+        actions: [], depositActions: [], receiptActions: [], withdrawalActions: [], signers: [addr], nonce: 0,
         chainPath: ["Nexus"]
     )
     return try await buildAndStoreGenesis(
@@ -73,7 +72,7 @@ final class DoubleClaimTests: XCTestCase {
             accountActions: [AccountAction(owner: kpAddr, delta: -Int64(amount))],
             actions: [],
             depositActions: [childSwap],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 1,
             chainPath: ["Nexus"]
         )
@@ -85,8 +84,7 @@ final class DoubleClaimTests: XCTestCase {
         // The receipt's payment is funded by the coinbase.
         let settleBody = TransactionBody(
             accountActions: [],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: amount, directory: "Child")],
+            actions: [], depositActions: [], receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: amount, directory: "Child")],
             withdrawalActions: [],
             signers: [kpAddr], nonce: 0,
             chainPath: ["Nexus"]
@@ -100,7 +98,7 @@ final class DoubleClaimTests: XCTestCase {
         let c1Body = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(amount))],
             actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [],
+            receiptActions: [],
             withdrawalActions: [WithdrawalAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: amount, amountWithdrawn: amount)],
             signers: [kpAddr], nonce: 2,
             chainPath: ["Nexus"]
@@ -115,7 +113,7 @@ final class DoubleClaimTests: XCTestCase {
         let c2Body = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(amount))],
             actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [],
+            receiptActions: [],
             withdrawalActions: [WithdrawalAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: amount, amountWithdrawn: amount)],
             signers: [kpAddr], nonce: 3,
             chainPath: ["Nexus"]
@@ -156,8 +154,7 @@ final class PhantomSettleTests: XCTestCase {
 
         let settleBody = TransactionBody(
             accountActions: [],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 99, demander: kpAddr, amountDemanded: 1000, directory: "Child")],
+            actions: [], depositActions: [], receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 99, demander: kpAddr, amountDemanded: 1000, directory: "Child")],
             withdrawalActions: [],
             signers: [kpAddr], nonce: 0, chainPath: ["Nexus"]
         )
@@ -171,7 +168,7 @@ final class PhantomSettleTests: XCTestCase {
         let claimBody = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: 1000)],
             actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [],
+            receiptActions: [],
             withdrawalActions: [WithdrawalAction(withdrawer: kpAddr, nonce: 99, demander: kpAddr, amountDemanded: 1000, amountWithdrawn: 1000)],
             signers: [kpAddr], nonce: 1,
             chainPath: ["Nexus"]
@@ -228,7 +225,7 @@ final class CrossChainReplayTests: XCTestCase {
             accountActions: [AccountAction(owner: kpAddr, delta: -Int64(amount))],
             actions: [],
             depositActions: [childASwap],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 1,
             chainPath: ["Nexus"]
         )
@@ -240,8 +237,7 @@ final class CrossChainReplayTests: XCTestCase {
         // The receipt's payment is funded by the coinbase.
         let settleBody = TransactionBody(
             accountActions: [],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: amount, directory: "ChildA")],
+            actions: [], depositActions: [], receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: amount, directory: "ChildA")],
             withdrawalActions: [],
             signers: [kpAddr], nonce: 0,
             chainPath: ["Nexus"]
@@ -255,7 +251,7 @@ final class CrossChainReplayTests: XCTestCase {
         let replayBody = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: Int64(amount))],
             actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [],
+            receiptActions: [],
             withdrawalActions: [WithdrawalAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: amount, amountWithdrawn: amount)],
             signers: [kpAddr], nonce: 1,
             chainPath: ["Nexus"]
@@ -398,8 +394,7 @@ final class ChainPolicyBlockTests: XCTestCase {
         )
         let body = TransactionBody(
             accountActions: [],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 0, chainPath: ["Nexus"]
         )
         let block = try await buildAndStoreBlock(
@@ -427,8 +422,7 @@ final class ChainPolicyBlockTests: XCTestCase {
         // Block rejected by the chain's transaction policy.
         let lowFeeBody = TransactionBody(
             accountActions: [],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 0, chainPath: ["Nexus"]
         )
         let lowFeeBlock = try await buildAndStoreBlock(
@@ -454,8 +448,7 @@ final class ChainPolicyBlockTests: XCTestCase {
         let body = TransactionBody(
             accountActions: [],
             actions: [Action(key: "policy/test", oldValue: nil, newValue: "value")],
-            depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 0, chainPath: ["Nexus"]
         )
         let block = try await buildAndStoreBlock(
@@ -488,8 +481,7 @@ final class ChainPolicyBlockTests: XCTestCase {
             )
             let body = TransactionBody(
                 accountActions: [],
-                actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [],
+                actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
                 signers: [kpAddr], nonce: 0, chainPath: ["Nexus"]
             )
             let block = try await buildAndStoreBlock(
@@ -524,8 +516,7 @@ final class GeneralStateBlockTests: XCTestCase {
         let insertBody = TransactionBody(
             accountActions: [],
             actions: [Action(key: "greeting", oldValue: nil, newValue: "hello")],
-            depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 0, chainPath: ["Nexus"]
         )
         let block1 = try await buildAndStoreBlock(
@@ -540,8 +531,7 @@ final class GeneralStateBlockTests: XCTestCase {
         let updateBody = TransactionBody(
             accountActions: [],
             actions: [Action(key: "greeting", oldValue: "hello", newValue: "world")],
-            depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 1, chainPath: ["Nexus"]
         )
         let block2 = try await buildAndStoreBlock(
@@ -555,8 +545,7 @@ final class GeneralStateBlockTests: XCTestCase {
         let deleteBody = TransactionBody(
             accountActions: [],
             actions: [Action(key: "greeting", oldValue: "world", newValue: nil)],
-            depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 2, chainPath: ["Nexus"]
         )
         let block3 = try await buildAndStoreBlock(
@@ -581,8 +570,7 @@ final class GeneralStateBlockTests: XCTestCase {
         let insertBody = TransactionBody(
             accountActions: [],
             actions: [Action(key: "key1", oldValue: nil, newValue: "value1")],
-            depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -595,8 +583,7 @@ final class GeneralStateBlockTests: XCTestCase {
         let wrongBody = TransactionBody(
             accountActions: [],
             actions: [Action(key: "key1", oldValue: "WRONG", newValue: "value2")],
-            depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 1,
             chainPath: ["Nexus"]
         )

@@ -10,47 +10,43 @@ import XCTest
 import UInt256
 import cashew
 
-/// Several genesis roots per chain in one weighed graph (§9.9 genesis
-/// admission, §9.4 across roots), tested against the "Lattice architecture
-/// preserved" checklist: the weighed graph with the executed set inside it,
-/// validity selects, continuity, genesis links from any executed parent
-/// block, hierarchical GHOST with grinds deduped, weighed-only blocks issue
-/// no facts, and the root-exclusion rule.
+/// Several genesis roots per child chain in one weighed graph (§9.9 genesis
+/// admission, §9.4 across roots), with no parent authorization: a child
+/// genesis weighs by its `ChildBlockProof` and executes like any child block.
+/// Tested against the "Lattice architecture preserved" checklist: the weighed
+/// graph with the executed set inside it, validity selects, continuity
+/// against any executed parent state (every block, the genesis included),
+/// hierarchical GHOST with grinds deduped, weighed-only blocks issue no facts,
+/// and the root-exclusion rule.
 final class MultiRootGenesisTests: XCTestCase {
-    private let rootContext = testChainContext()
     private let childContext = testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
+    private let easy = AdmissionFixture.easy
 
     private func cid(_ block: Block) throws -> String {
         try BlockHeader(node: block).rawCID
     }
 
-    private func link(_ genesis: Block) throws -> ParentGenesisLink {
-        ParentGenesisLink(
-            parentPath: [DEFAULT_ROOT_DIRECTORY],
-            directory: "Child",
-            childGenesisCID: try cid(genesis),
-            parentStateCID: LatticeState.emptyHeader.rawCID
-        )
-    }
-
-    private func granting(_ genesis: Block...) throws -> GrantedGenesisFacts {
-        GrantedGenesisFacts(links: Set(try genesis.map(link)))
-    }
-
-    /// A child tree bootstrapped from `genesis` through the one genesis path.
-    private func childTree(
-        _ genesis: Block,
-        fetcher: StorableFetcher
-    ) async throws -> (tree: ChainTree, batches: [BlockImportBatch]) {
-        let bootstrapped = try await ChainTree.bootstrap(
-            genesis: try BlockHeader(node: genesis), fetcher: fetcher,
-            context: childContext, parentFacts: try granting(genesis)
-        ).get()
-        return (bootstrapped.tree, bootstrapped.batches)
-    }
-
     private func work(_ seed: String, _ amount: UInt64 = 1) -> VerifiedWorkContribution {
         VerifiedWorkContribution(id: testCID("grind-\(seed)"), work: UInt256(amount))
+    }
+
+    /// Test evidence of `work` securing exactly `block`.
+    private func evidence(_ block: Block, _ work: VerifiedWorkContribution) throws -> VerifiedChildEvidence {
+        try TreeDriver.evidence(for: block, work: work)
+    }
+
+    /// A child tree bootstrapped from `genesis` through the one genesis path,
+    /// weighed by `work`.
+    private func childTree(
+        _ genesis: Block,
+        work: VerifiedWorkContribution,
+        fetcher: StorableFetcher
+    ) async throws -> (tree: ChainTree, facts: BlockImportBatch) {
+        let bootstrapped = try await ChainTree.bootstrap(
+            genesis: try BlockHeader(node: genesis), evidence: try evidence(genesis, work),
+            fetcher: fetcher, context: childContext
+        ).get()
+        return (bootstrapped.tree, bootstrapped.facts)
     }
 
     /// Every block the tree holds that it executed.
@@ -58,41 +54,115 @@ final class MultiRootGenesisTests: XCTestCase {
         Set(try blocks.map(cid).filter { tree.hasExecutedAncestry(blockHash: $0) })
     }
 
+    /// Grind `build` until its block meets its own target.
+    private func mined(_ build: (UInt64) async throws -> Block) async throws -> Block {
+        for nonce in UInt64(1)..<UInt64(4_000) {
+            let block = try await build(nonce)
+            if block.proofOfWorkHash() <= block.target { return block }
+        }
+        throw XCTSkip("no grind found")
+    }
+
+    // MARK: - Merge-mined genesis under a real hard-target Nexus carrier
+
+    /// A child genesis committing a REAL parent state is merge-mined into a
+    /// Nexus block whose hash meets a hard (non-max) target. It reaches the
+    /// executed set with no parent record — only its proof and continuity —
+    /// and a rival root carried with more work displaces it.
+    func testAMergeMinedGenesisExecutesWithoutAParentRecordAndAHeavierRivalDisplacesIt() async throws {
+        let fetcher = StorableFetcher()
+        let nexusGenesis = try await buildAndStoreGenesis(
+            spec: chainLocalSpec(),
+            transactions: [AdmissionFixture.unsignedStateChangingGenesisTransaction(
+                key: "nexus-state", chainPath: [DEFAULT_ROOT_DIRECTORY]
+            )],
+            timestamp: 1_000, target: easy, fetcher: fetcher
+        )
+        XCTAssertNotEqual(nexusGenesis.postState.rawCID, LatticeState.emptyHeader.rawCID, "a real parent state")
+        var nexus = try await TreeDriver.tree(genesis: nexusGenesis, context: testChainContext(genesis: nexusGenesis), fetcher: fetcher)
+
+        func childGenesis(nonce: UInt64) async throws -> Block {
+            let block = try await BlockBuilder.buildChildGenesis(
+                spec: chainLocalSpec(), parentState: nexusGenesis.postState,
+                timestamp: 1_500, target: easy, nonce: nonce, fetcher: fetcher
+            )
+            try await storeBuiltBlock(block, in: fetcher)
+            return block
+        }
+        /// A real Nexus block, mined to `target`, carrying `child`.
+        func carrier(of child: Block, target: UInt256, timestamp: Int64) async throws -> Block {
+            try await mined { nonce in
+                try await buildAndStoreBlock(
+                    previous: nexusGenesis, children: ["Child": child],
+                    timestamp: timestamp, target: target, nonce: nonce, fetcher: fetcher
+                )
+            }
+        }
+        func carriedEvidence(_ child: Block, by carrier: Block) async throws -> VerifiedChildEvidence {
+            let proof = try await ChildBlockProof.generate(
+                rootHeader: try BlockHeader(node: carrier), childDirectory: "Child", fetcher: fetcher
+            )
+            return try await proof.verifySecuringWork(child: child, chainPath: childContext.path).get()
+        }
+
+        let hard = easy / UInt256(4)
+        let genesis = try await childGenesis(nonce: 1)
+        let firstCarrier = try await carrier(of: genesis, target: hard, timestamp: 2_000)
+        let carrierInsert = try await TreeDriver.insert(firstCarrier, into: &nexus, fetcher: fetcher)
+        XCTAssertNotNil(carrierInsert.update, "a real Nexus block")
+        let firstEvidence = try await carriedEvidence(genesis, by: firstCarrier)
+        XCTAssertEqual(firstEvidence.contribution?.work, workForTarget(hard), "priced by the hard carrier")
+
+        // Continuity is the only parent fact: the parent state is produced by
+        // the Nexus executed set. No parent block records this genesis.
+        let parentFacts = ParentLevelFacts(tree: nexus)
+        let bootstrapped = try await ChainTree.bootstrap(
+            genesis: try BlockHeader(node: genesis), evidence: firstEvidence,
+            fetcher: fetcher, context: childContext, parentFacts: parentFacts
+        ).get()
+        var tree = bootstrapped.tree
+        XCTAssertTrue(tree.hasExecutedAncestry(blockHash: try cid(genesis)))
+        XCTAssertEqual(tree.canonicalTip, try cid(genesis))
+
+        // A rival root, carried by a harder carrier: more work, so it wins.
+        let rival = try await childGenesis(nonce: 2)
+        let harder = hard / UInt256(4)
+        let rivalCarrier = try await carrier(of: rival, target: harder, timestamp: 2_100)
+        let rivalEvidence = try await carriedEvidence(rival, by: rivalCarrier)
+        XCTAssertNotNil(tree.insertGenesis(rival, spec: chainLocalSpec(), evidence: rivalEvidence).update)
+        XCTAssertEqual(tree.canonicalTip, try cid(rival), "the heavier root wins")
+        XCTAssertFalse(tree.hasExecutedAncestry(blockHash: try cid(rival)), "weighed, not yet executed")
+        let executed = try await TreeDriver.connect(try cid(rival), on: &tree, fetcher: fetcher, parentFacts: parentFacts)
+        XCTAssertNotNil(executed.update)
+        XCTAssertTrue(tree.hasExecutedAncestry(blockHash: try cid(rival)))
+        XCTAssertTrue(tree.hasExecutedAncestry(blockHash: try cid(genesis)), "execution is never revoked")
+    }
+
     // MARK: - Weighed graph; executed set inside it
 
-    /// An unauthorized root weighs — its descendants' work included — and
-    /// is selected by weight, but it is never executed until authorized:
-    /// the executed set stays inside the weighed graph.
-    func testAnUnauthorizedRootWeighsButExecutesOnlyOnceAuthorized() async throws {
+    /// A rival root weighs from its proof — its descendants' work included —
+    /// and is selected by weight, but executes only when connected.
+    func testARivalRootWeighsByItsProofAndExecutesLikeAnyBlock() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
         let rival = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 2)
         let rivalChild = try await AdmissionFixture.makeChild(of: rival, fetcher: fetcher, timestamp: 2_000, nonce: 1)
-        var (tree, _) = try await childTree(genesis, fetcher: fetcher)
+        var (tree, _) = try await childTree(genesis, work: work("genesis"), fetcher: fetcher)
 
-        let inserted = try XCTUnwrap(tree.insertGenesis(rival, spec: chainLocalSpec()).update)
-        XCTAssertEqual(inserted.batches.map { $0.facts.count }, [1], "a genesis fact alone: no work of its own")
-        XCTAssertEqual(tree.subtreeWeight(forHash: try cid(rival)), .zero)
+        XCTAssertEqual(tree.insertGenesis(rival, spec: chainLocalSpec()).failure,
+                       .crossChainEvidenceRequired(.childProof(chainPath: childContext.path, childCID: try cid(rival))),
+                       "a child root weighs only by a proof")
+        let inserted = try XCTUnwrap(tree.insertGenesis(rival, spec: chainLocalSpec(), evidence: try evidence(rival, work("rival"))).update)
+        XCTAssertEqual(inserted.batches.map { $0.facts.count }, [2], "block and work")
+        XCTAssertEqual(tree.subtreeWeight(forHash: try cid(rival)), WorkSum(UInt256(1)))
         let weighed = try await TreeDriver.insert(rivalChild, into: &tree, fetcher: fetcher, work: work("rival-child"))
         XCTAssertNotNil(weighed.update)
-        XCTAssertEqual(tree.subtreeWeight(forHash: try cid(rival)), WorkSum(UInt256(1)))
         XCTAssertEqual(tree.canonicalTip, try cid(rivalChild), "the heavier root wins, executed or not")
 
-        // Unauthorized: no verdict, and nothing recorded.
-        let refused = try await TreeDriver.connect(try cid(rival), on: &tree, fetcher: fetcher)
-        guard case .crossChainEvidenceRequired(.parentGenesis(_, "Child", let genesisCID, _))? = refused.failure else {
-            return XCTFail("an unauthorized root asks for its parent's genesis fact, got \(refused)")
-        }
-        XCTAssertEqual(genesisCID, try cid(rival))
         let all = [genesis, rival, rivalChild]
         XCTAssertEqual(try executedSet(tree, among: all), [try cid(genesis)])
-
-        // Authorized: it executes, and so can its block.
-        let executed = try await TreeDriver.connect(
-            try cid(rival), on: &tree, fetcher: fetcher, parentFacts: try granting(rival)
-        )
-        XCTAssertNotNil(executed.update)
-        XCTAssertEqual(executed.update?.parentGenesisLinks, [])
+        let rivalExecuted = try await TreeDriver.connect(try cid(rival), on: &tree, fetcher: fetcher)
+        XCTAssertNotNil(rivalExecuted.update)
         XCTAssertTrue(tree.hasExecutedAncestry(blockHash: try cid(rival)))
         for hash in try executedSet(tree, among: all) {
             XCTAssertTrue(tree.contains(blockHash: hash), "executed ⊆ weighed")
@@ -101,104 +171,91 @@ final class MultiRootGenesisTests: XCTestCase {
 
     // MARK: - Validity selects; root exclusion
 
-    /// An authorized but invalid root is excluded while another executed
-    /// root stands: never executed, never selected, its subtree still weighs.
-    func testAnInvalidAuthorizedRootIsExcludedAndStillWeighs() async throws {
+    /// An invalid root is excluded while another executed root stands: never
+    /// executed, never selected, its subtree still weighs.
+    func testAnInvalidRootIsExcludedAndStillWeighs() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
         let template = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 3)
         let invalid = try await TreeDriver.forgedPostState(of: template, seed: "invalid-root", fetcher: fetcher)
         let below = try await AdmissionFixture.makeChild(of: invalid, fetcher: fetcher, timestamp: 2_000, nonce: 1)
-        var (tree, _) = try await childTree(genesis, fetcher: fetcher)
+        var (tree, _) = try await childTree(genesis, work: work("genesis"), fetcher: fetcher)
 
-        XCTAssertNotNil(tree.insertGenesis(invalid, spec: chainLocalSpec()).update)
+        XCTAssertNotNil(tree.insertGenesis(invalid, spec: chainLocalSpec(), evidence: try evidence(invalid, work("invalid"))).update)
         let weighedBelow = try await TreeDriver.insert(below, into: &tree, fetcher: fetcher, work: work("below", 5))
         XCTAssertNotNil(weighedBelow.update)
         XCTAssertEqual(tree.canonicalTip, try cid(below))
 
-        let verdict = try await TreeDriver.connect(
-            try cid(invalid), on: &tree, fetcher: fetcher, parentFacts: try granting(invalid)
-        )
+        let verdict = try await TreeDriver.connect(try cid(invalid), on: &tree, fetcher: fetcher)
         XCTAssertEqual(verdict.update?.excluded, true)
         XCTAssertTrue(tree.isExcludedRoot(try cid(invalid)))
         XCTAssertFalse(tree.hasExecutedAncestry(blockHash: try cid(invalid)))
-        XCTAssertEqual(tree.subtreeWeight(forHash: try cid(invalid)), WorkSum(UInt256(5)), "work weighs")
+        XCTAssertEqual(tree.subtreeWeight(forHash: try cid(invalid)), WorkSum(UInt256(6)), "work weighs")
         XCTAssertEqual(tree.canonicalTip, try cid(genesis), "validity selects")
     }
 
-    /// The root-exclusion rule holds with several roots: the only executed
-    /// root is never excluded (irrevocable), and an unexecuted root is
-    /// excluded only while an executed one stands.
+    /// The root-exclusion rule: a chain's only root is never excluded, and an
+    /// executed root is never excluded at all (irrevocable), live or replayed.
     func testTheRootExclusionRuleHoldsAcrossRoots() async throws {
         let fetcher = StorableFetcher()
         let template = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 4)
         let invalid = try await TreeDriver.forgedPostState(of: template, seed: "lone-root", fetcher: fetcher)
         var lone = ChainTree.empty(context: childContext)
-        XCTAssertNotNil(lone.insertGenesis(invalid, spec: chainLocalSpec()).update)
-        let refused = try await TreeDriver.connect(
-            try cid(invalid), on: &lone, fetcher: fetcher, parentFacts: try granting(invalid)
-        )
+        XCTAssertNotNil(lone.insertGenesis(invalid, spec: chainLocalSpec(), evidence: try evidence(invalid, work("lone"))).update)
+        let refused = try await TreeDriver.connect(try cid(invalid), on: &lone, fetcher: fetcher)
         XCTAssertEqual(refused.failure, .notYetValid, "no executed root to stand on")
         XCTAssertFalse(lone.isExcludedRoot(try cid(invalid)))
 
         let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
-        var (tree, _) = try await childTree(genesis, fetcher: fetcher)
+        var (tree, facts) = try await childTree(genesis, work: work("genesis"), fetcher: fetcher)
         let contradiction = tree.applyConnect(ConnectVerdict(
             blockHash: try cid(genesis), outcome: .invalid(isGenesis: true)
         ))
         XCTAssertEqual(contradiction.failure, .localVerificationFailure, "execution is never revoked")
         XCTAssertFalse(tree.isExcludedRoot(try cid(genesis)))
+        // The reducer is the fail-closed twin: a durable contradiction does
+        // not restore, whatever the order.
+        let exclusion = BlockImportBatch.staged([.exclusion(ChainExclusionFact(blockHash: try cid(genesis)))])
+        for order in [[facts, exclusion], [exclusion, facts]] {
+            XCTAssertThrowsError(try ChainTree.restore(replaying: order, context: childContext))
+        }
     }
 
     // MARK: - Continuity; weighed-only blocks issue no facts
 
-    /// An unexecuted root's declared states are claims: no continuity, no
-    /// genesis link, until it executes.
-    func testAWeighedOnlyRootIssuesNoFactsAndAttestsNoState() async throws {
+    /// An unexecuted root's declared post-state is a claim: no continuity
+    /// until it executes. A genesis whose parent state no executed parent
+    /// block produced does not execute.
+    func testAWeighedOnlyRootAttestsNothingAndAGenesisNeedsContinuity() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let childGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 9)
-        let keyPair = CryptoUtils.generateKeyPair()
-        let body = TransactionBody(
-            accountActions: [], actions: [], depositActions: [],
-            genesisActions: [GenesisAction(directory: "Child", blockCID: try cid(childGenesis))],
-            receiptActions: [], withdrawalActions: [],
-            signers: [testAddress(publicKey: keyPair.publicKey)], nonce: 0,
-            chainPath: [DEFAULT_ROOT_DIRECTORY]
+        let nexusGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let unproduced = try await BlockBuilder.buildChildGenesis(
+            spec: chainLocalSpec(), parentState: LatticeStateHeader(rawCID: testCID("never-produced")),
+            timestamp: 1_500, target: easy, nonce: 1, fetcher: fetcher
         )
-        // A rival ROOT of the parent chain whose genesis transaction issues
-        // the child's genesis link.
-        let issuer = try await AdmissionFixture.makeGenesis(
-            fetcher: fetcher, timestamp: 1_000, nonce: 5,
-            transactions: [signedTestTransaction(body, by: keyPair)]
+        try await storeBuiltBlock(unproduced, in: fetcher)
+        let nexus = try await TreeDriver.tree(genesis: nexusGenesis, context: testChainContext(genesis: nexusGenesis), fetcher: fetcher)
+        let refused = await ChainTree.bootstrap(
+            genesis: try BlockHeader(node: unproduced), evidence: try evidence(unproduced, work("unproduced")),
+            fetcher: fetcher, context: childContext, parentFacts: ParentLevelFacts(tree: nexus)
         )
-        var parent = try await ChainTree.bootstrap(
-            genesis: try BlockHeader(node: genesis), fetcher: fetcher, context: rootContext
-        ).get().tree
-        let weighed = try XCTUnwrap(parent.insertGenesis(issuer, spec: chainLocalSpec()).update)
-        XCTAssertEqual(weighed.parentGenesisLinks, [], "a weighed-only root issues no facts")
-        XCTAssertFalse(parent.executedSetProduced(stateCID: issuer.postState.rawCID))
+        guard case .failure(.crossChainEvidenceRequired(.parentStateContinuity)) = refused else {
+            return XCTFail("a genesis proves its parent state like any child block, got \(refused)")
+        }
 
-        var facts = ParentLevelFacts(tree: parent)
-        facts.record(weighed)
-        XCTAssertFalse(facts.recordsGenesis(try link(childGenesis)), "no executed issuer")
-
-        let childLink = try link(childGenesis)
-        let executed = try await TreeDriver.connect(try cid(issuer), on: &parent, fetcher: fetcher)
-        let update = try XCTUnwrap(executed.update)
-        XCTAssertEqual(update.parentGenesisLinks, [childLink])
-        XCTAssertTrue(parent.executedSetProduced(stateCID: issuer.postState.rawCID), "continuity from any executed root")
-
-        // Genesis links from ANY executed parent block: the issuer is a
-        // losing root, and still authorizes the child.
-        facts.record(update)
-        facts.tree = parent
-        XCTAssertTrue(facts.recordsGenesis(childLink))
-        let child = try await ChainTree.bootstrap(
-            genesis: try BlockHeader(node: childGenesis), fetcher: fetcher,
-            context: childContext, parentFacts: facts
-        ).get()
-        XCTAssertTrue(child.tree.hasExecutedAncestry(blockHash: try cid(childGenesis)))
+        let keyed = try await AdmissionFixture.makeGenesis(
+            fetcher: fetcher, timestamp: 1_000, nonce: 7,
+            transactions: [AdmissionFixture.unsignedStateChangingGenesisTransaction(
+                key: "weighed-only", chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
+            )]
+        )
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        var (tree, _) = try await childTree(genesis, work: work("genesis"), fetcher: fetcher)
+        let weighed = try XCTUnwrap(tree.insertGenesis(keyed, spec: chainLocalSpec(), evidence: try evidence(keyed, work("keyed"))).update)
+        XCTAssertNil(weighed.materializedPostState, "a weighed-only root issues nothing")
+        XCTAssertFalse(tree.executedSetProduced(stateCID: keyed.postState.rawCID))
+        _ = try await TreeDriver.connect(try cid(keyed), on: &tree, fetcher: fetcher)
+        XCTAssertTrue(tree.executedSetProduced(stateCID: keyed.postState.rawCID), "continuity from any executed root")
     }
 
     // MARK: - Hierarchical GHOST, grinds deduped
@@ -211,47 +268,46 @@ final class MultiRootGenesisTests: XCTestCase {
         let rival = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 2)
         let a = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
         let b = try await AdmissionFixture.makeChild(of: rival, fetcher: fetcher, timestamp: 2_000, nonce: 1)
-        var (tree, _) = try await childTree(genesis, fetcher: fetcher)
-        XCTAssertNotNil(tree.insertGenesis(rival, spec: chainLocalSpec()).update)
-
         let shared = work("shared", 2)
-        let weighedA = try await TreeDriver.insert(a, into: &tree, fetcher: fetcher, work: shared)
+        var (tree, _) = try await childTree(genesis, work: shared, fetcher: fetcher)
+        XCTAssertEqual(tree.insertGenesis(rival, spec: chainLocalSpec(), evidence: try evidence(rival, shared)).failure,
+                       .providerMalformedEvidence, "one grind, one location per chain — roots included")
+        XCTAssertNotNil(tree.insertGenesis(rival, spec: chainLocalSpec(), evidence: try evidence(rival, work("rival"))).update)
+
+        let weighedA = try await TreeDriver.insert(a, into: &tree, fetcher: fetcher, work: work("a", 1))
         XCTAssertNotNil(weighedA.update)
-        let elsewhere = try await TreeDriver.insert(b, into: &tree, fetcher: fetcher, work: shared)
-        XCTAssertEqual(elsewhere.failure, .providerMalformedEvidence, "one grind, one location per chain")
         let weighedB = try await TreeDriver.insert(b, into: &tree, fetcher: fetcher, work: work("b", 1))
         XCTAssertNotNil(weighedB.update)
-        XCTAssertEqual(tree.canonicalTip, try cid(a))
+        XCTAssertEqual(tree.canonicalTip, try cid(a), "3 against 2")
 
-        // Two more grinds under the rival outweigh the shared one.
-        XCTAssertNotNil(tree.addWork(work("b2", 2), to: try cid(b)).update)
+        XCTAssertNotNil(tree.addWork(work("b2", 3), to: try cid(b)).update)
         XCTAssertEqual(tree.canonicalTip, try cid(b))
-        // A repeated observation of a held grind counts once.
-        guard case .duplicate = tree.addWork(work("b2", 2), to: try cid(b)) else {
+        guard case .duplicate = tree.addWork(work("b2", 3), to: try cid(b)) else {
             return XCTFail("a repeated observation adds nothing")
         }
-        XCTAssertEqual(tree.subtreeWeight(forHash: try cid(rival)), WorkSum(UInt256(3)))
+        XCTAssertEqual(tree.subtreeWeight(forHash: try cid(rival)), WorkSum(UInt256(5)))
     }
 
     // MARK: - Spec per root
 
-    /// Each root's spec is held by its CID, and a block under a spec
-    /// mismatch is still scheduled by its ROOT's spec, held or not its own.
+    /// Each root's spec is held by its CID; a block under a spec mismatch is
+    /// still scheduled by its ROOT's spec; restore holds whatever specs it is
+    /// given, and a root without one only refuses headers beneath it.
     func testEveryRootHoldsItsOwnSpecAndSchedulesItsSubtree() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
         let otherSpec = ChainSpec.test(premine: 7)
         let rival = try await buildAndStoreGenesis(
-            spec: otherSpec, timestamp: 1_000, target: AdmissionFixture.easy, nonce: 2, fetcher: fetcher
+            spec: otherSpec, timestamp: 1_000, target: easy, nonce: 2, fetcher: fetcher
         )
-        var (tree, bootstrapBatches) = try await childTree(genesis, fetcher: fetcher)
-        XCTAssertEqual(tree.insertGenesis(rival, spec: chainLocalSpec()).failure, .providerMalformedEvidence,
-                       "a spec that is not the one the genesis names")
-        let inserted = try XCTUnwrap(tree.insertGenesis(rival, spec: otherSpec).update)
+        var (tree, bootstrapFacts) = try await childTree(genesis, work: work("genesis"), fetcher: fetcher)
+        let rivalEvidence = try evidence(rival, work("rival"))
+        XCTAssertEqual(tree.insertGenesis(rival, spec: chainLocalSpec(), evidence: rivalEvidence).failure,
+                       .providerMalformedEvidence, "a spec that is not the one the genesis names")
+        XCTAssertEqual(tree.specs.count, 1, "a refused genesis holds no spec")
+        let inserted = try XCTUnwrap(tree.insertGenesis(rival, spec: otherSpec, evidence: rivalEvidence).update)
         XCTAssertEqual(tree.specs.count, 2)
 
-        // A block under the first root declaring the rival's spec: excluded,
-        // and its own child is still scheduled by the first root's spec.
         let valid = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
         let offSpec = try await storeBuiltBlock(Block(
             version: valid.version, parent: valid.parent, transactions: valid.transactions,
@@ -269,9 +325,12 @@ final class MultiRootGenesisTests: XCTestCase {
         let below = try XCTUnwrap(belowInsert.update)
         XCTAssertFalse(below.excluded, "linked to its parent; never selected, as it sits under an exclusion")
 
-        // Restore needs every root's spec.
-        let batches = bootstrapBatches + inserted.batches + excluded.batches + below.batches
-        XCTAssertThrowsError(try ChainTree.restore(replaying: batches, context: childContext, specs: [chainLocalSpec()]))
+        let rivalChild = try await AdmissionFixture.makeChild(of: rival, fetcher: fetcher, timestamp: 2_000, nonce: 2)
+        let batches = [bootstrapFacts] + inserted.batches + excluded.batches + below.batches
+        var partial = try ChainTree.restore(replaying: batches, context: childContext, specs: [chainLocalSpec()])
+        XCTAssertEqual(partial.specs.count, 1)
+        let underMissing = try await TreeDriver.insert(rivalChild, into: &partial, fetcher: fetcher, work: work("rc"))
+        XCTAssertEqual(underMissing.failure, .notAcceptedAtCurrentChain, "a root without its spec refuses headers")
         let restored = try ChainTree.restore(
             replaying: batches, context: childContext, specs: [chainLocalSpec(), otherSpec]
         )
@@ -293,21 +352,18 @@ final class MultiRootGenesisTests: XCTestCase {
         let b = try await AdmissionFixture.makeChild(of: rival, fetcher: fetcher, timestamp: 2_000, nonce: 1)
         let x = try await AdmissionFixture.makeChild(of: invalid, fetcher: fetcher, timestamp: 2_000, nonce: 1)
 
-        var (tree, batches) = try await childTree(genesis, fetcher: fetcher)
+        var (tree, bootstrapFacts) = try await childTree(genesis, work: work("genesis"), fetcher: fetcher)
+        var batches = [bootstrapFacts]
         func keep(_ admission: ChainTreeAdmission) throws {
             batches += try XCTUnwrap(admission.update, "\(admission)").batches
         }
-        try keep(tree.insertGenesis(rival, spec: chainLocalSpec()))
-        try keep(tree.insertGenesis(invalid, spec: chainLocalSpec()))
+        try keep(tree.insertGenesis(rival, spec: chainLocalSpec(), evidence: try evidence(rival, work("rival"))))
+        try keep(tree.insertGenesis(invalid, spec: chainLocalSpec(), evidence: try evidence(invalid, work("invalid"))))
         try keep(try await TreeDriver.insert(a, into: &tree, fetcher: fetcher, work: work("a", 1)))
         try keep(try await TreeDriver.insert(b, into: &tree, fetcher: fetcher, work: work("b", 2)))
         try keep(try await TreeDriver.insert(x, into: &tree, fetcher: fetcher, work: work("x", 9)))
-        try keep(try await TreeDriver.connect(
-            try cid(rival), on: &tree, fetcher: fetcher, parentFacts: try granting(rival)
-        ))
-        try keep(try await TreeDriver.connect(
-            try cid(invalid), on: &tree, fetcher: fetcher, parentFacts: try granting(invalid)
-        ))
+        try keep(try await TreeDriver.connect(try cid(rival), on: &tree, fetcher: fetcher))
+        try keep(try await TreeDriver.connect(try cid(invalid), on: &tree, fetcher: fetcher))
         try keep(try await TreeDriver.connect(try cid(b), on: &tree, fetcher: fetcher))
         XCTAssertEqual(tree.canonicalTip, try cid(b))
 
@@ -322,7 +378,7 @@ final class MultiRootGenesisTests: XCTestCase {
             XCTAssertEqual(restored.canonicalTip, tree.canonicalTip)
             XCTAssertEqual(try executedSet(restored, among: all), expectedExecuted)
             XCTAssertTrue(restored.isExcludedRoot(try cid(invalid)))
-            XCTAssertEqual(restored.isExcludedRoot(try cid(rival)), false)
+            XCTAssertFalse(restored.isExcludedRoot(try cid(rival)))
         }
     }
 }

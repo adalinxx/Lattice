@@ -84,9 +84,6 @@ public extension Block {
                     ]] = .targeted
                 }
             }
-            for action in body.genesisActions {
-                setPrevStatePath([GENESIS_STATE_PROPERTY, action.directory])
-            }
             for action in body.receiptActions {
                 setPrevStatePath([
                     RECEIPT_STATE_PROPERTY,

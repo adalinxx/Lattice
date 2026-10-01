@@ -143,8 +143,7 @@ final class StatelessNexusVerificationTests: XCTestCase {
                     AccountAction(owner: aliceAddr, delta: -Int64(transfer + fee)),
                     AccountAction(owner: bobAddr, delta: Int64(transfer))
                 ],
-                actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [], signers: [aliceAddr], nonce: 0,
+                actions: [], depositActions: [], receiptActions: [], withdrawalActions: [], signers: [aliceAddr], nonce: 0,
                 chainPath: ["Nexus"]
             ), alice)],
             timestamp: ts3, target: target,
@@ -190,8 +189,7 @@ final class StatelessChildChainVerificationTests: XCTestCase {
             spec: childSpec,
             transactions: [sign(TransactionBody(
                 accountActions: [AccountAction(owner: ownerAddr, delta: Int64(childSpec.premineAmount()))],
-                actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [], signers: [ownerAddr], nonce: 0,
+                actions: [], depositActions: [], receiptActions: [], withdrawalActions: [], signers: [ownerAddr], nonce: 0,
                 chainPath: ["Nexus"]
             ), kp)],
             timestamp: now - 30_000, target: target, fetcher: producerFetcher
@@ -210,10 +208,6 @@ final class StatelessChildChainVerificationTests: XCTestCase {
             transactions: [sign(TransactionBody(
                 accountActions: [],
                 actions: [], depositActions: [],
-                genesisActions: [GenesisAction(
-                    directory: "Payments",
-                    blockCID: try VolumeImpl<Block>(node: childGenesis).rawCID
-                )],
                 receiptActions: [], withdrawalActions: [], signers: [ownerAddr], nonce: 0,
                 chainPath: ["Nexus"]
             ), kp)],
@@ -278,8 +272,7 @@ final class TargetedResolutionTests: XCTestCase {
         let txs1 = [sign(TransactionBody(
             accountActions: [AccountAction(owner: addrs[0], delta: -credit * 9)]
                 + (1..<10).map { AccountAction(owner: addrs[$0], delta: credit) },
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [addrs[0]], nonce: 0,
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [], signers: [addrs[0]], nonce: 0,
             chainPath: ["Nexus"]
         ), keyPairs[0])]
 
@@ -302,8 +295,7 @@ final class TargetedResolutionTests: XCTestCase {
                     AccountAction(owner: addrs[0], delta: -transferAmount),
                     AccountAction(owner: addrs[1], delta: transferAmount)
                 ],
-                actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [], signers: [addrs[0]], nonce: 1,
+                actions: [], depositActions: [], receiptActions: [], withdrawalActions: [], signers: [addrs[0]], nonce: 1,
                 chainPath: ["Nexus"]
             ), keyPairs[0])],
             timestamp: ts2, target: target,

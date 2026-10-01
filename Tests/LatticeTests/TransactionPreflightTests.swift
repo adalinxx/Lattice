@@ -35,7 +35,6 @@ final class TransactionPreflightTests: XCTestCase {
             accountActions: accountActions,
             actions: [],
             depositActions: [],
-            genesisActions: [],
             receiptActions: [],
             withdrawalActions: withdrawalActions,
             signers: addresses,

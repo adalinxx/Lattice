@@ -325,7 +325,6 @@ func buildPremineGenesis(
         accountActions: [AccountAction(owner: ownerAddress, delta: Int64(spec.premineAmount()))],
         actions: [],
         depositActions: [],
-        genesisActions: [],
         receiptActions: [],
         withdrawalActions: [],
         signers: [],
@@ -457,10 +456,24 @@ func storeWasmPolicy(
     return WasmPolicyRef(moduleCID: module.rawCID, scope: scope, entrypoint: entrypoint)
 }
 
+/// A root context pins a genesis CID (§5.1). Tests that never admit a root
+/// through `insertGenesis`, `connect` or `restore` with a context take the
+/// placeholder; the others pin their genesis (`testChainContext(genesis:)`).
+let testPlaceholderGenesisCID = testCID("test-placeholder-root-genesis")
+
 func testChainContext(
-    path: [String] = [DEFAULT_ROOT_DIRECTORY]
+    path: [String] = [DEFAULT_ROOT_DIRECTORY],
+    genesisCID: String? = nil
 ) -> ChainRuntimeContext {
-    try! ChainRuntimeContext(path: path)
+    try! ChainRuntimeContext(
+        path: path,
+        genesisCID: path.count == 1 ? (genesisCID ?? testPlaceholderGenesisCID) : nil
+    )
+}
+
+/// The root context pinned to `genesis`.
+func testChainContext(genesis: Block) -> ChainRuntimeContext {
+    testChainContext(genesisCID: try! BlockHeader(node: genesis).rawCID)
 }
 
 extension ChainLevel {
@@ -554,27 +567,9 @@ func testWorkBatch(
 
 func childValidationPackage(
     proof: ChildBlockProof,
-    fetcher _: any Fetcher,
-    parentGenesisLink: ParentGenesisLink? = nil
+    fetcher _: any Fetcher
 ) async throws -> ChildValidationPackage {
-    return ChildValidationPackage(
-        proof: proof,
-        parentGenesisLink: parentGenesisLink
-    )
-}
-
-func testParentGenesisLink(
-    directory: String,
-    childGenesisCID: String,
-    parentStateCID: String = testCID("parent-genesis-state"),
-    parentPath: [String] = [DEFAULT_ROOT_DIRECTORY]
-) -> ParentGenesisLink {
-    ParentGenesisLink(
-        parentPath: parentPath,
-        directory: directory,
-        childGenesisCID: childGenesisCID,
-        parentStateCID: parentStateCID
-    )
+    ChildValidationPackage(proof: proof)
 }
 
 @discardableResult
@@ -756,4 +751,44 @@ extension XCTestCase {
                 + "swift test --filter LatticeTests.\(type(of: self))/\(test)"
         )
     }
+}
+
+/// A child genesis's `ChildBlockProof`: a genesis-shaped carrier on the
+/// parent chain commits `childGenesis` under `directory`. The carrier's
+/// `prevState` is the empty state, so a child genesis committing the empty
+/// parent state needs no continuity fact.
+func carriedGenesisPackage(
+    _ childGenesis: Block,
+    directory: String = "Child",
+    nonce: UInt64 = 0,
+    target: UInt256 = UInt256.max,
+    fetcher: StorableFetcher
+) async throws -> ChildValidationPackage {
+    let carrier = try await buildAndStoreGenesis(
+        spec: chainLocalSpec(),
+        children: [directory: childGenesis],
+        timestamp: childGenesis.timestamp + 1,
+        target: target,
+        nonce: 10_000 + nonce,
+        fetcher: fetcher
+    )
+    let proof = try await ChildBlockProof.generate(
+        rootHeader: try BlockHeader(node: carrier),
+        childDirectory: directory,
+        fetcher: fetcher
+    )
+    return ChildValidationPackage(proof: proof)
+}
+
+/// The verified evidence of `carriedGenesisPackage` for `childGenesis`.
+func carriedGenesisEvidence(
+    _ childGenesis: Block,
+    path: [String] = [DEFAULT_ROOT_DIRECTORY, "Child"],
+    nonce: UInt64 = 0,
+    fetcher: StorableFetcher
+) async throws -> VerifiedChildEvidence {
+    let package = try await carriedGenesisPackage(
+        childGenesis, directory: path.last ?? "Child", nonce: nonce, fetcher: fetcher
+    )
+    return try await package.proof.verifySecuringWork(child: childGenesis, chainPath: path).get()
 }

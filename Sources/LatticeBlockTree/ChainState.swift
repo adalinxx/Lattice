@@ -197,6 +197,10 @@ public actor ChainState {
         tree.canonicalBlockHash(atHeight: height)
     }
 
+    public func isExecuted(blockHash: String) -> Bool {
+        tree.isExecuted(blockHash: blockHash)
+    }
+
     public func hasExecutedAncestry(blockHash: String) -> Bool {
         tree.hasExecutedAncestry(blockHash: blockHash)
     }

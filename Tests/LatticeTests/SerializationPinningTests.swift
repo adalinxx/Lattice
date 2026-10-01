@@ -81,7 +81,7 @@ final class SerializationPinningTests: XCTestCase {
     func testGenesisCIDMatchesGolden() async throws {
         let (_, cid) = try await deterministicGenesis()
 
-        let golden = "bafyreihj5onznvn3onyzzxs7qaq74qik6tkkitc44xymnjpjpccse2fwi4"
+        let golden = "bafyreigpyhfuoyirf3adenkl3jwnxjp3eqrdurfiudawiflgjwxuofk6ra"
         XCTAssertEqual(cid, golden,
             "genesis CID changed — this is a consensus-breaking change. If intentional, update the golden value.")
     }
@@ -93,7 +93,7 @@ final class SerializationPinningTests: XCTestCase {
         let hash = block.proofOfWorkHash()
         let hashHex = hash.toHexString()
 
-        let golden = "e5ba20b2da1a0d3542494c698a291f34e08de8c352976873861284782154e8f7"
+        let golden = "15b7d9fce7d6809c260c4d5531e291e6b79b6a33490833f3d4c730ae18b23ba9"
         XCTAssertEqual(hashHex, golden,
             "PoW hash changed — the preimage construction changed. If intentional, update the golden value.")
     }
@@ -151,7 +151,6 @@ final class SerializationPinningTests: XCTestCase {
             accountActions: [],
             actions: [],
             depositActions: [],
-            genesisActions: [],
             receiptActions: [],
             withdrawalActions: [],
             signers: [],
