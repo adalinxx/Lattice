@@ -368,9 +368,6 @@ public extension Block {
         // only by `genesis.timestamp`, so a genesis MUST carry its real
         // launch time.
         if parent.timestamp >= timestamp { return .offSchedule }
-        if !validationContext.permits(timestamp: timestamp) {
-            throw BlockValidationError.notYetValid
-        }
         guard let anchor = immediateDifficultyAnchor(parent: parent)
             ?? inheritedAnchor() else {
             throw AnchorUnavailable()
@@ -378,6 +375,13 @@ public extension Block {
         guard validateNextTarget(
             spec: spec, parent: parent, difficultyAnchor: anchor
         ) else { return .offSchedule }
+        // Only now the node's clock: every schedule check above is a function
+        // of the header and its parent, never of `now`, so a future-dated
+        // header off the schedule is a proof-of-work failure, not a hold
+        // (Bitcoin's ContextualCheckBlockHeader order: bits, then time).
+        if !validationContext.permits(timestamp: timestamp) {
+            throw BlockValidationError.notYetValid
+        }
         // Validity: deterministic rules against the parent's agreed state.
         if !validateSpec(parent: parent) || !validateState(parent: parent) {
             return .excluded
