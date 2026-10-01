@@ -792,8 +792,8 @@ enum BlockImport {
             // fact, and after every verdict above — so a malformed trie is
             // classified by the same funnel as any other deterministic
             // invalidity, and an unavailable one never blocks an exclusion.
-            // A possessed block already carries its map; enumerate only when
-            // none was recorded (a pre-field fact).
+            // A possessed block already carries its map; enumerate only for
+            // a block not yet held.
             let commitments: [String: String]
             if let recorded = await level.chain.recordedChildCommitments(of: blockHash) {
                 commitments = recorded

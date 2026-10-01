@@ -354,7 +354,8 @@ final class ChainTreeArchitectureTests: XCTestCase {
         let committerCID = try cid(committer)
         XCTAssertEqual(parent.recordedChildCommitments(of: committerCID), ["Child": try cid(childBlock)])
         parent.serveRuns(for: "Child")
-        let report = try XCTUnwrap(parent.parentRunReport(at: committerCID, directory: "Child"))
+        let runWork = try XCTUnwrap(parent.runs.runWork["Child"]?[committerCID])
+        let ownWork = try XCTUnwrap(parent.graph.work(of: committerCID)?.grindWork)
 
         // The committer's grind secures the child block.
         let grind = VerifiedWorkContribution(id: committerCID, work: UInt256(1))
@@ -364,13 +365,11 @@ final class ChainTreeArchitectureTests: XCTestCase {
         XCTAssertNotNil(childInserted.update)
         let before = try XCTUnwrap(child.subtreeWeight(forHash: childCID))
 
-        guard case .strengthened(let batch) = child.strengthenFromParentReport(
-            child: childCID, directory: "Child", report: report
-        ) else {
-            return XCTFail("the committer's run must strengthen the child block")
-        }
-        _ = try child.replay(batch)
-        let attributed = try XCTUnwrap(report.runWork.subtracting(report.ownWork))
+        XCTAssertEqual(
+            child.applyParentRun(from: parent, directory: "Child").raised, [childCID],
+            "the committer's run must strengthen the child block"
+        )
+        let attributed = try XCTUnwrap(runWork.subtracting(ownWork))
         XCTAssertEqual(child.subtreeWeight(forHash: childCID), before + attributed)
         XCTAssertGreaterThan(attributed, .zero, "the run beyond the committer weighs in the child")
 

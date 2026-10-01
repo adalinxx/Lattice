@@ -501,7 +501,7 @@ final class AdmissionDecisionGoldenTests: XCTestCase {
             AdmissionDecisionGolden.Fact(kind: "block", block: fixtures.name(value.blockHash), grind: nil, work: nil)
         case .work(let value):
             AdmissionDecisionGolden.Fact(
-                kind: value.attributedRun == nil ? "work" : "attributedRun",
+                kind: "work",
                 block: fixtures.name(value.blockHash),
                 grind: fixtures.name(value.contribution.id),
                 work: value.contribution.work.toHexString()

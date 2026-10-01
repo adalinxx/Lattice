@@ -31,17 +31,14 @@ public struct BlockMeta: Sendable {
     public var childHashes: [String]
     public let workContributions: [String: VerifiedWorkContribution]
     /// The contribution IDs here that are a parent's attributed runs (§9.10),
-    /// not grinds. A run report subtracts the committer's GRINDS — what the
-    /// child already holds — so a run attributed AT the committer stays in the
-    /// run it serves and reaches the next level down.
+    /// not grinds. A child's derivation subtracts the committer's GRINDS —
+    /// what the child already holds — so a run attributed AT the committer
+    /// stays in its run and reaches the next level down. Derived, in memory.
     public let attributedRuns: Set<String>
     /// Directory → child block CID this block commits, read from its PoW-bound
     /// `children` index at admission and carried on the durable block fact, so
     /// live admission and replay see the same commitments (§9.10).
-    /// Nil when NOT RECORDED — a fact written before this field existed — which
-    /// is not "commits nothing": replay tolerates it, and a later fact for the
-    /// same block supplies the real map (`BlockGraph.adoptChildCommitments`).
-    public let childCommitments: [String: String]?
+    public let childCommitments: [String: String]
 
     /// Backward cumulative proof-of-work prefix measure from genesis through
     /// this block. Each physical grind has one block location in this chain.
@@ -64,7 +61,7 @@ public struct BlockMeta: Sendable {
         cumulativeWork: WorkSum = .zero,
         subtreeWeight: WorkSum? = nil,
         difficultyAnchor: DifficultyAnchor? = nil,
-        childCommitments: [String: String]? = nil
+        childCommitments: [String: String] = [:]
     ) {
         let contributions = Dictionary(
             workContributions.map { ($0.id, $0) },
@@ -83,8 +80,8 @@ public struct BlockMeta: Sendable {
         self.subtreeWeight = subtreeWeight ?? work
         self.difficultyAnchor = difficultyAnchor
         self.childCommitments = childCommitments
-        // Attributed runs arrive as work-only facts after the block; a block is
-        // built with its grinds alone.
+        // Attributed runs are derived after the block (`applyParentRun`); a
+        // block is built with its grinds alone.
         self.attributedRuns = []
     }
 
@@ -199,8 +196,7 @@ private struct ConsensusBlockInput: Sendable {
     let blockHeight: UInt64
     let timestamp: Int64
     let snapshot: TipBlockSnapshot
-    /// Nil = not recorded on the fact (pre-field), never "commits nothing".
-    let childCommitments: [String: String]?
+    let childCommitments: [String: String]
 
     /// Requires an EXECUTED block.
     init(blockHeader: BlockHeader, block: Block) {
@@ -208,9 +204,8 @@ private struct ConsensusBlockInput: Sendable {
         parentBlockHash = block.parent?.rawCID
         blockHeight = block.height
         timestamp = block.timestamp
-        // Not enumerated on this test-only path: "not recorded", never a
-        // silent "commits nothing".
-        childCommitments = nil
+        // Not enumerated on this test-only path: it records no commitments.
+        childCommitments = [:]
         snapshot = TipBlockSnapshot(
             postStateCID: block.postState.rawCID,
             prevStateCID: block.prevState.rawCID,
@@ -242,7 +237,7 @@ private struct ConsensusBlockInput: Sendable {
         parentBlockHash = normalizedParent
         blockHeight = fact.blockHeight
         timestamp = fact.timestamp
-        childCommitments = fact.childCommitments
+        childCommitments = fact.childCommitments ?? [:]
         snapshot = TipBlockSnapshot(
             postStateCID: postStateCID,
             prevStateCID: prevStateCID,
@@ -261,8 +256,6 @@ private struct TrustedImportBatch {
     let block: ConsensusBlockInput?
     let workBlockHash: String
     let contribution: VerifiedWorkContribution
-    /// Set when the work fact is a parent's attributed run, not a grind.
-    let attributedRun: AttributedRunIdentity?
 
     init?(_ batch: BlockImportBatch) {
         guard !batch.facts.isEmpty,
@@ -290,17 +283,6 @@ private struct TrustedImportBatch {
             id: contributionID,
             work: work.contribution.work
         )
-        // An attributed run's marker names the identity its contribution ID is
-        // the CID of, and only a work-only batch carries one: a block's own
-        // work fact is its grind.
-        if let attributedRun = work.attributedRun {
-            guard blockFacts.isEmpty,
-                  attributedRun.contributionID.flatMap(CIDIdentity.canonicalString)
-                      == contributionID else {
-                return nil
-            }
-        }
-        self.attributedRun = work.attributedRun
         // The eager tier weighs and validates in one gate, so its batch may
         // carry one validation fact alongside the block and work. It must name
         // the batch's own block: a batch is one block's durability unit, and
@@ -385,7 +367,7 @@ public struct ChainTree: Sendable {
     /// durable, already-admitted facts, their commits are discarded, and no
     /// replay step reads the projection — so it is computed exactly once at
     /// the end of replay instead of per event.
-    private var deferProjectionForReplay = false
+    var deferProjectionForReplay = false
     /// Advances for every successful consensus mutation.
     var mutationGeneration: UInt64
     /// Capacity held across the node's asynchronous stage boundary. These
@@ -596,13 +578,21 @@ public struct ChainTree: Sendable {
     /// revision is a final lower bound, applied after replay so restarts do
     /// not create revisions. `context` is required: on a root chain it
     /// carries the pin restore enforces.
+    ///
+    /// The facts are observations only: attributed runs (§9.10) are derived,
+    /// never stored. A child chain passes its already-restored `parent` —
+    /// parent levels first, serving this chain's directory — and its runs
+    /// are re-derived (`applyParentRun`) before the one canonical projection.
     public static func restore(
         replaying batches: [BlockImportBatch],
         revisionFloor: UInt64 = 0,
         context: ChainRuntimeContext,
-        specs: [ChainSpec] = []
+        specs: [ChainSpec] = [],
+        parent: ChainTree? = nil
     ) throws -> ChainTree {
-        try restoring(batches, revisionFloor: revisionFloor, context: context, specs: specs)
+        try restoring(
+            batches, revisionFloor: revisionFloor, context: context, specs: specs, parent: parent
+        )
     }
 
     /// A tree with no chain context — tests and the superseded actor path's
@@ -612,14 +602,15 @@ public struct ChainTree: Sendable {
         revisionFloor: UInt64 = 0,
         specs: [ChainSpec] = []
     ) throws -> ChainTree {
-        try restoring(batches, revisionFloor: revisionFloor, context: nil, specs: specs)
+        try restoring(batches, revisionFloor: revisionFloor, context: nil, specs: specs, parent: nil)
     }
 
     private static func restoring(
         _ batches: [BlockImportBatch],
         revisionFloor: UInt64,
         context: ChainRuntimeContext?,
-        specs: [ChainSpec]
+        specs: [ChainSpec],
+        parent: ChainTree?
     ) throws -> ChainTree {
         guard batches.contains(where: decodesAsGenesis) else {
             throw ChainStateRestoreError.corruptConsensusGraph
@@ -639,6 +630,9 @@ public struct ChainTree: Sendable {
         chain.context = context
         chain.beginReplayProjectionDeferral()
         try replay(batches[...], onto: &chain)
+        if let parent, let directory = context?.path.last, context?.isRoot == false {
+            chain.applyParentRun(from: parent, directory: directory)
+        }
         chain.completeReplayProjectionDeferral()
         chain.sealRecovery(revisionFloor: revisionFloor)
         for spec in specs {
@@ -1021,8 +1015,8 @@ public struct ChainTree: Sendable {
             }
         }
         for contribution in contributions {
-            // A block arrives with its grinds; attributed runs come later, as
-            // work-only facts.
+            // A block arrives with its grinds; attributed runs are derived
+            // later (`applyParentRun`).
             applyLocalContribution(contribution, to: blockHash, attributed: false)
         }
         // Every connected block routes, a descendant of an excluded root
@@ -1091,7 +1085,7 @@ public struct ChainTree: Sendable {
     mutating func addWorkContribution(
         _ contribution: VerifiedWorkContribution,
         to blockHash: String,
-        attributedRun: AttributedRunIdentity? = nil
+        attributed: Bool = false
     ) -> SubmissionResult {
         guard graph.contains(blockHash),
               forkChoice.acceptsLocation(of: contribution.id, at: blockHash) else {
@@ -1103,7 +1097,7 @@ public struct ChainTree: Sendable {
         }
         guard hasUnreservedMutationCapacity else { return .discarded() }
         let workBefore = graph.work(of: blockHash)?.work ?? .zero
-        applyLocalContribution(contribution, to: blockHash, attributed: attributedRun != nil)
+        applyLocalContribution(contribution, to: blockHash, attributed: attributed)
         // A strengthening raises this block's own work, so its run (§9.10)
         // rises by exactly that delta — once the block is connected. An
         // orphan's work is credited in full at the moment it connects.
@@ -1202,11 +1196,7 @@ public struct ChainTree: Sendable {
                     throw ChainStateRestoreError.corruptConsensusGraph
                 }
                 hydrateMetadata(from: input)
-                let submission = addWorkContribution(
-                    contribution,
-                    to: input.blockHash,
-                    attributedRun: trusted.attributedRun
-                )
+                let submission = addWorkContribution(contribution, to: input.blockHash)
                 guard submission.addedContribution else {
                     throw ChainStateRestoreError.corruptConsensusGraph
                 }
@@ -1232,9 +1222,7 @@ public struct ChainTree: Sendable {
         ), existing.work >= contribution.work {
             return nil
         }
-        let submission = addWorkContribution(
-            contribution, to: blockHash, attributedRun: trusted.attributedRun
-        )
+        let submission = addWorkContribution(contribution, to: blockHash)
         guard submission.addedContribution else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
@@ -1360,10 +1348,8 @@ public struct ChainTree: Sendable {
             && meta.blockHeight == input.blockHeight
             // Commitments are PoW-bound content, so two honest facts for one
             // block agree; a disagreement is a graph conflict, rejected — never
-            // resolved by whichever fact happened to replay first. A fact that
-            // recorded none (pre-field) conflicts with nothing.
-            && (meta.childCommitments == nil || input.childCommitments == nil
-                || meta.childCommitments == input.childCommitments)
+            // resolved by whichever fact happened to replay first.
+            && meta.childCommitments == input.childCommitments
     }
 
     private mutating func hydrateMetadata(from input: ConsensusBlockInput) {
@@ -1371,23 +1357,6 @@ public struct ChainTree: Sendable {
         // The index above just recorded `input.snapshot` for this block.
         if canonicalTip == input.blockHash {
             frontier.refreshTipSnapshot()
-        }
-        if let commitments = input.childCommitments {
-            adoptChildCommitments(commitments, at: input.blockHash)
-        }
-    }
-
-    /// A later fact supplies commitments a pre-field fact left unrecorded. If
-    /// the block was already settled as a non-committer in a served directory
-    /// it now commits into, that directory's runs are re-settled from scratch:
-    /// O(N), exact, and reachable only at the upgrade boundary.
-    private mutating func adoptChildCommitments(_ commitments: [String: String], at hash: String) {
-        guard let meta = graph[hash], meta.childCommitments == nil else { return }
-        graph.adoptChildCommitments(commitments, at: hash)
-        guard forkChoice.isRouted(hash) else { return }
-        for directory in runs.served where commitments[directory] != nil {
-            runs.forget(directory: directory)
-            serveRuns(for: directory)
         }
     }
 

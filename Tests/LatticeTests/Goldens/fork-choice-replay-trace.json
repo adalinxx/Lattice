@@ -308,8 +308,8 @@
 
         ],
         "subject" : "b19",
-        "tip" : "b37",
-        "tipHeight" : 10
+        "tip" : "b39",
+        "tipHeight" : 11
       },
       {
         "event" : 403,
@@ -318,8 +318,8 @@
 
         ],
         "subject" : "b259",
-        "tip" : "b37",
-        "tipHeight" : 10
+        "tip" : "b39",
+        "tipHeight" : 11
       },
       {
         "event" : 225,
@@ -494,7 +494,7 @@
       },
       {
         "event" : 75,
-        "kind" : "attributedRun",
+        "kind" : "strengthen",
         "removed" : [
           "b29",
           "b34",
