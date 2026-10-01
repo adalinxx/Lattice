@@ -532,10 +532,9 @@ final class AdmissionDecisionGoldenTests: XCTestCase {
             return tree.insertChildHeader(block, childIndex: childIndex, evidence: evidence)
         case .genesis:
             guard step.package else {
-                return tree.insertGenesis(block, spec: AdmissionFixtures.spec)
+                return tree.insertGenesis(block, spec: AdmissionFixtures.spec, childIndex: testChildIndex(block))
             }
-            return tree.insertGenesis(
-                block, spec: AdmissionFixtures.spec,
+            return tree.insertGenesis(block, spec: AdmissionFixtures.spec, childIndex: testChildIndex(block),
                 evidence: try await fixtures.evidence(step.candidate, path: path)
             )
         case .connect:

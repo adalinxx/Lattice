@@ -257,9 +257,10 @@ public actor ChainState {
     public func applyParentRun(
         from parent: ChainTree,
         directory: String,
-        committers: Set<String>? = nil
+        parentBlocks: Set<String>? = nil,
+        held: Set<String> = []
     ) -> (raised: [String], commit: ChainCommit?) {
-        tree.applyParentRun(from: parent, directory: directory, committers: committers)
+        tree.applyParentRun(from: parent, directory: directory, parentBlocks: parentBlocks, held: held)
     }
 
     public func recordedChildCommitments(of blockHash: String) -> [String: String]? {

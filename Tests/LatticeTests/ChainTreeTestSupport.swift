@@ -112,3 +112,8 @@ enum TreeDriver {
         ), in: fetcher)
     }
 }
+
+/// A test block's own child index: every fixture builds its blocks in memory.
+func testChildIndex(_ block: Block) -> ChildIndex {
+    block.children.node ?? ChildIndex()
+}

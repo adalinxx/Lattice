@@ -173,7 +173,7 @@ final class ParentForkAttributionTests: XCTestCase {
         for _ in 0..<passes {
             for i in order where s.parent[i].commits[s.directory] != nil {
                 strengthened += await child.applyParentRun(
-                    from: parentTree, directory: s.directory, committers: [h(s.parent[i].name)]
+                    from: parentTree, directory: s.directory, parentBlocks: [h(s.parent[i].name)]
                 ).raised.count
             }
         }
