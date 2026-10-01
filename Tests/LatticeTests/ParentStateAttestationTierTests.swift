@@ -280,16 +280,12 @@ final class ParentStateAttestationTierTests: XCTestCase {
         ])
     }
 
-    /// An upgraded store replays facts that predate validation facts. Those
-    /// prove no execution, so they must come back UNVERIFIED — fail-closed.
-    ///
-    /// But the chain's own genesis must stay attestable regardless: it is
-    /// self-contained, commits the empty pre-state, and its transition is what
-    /// defines the chain. Block 1 anchors by walking back to a block whose
-    /// `prevState` is `emptyHeader`, which is the parent's genesis — so an
-    /// unattestable genesis makes that walk unable to terminate and silently
-    /// wedges every child chain.
-    func testLegacyReplayKeepsGenesisAttestableAndTheRestUnverified() async throws {
+    /// Facts carrying no validation fact prove no execution, so they come
+    /// back UNVERIFIED — fail-closed — a genesis included: a chain may hold
+    /// several roots (§9.4), and restore executes none of them on its own.
+    /// A root is executed only by its validation fact, which bootstrap
+    /// always persists with it.
+    func testReplayWithoutValidationFactsExecutesNothingNotEvenAGenesis() async throws {
         let empty = LatticeState.emptyHeader.rawCID
         let s1 = testCID("legacy-state-1")
         let s2 = testCID("legacy-state-2")
@@ -300,26 +296,20 @@ final class ParentStateAttestationTierTests: XCTestCase {
             legacyBatch(genesis, parent: nil, height: 0, from: empty, to: s1, nonce: 1),
             legacyBatch(one, parent: genesis, height: 1, from: s1, to: s2, nonce: 2),
         ])
-
         let genesisAttestable = await chain.hasStateContinuity(from: empty, to: s1)
-        XCTAssertTrue(
-            genesisAttestable,
-            """
-            The chain's own genesis must stay attestable across an upgrade, or \
-            a child's block 1 can never terminate its anchor walk and every \
-            child chain wedges silently.
-            """
-        )
-
+        XCTAssertFalse(genesisAttestable, "an unexecuted root is not attestable")
         let replayedBlockAttestable = await chain.hasStateContinuity(from: s1, to: s2)
-        XCTAssertFalse(
-            replayedBlockAttestable,
-            """
-            A replayed record carrying no validation fact proves no execution, \
-            so its declared post-state must not be attestable until the \
-            validate walk re-executes the block.
-            """
-        )
+        XCTAssertFalse(replayedBlockAttestable)
+
+        let validated = try await ChainState.restore(replaying: [
+            legacyBatch(genesis, parent: nil, height: 0, from: empty, to: s1, nonce: 1),
+            legacyBatch(one, parent: genesis, height: 1, from: s1, to: s2, nonce: 2),
+            .validation(blockHash: genesis),
+        ])
+        let executedGenesisAttestable = await validated.hasStateContinuity(from: empty, to: s1)
+        XCTAssertTrue(executedGenesisAttestable, "its validation fact executes the root")
+        let stillUnverified = await validated.hasStateContinuity(from: s1, to: s2)
+        XCTAssertFalse(stillUnverified)
     }
 
     /// T1: executing a block must anchor descendants executed EARLIER.

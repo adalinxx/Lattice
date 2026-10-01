@@ -178,7 +178,8 @@ struct PreparedImport: Sendable {
     let resolvedHeader: BlockHeader
     let block: Block
     let fetcher: any Fetcher
-    let contribution: VerifiedWorkContribution
+    /// Nil only for a genesis: it has no work of its own (§5.1).
+    let contribution: VerifiedWorkContribution?
     /// The chain this block is on: the parent path of its genesis links.
     let chainPath: [String]
     /// Whether this chain verified a complete ancestry for the block.
@@ -885,11 +886,13 @@ enum BlockImport {
     /// The one construction of an admission batch, whichever API admits the
     /// block: a block fact (with its child commitments) and its work, the
     /// validation last when the transition was executed; a work fact alone
-    /// for another grind; the exclusion alone for a proven-invalid block.
+    /// for another grind; the exclusion alone for a proven-invalid block. A
+    /// genesis with no grind (`contribution` nil) has no work fact: it has no
+    /// work of its own (§5.1).
     static func admissionFacts(
         blockHash: String,
         block: Block,
-        contribution: VerifiedWorkContribution,
+        contribution: VerifiedWorkContribution?,
         kind: PreparedImport.Kind,
         childCommitments: [String: String]?
     ) -> BlockImportBatch {
@@ -917,10 +920,12 @@ enum BlockImport {
         case .evidence, .exclusion:
             break
         }
-        facts.append(.work(ChainWorkFact(
-            blockHash: blockHash,
-            contribution: contribution
-        )))
+        if let contribution {
+            facts.append(.work(ChainWorkFact(
+                blockHash: blockHash,
+                contribution: contribution
+            )))
+        }
         // Last: execution is the newest judgment in the batch, and keeping the
         // block/work prefix stable leaves existing batch-shape expectations
         // positionally intact.
@@ -1165,19 +1170,18 @@ enum BlockImport {
         case unresolved(BlockImportError)
         case notGenesis
         case unauthorized
-        case noWork
         case invalid(BlockImportError)
         case ready(
             (header: BlockHeader, block: Block),
-            VerifiedWorkContribution,
             ExecutedTransition
         )
     }
 
-    /// The one genesis admission sequence every bootstrap runs: resolve, the
-    /// genesis position, a child genesis's shape and parent authorization
-    /// (`authorizes` is asked for exactly the link that would authorize it),
-    /// its own proof-of-work, then execution.
+    /// The one genesis admission sequence every actor-path bootstrap runs:
+    /// resolve, the genesis position, a child genesis's shape and parent
+    /// authorization (`authorizes` is asked for exactly the link that would
+    /// authorize it), then execution. A genesis has no work of its own
+    /// (§5.1), so no proof-of-work or target is checked.
     static func prepareGenesis(
         context: ChainRuntimeContext,
         genesisHeader: BlockHeader,
@@ -1206,9 +1210,6 @@ enum BlockImport {
                 return .unauthorized
             }
         }
-        guard let contribution = rootWork(of: resolved.block, blockHash: blockHash) else {
-            return .noWork
-        }
         switch await executeTransition(
             block: resolved.block,
             blockHash: blockHash,
@@ -1219,7 +1220,7 @@ enum BlockImport {
             validationContext: validationContext
         ) {
         case .failure(let failure): return .invalid(failure)
-        case .success(let transition): return .ready(resolved, contribution, transition)
+        case .success(let transition): return .ready(resolved, transition)
         }
     }
 
@@ -1227,7 +1228,6 @@ enum BlockImport {
         context: ChainRuntimeContext,
         resolved: (header: BlockHeader, block: Block),
         fetcher: any Fetcher,
-        contribution: VerifiedWorkContribution,
         transition: ExecutedTransition,
         validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
@@ -1242,7 +1242,7 @@ enum BlockImport {
             resolvedHeader: resolved.header,
             block: resolved.block,
             fetcher: fetcher,
-            contribution: contribution,
+            contribution: nil,
             chainPath: context.path,
             issuable: true,
             sameChainPredecessor: nil,
@@ -1679,7 +1679,6 @@ public extension ChainLevel {
     ) {
         guard context.isRoot else { throw BlockImportError.protocolInvalid }
         let resolved: (header: BlockHeader, block: Block)
-        let contribution: VerifiedWorkContribution
         let transition: BlockImport.ExecutedTransition
         switch await BlockImport.prepareGenesis(
             context: context,
@@ -1690,21 +1689,14 @@ public extension ChainLevel {
         ) {
         case .unresolved(let failure), .invalid(let failure): throw failure
         case .notGenesis, .unauthorized: throw BlockImportError.protocolInvalid
-        // Genesis must satisfy its own declared target like any block: a target-0
-        // (or otherwise target-miss) genesis is rejected here, matching child
-        // bootstrap, which only makes a child genesis live once a parent grind
-        // confirms it. The canonical max-target genesis passes trivially.
-        case .noWork: throw BlockImportError.proofOfWorkInvalid
-        case .ready(let readyResolved, let readyContribution, let readyTransition):
+        case .ready(let readyResolved, let readyTransition):
             resolved = readyResolved
-            contribution = readyContribution
             transition = readyTransition
         }
         return try await BlockImport.finishBootstrap(
             context: context,
             resolved: resolved,
             fetcher: fetcher,
-            contribution: contribution,
             transition: transition,
             validationContentStorer: validationContentStorer,
             materializedVolumeStorer: materializedVolumeStorer,
@@ -1725,10 +1717,9 @@ public extension ChainLevel {
         stage: @Sendable (BlockImportStagingContext) async throws -> Void
     ) async throws -> ChildChainBootstrapResult {
         guard !context.isRoot else { throw BlockImportError.protocolInvalid }
-        // A child genesis is self-contained and SELF-mined, exactly like a root
-        // genesis — it is never co-mined via a carrier proof.
+        // A child genesis is self-contained and has no work of its own, exactly
+        // like a root genesis (§5.1).
         let resolved: (header: BlockHeader, block: Block)
-        let contribution: VerifiedWorkContribution
         let transition: BlockImport.ExecutedTransition
         // Record gate: the parent must have RECORDED this genesis for this
         // directory (a plain GenesisAction → genesisState). The caller supplies
@@ -1746,22 +1737,16 @@ public extension ChainLevel {
         case .notGenesis: throw BlockImportError.protocolInvalid
         case .unauthorized:
             return .rejected(.providerMalformedEvidence)
-        // Self-PoW: the genesis must satisfy its own declared target, like a root
-        // genesis. A target-miss yields no work.
-        case .noWork:
-            return .rejected(.proofOfWorkInvalid)
         case .invalid(let failure):
             return .rejected(failure)
-        case .ready(let readyResolved, let readyContribution, let readyTransition):
+        case .ready(let readyResolved, let readyTransition):
             resolved = readyResolved
-            contribution = readyContribution
             transition = readyTransition
         }
         let accepted = try await BlockImport.finishBootstrap(
             context: context,
             resolved: resolved,
             fetcher: fetcher,
-            contribution: contribution,
             transition: transition,
             validationContentStorer: validationContentStorer,
             materializedVolumeStorer: materializedVolumeStorer,

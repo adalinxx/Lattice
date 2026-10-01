@@ -300,7 +300,7 @@ final class ChainTreeArchitectureTests: XCTestCase {
             genesis: try BlockHeader(node: childGenesis), fetcher: fetcher, context: childContext,
             parentFacts: ParentLevelFacts(tree: parent)
         )
-        guard case .failure(.providerMalformedEvidence) = refused else {
+        guard case .failure(.crossChainEvidenceRequired(.parentGenesis)) = refused else {
             return XCTFail("no executed parent block recorded the genesis, got \(refused)")
         }
 
@@ -323,7 +323,7 @@ final class ChainTreeArchitectureTests: XCTestCase {
         let child = try bootstrapped.get()
         XCTAssertEqual(child.tree.canonicalTip, childCID)
         XCTAssertTrue(child.tree.hasExecutedAncestry(blockHash: childCID))
-        XCTAssertEqual(kinds([child.facts]), ["block", "work", "validation"])
+        XCTAssertEqual(kinds(child.batches), ["block", "block", "validation"])
     }
 
     // MARK: - Hierarchical GHOST
@@ -387,15 +387,19 @@ final class ChainTreeArchitectureTests: XCTestCase {
     // MARK: - Unchanged rules
 
     /// The root-exclusion rule: a root may be excluded only while another
-    /// executed root stands.
+    /// executed root stands. A chain's only root, proven invalid, is refused.
     func testRootExclusionRuleIsUnchanged() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        var tree = try await TreeDriver.tree(genesis: genesis, context: rootContext, fetcher: fetcher)
-        let result = try await TreeDriver.connect(try cid(genesis), on: &tree, fetcher: fetcher)
+        let invalid = try await TreeDriver.forgedPostState(of: genesis, seed: "only-root", fetcher: fetcher)
+        let spec = chainLocalSpec()
+        var tree = ChainTree.empty(context: rootContext)
+        XCTAssertNotNil(tree.insertGenesis(invalid, spec: spec).update)
+        let result = try await TreeDriver.connect(try cid(invalid), on: &tree, fetcher: fetcher)
         XCTAssertEqual(result.failure, .notYetValid)
-        XCTAssertFalse(tree.isExcludedRoot(try cid(genesis)))
-        XCTAssertEqual(tree.canonicalTip, try cid(genesis))
+        XCTAssertFalse(tree.isExcludedRoot(try cid(invalid)))
+        XCTAssertEqual(tree.canonicalTip, try cid(invalid))
+        XCTAssertFalse(tree.hasExecutedAncestry(blockHash: try cid(invalid)))
     }
 
     /// The four fact kinds and their encoding: everything the value API
@@ -494,7 +498,7 @@ final class ChainTreeArchitectureTests: XCTestCase {
             genesis: try BlockHeader(node: attack.childGenesis), fetcher: attack.fetcher,
             context: childContext, parentFacts: facts
         )
-        guard case .failure(.providerMalformedEvidence) = bootstrapped else {
+        guard case .failure(.crossChainEvidenceRequired(.parentGenesis)) = bootstrapped else {
             return XCTFail("a link from outside the executed set authorizes nothing, got \(bootstrapped)")
         }
     }

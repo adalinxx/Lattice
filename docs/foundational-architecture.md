@@ -113,11 +113,11 @@ carrier may fail its own target, transition, timestamp rule, or proposed
 beats that child's target. Those carrier-local rules do not become descendant
 dependencies.
 
-A child genesis must meet its own target, like a root genesis: child
-bootstrap rejects a target miss as a proof-of-work failure, and a target hit
-that fails the local transition, without creating a runtime or durable local
-consensus fact. The same bytes may still sit on a descendant's proof path: a
-grind reaches a descendant only inside that descendant's `ChildBlockProof`.
+A genesis, root or child, has no work of its own (spec §5.1): it is weighed
+without a proof-of-work check, and a child genesis executes only once its
+parent authorizes it (spec §9.9, genesis admission). The same bytes may still
+sit on a descendant's proof path: a grind reaches a descendant only inside
+that descendant's `ChildBlockProof`.
 
 The proof-derived contribution becomes ordinary same-chain work only after the
 terminal child is accepted and connected. See

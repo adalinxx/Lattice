@@ -76,7 +76,8 @@ final class FactReplayRecoveryTests: XCTestCase {
         let restoredTip = await restored.canonicalTip
         let revision = await restored.currentRevision()
         XCTAssertEqual(restoredTip, try BlockHeader(node: block).rawCID)
-        XCTAssertEqual(revision, 1)
+        // The genesis insert and the block: two mutations, replayed once.
+        XCTAssertEqual(revision, 2)
     }
 
     func testFactReplayRejectsMissingGenesisAndConflictingImmutableFacts() async throws {

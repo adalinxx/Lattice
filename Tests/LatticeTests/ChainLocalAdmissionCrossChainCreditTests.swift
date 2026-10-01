@@ -460,22 +460,8 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             childDirectory: "Middle",
             fetcher: fetcher
         )
-        let middleResult = try await ChainLevel.bootstrap(
-            context: testChainContext(
-                path: [DEFAULT_ROOT_DIRECTORY, "Middle"]
-            ),
-            genesisHeader: try BlockHeader(node: middle),
-            fetcher: fetcher,
-            parentGenesisLink: testParentGenesisLink(
-                directory: "Middle",
-                childGenesisCID: try BlockHeader(node: middle).rawCID,
-                parentStateCID: middle.parentState.rawCID
-            ),
-            validationContentStorer: fetcher,
-            materializedVolumeStorer: fetcher,
-            stage: testAdmissionStage
-        )
-        XCTAssertEqual(middleResult.failure, .proofOfWorkInvalid)
+        // The middle genesis is never bootstrapped: its chain need not exist
+        // for the share to relay through it.
 
         let leafHop = try await ChildBlockProof.generate(
             rootHeader: try BlockHeader(node: middle),

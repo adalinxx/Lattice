@@ -17,7 +17,9 @@ final class LazyLocalWorkCacheTests: XCTestCase {
 
         let blocksBeforeQuery = await chain.hashToBlock
         let rawBeforeQuery = try XCTUnwrap(blocksBeforeQuery[rootHash])
-        XCTAssertEqual(rawBeforeQuery.subtreeWeight, WorkSum(UInt256(1)))
+        // Not materialized: the root was inserted like any block, with zero
+        // diagnostics until a query needs them.
+        XCTAssertEqual(rawBeforeQuery.subtreeWeight, .zero)
 
         let queriedRootValue = await chain.getConsensusBlock(hash: rootHash)
         let queriedRoot = try XCTUnwrap(queriedRootValue)
@@ -33,7 +35,7 @@ final class LazyLocalWorkCacheTests: XCTestCase {
 
         let blocksBeforePersist = await chain.hashToBlock
         let rawBeforePersist = try XCTUnwrap(blocksBeforePersist[rootHash])
-        XCTAssertEqual(rawBeforePersist.subtreeWeight, WorkSum(UInt256(1)))
+        XCTAssertEqual(rawBeforePersist.subtreeWeight, .zero)
 
         let restored = try await ChainState.restore(replaying: hashes.indices.map {
             lazyCacheAdmission(
@@ -50,7 +52,7 @@ final class LazyLocalWorkCacheTests: XCTestCase {
         XCTAssertEqual(restoredTip, tipHash)
         XCTAssertEqual(restoredRootWork, WorkSum(UInt256(21)))
         XCTAssertEqual(restoredTipWork, WorkSum(UInt256(21)))
-        XCTAssertEqual(rawAfterReplay.subtreeWeight, WorkSum(UInt256(1)))
+        XCTAssertEqual(rawAfterReplay.subtreeWeight, .zero)
     }
 }
 

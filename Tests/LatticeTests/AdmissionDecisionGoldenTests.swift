@@ -28,8 +28,9 @@ struct AdmissionDecisionGolden: Codable, Equatable {
     struct Step: Codable, Equatable {
         let scenario: String
         let step: Int
-        /// `header` (`insertRootHeader`/`insertChildHeader`) or `connect`
-        /// (`connectJob` → `connect` → `applyConnect`).
+        /// `header` (`insertRootHeader`/`insertChildHeader`), `genesis`
+        /// (`insertGenesis`) or `connect` (`connectJob` → `connect` →
+        /// `applyConnect`).
         let operation: String
         let candidate: String
         /// `applied`, `duplicate` or `rejected`.
@@ -231,6 +232,14 @@ private struct AdmissionFixtures {
             "otherSpec", of: valid, spec: try VolumeImpl<ChainSpec>(node: ChainSpec.test(premine: 7))
         )
 
+        // A rival root of the same chain, with one block of its own.
+        let rivalGenesis = try fixtures.register("rivalGenesis", try await buildAndStoreGenesis(
+            spec: spec, timestamp: 1_000, target: easy, nonce: 11, fetcher: fixtures.fetcher
+        ))
+        _ = try fixtures.register("rivalChild", try await buildAndStoreBlock(
+            previous: rivalGenesis, timestamp: 2_000, target: easy, nonce: 1, fetcher: fixtures.fetcher
+        ))
+
         let hardGenesis = try fixtures.register("hardGenesis", try await buildAndStoreGenesis(
             spec: spec, timestamp: 1_000, target: easy / UInt256(2), nonce: 9, fetcher: fixtures.fetcher
         ))
@@ -256,6 +265,11 @@ private struct AdmissionFixtures {
             fetcher: fixtures.fetcher
         )
         fixtures.packages["childCandidate"] = ChildValidationPackage(proof: proof)
+
+        // A rival genesis for the child chain.
+        _ = try fixtures.register("rivalChildGenesis", try await buildAndStoreGenesis(
+            spec: spec, timestamp: 1_000, target: easy, nonce: 2, fetcher: fixtures.fetcher
+        ))
 
         // A child block whose own target the carrier's hash MISSES: the proof
         // still relays work for descendants, but at this level the block is a
@@ -304,6 +318,30 @@ private struct AdmissionFixtures {
         )
     }
 
+    /// A tree on `path` made by `ChainTree.bootstrap` — the one genesis path:
+    /// its root carries no work of its own.
+    func bootstrappedTree(genesis: String, path: [String]) async throws -> ChainTree {
+        let block = try XCTUnwrap(blocks[genesis], "no fixture named \(genesis)")
+        return try await ChainTree.bootstrap(
+            genesis: try BlockHeader(node: block),
+            fetcher: fetcher,
+            context: testChainContext(path: path),
+            parentFacts: authorizingFacts(path: path)
+        ).get().tree
+    }
+
+    /// Parent facts authorizing every child genesis fixture under `path`.
+    func authorizingFacts(path: [String]) throws -> GrantedGenesisFacts {
+        GrantedGenesisFacts(links: Set(try ["childGenesis", "rivalChildGenesis"].map {
+            ParentGenesisLink(
+                parentPath: Array(path.dropLast()),
+                directory: path.last ?? "",
+                childGenesisCID: try hash(named: $0),
+                parentStateCID: LatticeState.emptyHeader.rawCID
+            )
+        }))
+    }
+
     /// The stable classification the golden records for a failure.
     func classify(_ failure: BlockImportError) -> (kind: String, path: [String]?, cids: [String]?) {
         switch failure {
@@ -336,11 +374,20 @@ private struct AdmissionFixtures {
     }
 }
 
+/// Parent facts that authorize exactly `links` and attest no continuity.
+struct GrantedGenesisFacts: ParentChainFacts {
+    let links: Set<ParentGenesisLink>
+
+    func hasContinuity(_ link: ParentStateContinuityLink) -> Bool { false }
+    func recordsGenesis(_ link: ParentGenesisLink) -> Bool { links.contains(link) }
+}
+
 // MARK: - Scenarios
 
 private struct AdmissionScenario {
     enum Operation: String {
         case header
+        case genesis
         case connect
     }
 
@@ -351,19 +398,28 @@ private struct AdmissionScenario {
         var package: Bool = false
         /// Execute against the boundary-only fetcher.
         var bodyless: Bool = false
+        /// Execute with parent facts authorizing the child genesis fixtures.
+        var authorized: Bool = false
     }
 
     let name: String
     let genesis: String
     var path: [String] = [DEFAULT_ROOT_DIRECTORY]
+    /// Seed the tree through `ChainTree.bootstrap` (no own genesis work)
+    /// rather than the test-only `fromGenesis`.
+    var bootstrapped: Bool = false
     let steps: [Step]
 
     static func header(_ candidate: String, package: Bool = false) -> Step {
         Step(operation: .header, candidate: candidate, package: package)
     }
 
-    static func connect(_ candidate: String, bodyless: Bool = false) -> Step {
-        Step(operation: .connect, candidate: candidate, bodyless: bodyless)
+    static func connect(_ candidate: String, bodyless: Bool = false, authorized: Bool = false) -> Step {
+        Step(operation: .connect, candidate: candidate, bodyless: bodyless, authorized: authorized)
+    }
+
+    static func genesis(_ candidate: String) -> Step {
+        Step(operation: .genesis, candidate: candidate)
     }
 
     static let childPath = [DEFAULT_ROOT_DIRECTORY, AdmissionFixtures.childDirectory]
@@ -389,6 +445,23 @@ private struct AdmissionScenario {
             steps: [header("valid"), connect("valid", bodyless: true)]
         ),
         AdmissionScenario(name: "weighedThenExtend", genesis: "genesis", steps: [header("valid"), header("grandchild")]),
+        // Multiple genesis roots (§9.9 genesis admission, §9.4 across roots).
+        AdmissionScenario(
+            name: "authorizedRival", genesis: "childGenesis", path: childPath, bootstrapped: true,
+            steps: [genesis("rivalChildGenesis"), connect("rivalChildGenesis", authorized: true)]
+        ),
+        AdmissionScenario(
+            name: "unauthorizedRival", genesis: "childGenesis", path: childPath, bootstrapped: true,
+            steps: [genesis("rivalChildGenesis"), connect("rivalChildGenesis"), genesis("rivalChildGenesis")]
+        ),
+        AdmissionScenario(
+            name: "rivalHeavierWins", genesis: "genesis", bootstrapped: true,
+            steps: [genesis("rivalGenesis"), header("rivalChild"), connect("rivalGenesis"), connect("rivalChild")]
+        ),
+        AdmissionScenario(
+            name: "rivalEqualWorkTie", genesis: "genesis", bootstrapped: true,
+            steps: [header("side"), genesis("rivalGenesis"), header("rivalChild")]
+        ),
     ]
 }
 
@@ -435,10 +508,13 @@ final class AdmissionDecisionGoldenTests: XCTestCase {
             let package = try XCTUnwrap(fixtures.packages[step.candidate])
             let evidence = try await package.proof.verifySecuringWork(child: block, chainPath: path).get()
             return tree.insertChildHeader(block, childIndex: childIndex, evidence: evidence)
+        case .genesis:
+            return tree.insertGenesis(block, spec: AdmissionFixtures.spec)
         case .connect:
             let job = try XCTUnwrap(tree.connectJob(for: try BlockHeader(node: block).rawCID))
             let verdict = await ChainTree.connect(
-                job, fetcher: step.bodyless ? fixtures.bodyless : fixtures.fetcher
+                job, fetcher: step.bodyless ? fixtures.bodyless : fixtures.fetcher,
+                parentFacts: step.authorized ? try fixtures.authorizingFacts(path: path) : nil
             )
             return tree.applyConnect(verdict)
         }
@@ -448,7 +524,9 @@ final class AdmissionDecisionGoldenTests: XCTestCase {
         _ scenario: AdmissionScenario,
         fixtures: AdmissionFixtures
     ) async throws -> [AdmissionDecisionGolden.Step] {
-        var tree = try fixtures.tree(genesis: scenario.genesis, path: scenario.path)
+        var tree = scenario.bootstrapped
+            ? try await fixtures.bootstrappedTree(genesis: scenario.genesis, path: scenario.path)
+            : try fixtures.tree(genesis: scenario.genesis, path: scenario.path)
         var steps: [AdmissionDecisionGolden.Step] = []
         for (index, step) in scenario.steps.enumerated() {
             let hash = try fixtures.hash(named: step.candidate)

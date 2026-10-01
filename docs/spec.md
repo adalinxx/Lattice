@@ -261,23 +261,12 @@ A genesis block `B` is valid if and only if ALL of the following hold:
    timestamp is deferred until real time reaches it, not permanently rejected)
 4. `B.prevState == CID(emptyState())` and `B.rewardRecipient == nil` (a
    genesis mints only its premine; there is no reward to pay)
-5. `B.nextTarget == B.target`, and the target `B` commits is actually met — the
-   same inclusive `hash <= target` rule every block obeys, evaluated against the
-   hash that secures `B` at its own level (per §5.4 and §9.5):
-   - **Nexus (root) genesis:** `proofOfWorkHash(B) <= B.target` — `B`'s own grind.
-   - **Child genesis:** the securing root-grind hash `h` carried by its
-     `ChildBlockProof` satisfies `h <= B.target`; `B`'s own block hash is not
-     evaluated (a child inherits identity-bearing work from the root grind, not
-     from mining its own block).
-
-   Consensus does not constrain the target *value* a genesis may commit, but that
-   target must be met, so `target == 0` — which no hash satisfies at either level —
-   is invalid. By convention `GenesisCeremony` commits the canonical maximum
-   (easiest) target, which every hash satisfies, so the chain starts trivial, needs
-   no grinding, and self-calibrates from block 1; an operator wanting a harder
-   genesis must grind to meet it. A genesis therefore always carries positive work
-   (one unit at the canonical target), so there is no zero-work-genesis exemption
-   in construction or replay.
+5. `B.nextTarget == B.target` and `B.target > 0`. A genesis has no work of its
+   own: no hash is evaluated against its target, at either level. It weighs
+   through its descendants' work and any proof later credited to it (§9.9,
+   genesis admission). Its target is block 1's schedule input (§5.5), which is
+   why it must be positive; by convention `GenesisCeremony` commits the canonical
+   maximum (easiest) target, so the chain self-calibrates from block 1.
 6. All transactions in `B.transactions` are fully resolvable
 7. For each transaction `tx`: `tx.validateTransactionForGenesis()` returns true
    - Account and general actions are structurally valid
@@ -501,11 +490,9 @@ the scheduled `parent.nextTarget`.
 Genesis has no parent-derived target. The `GenesisCeremony` commits the canonical
 maximum (easiest) target by convention — every hash satisfies it, so genesis needs
 no grinding, block 1's schedule is `max`, and the chain self-calibrates as early
-miners voluntarily mine harder. The committed value is unconstrained, but genesis
-is NOT exempt from meeting it: the securing hash must satisfy `hash <= target`
-like any block — the root genesis's own grind hash, or a child genesis's securing
-root-grind hash (§5.1 rule 5) — so a genesis whose committed target is not met,
-including `target == 0`, is invalid. Its `nextTarget` MUST equal that target. Each non-genesis block's
+miners voluntarily mine harder. The committed value is unconstrained except that
+it is positive, and no hash is checked against it (§5.1 rule 5). Its `nextTarget`
+MUST equal that target. Each non-genesis block's
 `nextTarget` is **absolutely scheduled from an anchor (ASERT)**: a pure function
 of one anchor block and the block being targeted, with no window and no
 intervening history.
@@ -1042,8 +1029,9 @@ carrier validity and securing-work validity are orthogonal.
 At each fork, GHOST compares the competing same-chain child blocks. The child
 with greatest effective `trueCumWork` wins. Equal work compares the canonical
 CID bytes of those child blocks; the lexicographically smaller CID wins.
-`nextTarget` is not a comparator. The same rule applies to competing genesis roots, so arrival and
-replay order cannot change fork choice. The deliberate security tradeoff of
+`nextTarget` is not a comparator. A chain may hold several genesis roots (§9.9,
+genesis admission); the same rule applies to them, so arrival and replay order
+cannot change fork choice. The deliberate security tradeoff of
 this grindable deterministic tie-break is quantified by the
 [consensus simulator's adversarial model](consensus-simulator.md#adversarial-model).
 
@@ -1236,6 +1224,22 @@ fact:
 Weighed headers are never evicted. The exclusion is a separate batch from the
 block's own (a batch carries an exclusion alone); the node MUST make both
 durable in one transaction, and replay applies them in any order.
+
+**Genesis admission.** A chain's roots enter the weighed graph only as
+genesis blocks, never from a header, and a chain may hold several. A genesis
+is weighed from its bytes alone — its CID is computed from them, and its
+`spec` is held by that CID as its root's spec, which schedules every header
+beneath it — with no work of its own (§5.1 rule 5). Nothing else is asked at
+this tier: a child genesis no parent block has authorized yet weighs like any
+other root, and so do its descendants. It is executed — and so enters the
+executed set — only once a `GenesisAction` for exactly it is in a block of
+the parent's executed set, on any branch (§9.3's immediate-parent genesis
+fact); until then execution returns that missing fact, never a verdict. A
+Nexus genesis is authorized by its configured CID (§5.1). Execution and
+authorization are never revoked, so admission is monotone: an executed block
+is never later excluded, and a verdict claiming so is a local fault, recorded
+nowhere. An authorized genesis that fails execution is excluded under the
+root rule above, its weight staying in the graph like any excluded subtree.
 
 ### 9.10 Parent-Attributed Run Work
 
