@@ -391,6 +391,7 @@ struct ExecutionFrontier: Sendable {
            let outcome = truncatedProjection(
                forkChoice: forkChoice,
                in: graph,
+               heightZero: heightZero,
                monotoneIncreaseAt: mutatedAt
            ) {
             return outcome.commit
@@ -456,9 +457,10 @@ struct ExecutionFrontier: Sendable {
         let commit: ChainCommit?
     }
 
-    /// The deepest canonical block on the ancestor line of `mutatedAt`. Nil when
-    /// that line reaches a root or a missing parent without meeting the
-    /// canonical path — including a mutation under a different root.
+    /// The deepest canonical block on the ancestor line of `mutatedAt`;
+    /// `.otherRoot` when that line ends at a root without meeting the
+    /// canonical path (a mutation under a different root), and `.malformed`
+    /// at a missing parent or a non-descending height.
     ///
     /// This walk is UNCAPPED deliberately. A step budget here is a cliff, not a
     /// budget: past it the caller falls through to the whole-chain projection,
@@ -477,16 +479,26 @@ struct ExecutionFrontier: Sendable {
     private func canonicalDivergencePoint(
         from mutatedAt: String,
         in graph: BlockGraph
-    ) -> String? {
+    ) -> Divergence {
         var current = mutatedAt
         while !canonicalHashes.contains(current) {
-            guard let meta = graph[current],
-                  let parentHash = meta.parentBlockHash,
-                  let parent = graph[parentHash],
-                  parent.blockHeight < meta.blockHeight else { return nil }
+            guard let meta = graph[current] else { return .malformed }
+            guard let parentHash = meta.parentBlockHash else {
+                return meta.blockHeight == 0 ? .otherRoot : .malformed
+            }
+            guard let parent = graph[parentHash],
+                  parent.blockHeight < meta.blockHeight else { return .malformed }
             current = parentHash
         }
-        return current
+        return .canonical(current)
+    }
+
+    /// Where the ancestor line of a mutated block meets the canonical path.
+    private enum Divergence {
+        case canonical(String)
+        /// The line ends at a genesis root that is not the canonical one.
+        case otherRoot
+        case malformed
     }
 
     /// Re-descend from the divergence point instead of the root. Every guard
@@ -495,6 +507,7 @@ struct ExecutionFrontier: Sendable {
     private mutating func truncatedProjection(
         forkChoice: ForkChoice,
         in graph: BlockGraph,
+        heightZero: Set<String>,
         monotoneIncreaseAt mutatedAt: String
     ) -> TruncatedProjectionOutcome? {
         // A block that never routed into the quotient contributed no work and no
@@ -511,9 +524,27 @@ struct ExecutionFrontier: Sendable {
         guard !canonicalHashes.contains(mutatedAt) else {
             return TruncatedProjectionOutcome(commit: nil)
         }
-        guard let divergence = canonicalDivergencePoint(from: mutatedAt, in: graph),
-              let divergenceHeight = graph.height(of: divergence)
-        else { return nil }
+        let divergence: String
+        switch canonicalDivergencePoint(from: mutatedAt, in: graph) {
+        case .canonical(let hash):
+            divergence = hash
+        case .otherRoot:
+            // The increase landed under another genesis root, so nothing in
+            // the canonical root's tree moved: if that root still wins among
+            // the roots, the whole canonical path stands. O(#roots).
+            guard let canonicalRoot = canonicalHashByHeight[0] else { return nil }
+            let roots = Array(heightZero).filter { graph.parent(of: $0) == nil }
+            guard forkChoice.selectableRoot(among: roots) == canonicalRoot else {
+                return nil
+            }
+#if DEBUG
+            truncatedCanonicalProjectionCount += 1
+#endif
+            return TruncatedProjectionOutcome(commit: nil)
+        case .malformed:
+            return nil
+        }
+        guard let divergenceHeight = graph.height(of: divergence) else { return nil }
         let (suffixHeight, overflow) = divergenceHeight.addingReportingOverflow(1)
         guard !overflow else { return nil }
         let excludedRoots = forkChoice.excludedRoots

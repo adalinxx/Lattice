@@ -224,9 +224,9 @@ private struct ConsensusBlockInput: Sendable {
               let specCID = CIDIdentity.canonicalString(fact.specCID),
               let target = UInt256(fact.target, radix: 16),
               let nextTarget = UInt256(fact.nextTarget, radix: 16),
-              // Every block, genesis included, must commit a positive target and
-              // nextTarget: genesis must satisfy its own target (h <= target), so a
-              // zero target — which no hash meets — is not admissible.
+              // Every block, genesis included, commits a positive target and
+              // nextTarget: a genesis's target is block 1's schedule input
+              // (§5.1 rule 5), and a zero target is not admissible.
               target > .zero, nextTarget > .zero,
               (fact.parentBlockHash == nil) == (fact.blockHeight == 0) else {
             return nil
@@ -255,7 +255,9 @@ private struct ConsensusBlockInput: Sendable {
 private struct TrustedImportBatch {
     let block: ConsensusBlockInput?
     let workBlockHash: String
-    let contribution: VerifiedWorkContribution
+    /// Nil only for a genesis block batch with no work fact: a genesis has no
+    /// work of its own (§5.1), so its first fact carries none.
+    let contribution: VerifiedWorkContribution?
     /// Set when the work fact is a parent's attributed run, not a grind.
     let attributedRun: AttributedRunIdentity?
 
@@ -272,10 +274,29 @@ private struct TrustedImportBatch {
             guard case .work(let value) = fact else { return nil }
             return value
         }
-        // Every block, genesis included, must carry positive work: genesis must
-        // satisfy its own committed target, and the canonical max-target genesis
-        // already yields one unit of work, so a zero-work contribution is never
-        // admissible in either the durable/replay path or in-memory construction.
+        // A work fact always carries positive work. Every non-genesis block
+        // batch carries exactly one; a genesis block batch carries one or none,
+        // since a genesis has no work of its own (§5.1) and weighs through its
+        // descendants and any proof credited to it.
+        if workFacts.isEmpty {
+            guard blockFacts.count == 1,
+                  let input = ConsensusBlockInput(fact: blockFacts[0]),
+                  input.parentBlockHash == nil,
+                  batch.facts.count == 1 + batch.facts.filter({
+                      if case .validation(let fact) = $0 {
+                          return CIDIdentity.canonicalString(fact.blockHash) == input.blockHash
+                      }
+                      return false
+                  }).count,
+                  batch.facts.count <= 2 else {
+                return nil
+            }
+            block = input
+            workBlockHash = input.blockHash
+            contribution = nil
+            attributedRun = nil
+            return
+        }
         guard workFacts.count == 1,
               let work = workFacts.first,
               work.contribution.work > .zero,
@@ -350,11 +371,18 @@ public struct ChainTree: Sendable {
     /// its blocks need. Nil for a tree made without one (the actor path,
     /// which carries its context on `ChainLevel`).
     public private(set) var context: ChainRuntimeContext?
-    /// The chain's spec — its genesis's, bound by CID when the tree is made.
-    /// Header admission computes the target schedule from it and compares
-    /// each block's spec CID with its parent's. Nil for a tree made without
+    /// The specs of this chain's genesis roots, keyed by spec CID: each bound
+    /// by CID to the genesis that names it when that genesis is inserted.
+    /// Header admission computes a block's target schedule from its ROOT's
+    /// spec (`scheduleSpec(underParent:)`). Empty for a tree made without
     /// one, which admits no header.
-    public private(set) var spec: ChainSpec?
+    public private(set) var specs: [String: ChainSpec] = [:]
+    /// Blocks whose declared spec CID is not their root's, mapped to their
+    /// root's spec CID. Only a block weighed under a `spec != parent.spec`
+    /// exclusion, or a descendant of one, lands here, so the map stays as
+    /// small as those subtrees and every other block reads its root's spec
+    /// from its own snapshot in O(1).
+    private var offRootSpecCID: [String: String] = [:]
     var indexToBlockHash: [UInt64: Set<String>]
     /// The block tree: records, child edges, work facts, anchors and the
     /// diagnostic totals (BlockGraph.swift).
@@ -437,13 +465,11 @@ public struct ChainTree: Sendable {
         self.reservedImportRevisions = 0
         for meta in hashToBlock.values {
             let contributions = meta.workContributions.values
-            guard !contributions.isEmpty else {
+            // A genesis has no work of its own (§5.1); every other block
+            // carries at least one positive contribution.
+            guard !contributions.isEmpty || meta.parentBlockHash == nil else {
                 throw ChainStateRestoreError.corruptConsensusGraph
             }
-            // Every block, genesis included, must carry positive work: genesis
-            // must satisfy its own committed target (h <= target), and the
-            // canonical max-target genesis already yields one unit, so there is no
-            // zero-work genesis to exempt.
             guard contributions.allSatisfy({ $0.work > .zero }) else {
                 throw ChainStateRestoreError.corruptConsensusGraph
             }
@@ -495,13 +521,48 @@ public struct ChainTree: Sendable {
         }
         var tree = fromGenesis(block: block)
         tree.context = context
-        tree.spec = spec
+        tree.specs[block.spec.rawCID] = spec
+        return tree
+    }
+
+    /// A tree on `context` holding no block yet: `insertGenesis` adds its
+    /// first root. Until then it has no canonical tip (`canonicalTip` is
+    /// empty) and admits no header.
+    public static func empty(context: ChainRuntimeContext) -> ChainTree {
+        // An empty graph satisfies every invariant the initializer checks.
+        var tree = try! ChainTree(
+            canonicalTip: "",
+            canonicalHashes: [],
+            indexToBlockHash: [:],
+            hashToBlock: [:]
+        )
+        tree.context = context
         return tree
     }
 
     /// Whether `spec` is the one `specCID` names.
-    private static func binds(_ spec: ChainSpec, to specCID: String) -> Bool {
+    package static func binds(_ spec: ChainSpec, to specCID: String) -> Bool {
         (try? VolumeImpl<ChainSpec>(node: spec).rawCID) == specCID
+    }
+
+    /// The spec whose schedule a child of `parentHash` is measured against:
+    /// its root's. Nil when the parent is not held or its root's spec is not.
+    package func scheduleSpec(underParent parentHash: String) -> ChainSpec? {
+        rootSpecCID(of: parentHash).flatMap { specs[$0] }
+    }
+
+    /// The spec CID of `blockHash`'s root: its own declared spec unless it
+    /// sits under a spec mismatch (`offRootSpecCID`).
+    private func rootSpecCID(of blockHash: String) -> String? {
+        offRootSpecCID[blockHash] ?? frontier.snapshot(of: blockHash)?.specCID
+    }
+
+    /// Hold `spec` as the spec of a root that names it. False when it is not
+    /// the spec `specCID` names.
+    package mutating func holdSpec(_ spec: ChainSpec, for specCID: String) -> Bool {
+        guard Self.binds(spec, to: specCID) else { return false }
+        specs[specCID] = spec
+        return true
     }
 
     package static func fromVerifiedGenesis(
@@ -528,63 +589,29 @@ public struct ChainTree: Sendable {
         )
     }
 
-    private static func fromTrustedGenesis(
-        input: ConsensusBlockInput,
-        contribution: VerifiedWorkContribution,
-        mutationGeneration: UInt64 = 0
-    ) throws -> ChainTree {
-        // Genesis, like every block, must carry positive work: it must satisfy its
-        // own committed target, so a zero-work genesis is not admissible.
-        guard input.parentBlockHash == nil,
-              input.blockHeight == 0,
-              contribution.work > .zero else {
-            throw ChainStateRestoreError.corruptConsensusGraph
-        }
-        let meta = BlockMeta(
-            blockHash: input.blockHash,
-            parentBlockHash: nil,
-            blockHeight: 0,
-            childHashes: [],
-            workContributions: [contribution],
-            cumulativeWork: WorkSum(contribution.work),
-            childCommitments: input.childCommitments
-        )
-        return try ChainTree(
-            canonicalTip: input.blockHash,
-            canonicalHashes: [input.blockHash],
-            indexToBlockHash: [0: [input.blockHash]],
-            hashToBlock: [input.blockHash: meta],
-            tipSnapshot: input.snapshot,
-            validatedBlocks: [input.blockHash],
-            mutationGeneration: mutationGeneration
-        )
-    }
-
-    /// Restore a child process whose staged genesis batch reached durable storage
-    /// before the in-memory actor was created. The durable revision is a final
-    /// lower bound, applied after replay so restarts do not create revisions.
+    /// Rebuild a tree from its durable facts, in any order. Every root is
+    /// inserted by its own genesis fact and is executed only if a validation
+    /// fact says so. A tree on a chain must hold the spec of every root it
+    /// restores (`specs`, matched by CID); one without a context may hold
+    /// none. The durable revision is a final lower bound, applied after
+    /// replay so restarts do not create revisions.
     public static func restore(
         replaying batches: [BlockImportBatch],
         revisionFloor: UInt64 = 0,
         context: ChainRuntimeContext? = nil,
-        spec: ChainSpec? = nil
+        specs: [ChainSpec] = []
     ) throws -> ChainTree {
-        let genesis = batches.compactMap(TrustedImportBatch.init).filter {
-            $0.block?.parentBlockHash == nil && $0.block?.blockHeight == 0
-        }.sorted {
-            ($0.block?.blockHash ?? "") < ($1.block?.blockHash ?? "")
-        }.first
-        guard let trusted = genesis, let input = trusted.block else {
+        guard batches.contains(where: decodesAsGenesis) else {
             throw ChainStateRestoreError.corruptConsensusGraph
         }
-        var chain = try fromTrustedGenesis(
-            input: input,
-            contribution: trusted.contribution,
-            mutationGeneration: 0
+        var chain = try ChainTree(
+            canonicalTip: "",
+            canonicalHashes: [],
+            indexToBlockHash: [:],
+            hashToBlock: [:]
         )
-        // The node may enumerate its durable facts in any order. Replay the seed
-        // batch too: its existing block/work record makes that a no-op.
-        // The projection is a derived cache and no replay step reads it, so it
+        // The node may enumerate its durable facts in any order. The
+        // projection is a derived cache and no replay step reads it, so it
         // is deferred across the whole replay and computed exactly once —
         // replay is O(batches), not O(batches × chain length).
         chain.beginReplayProjectionDeferral()
@@ -592,15 +619,30 @@ public struct ChainTree: Sendable {
         chain.completeReplayProjectionDeferral()
         chain.sealRecovery(revisionFloor: revisionFloor)
         chain.context = context
-        // A tree on a chain holds that chain's spec — the genesis's own — so
-        // it can admit headers; one without a context holds none.
-        if context != nil || spec != nil {
-            guard let spec, binds(spec, to: input.snapshot.specCID) else {
-                throw ChainStateRestoreError.corruptConsensusGraph
+        // A tree on a chain holds the spec of every root — each the
+        // genesis's own — so it can admit headers under any of them.
+        if context != nil || !specs.isEmpty {
+            for spec in specs {
+                guard let cid = try? VolumeImpl<ChainSpec>(node: spec).rawCID else {
+                    throw ChainStateRestoreError.corruptConsensusGraph
+                }
+                chain.specs[cid] = spec
             }
-            chain.spec = spec
+            for root in chain.indexToBlockHash[0] ?? []
+            where chain.graph.parent(of: root) == nil {
+                guard let cid = chain.frontier.snapshot(of: root)?.specCID,
+                      chain.specs[cid] != nil else {
+                    throw ChainStateRestoreError.corruptConsensusGraph
+                }
+            }
         }
         return chain
+    }
+
+    /// Whether `batch` is an authenticated batch carrying a genesis block.
+    package static func decodesAsGenesis(_ batch: BlockImportBatch) -> Bool {
+        guard let block = TrustedImportBatch(batch)?.block else { return false }
+        return block.parentBlockHash == nil && block.blockHeight == 0
     }
 
     private mutating func sealRecovery(revisionFloor: UInt64) {
@@ -696,13 +738,16 @@ public struct ChainTree: Sendable {
         default:
             break
         }
-        if left.contribution.work != right.contribution.work {
-            return left.contribution.work < right.contribution.work
+        // A work-less genesis batch sorts as zero work with an empty grind ID.
+        let leftWork = left.contribution?.work ?? .zero
+        let rightWork = right.contribution?.work ?? .zero
+        if leftWork != rightWork {
+            return leftWork < rightWork
         }
         if left.workBlockHash != right.workBlockHash {
             return left.workBlockHash < right.workBlockHash
         }
-        return left.contribution.id < right.contribution.id
+        return (left.contribution?.id ?? "") < (right.contribution?.id ?? "")
     }
 
     private static func snapshot(for block: Block) -> TipBlockSnapshot {
@@ -853,24 +898,31 @@ public struct ChainTree: Sendable {
         )
     }
 
+    /// `contribution` is nil only for a genesis, which has no work of its own
+    /// (§5.1): it is inserted as a root weighing nothing until its
+    /// descendants or a credited proof add work.
     private mutating func submitBlock(
         input: ConsensusBlockInput,
-        contribution: VerifiedWorkContribution
+        contribution: VerifiedWorkContribution?
     ) -> SubmissionResult {
         let blockHash = input.blockHash
         let isRoot = input.parentBlockHash == nil
         let oldTip = canonicalTip
 
-        if contribution.work == .zero || (isRoot && input.blockHeight != 0) {
+        if isRoot && input.blockHeight != 0 {
             return .discarded()
         }
-
-        guard forkChoice.acceptsLocation(of: contribution.id, at: blockHash) else {
-            return .discarded()
-        }
-
-        if graph.contains(blockHash) {
-            return addWorkContribution(contribution, to: blockHash)
+        if let contribution {
+            if contribution.work == .zero { return .discarded() }
+            guard forkChoice.acceptsLocation(of: contribution.id, at: blockHash) else {
+                return .discarded()
+            }
+            if graph.contains(blockHash) {
+                return addWorkContribution(contribution, to: blockHash)
+            }
+        } else {
+            guard isRoot else { return .discarded() }
+            if graph.contains(blockHash) { return .discarded() }
         }
 
         guard hasUnreservedMutationCapacity else { return .discarded() }
@@ -878,8 +930,8 @@ public struct ChainTree: Sendable {
 
         let result = insertBlock(
             input: input,
-            contributions: [contribution],
-            addedContribution: true,
+            contributions: contribution.map { [$0] } ?? [],
+            addedContribution: contribution != nil,
             graftsExistingComponent: graftsExistingComponent
         )
         if !result.addedBlock { return result }
@@ -916,10 +968,10 @@ public struct ChainTree: Sendable {
         graftsExistingComponent: Bool
     ) -> SubmissionResult {
         let blockHash = input.blockHash
-        guard !contributions.isEmpty,
+        // Every block carries positive work except a genesis, which has none of
+        // its own (§5.1) and may arrive with no contribution at all.
+        guard !contributions.isEmpty || input.parentBlockHash == nil,
               Set(contributions.map(\.id)).count == contributions.count,
-              // Every block, genesis included, must carry positive work — genesis
-              // must satisfy its own committed target.
               contributions.allSatisfy({ $0.work > .zero }),
               !(input.parentBlockHash == nil && input.blockHeight != 0)
         else {
@@ -959,6 +1011,14 @@ public struct ChainTree: Sendable {
         indexStateTransition(input.snapshot, blockHash: blockHash)
         if let prevHash = input.parentBlockHash {
             graph.appendChild(blockHash, to: prevHash)
+            // A block declaring a spec other than its root's (a `spec !=
+            // parent.spec` exclusion, or below one) keeps its root's spec for
+            // the schedule of its own children. Header admission always holds
+            // the parent, so every header-admitted block is settled here.
+            if let rootSpec = rootSpecCID(of: prevHash),
+               rootSpec != input.snapshot.specCID {
+                offRootSpecCID[blockHash] = rootSpec
+            }
         }
         for contribution in contributions {
             // A block arrives with its grinds; attributed runs come later, as
@@ -1114,10 +1174,17 @@ public struct ChainTree: Sendable {
                       }) ?? true else {
                     throw ChainStateRestoreError.corruptConsensusGraph
                 }
+                guard let contribution = trusted.contribution else {
+                    // A work-less genesis fact for a held genesis: nothing to
+                    // weigh, only metadata and any validation it carries.
+                    hydrateMetadata(from: input)
+                    applyValidations()
+                    return nil
+                }
                 if let existing = workContribution(
-                    id: trusted.contribution.id,
+                    id: contribution.id,
                     at: input.blockHash
-                ), existing.work >= trusted.contribution.work {
+                ), existing.work >= contribution.work {
                     hydrateMetadata(from: input)
                     applyValidations()
                     return nil
@@ -1127,7 +1194,7 @@ public struct ChainTree: Sendable {
                 }
                 hydrateMetadata(from: input)
                 let submission = addWorkContribution(
-                    trusted.contribution,
+                    contribution,
                     to: input.blockHash,
                     attributedRun: trusted.attributedRun
                 )
@@ -1138,7 +1205,8 @@ public struct ChainTree: Sendable {
                 return submission
             }
             let submission = submitBlock(input: input, contribution: trusted.contribution)
-            guard submission.addedBlock, submission.addedContribution else {
+            guard submission.addedBlock,
+                  submission.addedContribution || trusted.contribution == nil else {
                 throw ChainStateRestoreError.corruptConsensusGraph
             }
             applyValidations()
@@ -1146,17 +1214,21 @@ public struct ChainTree: Sendable {
         }
 
         let blockHash = trusted.workBlockHash
+        // Only a genesis block batch lacks a work fact, and it has a block.
+        guard let contribution = trusted.contribution else {
+            throw ChainStateRestoreError.corruptConsensusGraph
+        }
         guard graph.contains(blockHash) else {
             throw ChainStateRestoreError.missingBlockFact
         }
         if let existing = workContribution(
-            id: trusted.contribution.id,
+            id: contribution.id,
             at: blockHash
-        ), existing.work >= trusted.contribution.work {
+        ), existing.work >= contribution.work {
             return nil
         }
         let submission = addWorkContribution(
-            trusted.contribution, to: blockHash, attributedRun: trusted.attributedRun
+            contribution, to: blockHash, attributedRun: trusted.attributedRun
         )
         guard submission.addedContribution else {
             throw ChainStateRestoreError.corruptConsensusGraph

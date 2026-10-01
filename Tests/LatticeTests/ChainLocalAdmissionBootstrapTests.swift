@@ -491,9 +491,10 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         XCTAssertTrue(staged.isEmpty)
     }
 
-    func testRootBootstrapRejectsTargetMissWithoutStoring() async throws {
+    /// A genesis has no work of its own (§5.1): a root genesis whose hash
+    /// misses its own target bootstraps, staging its batch with no work fact.
+    func testRootBootstrapNeedsNoGenesisWork() async throws {
         let fetcher = StorableFetcher()
-        let durable = RecordingAdmissionStorer()
         let recorder = AdmissionStageRecorder()
 
         let hardGenesis = try await buildAndStoreGenesis(
@@ -504,26 +505,26 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             fetcher: fetcher
         )
         XCTAssertGreaterThan(hardGenesis.proofOfWorkHash(), hardGenesis.target)
-        do {
-            _ = try await ChainLevel.bootstrap(
-                context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY]),
-                genesisHeader: try BlockHeader(node: hardGenesis),
-                fetcher: fetcher,
-                validationContentStorer: durable,
-                materializedVolumeStorer: durable,
-                stage: { batch in await recorder.stage(batch) }
-            )
-            XCTFail("a target miss cannot bootstrap the root")
-        } catch let failure as BlockImportError {
-            XCTAssertEqual(failure, .proofOfWorkInvalid)
-        }
-        let targetMissStoreCalls = await durable.storeCallCount()
-        let targetMissBatches = await recorder.recordedBatches()
-        XCTAssertEqual(targetMissStoreCalls, 0)
-        XCTAssertTrue(targetMissBatches.isEmpty)
+        let level = try await ChainLevel.bootstrap(
+            context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY]),
+            genesisHeader: try BlockHeader(node: hardGenesis),
+            fetcher: fetcher,
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
+            stage: { batch in await recorder.stage(batch) }
+        ).level
+        let batches = await recorder.recordedBatches()
+        XCTAssertEqual(batches.count, 1)
+        XCTAssertFalse(batches.flatMap(\.facts).contains {
+            if case .work = $0 { return true }
+            return false
+        }, "a genesis carries no work fact")
+        let tip = await level.chain.canonicalTip
+        XCTAssertEqual(tip, try BlockHeader(node: hardGenesis).rawCID)
     }
 
-    func testBootstrapDoesNotStageOnCurrentChainTargetMiss() async throws {
+    /// A child genesis likewise needs no work: authorization alone admits it.
+    func testChildBootstrapNeedsNoGenesisWork() async throws {
         let fetcher = StorableFetcher()
         let childGenesis = try await buildAndStoreGenesis(
             spec: chainLocalSpec(),
@@ -548,9 +549,9 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             materializedVolumeStorer: fetcher,
             stage: { record in await recorder.stage(record) }
         )
-        XCTAssertEqual(result.failure, .proofOfWorkInvalid)
+        XCTAssertNil(result.failure)
         let stageCount = await recorder.count(for: header.rawCID)
-        XCTAssertEqual(stageCount, 0)
+        XCTAssertEqual(stageCount, 1)
     }
 
     func testHeightOverflowFailsClosedInBuilder() async throws {

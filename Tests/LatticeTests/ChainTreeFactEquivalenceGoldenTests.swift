@@ -256,7 +256,7 @@ final class ChainTreeFactEquivalenceGoldenTests: XCTestCase {
         ).get()
         let oldGenesisBatch = await recorder.recordedBatches().last
         let genesisHex = try Self.hex(oldGenesisBatch)
-        XCTAssertEqual(genesisHex, try Self.hex(new.facts), "child genesis bootstrap facts")
+        XCTAssertEqual(genesisHex, try Self.hex(new.batches.last), "child genesis bootstrap facts")
         let steps = [Golden.Step(name: "child/genesis/bootstrap", facts: genesisHex)]
 
         let child = Pair(level: accepted.level, tree: new.tree, fetcher: fetcher)

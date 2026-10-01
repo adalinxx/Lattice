@@ -511,7 +511,13 @@ func testAdmissionBatch(
             stateDiff: .empty
         )),
         .work(ChainWorkFact(blockHash: header.rawCID, contribution: work)),
-    ])
+    ] + executedGenesisFacts(block, blockHash: header.rawCID))
+}
+
+/// A genesis batch as bootstrap persists it carries its validation: a root
+/// is executed only by a validation fact, never by being restored.
+private func executedGenesisFacts(_ block: Block, blockHash: String) -> [ChainFact] {
+    block.parent == nil ? [.validation(ChainValidationFact(blockHash: blockHash))] : []
 }
 
 func testAdmissionBatch(
@@ -534,7 +540,7 @@ func testAdmissionBatch(
             stateDiff: stateDiff
         )),
         .work(ChainWorkFact(blockHash: header.rawCID, contribution: contribution))
-    ])
+    ] + executedGenesisFacts(block, blockHash: header.rawCID))
 }
 
 func testWorkBatch(
