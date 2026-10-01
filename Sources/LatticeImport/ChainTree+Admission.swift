@@ -8,47 +8,27 @@ import LatticeBlockTree
 
 // MARK: - Parent-chain facts
 
-/// What a child chain's execution asks of its parent chain. Both answers are
+/// What a child chain's execution asks of its parent chain: continuity,
 /// about the parent's EXECUTED SET — every block executed from genesis on any
-/// branch, minus excluded subtrees — never about its tip, and both are for
-/// the parent chain the link names.
+/// branch, minus excluded subtrees — never about its tip, and for the parent
+/// chain the link names.
 public protocol ParentChainFacts: Sendable {
     /// Whether some block of the parent's executed set, on any branch,
     /// produced `link.toStateCID` (continuity from the parent's genesis).
     func hasContinuity(_ link: ParentStateContinuityLink) -> Bool
-    /// Whether a `GenesisAction` in a block of the parent's executed set
-    /// authorized exactly `link`.
-    func recordsGenesis(_ link: ParentGenesisLink) -> Bool
 }
 
 /// A parent level's facts as values: its tree, whose executed set and path
-/// answer continuity, and every genesis link its executions reported, keyed
-/// by the issuing block. A link is honoured only while an issuer is in the
-/// executed set — checked when read, so a block executed ahead of its
-/// ancestry authorizes once that ancestry executes, and never once an
-/// ancestor is excluded.
+/// answer continuity.
 public struct ParentLevelFacts: ParentChainFacts {
     public var tree: ChainTree
     /// The parent chain's path: facts answer only for links naming it.
     public let path: [String]?
-    public private(set) var genesisIssuers: [ParentGenesisLink: Set<String>]
 
     /// `path` defaults to the tree's own context.
-    public init(
-        tree: ChainTree,
-        path: [String]? = nil,
-        genesisIssuers: [ParentGenesisLink: Set<String>] = [:]
-    ) {
+    public init(tree: ChainTree, path: [String]? = nil) {
         self.tree = tree
         self.path = path ?? tree.context?.path
-        self.genesisIssuers = genesisIssuers
-    }
-
-    /// Record the genesis links one of the parent's executions reported.
-    public mutating func record(_ update: ChainTreeUpdate) {
-        for link in update.parentGenesisLinks {
-            genesisIssuers[link, default: []].insert(update.blockHash)
-        }
     }
 
     public func hasContinuity(_ link: ParentStateContinuityLink) -> Bool {
@@ -56,18 +36,10 @@ public struct ParentLevelFacts: ParentChainFacts {
             && link.fromStateCID == LatticeState.emptyHeader.rawCID
             && tree.executedSetProduced(stateCID: link.toStateCID)
     }
-
-    public func recordsGenesis(_ link: ParentGenesisLink) -> Bool {
-        guard link.parentPath == path, let issuers = genesisIssuers[link] else {
-            return false
-        }
-        return issuers.contains { tree.hasExecutedAncestry(blockHash: $0) }
-    }
 }
 
 /// One parent fact a child's execution needs, and how a source answers it.
 enum ParentFactQuery: Sendable {
-    case genesis(ParentGenesisLink)
     case continuity(ParentStateContinuityLink)
     /// The block commits no parent state: no fact may be offered for it.
     case none
@@ -102,11 +74,6 @@ public struct ChainTreeUpdate: Sendable {
     public let commit: ChainCommit?
     /// The executed post-state (`applyConnect` of a valid block only).
     public let materializedPostState: LatticeState?
-    /// The child-genesis links this block's `GenesisAction`s authorize. Only
-    /// an executed block issues any: a weighed-only block issues no facts.
-    /// A link authorizes a child only while this block is in the executed
-    /// set (`ParentLevelFacts.record`).
-    public let parentGenesisLinks: [ParentGenesisLink]
 }
 
 public enum ChainTreeAdmission: Sendable {
@@ -138,8 +105,7 @@ public enum ChainTreeAdmission: Sendable {
 public struct ConnectJob: Sendable {
     public let blockHash: String
     public let context: ChainRuntimeContext
-    /// Nil only for a genesis no grind has been credited to.
-    let contribution: VerifiedWorkContribution?
+    let contribution: VerifiedWorkContribution
     let recordedChildCommitments: [String: String]?
     let anchors: AnchorSnapshot
 }
@@ -158,7 +124,7 @@ struct AnchorSnapshot: DifficultyAnchorSource {
 /// `applyConnect`, or a non-verdict to retry.
 public struct ConnectVerdict: Sendable {
     enum Outcome: Sendable {
-        case valid(BlockImportBatch, LatticeState?, [ParentGenesisLink])
+        case valid(BlockImportBatch, LatticeState?)
         /// Execution completed and proved the block invalid.
         case invalid(isGenesis: Bool)
         /// No verdict (availability, ordering, missing parent facts).
@@ -181,12 +147,11 @@ public struct ConnectVerdict: Sendable {
     }
 }
 
-/// A chain bootstrapped from its genesis: the tree, and the batches that
-/// seeded it — the genesis inserted (`insertGenesis`), then executed
-/// (`applyConnect`). The caller MUST persist both in one transaction.
+/// A chain bootstrapped from its genesis, with the one batch that seeds it:
+/// the genesis's block, its work and its validation.
 public struct GenesisBootstrap: Sendable {
     public let tree: ChainTree
-    public let batches: [BlockImportBatch]
+    public let facts: BlockImportBatch
     public let stateDiff: StateDiff
     public let materializedPostState: LatticeState?
 }
@@ -394,8 +359,7 @@ extension ChainTree {
     /// the tree, on the tree's own chain. The validation batch re-states one
     /// grind the tree holds for the block: `grind` when named, else the
     /// strongest. Nil for a block this tree does not hold, a grind it does
-    /// not hold there, a non-genesis block with no grind, or a tree made
-    /// without a context. A genesis needs no grind: it has no work of its own.
+    /// not hold there, or a tree made without a context.
     public mutating func connectJob(
         for blockHash: String,
         grind: String? = nil
@@ -404,14 +368,7 @@ extension ChainTree {
               let hash = CIDIdentity.canonicalString(blockHash),
               contains(blockHash: hash) else { return nil }
         let held = grind.map { workContribution(id: $0, at: hash) } ?? strongestGrind(of: hash)
-        let contribution: VerifiedWorkContribution?
-        if let held {
-            contribution = held
-        } else if grind == nil, parentHash(of: hash) == nil {
-            contribution = nil
-        } else {
-            return nil
-        }
+        guard let contribution = held else { return nil }
         var anchors: [String: DifficultyAnchor] = [:]
         if let parentHash = parentHash(of: hash),
            let anchor = difficultyAnchor(forBlockHash: parentHash) {
@@ -459,24 +416,12 @@ extension ChainTree {
                 : verdict(.retry(failure))
         }
         if isGenesis {
+            // A root chain executes only its configured genesis (§5.1).
+            guard context.admitsGenesis(job.blockHash) else {
+                return verdict(.retry(.protocolInvalid))
+            }
             guard block.height == 0 else {
                 return verdict(.invalid(isGenesis: true))
-            }
-            // A child genesis is executed only once authorized: a
-            // `GenesisAction` for exactly this genesis in a block of the
-            // parent's executed set (`parentFacts.recordsGenesis`). Asked
-            // before execution, so an unauthorized root costs nothing to hold.
-            // A root chain's genesis is authorized by the node's configured
-            // genesis CID, outside this tree.
-            if !context.isRoot,
-               let failure = BlockImport.validateParentFacts(
-                   BlockImport.parentFactLookup(parentFacts),
-                   child: block,
-                   childCID: job.blockHash,
-                   context: context
-               ),
-               !BlockImport.isDeterministicInvalidity(failure) {
-                return verdict(.retry(failure))
             }
         }
         let transition: BlockImport.ExecutedTransition
@@ -506,17 +451,6 @@ extension ChainTree {
             case .failure(let failure): return rejected(failure)
             }
         }
-        let genesisLinks: [ParentGenesisLink]
-        do {
-            genesisLinks = try await parentGenesisLinks(
-                in: resolvedHeader,
-                parentPath: context.path,
-                fetcher: fetcher
-            )
-        } catch {
-            // Issuance only, never a verdict on the block.
-            return verdict(.retry(.unavailableEvidence))
-        }
         return verdict(.valid(
             BlockImport.admissionFacts(
                 blockHash: job.blockHash,
@@ -529,8 +463,7 @@ extension ChainTree {
                 ),
                 childCommitments: commitments
             ),
-            transition.materializedPostState,
-            genesisLinks
+            transition.materializedPostState
         ))
     }
 
@@ -560,85 +493,100 @@ extension ChainTree {
                 of: blockHash,
                 excluded: true
             )
-        case .valid(let facts, let materializedPostState, let genesisLinks):
+        case .valid(let facts, let materializedPostState):
             guard contains(blockHash: blockHash) else {
                 return .rejected(.notYetValid)
-            }
-            // An executed root re-executed adds nothing: the actor path stages
-            // nothing for a held genesis either.
-            if parentHash(of: blockHash) == nil, isExecuted(blockHash: blockHash) {
-                return .duplicate(promotedCommit: nil)
             }
             return applyAdmission(
                 [facts],
                 of: blockHash,
-                materializedPostState: materializedPostState,
-                parentGenesisLinks: genesisLinks
+                materializedPostState: materializedPostState
             )
         }
     }
 
-    /// Insert a genesis root into the weighed graph (§9.9 genesis
-    /// admission). A genesis has no work of its own (§5.1): no proof-of-work
-    /// or target is checked, and it weighs through its descendants' work and
-    /// any proof later credited to it (`addWork`). Authorization is not
-    /// asked here: an unauthorized root weighs like any other and enters the
-    /// executed set only through `connect` once its parent authorizes it.
+    /// Weigh a genesis root (§9.9 genesis admission). A chain may hold
+    /// several; GHOST chooses among them (§9.4).
     ///
-    /// Proof of content: `block` is the genesis itself — its CID is computed
-    /// from it, so the bytes are their own proof — and `spec` must be the
-    /// spec its `spec` field names by CID (otherwise
-    /// `.providerMalformedEvidence`). The tree holds that spec as this root's
-    /// (`specs`), and every header under the root is scheduled by it.
+    /// - Root chain: only the configured genesis (`context.genesisCID`), with
+    ///   its own grind (`rootWork`). Any other is `.protocolInvalid`.
+    /// - Child chain: any genesis, with the work of a verified child proof of
+    ///   exactly it (`evidence`), like `insertChildHeader`. No parent record
+    ///   is asked: it is executed — continuity included — like any child
+    ///   block, and excluded if invalid.
     ///
-    /// - Applied: one batch, the genesis's block fact alone (empty diff, child
-    ///   commitments not recorded until execution). No work fact, no
-    ///   validation, no cross-chain fact: a weighed-only block issues none.
-    /// - Duplicate: the root is already held.
-    /// - `.protocolInvalid` (drop): not a genesis (a parent, or a height),
-    ///   a malformed reward recipient, or header fields that do not decode
-    ///   (a zero target).
+    /// Proof of content: the CID is computed from `block`, and `spec` must be
+    /// the spec its `spec` field names (`.providerMalformedEvidence`
+    /// otherwise); the tree then holds it as this root's (`specs`). Emits the
+    /// block fact and its work fact. A held genesis takes `addWork`.
     public mutating func insertGenesis(
         _ block: Block,
-        spec: ChainSpec
+        spec: ChainSpec,
+        evidence: VerifiedChildEvidence? = nil
     ) -> ChainTreeAdmission {
-        guard context != nil else { return .rejected(.notAcceptedAtCurrentChain) }
+        guard let context else { return .rejected(.notAcceptedAtCurrentChain) }
         guard let blockHash = try? BlockHeader(node: block).rawCID else {
-            return .rejected(.providerMalformedEvidence)
+            return .rejected(.proofOfWorkInvalid)
         }
         guard block.parent == nil, block.height == 0,
-              block.hasWellFormedRewardRecipient else {
+              block.hasWellFormedRewardRecipient,
+              context.admitsGenesis(blockHash) else {
             return .rejected(.protocolInvalid)
         }
+        let work: VerifiedWorkContribution
+        if context.isRoot {
+            guard evidence == nil else { return .rejected(.protocolInvalid) }
+            guard let own = BlockImport.rootWork(of: block, blockHash: blockHash) else {
+                return .rejected(.proofOfWorkInvalid)
+            }
+            work = own
+        } else {
+            guard let evidence else {
+                return .rejected(.crossChainEvidenceRequired(.childProof(
+                    chainPath: context.path, childCID: blockHash
+                )))
+            }
+            guard CIDIdentity.canonicalString(evidence.childCID) == blockHash,
+                  let proven = evidence.contribution else {
+                return .rejected(.proofOfWorkInvalid)
+            }
+            work = proven
+        }
+        guard work.work > .zero else { return .rejected(.proofOfWorkInvalid) }
         guard ChainTree.binds(spec, to: block.spec.rawCID) else {
             return .rejected(.providerMalformedEvidence)
         }
         if contains(blockHash: blockHash) {
-            return .duplicate(promotedCommit: reevaluateForkChoice())
+            return addWork(work, to: blockHash)
+        }
+        guard acceptsWorkLocation(of: work.id, at: blockHash) else {
+            return .rejected(.providerMalformedEvidence)
         }
         let facts = BlockImport.admissionFacts(
             blockHash: blockHash,
             block: block,
-            contribution: nil,
+            contribution: work,
             kind: .block(.empty, nil, validated: false),
             childCommitments: nil
         )
-        // The fact must decode as a root before the spec is held, so a
-        // refused genesis leaves the tree unchanged.
         guard ChainTree.decodesAsGenesis(facts) else {
             return .rejected(.protocolInvalid)
         }
-        _ = holdSpec(spec, for: block.spec.rawCID)
-        return applyAdmission([facts], of: blockHash)
+        let admission = applyAdmission([facts], of: blockHash)
+        if admission.update != nil {
+            _ = holdSpec(spec, for: block.spec.rawCID)
+        }
+        return admission
     }
 
     /// Bootstrap a chain from its genesis: an empty tree, `insertGenesis`,
-    /// then `connect` and `applyConnect` — the one path every root takes.
-    /// A child genesis must be authorized by `parentFacts`
-    /// (`.crossChainEvidenceRequired(.parentGenesis)` otherwise); an invalid
-    /// one is `.protocolInvalid`.
+    /// then `connect` and `applyConnect` — the one path every root takes. A
+    /// child genesis needs `evidence` (its proof) and its continuity in
+    /// `parentFacts`; an invalid genesis is `.protocolInvalid`. Returns the
+    /// one executed batch (block, work, validation), which restores the tree.
     public static func bootstrap(
         genesis genesisHeader: BlockHeader,
+        evidence: VerifiedChildEvidence? = nil,
         fetcher: any Fetcher,
         context: ChainRuntimeContext,
         parentFacts: (any ParentChainFacts)? = nil,
@@ -653,10 +601,11 @@ extension ChainTree {
             return .failure(.unavailableEvidence)
         }
         var tree = ChainTree.empty(context: context)
-        guard let inserted = tree.insertGenesis(block, spec: spec).update else {
-            return .failure(.protocolInvalid)
+        let inserted = tree.insertGenesis(block, spec: spec, evidence: evidence)
+        guard let blockHash = inserted.update?.blockHash else {
+            return .failure(inserted.failure ?? .protocolInvalid)
         }
-        guard let job = tree.connectJob(for: inserted.blockHash) else {
+        guard let job = tree.connectJob(for: blockHash) else {
             return .failure(.localVerificationFailure)
         }
         let verdict = await connect(
@@ -666,10 +615,9 @@ extension ChainTree {
             validationContext: validationContext
         )
         if let failure = verdict.retryFailure { return .failure(failure) }
-        if verdict.provesInvalid { return .failure(.protocolInvalid) }
-        guard let executed = tree.applyConnect(verdict).update,
-              case .valid(let facts, _, _) = verdict.outcome else {
-            return .failure(.localVerificationFailure)
+        guard case .valid(let facts, _) = verdict.outcome,
+              let executed = tree.applyConnect(verdict).update else {
+            return .failure(.protocolInvalid)
         }
         let stateDiff = facts.facts.lazy.compactMap { fact -> StateDiff? in
             if case .block(let value) = fact { return value.stateDiff }
@@ -677,7 +625,7 @@ extension ChainTree {
         }.first ?? .empty
         return .success(GenesisBootstrap(
             tree: tree,
-            batches: inserted.batches + executed.batches,
+            facts: facts,
             stateDiff: stateDiff,
             materializedPostState: executed.materializedPostState
         ))
@@ -691,8 +639,7 @@ extension ChainTree {
         _ batches: [BlockImportBatch],
         of blockHash: String,
         excluded: Bool = false,
-        materializedPostState: LatticeState? = nil,
-        parentGenesisLinks: [ParentGenesisLink] = []
+        materializedPostState: LatticeState? = nil
     ) -> ChainTreeAdmission {
         // All or nothing: every batch here is one consensus mutation, so the
         // capacity for all of them is checked before the first is applied.
@@ -715,8 +662,7 @@ extension ChainTree {
             batches: batches,
             excluded: excluded,
             commit: commit,
-            materializedPostState: materializedPostState,
-            parentGenesisLinks: parentGenesisLinks
+            materializedPostState: materializedPostState
         ))
     }
 }

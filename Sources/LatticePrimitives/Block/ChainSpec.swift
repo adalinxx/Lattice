@@ -3,8 +3,8 @@ import Foundation
 import UInt256
 
 /// The conventional name of the single root chain (Nexus). A chain's directory
-/// is positional — it is the key it is anchored under in its parent's
-/// genesisState (i.e. the last element of its chainPath) — and is therefore NOT
+/// is positional — the directory its blocks are carried under in its parent's
+/// child index (i.e. the last element of its chainPath) — and is therefore NOT
 /// stored in the content-addressed `ChainSpec`. This constant is only the
 /// fallback used by the validators when no chainPath/directory is supplied,
 /// which is the root case; the node always supplies its configured chainPath.

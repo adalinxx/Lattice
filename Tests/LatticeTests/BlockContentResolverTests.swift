@@ -17,7 +17,6 @@ final class BlockContentResolverTests: XCTestCase {
             accountActions: [AccountAction(owner: "alice", delta: 10)],
             actions: [],
             depositActions: [],
-            genesisActions: [],
             receiptActions: [],
             withdrawalActions: [],
             signers: ["alice"],
@@ -71,7 +70,6 @@ final class BlockContentResolverTests: XCTestCase {
             accountActions: [],
             actions: [],
             depositActions: [],
-            genesisActions: [],
             receiptActions: [receipt],
             withdrawalActions: [withdrawal],
             signers: [],
@@ -121,7 +119,6 @@ final class BlockContentResolverTests: XCTestCase {
             accountActions: [],
             actions: [],
             depositActions: [],
-            genesisActions: [],
             receiptActions: [],
             withdrawalActions: [],
             signers: ["alice"],
@@ -192,7 +189,6 @@ final class BlockContentResolverTests: XCTestCase {
             accountActions: [],
             actions: [],
             depositActions: [],
-            genesisActions: [],
             receiptActions: [],
             withdrawalActions: [],
             signers: ["alice"],
@@ -307,7 +303,6 @@ final class BlockContentResolverTests: XCTestCase {
         XCTAssertTrue(roots.contains(emptyState.accountState.rawCID))
         XCTAssertTrue(roots.contains(emptyState.generalState.rawCID))
         XCTAssertTrue(roots.contains(emptyState.depositState.rawCID))
-        XCTAssertTrue(roots.contains(emptyState.genesisState.rawCID))
         XCTAssertTrue(roots.contains(emptyState.receiptState.rawCID))
 
         let copied = try await VolumeImpl<Block>(rawCID: header.rawCID)
@@ -545,7 +540,6 @@ private func contentTransaction(nonce: UInt64, payloadBytes: Int) -> Transaction
         accountActions: [],
         actions: [],
         depositActions: [],
-        genesisActions: [],
         receiptActions: [],
         withdrawalActions: [],
         signers: [],
@@ -567,7 +561,6 @@ private func stateContentTransaction(payloadBytes: Int) -> Transaction {
             newValue: String(repeating: "s", count: payloadBytes)
         )],
         depositActions: [],
-        genesisActions: [],
         receiptActions: [],
         withdrawalActions: [],
         signers: [],

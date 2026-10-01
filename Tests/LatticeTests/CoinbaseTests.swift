@@ -59,8 +59,7 @@ struct CoinbaseFixture {
             accountActions: [AccountAction(
                 owner: payerAddress, delta: Int64(spec.premineAmount()) - Int64(bystanders)
             )] + (0..<bystanders).map { _ in AccountAction(owner: freshAddress(), delta: 1) },
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [], nonce: 0, chainPath: ["Nexus"]
         )
         let result = try await BlockBuilder.buildGenesisWithTransition(
@@ -89,8 +88,7 @@ struct CoinbaseFixture {
         let body = TransactionBody(
             accountActions: [AccountAction(owner: payerAddress, delta: -Int64(debit))]
                 + credits.map { AccountAction(owner: $0.0, delta: Int64($0.1)) },
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [payerAddress], nonce: nonce, chainPath: chainPath
         )
         return (body, signedTestTransaction(body, by: payer))
@@ -224,8 +222,7 @@ final class CoinbaseRuleTests: XCTestCase {
         let minerAddress = testAddress(publicKey: miner.publicKey)
         let oldRewardBody = TransactionBody(
             accountActions: [AccountAction(owner: minerAddress, delta: Int64(f.reward))],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [minerAddress], nonce: 0, chainPath: ["Nexus"]
         )
         let oldReward = signedTestTransaction(oldRewardBody, by: miner)
@@ -310,7 +307,7 @@ final class CoinbaseRuleTests: XCTestCase {
         let honest = try await f.genesis.validateGenesis(fetcher: f.fetcher, chainPath: ["Nexus"]).0
         XCTAssertTrue(honest)
         let paid = withRewardRecipient(f.genesis, f.payerAddress)
-        XCTAssertFalse(paid.hasGenesisShape())
+        XCTAssertFalse(paid.hasGenesisShape(isRoot: true))
         let paidValid = try await paid.validateGenesis(fetcher: f.fetcher, chainPath: ["Nexus"]).0
         XCTAssertFalse(paidValid)
     }
@@ -534,7 +531,7 @@ final class CoinbaseChildChainTests: XCTestCase {
             accountActions: [AccountAction(owner: payerAddress, delta: -25)],
             actions: [],
             depositActions: [DepositAction(nonce: 1, demander: payerAddress, amountDemanded: 20, amountDeposited: 20)],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [payerAddress], nonce: 0, chainPath: ["Nexus", "Payments"]
         )
         XCTAssertEqual(body.minerSurplus(), WorkSum(UInt256(5)))

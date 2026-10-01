@@ -45,8 +45,7 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
 
         let premineBody = TransactionBody(
             accountActions: [AccountAction(owner: aliceAddr, delta: Int64(premineAmount))],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], nonce: 0,
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [], signers: [], nonce: 0,
             chainPath: ["Nexus"]
         )
         let premineHeader = try! HeaderImpl<TransactionBody>(node: premineBody)
@@ -63,8 +62,7 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
                 AccountAction(owner: aliceAddr, delta: Int64(premineAmount - transferAmount) - Int64(premineAmount)),
                 AccountAction(owner: bobAddr, delta: Int64(transferAmount))
             ],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [aliceAddr], nonce: 0, chainPath: ["Nexus"]
         )
         let transferHeader = try! HeaderImpl<TransactionBody>(node: transferBody)
@@ -128,8 +126,7 @@ final class SourceOverloadEquivalenceTests: XCTestCase {
         // so the builder must be told to assemble it anyway.
         let overclaimBody = TransactionBody(
             accountActions: [AccountAction(owner: minerAddr, delta: Int64(reward + 1))],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [minerAddr], nonce: 0, chainPath: ["Nexus"]
         )
         let bodyHeader = try! HeaderImpl<TransactionBody>(node: overclaimBody)

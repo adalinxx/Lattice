@@ -20,17 +20,6 @@ import UInt256
 ///
 /// These tests pin the boundary: an unverified declared state MUST NOT be
 /// attestable.
-private actor StagedIssuanceRecorder {
-    private var contexts: [BlockImportStagingContext] = []
-    func record(_ context: BlockImportStagingContext) { contexts.append(context) }
-    func issuedHierarchyFacts() -> Int {
-        contexts.filter { $0.issuesHierarchyFacts }.count
-    }
-    func genesisLinkCount() -> Int {
-        contexts.reduce(0) { $0 + $1.parentGenesisLinks.count }
-    }
-}
-
 final class ParentStateAttestationTierTests: XCTestCase {
     private let easy = UInt256.max
 
@@ -53,7 +42,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
                 TransactionBody(
                     accountActions: [],
                     actions: [Action(key: key, oldValue: nil, newValue: "v")],
-                    depositActions: [], genesisActions: [], receiptActions: [],
+                    depositActions: [], receiptActions: [],
                     withdrawalActions: [],
                     signers: [testAddress(publicKey: keyPair.publicKey)],
                     nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
@@ -80,7 +69,6 @@ final class ParentStateAttestationTierTests: XCTestCase {
             accountActions: [],
             actions: [Action(key: "unrelated", oldValue: nil, newValue: "v")],
             depositActions: [],
-            genesisActions: [],
             receiptActions: [],
             withdrawalActions: [],
             signers: [signer],
@@ -201,7 +189,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
                 TransactionBody(
                     accountActions: [], 
                     actions: [Action(key: "upgrade", oldValue: nil, newValue: "v")],
-                    depositActions: [], genesisActions: [], receiptActions: [],
+                    depositActions: [], receiptActions: [],
                     withdrawalActions: [],
                     signers: [testAddress(publicKey: keyPair.publicKey)],
                     nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
@@ -426,9 +414,10 @@ final class ParentStateAttestationTierTests: XCTestCase {
         let s1 = testCID("excl-state-1")
         let s2 = testCID("excl-state-2")
 
+        // Block 1 is weighed only; block 2 was executed ahead of it.
         let history = [
             executedBatch(g, parent: nil, height: 0, from: empty, to: sg, n: 1),
-            executedBatch(one, parent: g, height: 1, from: sg, to: s1, n: 2),
+            legacyBatch(one, parent: g, height: 1, from: sg, to: s1, nonce: 2),
             executedBatch(two, parent: one, height: 2, from: s1, to: s2, n: 3),
         ]
         let exclusion = BlockImportBatch(facts: [
@@ -436,21 +425,12 @@ final class ParentStateAttestationTierTests: XCTestCase {
         ])
 
         let live = try await ChainState.restore(replaying: history)
-        let attestableBefore = await live.hasStateContinuity(from: empty, to: s2)
-        XCTAssertTrue(
-            attestableBefore,
-            "the fixture must be attestable before the verdict"
-        )
         _ = try await live.applyStaged(exclusion)
-
-        // Excluding block 1 must take its descendant with it.
+        // Excluding block 1 keeps its executed descendant out of the frontier.
         let liveOne = await live.hasStateContinuity(from: empty, to: s1)
         let liveTwo = await live.hasStateContinuity(from: empty, to: s2)
         XCTAssertFalse(liveOne, "a proven-invalid block's state must not be attestable")
-        XCTAssertFalse(
-            liveTwo,
-            "a descendant of a proven-invalid block must not be attestable either"
-        )
+        XCTAssertFalse(liveTwo, "a descendant of a proven-invalid block must not be attestable either")
 
         // The same log restored wholesale must agree: the frontier is built by
         // different code on that path.
@@ -459,6 +439,19 @@ final class ParentStateAttestationTierTests: XCTestCase {
         let restoredTwo = await restored.hasStateContinuity(from: empty, to: s2)
         XCTAssertEqual(liveOne, restoredOne, "live and restored must agree")
         XCTAssertEqual(liveTwo, restoredTwo, "live and restored must agree")
+
+        // An EXECUTED block is never excluded: execution is never revoked.
+        let executedExclusion = BlockImportBatch(facts: [
+            .exclusion(ChainExclusionFact(blockHash: two)),
+        ])
+        do {
+            _ = try await live.applyStaged(executedExclusion)
+            XCTFail("an executed block cannot be excluded")
+        } catch {}
+        do {
+            _ = try await ChainState.restore(replaying: history + [executedExclusion])
+            XCTFail("a durable contradiction does not restore")
+        } catch {}
     }
 
     /// A batch's validation fact must name that batch's own block.
@@ -498,37 +491,6 @@ final class ParentStateAttestationTierTests: XCTestCase {
         }
     }
 
-    /// A block that deploys a child directory, so there is a cross-chain fact
-    /// to issue. Without one, an issuance test passes whatever the gate does.
-    private func deployingBlock(
-        previous: Block, fetcher: StorableFetcher, timestamp: Int64, nonce: UInt64
-    ) async throws -> Block {
-        let childGenesis = try await buildAndStoreGenesis(
-            spec: spec(), timestamp: 10, target: easy, nonce: 77, fetcher: fetcher
-        )
-        let keyPair = CryptoUtils.generateKeyPair()
-        let owner = testAddress(publicKey: keyPair.publicKey)
-        let body = TransactionBody(
-            accountActions: [],
-            actions: [],
-            depositActions: [],
-            genesisActions: [GenesisAction(
-                directory: "Deployed",
-                blockCID: try BlockHeader(node: childGenesis).rawCID
-            )],
-            receiptActions: [],
-            withdrawalActions: [],
-            signers: [owner],
-            nonce: 0,
-            chainPath: [DEFAULT_ROOT_DIRECTORY]
-        )
-        return try await buildAndStoreBlock(
-            previous: previous,
-            transactions: [signedTestTransaction(body, by: keyPair)],
-            timestamp: timestamp, target: easy, nonce: nonce,
-            rewardRecipient: owner, fetcher: fetcher
-        )
-    }
 
     private func weightedBatch(
         _ block: String, parent: String?, height: UInt64,
@@ -603,152 +565,6 @@ final class ParentStateAttestationTierTests: XCTestCase {
             child anchored there would be stranded by a contest it took no \
             part in.
             """
-        )
-    }
-
-    /// A weighed block issues no cross-chain fact, even when re-offered.
-    ///
-    /// "A weighed admission is not yet executed, so it MUST NOT issue any
-    /// cross-chain hierarchy fact" is enforced on the first-observation path.
-    /// Re-offering the same header — ordinary gossip — takes the DUPLICATE
-    /// path, which gated issuance on connectivity; a weighed block is connected
-    /// from its header alone. A child consuming such a binding would bind its
-    /// directory to a genesis this chain never verified and may yet exclude,
-    /// and because a side block is never validated, it is never excluded
-    /// either, so the binding is permanent.
-    func testWeighedBlockIssuesNoGenesisLinkOnTheDuplicatePath() async throws {
-        let fetcher = StorableFetcher()
-        let genesis = try await genesisWithState(
-            fetcher: fetcher, timestamp: 1_000, nonce: 0, key: "seam"
-        )
-        let block = try await deployingBlock(
-            previous: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1
-        )
-        let level = ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
-        let header = try BlockHeader(node: block)
-
-        let weighed = try await level.importBlock(
-            header, fetcher: fetcher,
-            validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
-            mode: .header, stage: testAdmissionStage
-        )
-        guard case .accepted = weighed else {
-            return XCTFail("weighed admission must possess the block, got \(weighed)")
-        }
-
-        // Ordinary gossip re-delivery of a header already held.
-        let replay = try await level.preflightBlockImport(
-            header, fetcher: fetcher, validationContentStorer: fetcher
-        )
-        guard case .duplicate(let preflight) = replay else {
-            return XCTFail("a re-offered header must take the duplicate path")
-        }
-        let resolved = try await level.resolveDuplicatePreflight(preflight)
-        XCTAssertTrue(
-            resolved.parentGenesisLinks.isEmpty,
-            """
-            An UNEXECUTED block issued a child-genesis binding. This is the \
-            gate deciding which genesis a directory resolves to, and the block \
-            may still be proven invalid — a side block never is, so the \
-            binding would be permanent.
-            """
-        )
-    }
-
-    /// The same rule through the EVIDENCE path.
-    ///
-    /// A second, distinct grind on a block already held is new evidence, not a
-    /// duplicate, so it takes a different branch — one where issuance was still
-    /// enabled. Extra work says nothing about whether the transition is valid,
-    /// so an unexecuted block must issue nothing there either.
-    func testSecondGrindOnAWeighedBlockIssuesNoHierarchyFact() async throws {
-        let fetcher = StorableFetcher()
-        let childGenesis = try await buildAndStoreGenesis(
-            spec: spec(), timestamp: 1_000, target: easy, nonce: 1, fetcher: fetcher
-        )
-        let parentGenesis = try await genesisWithState(
-            fetcher: fetcher, timestamp: 500, nonce: 2, key: "evidence-seam"
-        )
-        let shell = try await buildAndStoreBlock(
-            previous: parentGenesis, timestamp: 1_500, target: easy, nonce: 3,
-            fetcher: fetcher
-        )
-        // The child block deploys a grandchild, so there is a binding to issue.
-        let grandchildGenesis = try await buildAndStoreGenesis(
-            spec: spec(), timestamp: 20, target: easy, nonce: 88, fetcher: fetcher
-        )
-        let keyPair = CryptoUtils.generateKeyPair()
-        let owner = testAddress(publicKey: keyPair.publicKey)
-        let body = TransactionBody(
-            accountActions: [],
-            actions: [],
-            depositActions: [],
-            genesisActions: [GenesisAction(
-                directory: "Grandchild",
-                blockCID: try BlockHeader(node: grandchildGenesis).rawCID
-            )],
-            receiptActions: [],
-            withdrawalActions: [],
-            signers: [owner],
-            nonce: 0,
-            chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
-        )
-        let childBlock = try await buildAndStoreBlock(
-            previous: childGenesis,
-            transactions: [signedTestTransaction(body, by: keyPair)],
-            parentChainBlock: shell,
-            timestamp: 2_000, target: easy, nonce: 4,
-            rewardRecipient: owner, fetcher: fetcher
-        )
-
-        // Two DIFFERENT carriers naming the same child block: two distinct
-        // grind identities, so the second is evidence rather than a duplicate.
-        func package(nonce: UInt64) async throws -> ChildValidationPackage {
-            let carrier = try await buildAndStoreBlock(
-                previous: parentGenesis, children: ["Child": childBlock],
-                timestamp: Int64(1_600 + nonce), target: easy, nonce: nonce,
-                fetcher: fetcher
-            )
-            let proof = try await ChildBlockProof.generate(
-                rootHeader: try BlockHeader(node: carrier),
-                childDirectory: "Child", fetcher: fetcher
-            )
-            return try await childValidationPackage(proof: proof, fetcher: fetcher)
-        }
-
-        let level = ChainLevel(
-            chain: ChainState.fromGenesis(block: childGenesis),
-            context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
-        )
-        let recorder = StagedIssuanceRecorder()
-        let record: @Sendable (BlockImportStagingContext) async throws -> Void = {
-            await recorder.record($0)
-        }
-        let header = try BlockHeader(node: childBlock)
-
-        for nonce: UInt64 in [11, 12] {
-            _ = try await level.importBlock(
-                header, fetcher: fetcher,
-                childPackage: try await package(nonce: nonce),
-                validationContentStorer: fetcher,
-                materializedVolumeStorer: fetcher,
-                mode: .header, stage: record
-            )
-        }
-
-        let issued = await recorder.issuedHierarchyFacts()
-        let genesisLinks = await recorder.genesisLinkCount()
-        XCTAssertEqual(
-            issued, 0,
-            """
-            An unexecuted block issued hierarchy facts through the evidence \
-            path. Extra work on a block says nothing about whether its \
-            transition is valid.
-            """
-        )
-        XCTAssertEqual(
-            genesisLinks, 0,
-            "an unexecuted block must issue no child-genesis binding"
         )
     }
 
@@ -993,7 +809,6 @@ final class ParentStateAttestationTierTests: XCTestCase {
                     accountActions: [],
                     actions: [Action(key: "k", oldValue: nil, newValue: "v")],
                     depositActions: [],
-                    genesisActions: [],
                     receiptActions: [],
                     withdrawalActions: [],
                     signers: [testAddress(publicKey: keyPair.publicKey)],
@@ -1091,7 +906,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
                 TransactionBody(
                     accountActions: [],
                     actions: [Action(key: "walked", oldValue: nil, newValue: "v")],
-                    depositActions: [], genesisActions: [], receiptActions: [],
+                    depositActions: [], receiptActions: [],
                     withdrawalActions: [],
                     signers: [testAddress(publicKey: keyPair.publicKey)],
                     nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]

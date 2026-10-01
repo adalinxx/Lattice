@@ -80,7 +80,6 @@ TransactionBody = (
     accountActions:     [AccountAction],
     actions:            [Action],
     depositActions:     [DepositAction],
-    genesisActions:     [GenesisAction],
     receiptActions:     [ReceiptAction],
     withdrawalActions:  [WithdrawalAction],
     signers:            [CID(PublicKey)],
@@ -91,14 +90,13 @@ TransactionBody = (
 
 ### 3.4 LatticeState
 
-The world state is a 5-tuple of Sparse Merkle Tree roots:
+The world state is a 4-tuple of Sparse Merkle Tree roots:
 
 ```
 LatticeState = (
     accountState:      SMT<CID(PublicKey) -> uint64>,
     generalState:      SMT<string -> string>,
     depositState:      SMT<DepositKey -> uint64>,
-    genesisState:      SMT<string -> CID(Block)>,
     receiptState:      SMT<ReceiptKey -> CID(PublicKey)>
 )
 ```
@@ -193,15 +191,6 @@ WithdrawalAction = (withdrawer: CID(PublicKey), nonce: uint128, demander: CID(Pu
 ReceiptAction = (withdrawer: CID(PublicKey), nonce: uint128, demander: CID(PublicKey), amountDemanded: uint64, directory: string)
 ```
 
-#### GenesisAction
-
-```
-GenesisAction = (
-    directory: string,
-    blockCID:  CID(Block)
-)
-```
-
 ### 3.7 Keys
 
 #### DepositKey
@@ -234,9 +223,9 @@ Chains form a rooted tree:
 A1  A2
 ```
 
-A `directory` in a parent's `GenesisAction` is a **relative edge label** -- it
-names the child only with respect to that parent and is not stored in
-`ChainSpec`. A chain's canonical identity is its full **path** from Nexus, e.g.
+A `directory` — the key under which a parent block's `children` index commits
+a child block — is a **relative edge label**: it names the child only with
+respect to that parent and is not stored in `ChainSpec`. A chain's canonical identity is its full **path** from Nexus, e.g.
 `Nexus/Payments`. Siblings under different parents may reuse a
 directory because their full paths differ.
 
@@ -260,13 +249,15 @@ A genesis block `B` is valid if and only if ALL of the following hold:
    `validationContext.now` once (node-local, retriable import — a future
    timestamp is deferred until real time reaches it, not permanently rejected)
 4. `B.prevState == CID(emptyState())` and `B.rewardRecipient == nil` (a
-   genesis mints only its premine; there is no reward to pay)
-5. `B.nextTarget == B.target` and `B.target > 0`. A genesis has no work of its
-   own: no hash is evaluated against its target, at either level. It weighs
-   through its descendants' work and any proof later credited to it (§9.9,
-   genesis admission). Its target is block 1's schedule input (§5.5), which is
-   why it must be positive; by convention `GenesisCeremony` commits the canonical
-   maximum (easiest) target, so the chain self-calibrates from block 1.
+   genesis mints only its premine; there is no reward to pay). A Nexus genesis
+   commits `B.parentState == CID(emptyState())`; a child genesis commits a real
+   parent state and proves it like any child block (§5.3)
+5. `B.nextTarget == B.target`, and the target `B` commits is met by the hash
+   that secures `B` at its own level (§5.4, §9.5): a Nexus genesis by its own
+   grind, a child genesis by the root grind of its `ChildBlockProof`, like any
+   child block. `target == 0` is therefore invalid. By convention
+   `GenesisCeremony` commits the canonical maximum (easiest) target, so the
+   chain self-calibrates from block 1.
 6. All transactions in `B.transactions` are fully resolvable
 7. For each transaction `tx`: `tx.validateTransactionForGenesis()` returns true
    - Account and general actions are structurally valid
@@ -279,20 +270,17 @@ A genesis block `B` is valid if and only if ALL of the following hold:
     ```
     totalCredits <= premineAmount
     ```
-13. Every `GenesisAction` has a non-empty, visible-ASCII, separator-free
-    directory whose byte length fits the child-proof wire's `UInt16` length
-    prefix, and a canonical genesis block CID. Its child-proof depth likewise
-    fits the wire's `UInt16` prefix. These are the wire format's structural
-    capacities, not policy caps. The child process validates that block's
-    content.
-14. **Post-state correctness**: Applying all actions to `prevState` (empty
+13. **Post-state correctness**: Applying all actions to `prevState` (empty
     state) produces `postState`:
     ```
     proveAndUpdateState(prevState, allActions) == postState
     ```
 
-Genesis authority is the exact content-addressed block: Nexus by its configured
-genesis CID and a child by its parent's `GenesisAction.blockCID`. Signature and
+Genesis authority: the Nexus genesis is the exact content-addressed block of
+its configured genesis CID, and the root chain admits no other. A child chain
+has no genesis authority: every child genesis carried by a valid
+`ChildBlockProof` is a root of its weighed graph, and fork choice decides
+among them (§9.4, §9.9). Signature and
 declared-signer fields on genesis transactions carry no authority and are not
 shape-constrained. All later transactions remain signature-strict. The
 reference node binds
@@ -334,8 +322,7 @@ dropped, or held — is section 9.9's header admission.
     ```
     and, when `B.rewardRecipient` is set, it is a canonical address and the
     coinbase amount `M` fits a positive `int64` delta
-12. All genesis actions valid
-13. Post-state correctness: the transactions' actions, plus the coinbase credit
+12. Post-state correctness: the transactions' actions, plus the coinbase credit
     of exactly `M` to `B.rewardRecipient` when it is set and `M > 0`, applied to
     `prevState` produce `postState`
 
@@ -352,11 +339,9 @@ A child candidate `B` is imported with a `ChildValidationPackage` containing:
 
 - a `ChildBlockProof` for the exact sparse directory path from the mined root to
   `B`;
-- when `B` is parentless, one immediate-parent `ParentGenesisLink` authorizing
-  that exact genesis CID; or
-- when `B` has a same-chain predecessor whose `parentState` differs, one
-  immediate-parent `ParentStateContinuityLink` for the exact old and new state
-  CIDs.
+- when `B.parentState` is not the empty state, one immediate-parent
+  `ParentStateContinuityLink` for the exact old and new state CIDs — a genesis
+  included.
 
 The node authenticates immediate-parent facts and transports or caches them.
 The child process still verifies the proof, transition, and fact fields. These
@@ -382,17 +367,14 @@ this order:
    ROOT-MOST content-bound block on the path whose target is beaten by `h`,
    raised if greater by `B`'s own target (§9.5). Not the strongest such
    quantity: a deeper chain must not price a grind.
-5. For genesis, require the exact parent genesis link and the complete genesis
-   shape, including `nextTarget == target`.
-6. For non-genesis, compare the predecessor's `parentState` with `B.parentState`.
-   Equality is sufficient; otherwise require an exact continuity link proving
-   transitive forward reachability through the immediate parent's connected
-   accepted graph. This applies at EVERY height, block 1 included: a genesis
-   commits `emptyHeader` as its `parentState`, and every genesis's `prevState`
-   is `emptyHeader`, so continuity from it terminates at the parent's own
-   genesis. Step 3's terminal binding does not substitute for this — a carrier
-   need not be imported, connected, valid or canonical, so it establishes no
-   anchor.
+5. For genesis, require the complete genesis shape (§5.1), including
+   `nextTarget == target`.
+6. Require an exact continuity link proving that the immediate parent's
+   executed set produced `B.parentState` from `emptyHeader` — the parent's own
+   genesis pre-state — or that `B.parentState` is `emptyHeader` itself. This
+   applies at EVERY height, the genesis included. Step 3's terminal binding
+   does not substitute for this — a carrier need not be imported, connected,
+   valid or canonical, so it establishes no anchor.
 
    Each block proves its own anchor from `emptyHeader`, NOT from its
    predecessor's `parentState`. Anchoring against the predecessor is an
@@ -641,14 +623,7 @@ For each `ReceiptAction`:
 
 Receipt actions also derive account actions: the `withdrawer` is debited `amountDemanded` and the `demander` is credited `amountDemanded`.
 
-### 6.6 Genesis State Transitions
-
-For each `GenesisAction`:
-- **Key**: `action.directory`
-- **Proof**: Verify key does not exist in `prevState.genesisState` (insertion proof)
-- **Update**: `genesisState[directory] = action.blockCID`
-
-### 6.7 State Delta Accounting
+### 6.6 State Delta Accounting
 
 Each action type reports a state delta in bytes:
 
@@ -661,7 +636,6 @@ Each action type reports a state delta in bytes:
 | `DepositAction` | `+32 + len(demander)` |
 | `WithdrawalAction` | `+len(withdrawer) + len(demander) + 32` |
 | `ReceiptAction` | `+len(withdrawer) + len(demander) + len(directory) + 24` |
-| `GenesisAction` | `+len(blockCID) + len(directory)` |
 
 Total delta per block must not exceed `spec.maxStateGrowth`.
 
@@ -889,11 +863,9 @@ connected, valid, or canonical (§5.3, §9.5), so comparing a child's declared
 `parentState` against a carrier's declared `prevState` compares two values the
 same party may have chosen:
 
-1. Every non-genesis block proves its `parentState` by §5.3 step 6, at every
-   height including block 1. A genesis commits `emptyHeader`, and every
-   genesis's `prevState` is `emptyHeader`, so continuity from it terminates at
-   the parent's own genesis — the anchor is "reachable from real parent
-   history", established inductively thereafter.
+1. Every child block, its genesis included, proves its `parentState` by §5.3
+   step 6: continuity from `emptyHeader`, the parent's own genesis pre-state —
+   the anchor is "reachable from real parent history".
 2. State continuity is attested only across blocks on the parent's
    EXECUTED-FROM-GENESIS FRONTIER: executed, every ancestor executed, and not
    under an excluded block (§9.9). Execution alone is not enough — a block
@@ -1013,9 +985,8 @@ that grind satisfy the current chain's target. A target-hit accepted, duplicate,
 or rejected candidate may expose the exact typed predecessor requirement so the
 node can complete ordinary chain import and issuer promotion. This does not
 claim a predecessor body is unavailable. Missing cross-chain input instead
-identifies the child proof, immediate-parent state-continuity fact, or
-immediate-parent genesis fact that the node must obtain from an authenticated
-source. For a non-genesis candidate with predecessor `P`, continuity is
+identifies the child proof or immediate-parent state-continuity fact that the
+node must obtain from an authenticated source. For a non-genesis candidate with predecessor `P`, continuity is
 reflexive when `P.parentState == B.parentState`; otherwise the immediate
 parent's connected accepted graph must contain a transitive same-chain state
 path from `P.parentState` to `B.parentState`. Parent canonicity is irrelevant.
@@ -1226,20 +1197,16 @@ block's own (a batch carries an exclusion alone); the node MUST make both
 durable in one transaction, and replay applies them in any order.
 
 **Genesis admission.** A chain's roots enter the weighed graph only as
-genesis blocks, never from a header, and a chain may hold several. A genesis
-is weighed from its bytes alone — its CID is computed from them, and its
-`spec` is held by that CID as its root's spec, which schedules every header
-beneath it — with no work of its own (§5.1 rule 5). Nothing else is asked at
-this tier: a child genesis no parent block has authorized yet weighs like any
-other root, and so do its descendants. It is executed — and so enters the
-executed set — only once a `GenesisAction` for exactly it is in a block of
-the parent's executed set, on any branch (§9.3's immediate-parent genesis
-fact); until then execution returns that missing fact, never a verdict. A
-Nexus genesis is authorized by its configured CID (§5.1). Execution and
-authorization are never revoked, so admission is monotone: an executed block
-is never later excluded, and a verdict claiming so is a local fault, recorded
-nowhere. An authorized genesis that fails execution is excluded under the
-root rule above, its weight staying in the graph like any excluded subtree.
+genesis blocks, never from a header. A genesis is weighed from its bytes — its
+CID is computed from them, and its `spec` is held by that CID as its root's
+spec, which schedules every header beneath it — and its work: on the root
+chain, only the configured Nexus genesis, by its own grind; on a child chain,
+any genesis, by a verified `ChildBlockProof` of exactly it, so a child chain
+may hold several roots. No parent record authorizes a child genesis: it is
+executed like any child block — continuity included (§5.3) — and excluded
+under the root rule above if invalid. Execution is never revoked: an
+executed block is never later excluded, and a verdict claiming so is a local
+fault, recorded nowhere.
 
 ### 9.10 Parent-Attributed Run Work
 

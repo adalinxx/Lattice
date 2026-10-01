@@ -68,7 +68,7 @@ Task {
     print()
 
     let chain = ChainState.fromGenesis(block: genesis)
-    let context = try ChainRuntimeContext(path: [DEFAULT_ROOT_DIRECTORY])
+    let context = try ChainRuntimeContext(path: [DEFAULT_ROOT_DIRECTORY], genesisCID: genesisHeader.rawCID)
     let level = ChainLevel(chain: chain, context: context)
 
     print("Building a 5-block chain...")

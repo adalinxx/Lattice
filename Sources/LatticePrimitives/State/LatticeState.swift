@@ -4,14 +4,12 @@ import Foundation
 let ACCOUNT_STATE_PROPERTY = "accountState"
 let GENERAL_STATE_PROPERTY = "generalState"
 let DEPOSIT_STATE_PROPERTY = "depositState"
-let GENESIS_STATE_PROPERTY = "genesisState"
 let RECEIPT_STATE_PROPERTY = "receiptState"
 
 let LATTICE_STATE_PROPERTIES: Set<String> = Set([
     ACCOUNT_STATE_PROPERTY,
     GENERAL_STATE_PROPERTY,
     DEPOSIT_STATE_PROPERTY,
-    GENESIS_STATE_PROPERTY,
     RECEIPT_STATE_PROPERTY
 ])
 
@@ -19,20 +17,17 @@ public struct LatticeState: Node {
     public let accountState: AccountStateHeader
     public let generalState: GeneralStateHeader
     public let depositState: DepositStateHeader
-    public let genesisState: GenesisStateHeader
     public let receiptState: ReceiptStateHeader
 
     package init(
         accountState: AccountStateHeader,
         generalState: GeneralStateHeader,
         depositState: DepositStateHeader,
-        genesisState: GenesisStateHeader,
         receiptState: ReceiptStateHeader
     ) {
         self.accountState = accountState
         self.generalState = generalState
         self.depositState = depositState
-        self.genesisState = genesisState
         self.receiptState = receiptState
     }
 
@@ -43,8 +38,6 @@ public struct LatticeState: Node {
         generalState: try! GeneralStateHeader(node: GeneralState()),
         // known-valid local node; CID computation cannot fail (no Float/Double fields)
         depositState: try! DepositStateHeader(node: DepositState()),
-        // known-valid local node; CID computation cannot fail (no Float/Double fields)
-        genesisState: try! GenesisStateHeader(node: GenesisState()),
         // known-valid local node; CID computation cannot fail (no Float/Double fields)
         receiptState: try! ReceiptStateHeader(node: ReceiptState())
     )
@@ -58,7 +51,6 @@ public struct LatticeState: Node {
             case ACCOUNT_STATE_PROPERTY: return accountState
             case GENERAL_STATE_PROPERTY: return generalState
             case DEPOSIT_STATE_PROPERTY: return depositState
-            case GENESIS_STATE_PROPERTY: return genesisState
             case RECEIPT_STATE_PROPERTY: return receiptState
             default: return nil
         }
@@ -73,7 +65,6 @@ public struct LatticeState: Node {
             accountState: properties[ACCOUNT_STATE_PROPERTY] as? AccountStateHeader ?? accountState,
             generalState: properties[GENERAL_STATE_PROPERTY] as? GeneralStateHeader ?? generalState,
             depositState: properties[DEPOSIT_STATE_PROPERTY] as? DepositStateHeader ?? depositState,
-            genesisState: properties[GENESIS_STATE_PROPERTY] as? GenesisStateHeader ?? genesisState,
             receiptState: properties[RECEIPT_STATE_PROPERTY] as? ReceiptStateHeader ?? receiptState
         )
     }

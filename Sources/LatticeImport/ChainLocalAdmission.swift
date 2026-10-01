@@ -56,28 +56,12 @@ public enum ImportMode: Sendable {
 }
 
 
-/// The verified, node-owned facts that must become durable with one admission
-/// batch. They are deliberately separate from ``BlockImportBatch``: chain
-/// replay needs only consensus facts, while the node also needs these facts to
-/// relay hierarchy evidence after a restart.
+/// What the node must make durable for one admission: the batch.
 public struct BlockImportStagingContext: Sendable {
     public let batch: BlockImportBatch
-    /// Whether this chain has verified a complete ancestry for the block and
-    /// may issue parent-process facts for it.
-    public let issuesHierarchyFacts: Bool
-    /// Child-genesis actions carried by this admission. They become issuer
-    /// facts only when `issuesHierarchyFacts`; retaining them lets a commit
-    /// atomically observe a predecessor that connected after preflight.
-    public let parentGenesisLinks: [ParentGenesisLink]
 
-    init(
-        batch: BlockImportBatch,
-        issuesHierarchyFacts: Bool,
-        parentGenesisLinks: [ParentGenesisLink]
-    ) {
+    init(batch: BlockImportBatch) {
         self.batch = batch
-        self.issuesHierarchyFacts = issuesHierarchyFacts
-        self.parentGenesisLinks = parentGenesisLinks
     }
 }
 
@@ -178,21 +162,11 @@ struct PreparedImport: Sendable {
     let resolvedHeader: BlockHeader
     let block: Block
     let fetcher: any Fetcher
-    /// Nil only for a genesis: it has no work of its own (§5.1).
-    let contribution: VerifiedWorkContribution?
-    /// The chain this block is on: the parent path of its genesis links.
+    let contribution: VerifiedWorkContribution
+    /// The chain this block is on.
     let chainPath: [String]
-    /// Whether this chain verified a complete ancestry for the block.
-    let issuable: Bool
     let sameChainPredecessor: SameChainPredecessorRequirement?
     let kind: Kind
-    /// A weighed admission is not yet executed, so it MUST NOT issue any
-    /// cross-chain hierarchy fact (a parent-genesis link): a child
-    /// consuming such a fact would bind to unvalidated — possibly invalid or
-    /// soon-reorged — parent state. Issuance is deferred to the validated tier,
-    /// which re-derives and emits it once the block is executed. `var` only so
-    /// the synthesized memberwise init can default it; never mutated.
-    var defersHierarchyIssuance: Bool = false
     /// A weighed admission possesses the block for fork choice but MUST NOT
     /// resolve or store the block BODY (tier-3: transaction bodies, validation-
     /// path states, WASM policy modules, genesis empty-state). Only the block
@@ -262,40 +236,14 @@ struct PreparedImport: Sendable {
             )
     }
 
-    /// The stage callback runs before `ChainState` applies `facts`, so this is
-    /// the only point where Lattice can pass the already-verified hierarchy
-    /// facts across the node durability boundary without reconstructing them.
-    func stagingContext() async throws -> BlockImportStagingContext {
-        let batch = facts
-        // A weighed (not-yet-executed) block issues NO cross-chain facts; both
-        // are re-derived and emitted when it is validated. Suppressing here is
-        // the choke point that keeps a child from binding to unvalidated parent
-        // state.
-        if defersHierarchyIssuance {
-            return BlockImportStagingContext(
-                batch: batch,
-                issuesHierarchyFacts: false,
-                parentGenesisLinks: []
-            )
-        }
-        return BlockImportStagingContext(
-            batch: batch,
-            issuesHierarchyFacts: issuable,
-            parentGenesisLinks: try await parentGenesisLinks(
-                in: resolvedHeader,
-                parentPath: chainPath,
-                fetcher: fetcher
-            )
-        )
+    var stagingContext: BlockImportStagingContext {
+        BlockImportStagingContext(batch: facts)
     }
 }
 
 fileprivate enum Preparation {
     case ready(PreparedImport)
-    case result(
-        BlockImportResult,
-        parentGenesisLinks: [ParentGenesisLink] = []
-    )
+    case result(BlockImportResult)
     case duplicate(PreparedDuplicateImportState)
 }
 
@@ -306,8 +254,6 @@ public enum BlockImportPreflightError: Error, Sendable, Equatable {
 /// A one-use, level-bound result of remote validation and validation-Volume
 /// storage.
 public actor PreparedBlockImport {
-    /// Commit may add an issuable carrier link if the already-validated
-    /// predecessor connected before the durability boundary.
     fileprivate nonisolated let stagingContext: BlockImportStagingContext
 
     private let levelIdentity: UUID
@@ -332,13 +278,12 @@ public actor PreparedBlockImport {
 
 fileprivate struct PreparedDuplicateImportState: Sendable {
     let blockHash: String
-    let parentGenesisLinks: [ParentGenesisLink]
 }
 
 /// A one-use, level-bound duplicate whose immutable validation completed before
-/// the node acquired its mutation lease. Resolving it under that lease can add
-/// genesis links when a predecessor connected in the meantime; it never
-/// stages consensus facts or reacquires remote content.
+/// the node acquired its mutation lease. Resolving it under that lease
+/// re-projects fork choice; it never stages consensus facts or reacquires
+/// remote content.
 public actor PreparedDuplicateImport {
     private let levelIdentity: UUID
     private var state: PreparedDuplicateImportState?
@@ -361,44 +306,9 @@ public actor PreparedDuplicateImport {
 }
 
 public enum BlockImportPreflightResult: Sendable {
-    case terminal(
-        BlockImportResult,
-        parentGenesisLinks: [ParentGenesisLink] = []
-    )
+    case terminal(BlockImportResult)
     case duplicate(PreparedDuplicateImport)
     case ready(PreparedBlockImport)
-}
-
-func parentGenesisLinks(
-    in header: BlockHeader,
-    parentPath: [String],
-    fetcher: any Fetcher
-) async throws -> [ParentGenesisLink] {
-    let content = try await header.resolveBlockContent(fetcher: fetcher)
-    guard let transactions = content.node?.transactions.node else {
-        throw DataErrors.nodeNotAvailable
-    }
-    var links = Set<ParentGenesisLink>()
-    for transaction in try transactions.allKeysAndValues().values {
-        guard let body = transaction.node?.body.node else {
-            throw DataErrors.nodeNotAvailable
-        }
-        for action in body.genesisActions {
-            links.insert(ParentGenesisLink(
-                parentPath: parentPath,
-                directory: action.directory,
-                childGenesisCID: action.blockCID,
-                // A self-contained child genesis commits to the empty parent
-                // state, so its recorded authorization binds to emptyHeader —
-                // never the recording block's prevState.
-                parentStateCID: LatticeState.emptyHeader.rawCID
-            ))
-        }
-    }
-    return links.sorted {
-        ($0.directory, $0.childGenesisCID, $0.parentStateCID)
-            < ($1.directory, $1.childGenesisCID, $1.parentStateCID)
-    }
 }
 
 enum BlockImport {
@@ -421,32 +331,23 @@ enum BlockImport {
     ) -> ParentFactLookup {
         { query in
             switch query {
-            case .genesis(let expected):
-                guard package.parentStateContinuityLink == nil else { return .malformed }
-                guard let link = package.parentGenesisLink else { return .absent }
-                return link == expected ? .present : .malformed
             case .continuity(let expected):
-                guard package.parentGenesisLink == nil else { return .malformed }
                 guard let link = package.parentStateContinuityLink else { return .absent }
                 return link == expected ? .present : .malformed
             case .none:
-                return package.parentGenesisLink == nil
-                    && package.parentStateContinuityLink == nil ? .absent : .malformed
+                return package.parentStateContinuityLink == nil ? .absent : .malformed
             }
         }
     }
 
-    /// The parent-chain facts a parent level's executed set answers: a
-    /// genesis link its executed blocks recorded, and a state its executed
-    /// set produced on any branch. A level holds no wrong link, so nothing it
-    /// answers is malformed.
+    /// The parent-chain fact a parent level's executed set answers: a state
+    /// its executed set produced on any branch. A level holds no wrong link,
+    /// so nothing it answers is malformed.
     static func parentFactLookup(
         _ facts: (any ParentChainFacts)?
     ) -> ParentFactLookup {
         { query in
             switch query {
-            case .genesis(let expected):
-                return facts?.recordsGenesis(expected) == true ? .present : .absent
             case .continuity(let expected):
                 return facts?.hasContinuity(expected) == true ? .present : .absent
             case .none:
@@ -462,40 +363,11 @@ enum BlockImport {
         context: ChainRuntimeContext
     ) -> BlockImportError? {
         let parentPath = Array(context.path.dropLast())
-        if child.parent == nil {
-            guard child.hasGenesisShape() else {
-                return .protocolInvalid
-            }
-            guard let directory = context.path.last else {
-                return .providerMalformedEvidence
-            }
-            let expected = ParentGenesisLink(
-                parentPath: parentPath,
-                directory: directory,
-                childGenesisCID: childCID,
-                parentStateCID: child.parentState.rawCID
-            )
-            switch lookup(.genesis(expected)) {
-            case .present:
-                return nil
-            case .malformed:
-                return .providerMalformedEvidence
-            case .absent:
-                return .crossChainEvidenceRequired(.parentGenesis(
-                    parentPath: parentPath,
-                    directory: directory,
-                    childGenesisCID: childCID,
-                    parentStateCID: child.parentState.rawCID
-                ))
-            }
-        }
-
-        // Block 1 proves its anchor exactly like every other height (§5.3 step
-        // 6, which carries no height-1 exemption). A genesis's `parentState` is
-        // `emptyHeader` and every genesis's `prevState` is `emptyHeader` too, so
-        // continuity from it terminates at the PARENT's own genesis — i.e. "this
-        // state is reachable from real parent history", which is the anchor
-        // block 1 needs.
+        // Every block, the genesis included, proves its anchor the same way
+        // (§5.3 step 6, with no height exemption): continuity from
+        // `emptyHeader` — the parent's own genesis pre-state — to its declared
+        // `parentState`, i.e. "this state is reachable from real parent
+        // history".
         //
         // This previously delegated to `verifySecuringWork`'s terminal binding,
         // which cannot carry it: that compares the child's declared
@@ -591,7 +463,7 @@ enum BlockImport {
                 return .result(rejection(failure))
             }
         }
-        let carrier = await deriveAncestry(
+        let predecessor = await deriveAncestry(
             blockHash: blockHash,
             block: block,
             level: level
@@ -625,7 +497,7 @@ enum BlockImport {
                 blockHash: blockHash,
                 fetcher: fetcher,
                 contribution: contribution,
-                carrier: carrier,
+                predecessor: predecessor,
                 childPackage: childPackage,
                 context: context,
                 level: level,
@@ -639,51 +511,25 @@ enum BlockImport {
         ), existing.work >= contribution.work {
             if knownBlock {
                 // A predecessor can connect after preflight but before the
-                // node takes its mutation lease. Keep this duplicate's
-                // immutable evidence so the lease can recheck only ancestry.
-                let genesisLinks: [ParentGenesisLink]
-                do {
-                    genesisLinks = try await parentGenesisLinks(
-                        in: resolvedHeader,
-                        parentPath: context.path,
-                        fetcher: fetcher
-                    )
-                } catch {
-                    return .result(rejection(
-                        classifyValidationFailure(error),
-                        sameChainPredecessor: carrier.sameChainPredecessor
-                    ))
-                }
-                return .duplicate(PreparedDuplicateImportState(
-                    blockHash: blockHash,
-                    parentGenesisLinks: genesisLinks
-                ))
+                // node takes its mutation lease: the lease rechecks ancestry.
+                return .duplicate(PreparedDuplicateImportState(blockHash: blockHash))
             }
             return .result(.duplicate(
-                sameChainPredecessor: carrier.sameChainPredecessor
+                sameChainPredecessor: predecessor
             ))
         }
 
         if knownBlock {
-            // A second, distinct grind on a block already held is new evidence,
-            // not a duplicate — so it does not take the branch above and would
-            // otherwise issue hierarchy facts with issuance still enabled. Gate
-            // it on whether this chain EXECUTED the block: extra work says
-            // nothing about whether the transition is valid, and a child must
-            // not bind to a commitment this chain has not verified.
-            let executed = await level.chain.hasExecutedAncestry(
-                blockHash: blockHash
-            )
+            // A second, distinct grind on a block already held is new
+            // evidence, not a duplicate.
             return .ready(PreparedImport(
                 resolvedHeader: resolvedHeader,
                 block: block,
                 fetcher: fetcher,
                 contribution: contribution,
                 chainPath: context.path,
-                issuable: carrier.issuable,
-                sameChainPredecessor: carrier.sameChainPredecessor,
-                kind: .evidence,
-                defersHierarchyIssuance: !executed
+                sameChainPredecessor: predecessor,
+                kind: .evidence
             ))
         }
 
@@ -714,13 +560,13 @@ enum BlockImport {
                 chain: level.chain,
                 validationContext: validationContext
             ) {
-                return .result(rejection(failure, carrier: carrier))
+                return .result(rejection(failure, sameChainPredecessor: predecessor))
             }
             let commitments: [String: String]
             switch await childCommitments(of: resolvedHeader, fetcher: fetcher) {
             case .success(let enumerated): commitments = enumerated
             case .failure(let failure):
-                return .result(rejection(failure, carrier: carrier))
+                return .result(rejection(failure, sameChainPredecessor: predecessor))
             }
             return .ready(PreparedImport(
                 resolvedHeader: resolvedHeader,
@@ -728,10 +574,8 @@ enum BlockImport {
                 fetcher: fetcher,
                 contribution: contribution,
                 chainPath: context.path,
-                issuable: carrier.issuable,
-                sameChainPredecessor: carrier.sameChainPredecessor,
+                sameChainPredecessor: predecessor,
                 kind: .block(StateDiff.empty, nil, validated: false),
-                defersHierarchyIssuance: true,
                 defersBodyStore: true,
                 childCommitments: commitments
             ))
@@ -753,13 +597,13 @@ enum BlockImport {
             validationContext: validationContext
         ) {
         case .failure(let failure):
-            return .result(rejection(failure, carrier: carrier))
+            return .result(rejection(failure, sameChainPredecessor: predecessor))
         case .success(let transition):
             let commitments: [String: String]
             switch await childCommitments(of: resolvedHeader, fetcher: fetcher) {
             case .success(let enumerated): commitments = enumerated
             case .failure(let failure):
-                return .result(rejection(failure, carrier: carrier))
+                return .result(rejection(failure, sameChainPredecessor: predecessor))
             }
             return .ready(PreparedImport(
                 resolvedHeader: resolvedHeader,
@@ -767,8 +611,7 @@ enum BlockImport {
                 fetcher: fetcher,
                 contribution: contribution,
                 chainPath: context.path,
-                issuable: carrier.issuable,
-                sameChainPredecessor: carrier.sameChainPredecessor,
+                sameChainPredecessor: predecessor,
                 kind: .block(
                     transition.stateDiff,
                     transition.materializedPostState,
@@ -789,10 +632,7 @@ enum BlockImport {
         blockHash: String,
         fetcher: any Fetcher,
         contribution: VerifiedWorkContribution,
-        carrier: (
-            issuable: Bool,
-            sameChainPredecessor: SameChainPredecessorRequirement?
-        ),
+        predecessor: SameChainPredecessorRequirement?,
         childPackage: ChildValidationPackage?,
         context: ChainRuntimeContext,
         level: ChainLevel,
@@ -803,6 +643,9 @@ enum BlockImport {
         // non-verdict: never written, so recovery cannot depend on the order
         // it replays in, and the validated tier stops here — visibly — rather
         // than leave a canonical path beneath a proven-invalid genesis.
+        // Execution is never revoked: a block this chain executed is never
+        // proven invalid. A verdict saying so is a local fault, never a fact.
+        let alreadyExecuted = await level.chain.isExecuted(blockHash: blockHash)
         let mayExclude: Bool
         if block.parent == nil {
             mayExclude = await level.chain.hasExecutedRoot(besides: blockHash)
@@ -810,8 +653,11 @@ enum BlockImport {
             mayExclude = true
         }
         func excluded() -> Preparation {
+            guard !alreadyExecuted else {
+                return .result(rejection(.localVerificationFailure, sameChainPredecessor: predecessor))
+            }
             guard mayExclude else {
-                return .result(rejection(.notYetValid, carrier: carrier))
+                return .result(rejection(.notYetValid, sameChainPredecessor: predecessor))
             }
             return .ready(PreparedImport(
                 resolvedHeader: resolvedHeader,
@@ -819,8 +665,7 @@ enum BlockImport {
                 fetcher: fetcher,
                 contribution: contribution,
                 chainPath: context.path,
-                issuable: carrier.issuable,
-                sameChainPredecessor: carrier.sameChainPredecessor,
+                sameChainPredecessor: predecessor,
                 kind: .exclusion
             ))
         }
@@ -829,7 +674,7 @@ enum BlockImport {
             // (unavailable, ordering) is retryable and never excludes.
             isDeterministicInvalidity(failure)
                 ? excluded()
-                : .result(rejection(failure, carrier: carrier))
+                : .result(rejection(failure, sameChainPredecessor: predecessor))
         }
 
         if block.parent == nil {
@@ -871,8 +716,7 @@ enum BlockImport {
                 fetcher: fetcher,
                 contribution: contribution,
                 chainPath: context.path,
-                issuable: carrier.issuable,
-                sameChainPredecessor: carrier.sameChainPredecessor,
+                sameChainPredecessor: predecessor,
                 kind: .block(
                     transition.stateDiff,
                     transition.materializedPostState,
@@ -985,15 +829,6 @@ enum BlockImport {
         )
     }
 
-    static func rejection(
-        _ failure: BlockImportError,
-        carrier: (
-            issuable: Bool,
-            sameChainPredecessor: SameChainPredecessorRequirement?
-        )
-    ) -> BlockImportResult {
-        rejection(failure, sameChainPredecessor: carrier.sameChainPredecessor)
-    }
 
     /// A failure is a validity verdict only when execution completed and the
     /// block is provably invalid. Availability, ordering, capacity and
@@ -1122,26 +957,19 @@ enum BlockImport {
         blockHash: String,
         block: Block,
         level: ChainLevel
-    ) async -> (
-        issuable: Bool,
-        sameChainPredecessor: SameChainPredecessorRequirement?
-    ) {
+    ) async -> SameChainPredecessorRequirement? {
         if await level.chain.hasConnectedAncestry(blockHash: blockHash) {
-            return (true, nil)
+            return nil
         }
-        guard let predecessorCID = block.parent?.rawCID else {
-            return (!level.context.isRoot, nil)
-        }
+        guard let predecessorCID = block.parent?.rawCID else { return nil }
         let predecessorIsConnected = await level.chain.hasConnectedAncestry(
             blockHash: predecessorCID
         )
-        guard !predecessorIsConnected else {
-            return (true, nil)
-        }
-        return (false, SameChainPredecessorRequirement(
+        guard !predecessorIsConnected else { return nil }
+        return SameChainPredecessorRequirement(
             descendantCID: blockHash,
             predecessorCID: predecessorCID
-        ))
+        )
     }
 
     /// Structural verification for the weighed tier: the header-linkage rules
@@ -1169,24 +997,24 @@ enum BlockImport {
     enum GenesisPreparation {
         case unresolved(BlockImportError)
         case notGenesis
-        case unauthorized
+        case noWork
         case invalid(BlockImportError)
         case ready(
             (header: BlockHeader, block: Block),
+            VerifiedWorkContribution,
             ExecutedTransition
         )
     }
 
     /// The one genesis admission sequence every actor-path bootstrap runs:
-    /// resolve, the genesis position, a child genesis's shape and parent
-    /// authorization (`authorizes` is asked for exactly the link that would
-    /// authorize it), then execution. A genesis has no work of its own
-    /// (§5.1), so no proof-of-work or target is checked.
+    /// resolve, the genesis position, its work — a root genesis's own grind
+    /// against the configured Nexus CID, a child genesis's `ChildBlockProof` —
+    /// then execution, a child genesis's continuity included (§5.3).
     static func prepareGenesis(
         context: ChainRuntimeContext,
         genesisHeader: BlockHeader,
         fetcher: any Fetcher,
-        authorizes: (ParentGenesisLink) -> Bool,
+        childPackage: ChildValidationPackage?,
         validationContext: ValidationContext
     ) async -> GenesisPreparation {
         let resolved: (header: BlockHeader, block: Block)
@@ -1194,33 +1022,37 @@ enum BlockImport {
         case .failure(let failure): return .unresolved(failure)
         case .success(let value): resolved = value
         }
-        guard resolved.block.parent == nil, resolved.block.height == 0 else {
+        let blockHash = resolved.header.rawCID
+        guard resolved.block.parent == nil, resolved.block.height == 0,
+              context.admitsGenesis(blockHash) else {
             return .notGenesis
         }
-        let blockHash = resolved.header.rawCID
-        if !context.isRoot {
-            guard resolved.block.hasGenesisShape(),
-                  let directory = context.path.last,
-                  authorizes(ParentGenesisLink(
-                      parentPath: Array(context.path.dropLast()),
-                      directory: directory,
-                      childGenesisCID: blockHash,
-                      parentStateCID: LatticeState.emptyHeader.rawCID
-                  )) else {
-                return .unauthorized
+        let contribution: VerifiedWorkContribution?
+        if context.isRoot {
+            contribution = rootWork(of: resolved.block, blockHash: blockHash)
+        } else {
+            guard let childPackage else {
+                return .unresolved(.crossChainEvidenceRequired(.childProof(
+                    chainPath: context.path, childCID: blockHash
+                )))
+            }
+            switch await verifyChildProof(childPackage, child: resolved.block, context: context) {
+            case .success(let verified): contribution = verified.contribution
+            case .failure(let failure): return .unresolved(failure)
             }
         }
+        guard let contribution else { return .noWork }
         switch await executeTransition(
             block: resolved.block,
             blockHash: blockHash,
             fetcher: fetcher,
             chain: nil,
-            parentFacts: nil,
+            parentFacts: childPackage.map(parentFactLookup),
             context: context,
             validationContext: validationContext
         ) {
         case .failure(let failure): return .invalid(failure)
-        case .success(let transition): return .ready(resolved, transition)
+        case .success(let transition): return .ready(resolved, contribution, transition)
         }
     }
 
@@ -1228,6 +1060,7 @@ enum BlockImport {
         context: ChainRuntimeContext,
         resolved: (header: BlockHeader, block: Block),
         fetcher: any Fetcher,
+        contribution: VerifiedWorkContribution,
         transition: ExecutedTransition,
         validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
@@ -1242,9 +1075,8 @@ enum BlockImport {
             resolvedHeader: resolved.header,
             block: resolved.block,
             fetcher: fetcher,
-            contribution: nil,
+            contribution: contribution,
             chainPath: context.path,
-            issuable: true,
             sameChainPredecessor: nil,
             kind: .block(
                 transition.stateDiff,
@@ -1253,7 +1085,7 @@ enum BlockImport {
             )
         )
         try await prepared.cacheValidationContent(to: validationContentStorer)
-        let stagingContext = try await prepared.stagingContext()
+        let stagingContext = prepared.stagingContext
         try await prepared.storeMaterializedPostState(
             to: materializedVolumeStorer
         )
@@ -1445,8 +1277,8 @@ public extension ChainLevel {
 #endif
 
     /// Verify one candidate and store its immutable validation Volumes without
-    /// mutating the accepted graph. The returned token contains the exact
-    /// hierarchy facts the node must make durable with the batch.
+    /// mutating the accepted graph. The returned token carries the batch the
+    /// node must make durable.
     func preflightBlockImport(
         _ blockHeader: BlockHeader,
         fetcher: any Fetcher,
@@ -1463,11 +1295,8 @@ public extension ChainLevel {
             validationContext: validationContext,
             mode: mode
         ) {
-        case .result(let result, let parentGenesisLinks):
-            return .terminal(
-                result,
-                parentGenesisLinks: parentGenesisLinks
-            )
+        case .result(let result):
+            return .terminal(result)
         case .duplicate(let duplicate):
             return .duplicate(PreparedDuplicateImport(
                 levelIdentity: importIdentity,
@@ -1477,7 +1306,7 @@ public extension ChainLevel {
             try await prepared.cacheValidationContent(
                 to: validationContentStorer
             )
-            let stagingContext = try await prepared.stagingContext()
+            let stagingContext = prepared.stagingContext
             return .ready(PreparedBlockImport(
                 levelIdentity: importIdentity,
                 prepared: prepared,
@@ -1491,31 +1320,17 @@ public extension ChainLevel {
     /// writes no consensus facts.
     func resolveDuplicatePreflight(
         _ preflight: PreparedDuplicateImport
-    ) async throws -> (
-        result: BlockImportResult,
-        parentGenesisLinks: [ParentGenesisLink]
-    ) {
+    ) async throws -> BlockImportResult {
         guard let duplicate = await preflight.take(for: importIdentity) else {
             throw BlockImportPreflightError.invalidToken
         }
-        // EXECUTED, not merely connected. A weighed block is connected from
-        // its header alone, and re-offering a header — ordinary gossip — takes
-        // this path. Issuing here would hand a child a genesis binding this
-        // chain never verified and may yet prove invalid, which is the rule at
-        // the top of this file, reached through a seam it does not cover.
-        let isExecuted = await chain.hasExecutedAncestry(
-            blockHash: duplicate.blockHash
-        )
         let requirement = await chain.sameChainPredecessorRequirement(
             for: duplicate.blockHash
         )
         let promotedCommit = await chain.reevaluateForkChoice()
-        return (
-            .duplicate(
-                sameChainPredecessor: requirement,
-                promotedCommit: promotedCommit
-            ),
-            isExecuted ? duplicate.parentGenesisLinks : []
+        return .duplicate(
+            sameChainPredecessor: requirement,
+            promotedCommit: promotedCommit
         )
     }
 
@@ -1541,12 +1356,19 @@ public extension ChainLevel {
         }
         // Every refusal the reducer can make of an exclusion is made HERE,
         // under the lease and BEFORE the durable write, so a fact the reducer
-        // would refuse is never written: the block must be possessed, and a
-        // root exclusion may stand only on another EXECUTED root (§9.9).
-        // Preflight checked the latter outside the lease; the other root could
-        // have been excluded since.
+        // would refuse is never written: the block must be possessed and not
+        // executed (execution is never revoked), and a root exclusion may
+        // stand only on another EXECUTED root (§9.9). Preflight checked these
+        // outside the lease; the state could have moved since.
         if case .exclusion = prepared.kind {
             let target = prepared.resolvedHeader.rawCID
+            if await chain.isExecuted(blockHash: target) {
+                await chain.releaseImportRevision()
+                return BlockImport.rejection(
+                    .localVerificationFailure,
+                    sameChainPredecessor: prepared.sameChainPredecessor
+                )
+            }
             let possessed = await chain.contains(blockHash: target)
             let standsOnAnotherRoot: Bool
             if prepared.block.parent == nil {
@@ -1562,25 +1384,7 @@ public extension ChainLevel {
                 )
             }
         }
-        let stagingContext: BlockImportStagingContext
-        if preflight.stagingContext.issuesHierarchyFacts {
-            stagingContext = preflight.stagingContext
-        } else if !prepared.defersHierarchyIssuance,
-                  let parentCID = prepared.block.parent?.rawCID,
-                  await chain.hasConnectedAncestry(blockHash: parentCID) {
-            // Promotion issues hierarchy facts when the predecessor connected
-            // after preflight. It keys off `hasConnectedAncestry` (routed, i.e.
-            // weighed-inclusive), so it MUST be suppressed for a weighed block —
-            // otherwise a deferred, unexecuted block would issue facts a child
-            // could bind to. Issuance is re-derived when it is validated.
-            stagingContext = BlockImportStagingContext(
-                batch: preflight.stagingContext.batch,
-                issuesHierarchyFacts: true,
-                parentGenesisLinks: preflight.stagingContext.parentGenesisLinks
-            )
-        } else {
-            stagingContext = preflight.stagingContext
-        }
+        let stagingContext = preflight.stagingContext
         do {
             try await stage(stagingContext)
         } catch {
@@ -1605,9 +1409,8 @@ public extension ChainLevel {
         )
     }
 
-    /// The node-owned atomic durability boundary. The context contains the
-    /// exact hierarchy facts Lattice verified for this admission, so callers do
-    /// not need to recreate them after the batch has become durable.
+    /// The node-owned atomic durability boundary: the staging context carries
+    /// the exact batch Lattice verified for this admission.
     func importBlock(
         _ blockHeader: BlockHeader,
         fetcher: any Fetcher,
@@ -1626,10 +1429,10 @@ public extension ChainLevel {
             validationContentStorer: validationContentStorer,
             mode: mode
         ) {
-        case .terminal(let result, _):
+        case .terminal(let result):
             return result
         case .duplicate(let preflight):
-            return try await resolveDuplicatePreflight(preflight).result
+            return try await resolveDuplicatePreflight(preflight)
         case .ready(let preflight):
             return try await commitPreflight(
                 preflight,
@@ -1661,8 +1464,8 @@ public extension ChainLevel {
         )
     }
 
-    /// Root bootstrap variant that stages verified hierarchy facts atomically
-    /// with the first admission batch.
+    /// Root bootstrap: the configured Nexus genesis (`context.genesisCID`),
+    /// weighed by its own grind and executed, staged as one batch.
     static func bootstrap(
         context: ChainRuntimeContext,
         genesisHeader: BlockHeader,
@@ -1678,85 +1481,74 @@ public extension ChainLevel {
         commit: ChainCommit
     ) {
         guard context.isRoot else { throw BlockImportError.protocolInvalid }
-        let resolved: (header: BlockHeader, block: Block)
-        let transition: BlockImport.ExecutedTransition
         switch await BlockImport.prepareGenesis(
             context: context,
             genesisHeader: genesisHeader,
             fetcher: fetcher,
-            authorizes: { _ in true },
+            childPackage: nil,
             validationContext: validationContext
         ) {
         case .unresolved(let failure), .invalid(let failure): throw failure
-        case .notGenesis, .unauthorized: throw BlockImportError.protocolInvalid
-        case .ready(let readyResolved, let readyTransition):
-            resolved = readyResolved
-            transition = readyTransition
+        case .notGenesis: throw BlockImportError.protocolInvalid
+        case .noWork: throw BlockImportError.proofOfWorkInvalid
+        case .ready(let resolved, let contribution, let transition):
+            return try await BlockImport.finishBootstrap(
+                context: context,
+                resolved: resolved,
+                fetcher: fetcher,
+                contribution: contribution,
+                transition: transition,
+                validationContentStorer: validationContentStorer,
+                materializedVolumeStorer: materializedVolumeStorer,
+                stage: stage
+            )
         }
-        return try await BlockImport.finishBootstrap(
-            context: context,
-            resolved: resolved,
-            fetcher: fetcher,
-            transition: transition,
-            validationContentStorer: validationContentStorer,
-            materializedVolumeStorer: materializedVolumeStorer,
-            stage: stage
-        )
     }
 
-    /// Child bootstrap variant that stages verified hierarchy facts atomically
-    /// with the first admission batch.
+    /// Child bootstrap: a child genesis weighed by its `ChildBlockProof`
+    /// (`childPackage`) and executed like any child block, its continuity
+    /// included, staged as one batch. No parent authorization exists.
     static func bootstrap(
         context: ChainRuntimeContext,
         genesisHeader: BlockHeader,
         fetcher: any Fetcher,
-        parentGenesisLink: ParentGenesisLink,
+        childPackage: ChildValidationPackage,
         validationContext: ValidationContext = .current,
         validationContentStorer: any VolumeStorer,
         materializedVolumeStorer: any VolumeStorer,
         stage: @Sendable (BlockImportStagingContext) async throws -> Void
     ) async throws -> ChildChainBootstrapResult {
         guard !context.isRoot else { throw BlockImportError.protocolInvalid }
-        // A child genesis is self-contained and has no work of its own, exactly
-        // like a root genesis (§5.1).
-        let resolved: (header: BlockHeader, block: Block)
-        let transition: BlockImport.ExecutedTransition
-        // Record gate: the parent must have RECORDED this genesis for this
-        // directory (a plain GenesisAction → genesisState). The caller supplies
-        // the ParentGenesisLink derived from its own validated parent state; here
-        // we confirm it authorizes exactly this self-contained genesis (empty
-        // parentState). This is the sole authorization — there is no carrier proof.
         switch await BlockImport.prepareGenesis(
             context: context,
             genesisHeader: genesisHeader,
             fetcher: fetcher,
-            authorizes: { $0 == parentGenesisLink },
+            childPackage: childPackage,
             validationContext: validationContext
         ) {
-        case .unresolved(let failure): throw failure
-        case .notGenesis: throw BlockImportError.protocolInvalid
-        case .unauthorized:
-            return .rejected(.providerMalformedEvidence)
-        case .invalid(let failure):
+        case .unresolved(let failure), .invalid(let failure):
             return .rejected(failure)
-        case .ready(let readyResolved, let readyTransition):
-            resolved = readyResolved
-            transition = readyTransition
+        case .notGenesis:
+            return .rejected(.protocolInvalid)
+        case .noWork:
+            return .rejected(.proofOfWorkInvalid)
+        case .ready(let resolved, let contribution, let transition):
+            let accepted = try await BlockImport.finishBootstrap(
+                context: context,
+                resolved: resolved,
+                fetcher: fetcher,
+                contribution: contribution,
+                transition: transition,
+                validationContentStorer: validationContentStorer,
+                materializedVolumeStorer: materializedVolumeStorer,
+                stage: stage
+            )
+            return .accepted(ChildChainBootstrapAcceptance(
+                level: accepted.level,
+                stateDiff: accepted.stateDiff,
+                materializedPostState: accepted.materializedPostState,
+                commit: accepted.commit
+            ))
         }
-        let accepted = try await BlockImport.finishBootstrap(
-            context: context,
-            resolved: resolved,
-            fetcher: fetcher,
-            transition: transition,
-            validationContentStorer: validationContentStorer,
-            materializedVolumeStorer: materializedVolumeStorer,
-            stage: stage
-        )
-        return .accepted(ChildChainBootstrapAcceptance(
-            level: accepted.level,
-            stateDiff: accepted.stateDiff,
-            materializedPostState: accepted.materializedPostState,
-            commit: accepted.commit
-        ))
     }
 }

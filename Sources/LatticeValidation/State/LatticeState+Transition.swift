@@ -3,7 +3,7 @@ import Foundation
 import LatticePrimitives
 
 extension LatticeState {
-    public func proveAndUpdateState(allAccountActions: [AccountAction], allActions: [Action], allDepositActions: [DepositAction], allGenesisActions: [GenesisAction], allReceiptActions: [ReceiptAction], allWithdrawalActions: [WithdrawalAction], transactionBodies: [TransactionBody], fetcher: Fetcher) async throws -> (LatticeState, StateDiff) {
+    public func proveAndUpdateState(allAccountActions: [AccountAction], allActions: [Action], allDepositActions: [DepositAction], allReceiptActions: [ReceiptAction], allWithdrawalActions: [WithdrawalAction], transactionBodies: [TransactionBody], fetcher: Fetcher) async throws -> (LatticeState, StateDiff) {
         async let accountResult = accountState.proveAndUpdateState(
             allAccountActions: allAccountActions,
             allReceiptActions: allReceiptActions,
@@ -11,7 +11,6 @@ extension LatticeState {
             fetcher: fetcher
         )
         async let generalResult = generalState.proveAndUpdateState(allActions: allActions, fetcher: fetcher)
-        async let genesisResult = genesisState.proveAndUpdateState(allGenesisActions: allGenesisActions, fetcher: fetcher)
         async let receiptResult = receiptState.proveAndUpdateState(allReceiptActions: allReceiptActions, fetcher: fetcher)
         let (afterWithdrawals, withdrawalDiff) = try await depositState.proveAndSpendForWithdrawals(allWithdrawalActions: allWithdrawalActions, fetcher: fetcher)
         async let depositResult = afterWithdrawals.proveAndUpdateState(allDepositActions: allDepositActions, fetcher: fetcher)
@@ -19,21 +18,18 @@ extension LatticeState {
         let (finalAccountState, accountDiff) = try await accountResult
         let (finalGeneralState, generalDiff) = try await generalResult
         let (finalDepositState, depositDiff) = try await depositResult
-        let (finalGenesisState, genesisDiff) = try await genesisResult
         let (finalReceiptState, receiptDiff) = try await receiptResult
 
         var diff = withdrawalDiff
         diff.merge(accountDiff)
         diff.merge(generalDiff)
         diff.merge(depositDiff)
-        diff.merge(genesisDiff)
         diff.merge(receiptDiff)
 
         let updated = Self(
             accountState: finalAccountState,
             generalState: finalGeneralState,
             depositState: finalDepositState,
-            genesisState: finalGenesisState,
             receiptState: finalReceiptState
         )
         let previousRoot = try LatticeStateHeader(node: self).rawCID

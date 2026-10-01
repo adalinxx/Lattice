@@ -14,8 +14,7 @@ final class NetDebitArithmeticTests: XCTestCase {
         fee: UInt64 = 0
     ) -> TransactionBody {
         TransactionBody(
-            accountActions: account, actions: [], depositActions: [], genesisActions: [],
-            receiptActions: receipts, withdrawalActions: [], signers: [], nonce: 0,
+            accountActions: account, actions: [], depositActions: [], receiptActions: receipts, withdrawalActions: [], signers: [], nonce: 0,
             chainPath: ["Nexus"]
         )
     }

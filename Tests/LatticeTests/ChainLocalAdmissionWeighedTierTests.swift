@@ -770,15 +770,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
 
         XCTAssertNotNil(committed.commit)
         let stagedContexts = await recorder.recordedContexts()
-        let stagedContext = try XCTUnwrap(stagedContexts.first)
-        XCTAssertFalse(
-            stagedContext.issuesHierarchyFacts,
-            "weighed admission must not issue hierarchy facts"
-        )
-        XCTAssertTrue(
-            stagedContext.parentGenesisLinks.isEmpty,
-            "weighed admission must not issue parent-genesis links"
-        )
+        XCTAssertEqual(stagedContexts.count, 1)
     }
 }
 

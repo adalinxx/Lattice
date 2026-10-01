@@ -372,8 +372,7 @@ final class BalanceConservationPropertyTests: XCTestCase {
             let balance = UInt64.random(in: 1...10_000, using: &rng)
             let (funded, _) = try await LatticeState.emptyState().proveAndUpdateState(
                 allAccountActions: [AccountAction(owner: demander, delta: Int64(balance))],
-                allActions: [], allDepositActions: [], allGenesisActions: [],
-                allReceiptActions: [], allWithdrawalActions: [], transactionBodies: [],
+                allActions: [], allDepositActions: [], allReceiptActions: [], allWithdrawalActions: [], transactionBodies: [],
                 fetcher: fetcher
             )
             try await LatticeStateHeader(node: funded).storeRecursively(storer: fetcher)
@@ -387,8 +386,7 @@ final class BalanceConservationPropertyTests: XCTestCase {
             )
             let (locked, _) = try await funded.proveAndUpdateState(
                 allAccountActions: [AccountAction(owner: demander, delta: -Int64(amount))],
-                allActions: [], allDepositActions: [deposit], allGenesisActions: [],
-                allReceiptActions: [], allWithdrawalActions: [], transactionBodies: [],
+                allActions: [], allDepositActions: [deposit], allReceiptActions: [], allWithdrawalActions: [], transactionBodies: [],
                 fetcher: fetcher
             )
             try await LatticeStateHeader(node: locked).storeRecursively(storer: fetcher)
@@ -407,8 +405,7 @@ final class BalanceConservationPropertyTests: XCTestCase {
             do {
                 _ = try await locked.proveAndUpdateState(
                     allAccountActions: [AccountAction(owner: demander, delta: -Int64(overdraw.amountDeposited))],
-                    allActions: [], allDepositActions: [overdraw], allGenesisActions: [],
-                    allReceiptActions: [], allWithdrawalActions: [], transactionBodies: [],
+                    allActions: [], allDepositActions: [overdraw], allReceiptActions: [], allWithdrawalActions: [], transactionBodies: [],
                     fetcher: fetcher
                 )
                 XCTFail("a deposit beyond the remaining balance must not be funded \(seed.note)")
@@ -432,7 +429,6 @@ final class BalanceConservationPropertyTests: XCTestCase {
                 accountActions: [action],
                 actions: [],
                 depositActions: [],
-                genesisActions: [],
                 receiptActions: [],
                 withdrawalActions: [],
                 signers: [],
@@ -446,7 +442,6 @@ final class BalanceConservationPropertyTests: XCTestCase {
                 accountActions: [action],
                 actions: [],
                 depositActions: [],
-                genesisActions: [],
                 receiptActions: [],
                 withdrawalActions: [],
                 signers: [owner],
@@ -472,7 +467,6 @@ final class BalanceConservationPropertyTests: XCTestCase {
                 accountActions: [action],
                 actions: [],
                 depositActions: [],
-                genesisActions: [],
                 receiptActions: [],
                 withdrawalActions: [],
                 signers: [],
@@ -657,7 +651,6 @@ final class StateDeltaPropertyTests: XCTestCase {
             accountActions: accountActions,
             actions: kvActions,
             depositActions: [],
-            genesisActions: [],
             receiptActions: [],
             withdrawalActions: [],
             signers: [],
@@ -751,16 +744,15 @@ final class BlockStructurePropertyTests: XCTestCase {
         XCTAssertEqual(state.properties().count, 5)
     }
 
-    // Property: All 5 sub-state property names are distinct
+    // Property: All 4 sub-state property names are distinct
     func testSubStatePropertyNamesDistinct() {
         let names = [
             ACCOUNT_STATE_PROPERTY,
             GENERAL_STATE_PROPERTY,
             DEPOSIT_STATE_PROPERTY,
-            GENESIS_STATE_PROPERTY,
             RECEIPT_STATE_PROPERTY,
         ]
-        XCTAssertEqual(Set(names).count, 5)
+        XCTAssertEqual(Set(names).count, 4)
     }
 
     // Property: Block has 6 required addressable child properties. The optional

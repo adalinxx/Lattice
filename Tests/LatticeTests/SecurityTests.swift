@@ -76,14 +76,12 @@ final class DoubleSpendTests: XCTestCase {
     func testTransactionNonceReplayBlocked() async {
         let body1 = TransactionBody(
             accountActions: [AccountAction(owner: "alice", delta: Int64(50) - Int64(100))],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["alice"], nonce: 42,
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [], signers: ["alice"], nonce: 42,
             chainPath: ["Nexus"]
         )
         let body2 = TransactionBody(
             accountActions: [AccountAction(owner: "alice", delta: -Int64(50))],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: ["alice"], nonce: 42,
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [], signers: ["alice"], nonce: 42,
             chainPath: ["Nexus"]
         )
         let key1 = AccountStateHeader.nonceTrackingKey(body1.signers[0])
@@ -95,13 +93,13 @@ final class DoubleSpendTests: XCTestCase {
     func testDifferentSignersSameNonceNotBlocked() async {
         let body1 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: ["alice"], nonce: 1,
             chainPath: ["Nexus"]
         )
         let body2 = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: ["bob"], nonce: 1,
             chainPath: ["Nexus"]
         )
@@ -125,7 +123,7 @@ final class StateModelHardeningTests: XCTestCase {
 
         let solo = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: ["alice"], nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -138,7 +136,7 @@ final class StateModelHardeningTests: XCTestCase {
 
         let cosignedReplay = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: ["alice", "bob"], nonce: 0,
             chainPath: ["Nexus"]
         )
@@ -155,7 +153,7 @@ final class StateModelHardeningTests: XCTestCase {
 
         let nextSolo = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: ["alice"], nonce: 1,
             chainPath: ["Nexus"]
         )
@@ -222,7 +220,7 @@ final class StateModelHardeningTests: XCTestCase {
         let keyPair = CryptoUtils.generateKeyPair()
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [CryptoUtils.createAddress(from: keyPair.publicKey)],
             nonce: 0,
             chainPath: ["Nexus"]
@@ -266,7 +264,6 @@ final class StateModelHardeningTests: XCTestCase {
             accountActions: [],
             actions: [Action(key: "", oldValue: nil, newValue: "value")],
             depositActions: [],
-            genesisActions: [],
             receiptActions: [],
             withdrawalActions: [],
             signers: [signer],
@@ -285,7 +282,6 @@ final class StateModelHardeningTests: XCTestCase {
             accountActions: [AccountAction(owner: signer, delta: 0)],
             actions: [],
             depositActions: [],
-            genesisActions: [],
             receiptActions: [],
             withdrawalActions: [],
             signers: [signer],
@@ -309,7 +305,6 @@ final class StateModelHardeningTests: XCTestCase {
             accountActions: [AccountAction(owner: recipient, delta: 25)],
             actions: [Action(key: "profile", oldValue: "old", newValue: "new")],
             depositActions: [],
-            genesisActions: [],
             receiptActions: [],
             withdrawalActions: [],
             signers: [signer],
@@ -398,7 +393,7 @@ final class SignatureForgeryTests: XCTestCase {
         let kp = CryptoUtils.generateKeyPair()
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [try! HeaderImpl<PublicKey>(node: PublicKey(key: kp.publicKey)).rawCID],
             nonce: 1,
             chainPath: ["Nexus"]
@@ -414,7 +409,7 @@ final class SignatureForgeryTests: XCTestCase {
         let signerCID = try! HeaderImpl<PublicKey>(node: PublicKey(key: kp2.publicKey)).rawCID
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [signerCID], nonce: 1,
             chainPath: ["Nexus"]
         )
@@ -429,7 +424,7 @@ final class SignatureForgeryTests: XCTestCase {
         let kp = CryptoUtils.generateKeyPair()
         let body = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [try! HeaderImpl<PublicKey>(node: PublicKey(key: kp.publicKey)).rawCID],
             nonce: 1,
             chainPath: ["Nexus"]
@@ -452,8 +447,7 @@ final class BalanceConservationTests: XCTestCase {
         ) -> TransactionBody {
             TransactionBody(
                 accountActions: accountActions, actions: [],
-                depositActions: deposits, genesisActions: [],
-                receiptActions: [], withdrawalActions: withdrawals,
+                depositActions: deposits, receiptActions: [], withdrawalActions: withdrawals,
                 signers: ["sender"], nonce: 0, chainPath: ["Nexus"]
             )
         }
@@ -612,8 +606,7 @@ final class ModelAFeeKeystoneTests: XCTestCase {
         // crediting itself reward + fee.
         let maliciousBody = TransactionBody(
             accountActions: [AccountAction(owner: minerAddr, delta: Int64(reward + fee))],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [minerAddr], nonce: 0, chainPath: ["Nexus"]
         )
         let block = try await buildAndStoreBlock(
@@ -644,8 +637,7 @@ final class ModelAFeeKeystoneTests: XCTestCase {
         let genesis = try await buildPremineGenesis(spec: s, owner: payer, fetcher: f, timestamp: base)
         let fundedBody = TransactionBody(
             accountActions: [AccountAction(owner: payerAddr, delta: -Int64(fee))],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [payerAddr], nonce: 0, chainPath: ["Nexus"]
         )
         let block = try await buildAndStoreBlock(
@@ -768,7 +760,7 @@ final class FilterBypassTests: XCTestCase {
         )
         let cheapTx = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [], nonce: 1,
             chainPath: ["Nexus"]
         )
@@ -784,7 +776,7 @@ final class FilterBypassTests: XCTestCase {
             wasmPolicies: [policy]
         )
         let badAction = Action(key: "system/hack", oldValue: nil, newValue: "data")
-        let body = TransactionBody(accountActions: [], actions: [badAction], depositActions: [], genesisActions: [], receiptActions: [], withdrawalActions: [], signers: [], nonce: 0, chainPath: ["Nexus"])
+        let body = TransactionBody(accountActions: [], actions: [badAction], depositActions: [], receiptActions: [], withdrawalActions: [], signers: [], nonce: 0, chainPath: ["Nexus"])
         let accepted = try await TransactionBody.batchVerifyPolicies(bodies: [body], spec: nsSpec, chainPath: ["Nexus"], height: 1, timestamp: 1, fetcher: fetcher)
         XCTAssertFalse(accepted)
     }
@@ -799,7 +791,7 @@ final class FilterBypassTests: XCTestCase {
         let childSpec = ChainSpec.test(halfLife: 10)
         let cheapTx = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [], nonce: 1,
             chainPath: ["Nexus"]
         )

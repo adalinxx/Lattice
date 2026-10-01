@@ -32,7 +32,6 @@ final class ChainSpecTests: XCTestCase {
             )],
             actions: [],
             depositActions: [],
-            genesisActions: [],
             receiptActions: [],
             withdrawalActions: [],
             signers: [],

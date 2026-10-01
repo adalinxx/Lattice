@@ -345,7 +345,6 @@ final class ConformanceVectorTests: XCTestCase {
         accountActions: [AccountAction] = [],
         actions: [Action] = [],
         depositActions: [DepositAction] = [],
-        genesisActions: [GenesisAction] = [],
         receiptActions: [ReceiptAction] = [],
         withdrawalActions: [WithdrawalAction] = []
     ) -> TransactionBody {
@@ -353,7 +352,6 @@ final class ConformanceVectorTests: XCTestCase {
             accountActions: accountActions,
             actions: actions,
             depositActions: depositActions,
-            genesisActions: genesisActions,
             receiptActions: receiptActions,
             withdrawalActions: withdrawalActions,
             signers: signers.map(\.address),
@@ -364,7 +362,6 @@ final class ConformanceVectorTests: XCTestCase {
 
     static func transactionBodies() async throws -> [(name: String, body: TransactionBody)] {
         let (alice, bob, _) = try parties()
-        let childGenesisCID = try VolumeImpl<Block>(node: try await genesis(childSpec())).rawCID
         return [
             ("transaction-body/account-action", body(
                 signers: [alice],
@@ -384,11 +381,6 @@ final class ConformanceVectorTests: XCTestCase {
                 depositActions: [DepositAction(
                     nonce: 7, demander: alice.address, amountDemanded: 500, amountDeposited: 500
                 )]
-            )),
-            ("transaction-body/genesis-action", body(
-                signers: [alice],
-                nonce: 2,
-                genesisActions: [GenesisAction(directory: "Child", blockCID: childGenesisCID)]
             )),
             ("transaction-body/receipt-action", body(
                 signers: [bob],

@@ -150,8 +150,7 @@ final class PremineUncappedTests: XCTestCase {
         let premine = s.premineAmount()
         let body = TransactionBody(
             accountActions: [AccountAction(owner: addr, delta: Int64(premine > UInt64(Int64.max) ? UInt64(Int64.max) : premine))],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [addr], nonce: 0,
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [], signers: [addr], nonce: 0,
             chainPath: ["Nexus"]
         )
         let bodyHeader = try! HeaderImpl<TransactionBody>(node: body)
@@ -214,8 +213,7 @@ final class PremineUncappedTests: XCTestCase {
         let fetcher = StorableFetcher()
         let body = TransactionBody(
             accountActions: [AccountAction(owner: addr, delta: Int64(premine))],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [], signers: [], nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
         let bodyHeader = try! HeaderImpl<TransactionBody>(node: body)
         let genesisTx = Transaction(signatures: [:], body: bodyHeader)
@@ -235,8 +233,7 @@ final class PremineUncappedTests: XCTestCase {
         // removal does not relax the conservation invariant.
         let overBody = TransactionBody(
             accountActions: [AccountAction(owner: addr, delta: Int64(premine + 1))],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [], signers: [], nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [], signers: [], nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
         )
         let overHeader = try! HeaderImpl<TransactionBody>(node: overBody)
         let overTx = Transaction(signatures: [:], body: overHeader)
