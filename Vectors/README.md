@@ -34,7 +34,7 @@ Encoding details an SDK must match, all visible in `encoding.json`:
   block's `spec`, `transactions` or states, or a transaction's `body`) is the
   map `{"rawCID": "<cid>"}`, not a tag-42 link. Other CID-valued fields are
   plain text strings: addresses (`signers`, `owner`, `demander`,
-  `withdrawer`) and `GenesisAction.blockCID`. `PublicKey.key` is the Multikey
+  `withdrawer`). `PublicKey.key` is the Multikey
   hex as a text string.
 - A `U256` is a `"0x"`-prefixed, lowercase hex string of minimal length: no
   leading zero digits, so zero is `"0x0"` (see

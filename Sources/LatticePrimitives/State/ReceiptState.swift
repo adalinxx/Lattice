@@ -4,8 +4,10 @@ import cashew
 /// string encodings used as merkle-dictionary keys. A chain's `directory` is a
 /// free-text `ReceiptKey` field, so it must never contain this separator or two
 /// distinct keys could collide (a withdrawal settling against the wrong chain's
-/// receipt). Enforced at the single entry point for directory names,
-/// `TransactionBody.genesisActionsAreValid`. Must stay equal to the literal "/"
+/// receipt). Enforced wherever a directory name enters consensus:
+/// `ChainRuntimeContext` for a chain's path and
+/// `TransactionBody.stateAtomsAreValid` for a receipt's directory. Must stay
+/// equal to the literal "/"
 /// used in `ReceiptKey`/`DepositKey` `description` and their parsers.
 public let DIRECTORY_KEY_SEPARATOR: Character = "/"
 

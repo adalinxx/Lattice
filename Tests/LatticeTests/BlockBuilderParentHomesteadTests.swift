@@ -105,7 +105,6 @@ final class BlockBuilderParentHomesteadTests: XCTestCase {
             accountActions: delta.map { [AccountAction(owner: owner, delta: $0)] } ?? [],
             actions: [],
             depositActions: [],
-            genesisActions: [],
             receiptActions: [],
             withdrawalActions: [],
             signers: [owner],

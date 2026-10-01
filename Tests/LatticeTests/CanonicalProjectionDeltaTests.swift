@@ -73,7 +73,7 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         chain: ChainState
     ) {
         let root = node("root", parent: nil, height: 0, work: 4)
-        let chain = try await ChainState.restore(replaying: [admission(root)])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [admission(root)])
         let blocksBefore = await chain.canonicalProjectionBlockVisitCount
         let segmentsBefore = await chain.canonicalProjectionSegmentVisitCount
         let cellsBefore = await chain.segmentWorkUpdateCellCount
@@ -224,7 +224,7 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
     func testDeepLosingSiblingMaterializesNothing() async throws {
         let length = 400
         let root = node("deep-root", parent: nil, height: 0, work: 4)
-        let chain = try await ChainState.restore(replaying: [admission(root)])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [admission(root)])
         var canonical = [root]
         var previous = root
         for height in 1...length {
@@ -294,7 +294,7 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         )
 
         let root = node("budget-root", parent: nil, height: 0, work: 4)
-        let chain = try await ChainState.restore(replaying: [admission(root)])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [admission(root)])
         var canonical = [root]
         var previous = root
         for height in 1...length {
@@ -417,7 +417,7 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         let componentDepth = 4
         for history in [200, 800] {
             let root = node("graft-\(history)-root", parent: nil, height: 0, work: 4)
-            let chain = try await ChainState.restore(replaying: [admission(root)])
+            let chain = try await ChainState.restoreWithoutContext(replaying: [admission(root)])
             let main = try await forkedHistory(
                 chain, prefix: "graft-\(history)", length: history, from: root
             )
@@ -471,7 +471,7 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         var cells: [Int: UInt64] = [:]
         for length in [200, 800] {
             let root = node("win-\(length)-root", parent: nil, height: 0, work: 4)
-            let chain = try await ChainState.restore(replaying: [admission(root)])
+            let chain = try await ChainState.restoreWithoutContext(replaying: [admission(root)])
             let main = try await forkedHistory(
                 chain, prefix: "win-\(length)", length: length, from: root
             )
@@ -515,7 +515,7 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         var cells: [Int: UInt64] = [:]
         for length in [200, 800] {
             let root = node("excl-\(length)-root", parent: nil, height: 0, work: 4)
-            let chain = try await ChainState.restore(replaying: [admission(root)])
+            let chain = try await ChainState.restoreWithoutContext(replaying: [admission(root)])
             let main = try await forkedHistory(
                 chain, prefix: "excl-\(length)", length: length, from: root
             )
@@ -564,7 +564,7 @@ final class CanonicalProjectionDeltaTests: XCTestCase {
         let root = node("dup-root", parent: nil, height: 0, work: 4)
         let a = node("dup-a", parent: root.hash, height: 1, work: 4)
         let b = node("dup-b", parent: root.hash, height: 1, work: 1)
-        let chain = try await ChainState.restore(replaying: [admission(root)])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [admission(root)])
         _ = try await chain.applyStaged(admission(a))
         _ = try await chain.applyStaged(admission(b))
 

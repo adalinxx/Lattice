@@ -22,6 +22,13 @@ extension ChainTree {
         forkChoice.excludedRoots.contains(blockHash)
     }
 
+    /// Whether this chain executed `blockHash`'s transition and found it
+    /// valid. Irrevocable: execution is a fact about immutable bytes, so an
+    /// executed block is never later proven invalid (`applyConnect`).
+    public func isExecuted(blockHash: String) -> Bool {
+        frontier.validated.contains(blockHash)
+    }
+
     /// The recorded header fields of a held block (post/prev state, spec,
     /// target, next target, height, timestamp): what header linkage reads for
     /// a parent.

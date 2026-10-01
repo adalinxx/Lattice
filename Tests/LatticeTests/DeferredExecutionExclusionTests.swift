@@ -86,7 +86,7 @@ final class DeferredExecutionExclusionTests: XCTestCase {
         var batches = [admission(for: g)]
         for b in h + l { batches.append(admission(for: b)) }
 
-        let chain = try await ChainState.restore(replaying: [admission(for: g)])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [admission(for: g)])
         for b in h + l {
             _ = try await chain.applyStaged(admission(for: b))
         }
@@ -151,7 +151,7 @@ final class DeferredExecutionExclusionTests: XCTestCase {
         var durable = batches
         durable.insert(exclusion(of: h[0]), at: 2)
 
-        let restored = try await ChainState.restore(replaying: durable)
+        let restored = try await ChainState.restoreWithoutContext(replaying: durable)
         let restoredTip = await restored.canonicalTip
         let restoredPath = await restored.canonicalHashes
         XCTAssertEqual(restoredTip, expectedTip)
@@ -171,7 +171,7 @@ final class DeferredExecutionExclusionTests: XCTestCase {
         let l1 = block("l1", parent: g, work: 4)
         let l2 = block("l2", parent: l1, work: 4)
 
-        let chain = try await ChainState.restore(replaying: [admission(for: g)])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [admission(for: g)])
         // R and the valid chain exist; B and C do not yet.
         _ = try await chain.applyStaged(admission(for: r))
         _ = try await chain.applyStaged(admission(for: l1))
@@ -259,7 +259,7 @@ final class DeferredExecutionExclusionTests: XCTestCase {
         durable.append(exclusion(of: h[0]))
         durable.append(contentsOf: batches.dropFirst())
 
-        let restored = try await ChainState.restore(replaying: durable)
+        let restored = try await ChainState.restoreWithoutContext(replaying: durable)
         let restoredTip = await restored.canonicalTip
         let restoredPath = await restored.canonicalHashes
         XCTAssertEqual(restoredTip, expectedTip)
@@ -327,7 +327,7 @@ final class DeferredExecutionExclusionTests: XCTestCase {
         let b1 = block("graft-b1", parent: b0, work: 10)
         let v1 = block("graft-v1", parent: g, work: 4)
 
-        let chain = try await ChainState.restore(replaying: [admission(for: g)])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [admission(for: g)])
         _ = try await chain.applyStaged(admission(for: v1))
 
         // B0 and B1 arrive while their connecting ancestor P is withheld, so

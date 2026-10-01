@@ -58,7 +58,7 @@ final class ParentStateContinuityTests: XCTestCase {
         let leftTip = testCID("parent-left-tip")
         let rightTip = testCID("parent-right-tip")
         let orphan = testCID("parent-orphan")
-        let chain = try await ChainState.restore(replaying: [
+        let chain = try await ChainState.restoreWithoutContext(replaying: [
             batch(root, parent: nil, height: 0, from: a, to: b, nonce: 1),
             batch(left, parent: root, height: 1, from: b, to: c, nonce: 2),
             batch(right, parent: root, height: 1, from: b, to: d, nonce: 3),
@@ -136,7 +136,7 @@ final class ParentStateContinuityTests: XCTestCase {
             ))
             parent = block
         }
-        let chain = try await ChainState.restore(replaying: batches)
+        let chain = try await ChainState.restoreWithoutContext(replaying: batches)
 
         let reflexive = await chain.hasStateContinuity(from: b, to: b)
         XCTAssertTrue(reflexive)

@@ -1,23 +1,29 @@
 {
   "fixtures" : {
-    "badPrevState" : "bafyreif6wsmunuzqaylfrpdj2m67nmcloswmducdw4edc2j4hbadrpnnwu",
-    "carrier" : "bafyreiayo3y344iipfbh35h4npeyijrtqdavtmsytrfquhucnlpii4br5u",
-    "childCandidate" : "bafyreiesnrar33xsnoxi3pujrh6q3rmwas465ozwi3e3qkenhelghwshme",
-    "childGenesis" : "bafyreicpb3llce2axngr2qyl42vtmxoy6mp7l2bywxuzzxjjt4numpdldq",
-    "forgedPostState" : "bafyreibv37f4kxpkqe3z2uhq3mmtwxeekcjv2fnkaxnxugpufjga25gevq",
-    "genesis" : "bafyreifqxlxcs3ichftflawz4gibgebdatxtdlhjcq4npzt65iyjwybycu",
-    "grandchild" : "bafyreibvx7f5qkwpuvi2ckrqlhvs2n27ehjzsj5t5wj4wupavgecoi6oem",
-    "hardChildGenesis" : "bafyreihasi35p4eed774gacwadrp4n3tgixsymt62jpbhxxkffhw6esmfe",
-    "hardGenesis" : "bafyreign2akgvlpvrakvqvc3nu4hasbjpnfbiyr6sivkr7ku34pe5mfidi",
-    "missCarrier" : "bafyreiejsxkwfhmakhdafjfqfzbfwfjjt3k7vtcz3iixjmqzxqgtuhsrve",
-    "missedChild" : "bafyreidskkmt7irrzwscv5j5ttskkyl6ygs2rfhd2hbaqibkiqn4lqfpu4",
-    "otherSpec" : "bafyreifkpuhwhtpihsgp7cmcny6ls4yvcfonxvu5b3bqfr3qvilzipz7su",
-    "side" : "bafyreihkohhcxqj5f2hmfhux3sdsqt3ztlaxgszo6gxzib6unpwc3ohuia",
-    "staleTimestamp" : "bafyreigayn2qv5crn63vcju23ulg3qnyzufuuaesf22ozploib2xrsvy5e",
-    "tooEasy" : "bafyreigz75s2i64fayr5t2qxzxu5kz564t7g7ciohhusqak5pgfeoev7pu",
-    "valid" : "bafyreifht3efgmkwv2nllkileuqr226p2mwqcrnhtci4ddb7m2y5gqu3je",
-    "wrongHeight" : "bafyreifuzt53sfqqop6be6kusdfjoo7eemn4bbpnfnx4hfupavcxpol3bq",
-    "wrongNextTarget" : "bafyreia5vd45aayshrnyhyanl4h3odemshyja4vcx6cm44v2xnik6g43k4"
+    "badPrevState" : "bafyreif5tqph5jo4c2ohmgw34xpj6lzkywtxtqkmlntxozkuv2ifa6sxpq",
+    "carrier" : "bafyreiedzzy6f6rqx7jtdgg4pxbl36wyjm3r7orygx55yvschsbbnhutiy",
+    "childCandidate" : "bafyreicgaaqvblrrcmbrn2bv2j2vey43s44nqfwmtvkmoh5p25zvbove7q",
+    "childGenesis" : "bafyreig4orln3rgl5gif5hoxvlwm4nj33uo3oroptlh6imadyxmu4uk4ze",
+    "childGenesisCarrier" : "bafyreiaywablvfmj7ysgrju75scq4jptlgji5ipyasw5xgwndqui4rsfiq",
+    "forgedPostState" : "bafyreihf2snl45tm7fyhmgwsizrlrarslodxhufeudpcjoq7cdu3xzwtkm",
+    "genesis" : "bafyreigs4zpcbuxj3itrbt6knya5xhwfe3rthkqd2oskkyqnrd2mytpdzu",
+    "grandchild" : "bafyreib4hbqvddmchrqz4i3a7p23tmp6krt6oet2ohcdawm5mvr4yxc5x4",
+    "hardChildGenesis" : "bafyreichyth7zx7dwkjw3bmxel4ko4tjfgi7uznmpy6eunejgbhihp3klu",
+    "hardGenesis" : "bafyreicybhn3t7zfmp2acnyo2sq4w5ey3b3ypcvtiy55pvkdc45nxjedbm",
+    "missCarrier" : "bafyreihtwztmxx5rtebrgex5feta2xxdupnt4ja7jzfffi3ibl76xva6fa",
+    "missedChild" : "bafyreibpzratpepyibta2lm4e5uosq3dqphfncam3mdm74bi5hlqs7vbbm",
+    "otherSpec" : "bafyreigc52rvdqch54xodmbbsczw56vwg2r62c7x75mral24qpkwjthkaq",
+    "rivalChildBlock" : "bafyreihnu4ydpfjieoj65wnbwhfrrsixy5ib3hjkp6qgzxa5bwdrfx6mra",
+    "rivalChildBlockCarrier" : "bafyreiad3t6k75tv4mle7j5giizrqy35bxeb6x5honzfi7fno5f4gqmixi",
+    "rivalChildGenesis" : "bafyreig6rsz4edyjqjim3uhinys7koozyndzuowh2qpg3ode2b7vhzz57i",
+    "rivalChildGenesisCarrier" : "bafyreictlh2gz2x7xeojtz22zbyai27njlqfbrowghvaia3s4pu7fd4s2e",
+    "rivalGenesis" : "bafyreibtguin7vmw4ndpogvd74wba3sd5ttxh7jd5xux5k7w5adcpciip4",
+    "side" : "bafyreieuagz6zhgkjjupnyxoz6zhacqpxwni3cvn4x4gt5mdrnoqmkdete",
+    "staleTimestamp" : "bafyreia7q6nezrdi5dn34du6d2tl374mqdvsf25y3pq23cjyx7lv2j3kse",
+    "tooEasy" : "bafyreibj6z2ujihvihsfd2q67qjuziq6m2ic6usklkaffxlmeqkmza4jam",
+    "valid" : "bafyreiettxkomvhzehv5fp6qmwzwwugqvsazvkfdwldpnsjfr5yyolf6qu",
+    "wrongHeight" : "bafyreifv7ksqwkgtlziib7a4vabergccghw4qktiwkr3piaxp4qg5j6g5e",
+    "wrongNextTarget" : "bafyreibgcejsmzpuvzb27t4urifhabqh2owiw34szlglgzrauwnjsqglk4"
   },
   "steps" : [
     {
@@ -49,7 +55,6 @@
       "executedAfter" : false,
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
       "result" : "applied",
       "scenario" : "valid",
@@ -86,7 +91,6 @@
       "executedAfter" : true,
       "materializedPostState" : true,
       "operation" : "connect",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
       "result" : "applied",
       "scenario" : "valid",
@@ -121,7 +125,6 @@
       "executedAfter" : false,
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
       "result" : "applied",
       "scenario" : "duplicate",
@@ -143,7 +146,6 @@
       "executedAfter" : false,
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
       "result" : "duplicate",
       "scenario" : "duplicate",
@@ -178,7 +180,6 @@
       "executedAfter" : false,
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
       "result" : "applied",
       "scenario" : "sideBlock",
@@ -213,7 +214,6 @@
       "executedAfter" : false,
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
       "result" : "applied",
       "scenario" : "sideBlock",
@@ -236,7 +236,6 @@
       "failure" : "unavailableEvidence",
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : false,
       "result" : "rejected",
       "scenario" : "unavailableParent",
@@ -277,7 +276,6 @@
       "executedAfter" : false,
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
       "result" : "applied",
       "scenario" : "badPrevState",
@@ -304,7 +302,6 @@
       "executedAfter" : false,
       "materializedPostState" : false,
       "operation" : "connect",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
       "result" : "applied",
       "scenario" : "badPrevState",
@@ -327,7 +324,6 @@
       "failure" : "proofOfWorkInvalid",
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : false,
       "result" : "rejected",
       "scenario" : "staleTimestamp",
@@ -368,7 +364,6 @@
       "executedAfter" : false,
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
       "result" : "applied",
       "scenario" : "otherSpec",
@@ -391,7 +386,6 @@
       "failure" : "proofOfWorkInvalid",
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : false,
       "result" : "rejected",
       "scenario" : "wrongNextTarget",
@@ -414,7 +408,6 @@
       "failure" : "protocolInvalid",
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : false,
       "result" : "rejected",
       "scenario" : "wrongHeight",
@@ -449,7 +442,6 @@
       "executedAfter" : false,
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
       "result" : "applied",
       "scenario" : "forgedPostState",
@@ -478,7 +470,6 @@
       "executedAfter" : false,
       "materializedPostState" : false,
       "operation" : "connect",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
       "result" : "applied",
       "scenario" : "forgedPostState",
@@ -501,7 +492,6 @@
       "failure" : "proofOfWorkInvalid",
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : false,
       "result" : "rejected",
       "scenario" : "targetEasierThanSchedule",
@@ -521,10 +511,9 @@
       "excluded" : false,
       "excludedAfter" : false,
       "executedAfter" : false,
-      "failure" : "protocolInvalid",
+      "failure" : "proofOfWorkInvalid",
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : false,
       "result" : "rejected",
       "scenario" : "rivalGenesis",
@@ -559,7 +548,6 @@
       "executedAfter" : false,
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
       "result" : "applied",
       "scenario" : "carriedChild",
@@ -589,7 +577,6 @@
       ],
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : false,
       "result" : "rejected",
       "scenario" : "carriedChildWithoutProof",
@@ -612,7 +599,6 @@
       "failure" : "proofOfWorkInvalid",
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : false,
       "result" : "rejected",
       "scenario" : "targetMissCarrier",
@@ -647,7 +633,6 @@
       "executedAfter" : false,
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
       "result" : "applied",
       "scenario" : "weighedThenValidateWithoutBody",
@@ -670,7 +655,6 @@
       "failure" : "unavailableEvidence",
       "materializedPostState" : false,
       "operation" : "connect",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
       "result" : "rejected",
       "scenario" : "weighedThenValidateWithoutBody",
@@ -705,7 +689,6 @@
       "executedAfter" : false,
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
       "result" : "applied",
       "scenario" : "weighedThenExtend",
@@ -740,11 +723,359 @@
       "executedAfter" : false,
       "materializedPostState" : false,
       "operation" : "header",
-      "parentGenesisLinks" : 0,
       "possessedAfter" : true,
       "result" : "applied",
       "scenario" : "weighedThenExtend",
       "step" : 1
+    },
+    {
+      "batches" : [
+
+      ],
+      "candidate" : "rivalGenesis",
+      "commitAdded" : [
+
+      ],
+      "commitRemoved" : [
+
+      ],
+      "excluded" : false,
+      "excludedAfter" : false,
+      "executedAfter" : false,
+      "failure" : "protocolInvalid",
+      "materializedPostState" : false,
+      "operation" : "genesis",
+      "possessedAfter" : false,
+      "result" : "rejected",
+      "scenario" : "rootRivalGenesis",
+      "step" : 0
+    },
+    {
+      "batches" : [
+
+      ],
+      "candidate" : "rivalChildGenesis",
+      "commitAdded" : [
+
+      ],
+      "commitRemoved" : [
+
+      ],
+      "excluded" : false,
+      "excludedAfter" : false,
+      "executedAfter" : false,
+      "failure" : "crossChainEvidenceRequired.childProof",
+      "failureCIDs" : [
+        "rivalChildGenesis"
+      ],
+      "failurePath" : [
+        "Nexus",
+        "Child"
+      ],
+      "materializedPostState" : false,
+      "operation" : "genesis",
+      "possessedAfter" : false,
+      "result" : "rejected",
+      "scenario" : "childRivalWithoutProof",
+      "step" : 0
+    },
+    {
+      "batches" : [
+        [
+          {
+            "block" : "rivalChildGenesis",
+            "kind" : "block"
+          },
+          {
+            "block" : "rivalChildGenesis",
+            "grind" : "rivalChildGenesisCarrier",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          }
+        ]
+      ],
+      "candidate" : "rivalChildGenesis",
+      "commitAdded" : [
+
+      ],
+      "commitRemoved" : [
+
+      ],
+      "commitRevision" : 2,
+      "commitTip" : "childGenesis",
+      "excluded" : false,
+      "excludedAfter" : false,
+      "executedAfter" : false,
+      "materializedPostState" : false,
+      "operation" : "genesis",
+      "possessedAfter" : true,
+      "result" : "applied",
+      "scenario" : "childRivalRoot",
+      "step" : 0
+    },
+    {
+      "batches" : [
+        [
+          {
+            "block" : "rivalChildGenesis",
+            "kind" : "block"
+          },
+          {
+            "block" : "rivalChildGenesis",
+            "grind" : "rivalChildGenesisCarrier",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          },
+          {
+            "block" : "rivalChildGenesis",
+            "kind" : "validation"
+          }
+        ]
+      ],
+      "candidate" : "rivalChildGenesis",
+      "commitAdded" : [
+
+      ],
+      "commitRemoved" : [
+
+      ],
+      "excluded" : false,
+      "excludedAfter" : false,
+      "executedAfter" : true,
+      "materializedPostState" : true,
+      "operation" : "connect",
+      "possessedAfter" : true,
+      "result" : "applied",
+      "scenario" : "childRivalRoot",
+      "step" : 1
+    },
+    {
+      "batches" : [
+
+      ],
+      "candidate" : "rivalChildGenesis",
+      "commitAdded" : [
+
+      ],
+      "commitRemoved" : [
+
+      ],
+      "excluded" : false,
+      "excludedAfter" : false,
+      "executedAfter" : true,
+      "materializedPostState" : false,
+      "operation" : "genesis",
+      "possessedAfter" : true,
+      "result" : "duplicate",
+      "scenario" : "childRivalRoot",
+      "step" : 2
+    },
+    {
+      "batches" : [
+        [
+          {
+            "block" : "rivalChildGenesis",
+            "kind" : "block"
+          },
+          {
+            "block" : "rivalChildGenesis",
+            "grind" : "rivalChildGenesisCarrier",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          }
+        ]
+      ],
+      "candidate" : "rivalChildGenesis",
+      "commitAdded" : [
+
+      ],
+      "commitRemoved" : [
+
+      ],
+      "commitRevision" : 2,
+      "commitTip" : "childGenesis",
+      "excluded" : false,
+      "excludedAfter" : false,
+      "executedAfter" : false,
+      "materializedPostState" : false,
+      "operation" : "genesis",
+      "possessedAfter" : true,
+      "result" : "applied",
+      "scenario" : "rivalHeavierWins",
+      "step" : 0
+    },
+    {
+      "batches" : [
+        [
+          {
+            "block" : "rivalChildBlock",
+            "kind" : "block"
+          },
+          {
+            "block" : "rivalChildBlock",
+            "grind" : "rivalChildBlockCarrier",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          }
+        ]
+      ],
+      "candidate" : "rivalChildBlock",
+      "commitAdded" : [
+        "rivalChildBlock",
+        "rivalChildGenesis"
+      ],
+      "commitRemoved" : [
+        "childGenesis"
+      ],
+      "commitRevision" : 3,
+      "commitTip" : "rivalChildBlock",
+      "excluded" : false,
+      "excludedAfter" : false,
+      "executedAfter" : false,
+      "materializedPostState" : false,
+      "operation" : "header",
+      "possessedAfter" : true,
+      "result" : "applied",
+      "scenario" : "rivalHeavierWins",
+      "step" : 1
+    },
+    {
+      "batches" : [
+        [
+          {
+            "block" : "rivalChildGenesis",
+            "kind" : "block"
+          },
+          {
+            "block" : "rivalChildGenesis",
+            "grind" : "rivalChildGenesisCarrier",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          },
+          {
+            "block" : "rivalChildGenesis",
+            "kind" : "validation"
+          }
+        ]
+      ],
+      "candidate" : "rivalChildGenesis",
+      "commitAdded" : [
+
+      ],
+      "commitRemoved" : [
+
+      ],
+      "excluded" : false,
+      "excludedAfter" : false,
+      "executedAfter" : true,
+      "materializedPostState" : true,
+      "operation" : "connect",
+      "possessedAfter" : true,
+      "result" : "applied",
+      "scenario" : "rivalHeavierWins",
+      "step" : 2
+    },
+    {
+      "batches" : [
+        [
+          {
+            "block" : "childCandidate",
+            "kind" : "block"
+          },
+          {
+            "block" : "childCandidate",
+            "grind" : "carrier",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          }
+        ]
+      ],
+      "candidate" : "childCandidate",
+      "commitAdded" : [
+        "childCandidate"
+      ],
+      "commitRemoved" : [
+
+      ],
+      "commitRevision" : 2,
+      "commitTip" : "childCandidate",
+      "excluded" : false,
+      "excludedAfter" : false,
+      "executedAfter" : false,
+      "materializedPostState" : false,
+      "operation" : "header",
+      "possessedAfter" : true,
+      "result" : "applied",
+      "scenario" : "rivalEqualWorkTie",
+      "step" : 0
+    },
+    {
+      "batches" : [
+        [
+          {
+            "block" : "rivalChildGenesis",
+            "kind" : "block"
+          },
+          {
+            "block" : "rivalChildGenesis",
+            "grind" : "rivalChildGenesisCarrier",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          }
+        ]
+      ],
+      "candidate" : "rivalChildGenesis",
+      "commitAdded" : [
+
+      ],
+      "commitRemoved" : [
+
+      ],
+      "commitRevision" : 3,
+      "commitTip" : "childCandidate",
+      "excluded" : false,
+      "excludedAfter" : false,
+      "executedAfter" : false,
+      "materializedPostState" : false,
+      "operation" : "genesis",
+      "possessedAfter" : true,
+      "result" : "applied",
+      "scenario" : "rivalEqualWorkTie",
+      "step" : 1
+    },
+    {
+      "batches" : [
+        [
+          {
+            "block" : "rivalChildBlock",
+            "kind" : "block"
+          },
+          {
+            "block" : "rivalChildBlock",
+            "grind" : "rivalChildBlockCarrier",
+            "kind" : "work",
+            "work" : "0000000000000000000000000000000000000000000000000000000000000001"
+          }
+        ]
+      ],
+      "candidate" : "rivalChildBlock",
+      "commitAdded" : [
+
+      ],
+      "commitRemoved" : [
+
+      ],
+      "commitRevision" : 4,
+      "commitTip" : "childCandidate",
+      "excluded" : false,
+      "excludedAfter" : false,
+      "executedAfter" : false,
+      "materializedPostState" : false,
+      "operation" : "header",
+      "possessedAfter" : true,
+      "result" : "applied",
+      "scenario" : "rivalEqualWorkTie",
+      "step" : 2
     }
   ]
 }

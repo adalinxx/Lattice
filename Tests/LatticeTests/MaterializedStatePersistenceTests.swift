@@ -21,7 +21,6 @@ final class MaterializedStatePersistenceTests: XCTestCase {
             ],
             allActions: [],
             allDepositActions: [],
-            allGenesisActions: [],
             allReceiptActions: [],
             allWithdrawalActions: [],
             transactionBodies: [],
@@ -50,16 +49,14 @@ final class MaterializedStatePersistenceTests: XCTestCase {
 
         let fundingBody = TransactionBody(
             accountActions: [AccountAction(owner: buyerAddress, delta: 250)],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [buyerAddress], nonce: 0,
             chainPath: ["Nexus"]
         )
         let initial = try XCTUnwrap(LatticeState.emptyHeader.node)
         let (funded, fundingDiff) = try await initial.proveAndUpdateState(
             allAccountActions: fundingBody.accountActions,
-            allActions: [], allDepositActions: [], allGenesisActions: [],
-            allReceiptActions: [], allWithdrawalActions: [],
+            allActions: [], allDepositActions: [], allReceiptActions: [], allWithdrawalActions: [],
             transactionBodies: [fundingBody], fetcher: storage
         )
         let fundedHeader = try LatticeStateHeader(node: funded)
@@ -80,13 +77,13 @@ final class MaterializedStatePersistenceTests: XCTestCase {
         )
         let receiptBody = TransactionBody(
             accountActions: [], actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [receipt],
+            receiptActions: [receipt],
             withdrawalActions: [], signers: [buyerAddress],
             nonce: 1, chainPath: ["Nexus"]
         )
         let (settled, receiptDiff) = try await reloadedFunded.proveAndUpdateState(
             allAccountActions: [], allActions: [], allDepositActions: [],
-            allGenesisActions: [], allReceiptActions: [receipt],
+            allReceiptActions: [receipt],
             allWithdrawalActions: [], transactionBodies: [receiptBody],
             fetcher: storage
         )

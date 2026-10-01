@@ -179,8 +179,6 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let contexts = await recorder.recordedContexts()
         XCTAssertEqual(contexts.count, 2)
         XCTAssertEqual(contexts[1].batch, batches[1])
-        XCTAssertTrue(contexts[1].issuesHierarchyFacts)
-        XCTAssertTrue(contexts[1].parentGenesisLinks.isEmpty)
     }
 
     func testReplayIsDuplicateAndDoesNotRestage() async throws {
@@ -221,35 +219,11 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         let missingParent = try await AdmissionFixture.makeChild(
             of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1
         )
-        let childGenesis = try await AdmissionFixture.makeGenesis(
-            fetcher: fetcher,
-            timestamp: 1_000,
-            nonce: 9
-        )
-        let childCID = try BlockHeader(node: childGenesis).rawCID
-        let keyPair = CryptoUtils.generateKeyPair()
-        let owner = testAddress(publicKey: keyPair.publicKey)
-        let body = TransactionBody(
-            accountActions: [],
-            actions: [],
-            depositActions: [],
-            genesisActions: [GenesisAction(
-                directory: "Child",
-                blockCID: childCID
-            )],
-            receiptActions: [],
-            withdrawalActions: [],
-            signers: [owner],
-            nonce: 0,
-            chainPath: [DEFAULT_ROOT_DIRECTORY]
-        )
         let orphan = try await buildAndStoreBlock(
             previous: missingParent,
-            transactions: [signedTestTransaction(body, by: keyPair)],
             timestamp: 3_000,
             target: AdmissionFixture.easy,
             nonce: 2,
-            rewardRecipient: owner,
             fetcher: fetcher
         )
         let orphanHeader = try BlockHeader(node: orphan)
@@ -275,9 +249,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         )
         XCTAssertNil(result.crossChainEvidenceRequirement)
         let orphanContexts = await recorder.recordedContexts()
-        let orphanContext = try XCTUnwrap(orphanContexts.first)
-        XCTAssertFalse(orphanContext.issuesHierarchyFacts)
-        XCTAssertEqual(orphanContext.parentGenesisLinks.count, 1)
+        XCTAssertEqual(orphanContexts.count, 1)
 
         _ = try await level.admit(missingParent, fetcher: fetcher)
         let replay = try await level.preflightBlockImport(
@@ -289,11 +261,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
             return XCTFail("replayed connected orphan must remain duplicate")
         }
         let promoted = try await level.resolveDuplicatePreflight(preflight)
-        XCTAssertNil(promoted.result.sameChainPredecessor)
-        XCTAssertEqual(
-            promoted.parentGenesisLinks.first?.childGenesisCID,
-            childCID
-        )
+        XCTAssertNil(promoted.sameChainPredecessor)
     }
 
     func testDuplicateReadmissionPromotesSideBlockThatBecomesHeaviest() async throws {
@@ -369,7 +337,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         }
         let promoted = try await stranded.resolveDuplicatePreflight(token)
         let commit = try XCTUnwrap(
-            promoted.result.commit,
+            promoted.commit,
             "the duplicate seam must surface the fork-choice promotion"
         )
         XCTAssertTrue(commit.canonicalChanged)
@@ -464,7 +432,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         XCTAssertTrue(containsCandidate)
         XCTAssertEqual(stageCount, 1)
 
-        let restored = try await ChainState.restore(replaying:
+        let restored = try await ChainState.restoreWithoutContext(replaying:
             [genesisBatch] + (await recorder.recordedBatches())
         )
         let restoredCandidate = await restored.contains(blockHash: candidateHeader.rawCID)
@@ -514,7 +482,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         XCTAssertFalse(containsSibling)
         let batches = await recorder.recordedBatches()
         XCTAssertEqual(batches.count, 1)
-        let restored = try await ChainState.restore(
+        let restored = try await ChainState.restoreWithoutContext(
             replaying: [fixture.seedBatch] + batches,
             revisionFloor: .max
         )
@@ -743,7 +711,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         XCTAssertTrue(containsSibling)
     }
 
-    func testPreflightCommitPromotesIssuanceAfterPredecessorConnects() async throws {
+    func testPreflightCommitsAfterPredecessorConnects() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
         let predecessor = try await AdmissionFixture.makeChild(
@@ -782,11 +750,10 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         XCTAssertNotNil(committed.commit)
         XCTAssertNil(committed.sameChainPredecessor)
         let stagedContexts = await recorder.recordedContexts()
-        let stagedContext = try XCTUnwrap(stagedContexts.first)
-        XCTAssertTrue(stagedContext.issuesHierarchyFacts)
+        XCTAssertEqual(stagedContexts.count, 1)
     }
 
-    func testDuplicatePreflightPromotesIssuanceAfterPredecessorConnectsWithoutStaging() async throws {
+    func testDuplicatePreflightResolvesAfterPredecessorConnectsWithoutStaging() async throws {
         let backing = StorableFetcher()
         let genesis = try await AdmissionFixture.makeGenesis(fetcher: backing, timestamp: 1_000)
         let predecessor = try await AdmissionFixture.makeChild(
@@ -829,11 +796,10 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         await source.denyAll()
         let resolved = try await level.resolveDuplicatePreflight(duplicate)
 
-        guard case .duplicate(let predecessor, _) = resolved.result else {
+        guard case .duplicate(let predecessor, _) = resolved else {
             return XCTFail("resolved token must remain duplicate")
         }
         XCTAssertNil(predecessor)
-        XCTAssertEqual(resolved.parentGenesisLinks, [])
         let orphanStageCount = await recorder.count(for: orphanHeader.rawCID)
         let predecessorStageCount = await recorder.count(
             for: predecessorHeader.rawCID

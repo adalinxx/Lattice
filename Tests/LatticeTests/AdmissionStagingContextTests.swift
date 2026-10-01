@@ -35,7 +35,7 @@ final class AdmissionStagingContextTests: XCTestCase {
         let recorder = StagingContextRecorder()
 
         _ = try await ChainLevel.bootstrap(
-            context: testChainContext(),
+            context: testChainContext(genesisCID: (try BlockHeader(node: genesis)).rawCID),
             genesisHeader: try BlockHeader(node: genesis),
             fetcher: fetcher,
             validationContentStorer: fetcher,
@@ -48,12 +48,10 @@ final class AdmissionStagingContextTests: XCTestCase {
         let contexts = await recorder.snapshot()
         let context = try XCTUnwrap(contexts.first)
         XCTAssertEqual(contexts.count, 1)
-        XCTAssertTrue(context.issuesHierarchyFacts)
-        XCTAssertTrue(context.parentGenesisLinks.isEmpty)
         // block + work + validation: the eager tier weighs and validates in
         // one gate, so it records execution alongside possession.
         XCTAssertEqual(context.batch.facts.count, 3)
-        guard case .validation = context.batch.facts[2] else {
+        guard context.batch.facts.count == 3, case .validation = context.batch.facts[2] else {
             return XCTFail("eager admission must record that it executed the block")
         }
     }

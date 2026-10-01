@@ -466,14 +466,12 @@ public struct BlockBuilder {
         var allAccountActions: [AccountAction] = []
         var allActions: [Action] = []
         var allDepositActions: [DepositAction] = []
-        var allGenesisActions: [GenesisAction] = []
         var allReceiptActions: [ReceiptAction] = []
         var allWithdrawalActions: [WithdrawalAction] = []
         for body in transactionBodies {
             allAccountActions.append(contentsOf: body.accountActions)
             allActions.append(contentsOf: body.actions)
             allDepositActions.append(contentsOf: body.depositActions)
-            allGenesisActions.append(contentsOf: body.genesisActions)
             allReceiptActions.append(contentsOf: body.receiptActions)
             allWithdrawalActions.append(contentsOf: body.withdrawalActions)
         }
@@ -483,7 +481,6 @@ public struct BlockBuilder {
             allAccountActions: allAccountActions,
             allActions: allActions,
             allDepositActions: allDepositActions,
-            allGenesisActions: allGenesisActions,
             allReceiptActions: allReceiptActions,
             allWithdrawalActions: allWithdrawalActions,
             transactionBodies: transactionBodies,

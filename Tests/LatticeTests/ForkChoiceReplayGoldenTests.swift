@@ -242,13 +242,14 @@ struct ForkChoiceGoldenGraph {
             ]))
         }
         /// Recent arrivals on (`onCanonical`) or off the oracle's current
-        /// canonical selection, excluding roots and already-excluded blocks.
+        /// canonical selection, excluding roots, already-excluded blocks and
+        /// executed blocks (execution is never revoked).
         func exclusionCandidates(onCanonical: Bool) -> [Int] {
             let canonical = Set(
                 (oracle.view().canonicalProjection()?.path ?? []).compactMap { indexByHash[$0] }
             )
             return arrived.suffix(20).filter {
-                blocks[$0].parentHash != nil && !excluded.contains($0)
+                blocks[$0].parentHash != nil && !excluded.contains($0) && !validated.contains($0)
                     && canonical.contains($0) == onCanonical
             }
         }
@@ -340,14 +341,17 @@ struct ForkChoiceGoldenGraph {
                     // Mostly extend the executed frontier (a block whose parent
                     // is executed); sometimes validate out of order, which the
                     // frontier must absorb when the parent's turn comes.
+                    // Never an excluded block: an executed block is never
+                    // excluded, so the two facts must not meet in any order.
                     let frontier = arrived.filter { candidate in
-                        guard !validated.contains(candidate),
+                        guard !validated.contains(candidate), !excluded.contains(candidate),
                               let parentIndex = blocks[candidate].parentIndex else { return false }
                         return validated.contains(parentIndex) && !excluded.contains(parentIndex)
                     }
                     let chosen = !frontier.isEmpty && random.chance(80)
                         ? blocks[frontier[random.nextInt(frontier.count)]]
                         : target
+                    guard !excluded.contains(chosen.index) else { continue }
                     validated.insert(chosen.index)
                     add(.validation, chosen, BlockImportBatch.validation(blockHash: chosen.hash))
                 }
@@ -611,7 +615,7 @@ final class ForkChoiceReplayGoldenTests: XCTestCase {
     ) async throws -> (chain: ChainState, trace: ForkChoiceTraceGolden.OrderTrace) {
         let names = graph.nameByHash
         func name(_ hash: String) -> String { names[hash] ?? hash }
-        let chain = try await ChainState.restore(replaying: [order[0].batch])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [order[0].batch])
         await chain.serveRuns(for: ForkChoiceGoldenGraph.directory)
         var reorgCommits = 0
         var reorgCommitsAfterDecisiveExclusion: [Int] = []
@@ -682,7 +686,7 @@ final class ForkChoiceReplayGoldenTests: XCTestCase {
         random.shuffle(&batches)
         XCTAssertNotEqual(batches, graph.events.map(\.batch), "the shuffle must move something")
 
-        let chain = try await ChainState.restore(replaying: batches)
+        let chain = try await ChainState.restoreWithoutContext(replaying: batches)
         await chain.serveRuns(for: ForkChoiceGoldenGraph.directory)
 
         let golden = try await ForkChoiceGolden.capture(chain, graph: graph)
