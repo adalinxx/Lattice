@@ -62,6 +62,31 @@ final class CIDIdentityTests: XCTestCase {
         XCTAssertEqual(cold[0], Array(v0.utf8), "the v0 CID must be canonical and so remembered")
     }
 
+    /// Only short canonical strings are remembered: a count-bounded memo must
+    /// not let long canonical strings from a peer multiply its memory.
+    func testLongCanonicalCIDIsNotRemembered() throws {
+        func identityCID(digestLength: Int) -> String {
+            var length = [UInt8]()
+            var n = digestLength
+            repeat {
+                length.append(UInt8(n & 0x7f) | (n >= 0x80 ? 0x80 : 0))
+                n >>= 7
+            } while n > 0
+            let bytes: [UInt8] = [0x01, 0x55, 0x00] + length
+                + [UInt8](repeating: 0xab, count: digestLength)
+            return "f" + bytes.map { String(format: "%02x", $0) }.joined()
+        }
+        // Raw codec over a 25,000-byte identity digest: ~40 KB of base32.
+        let long = try XCTUnwrap(CIDIdentity.canonicalString(identityCID(digestLength: 25_000)))
+        XCTAssertGreaterThan(long.utf8.count, 40_000)
+        XCTAssertEqual(CIDIdentity.canonicalString(long), long)
+        XCTAssertFalse(CIDIdentity.isProvenCanonical(long))
+
+        let short = testCID("short-is-remembered")
+        XCTAssertEqual(CIDIdentity.canonicalString(short), short)
+        XCTAssertTrue(CIDIdentity.isProvenCanonical(short))
+    }
+
     /// The local base32 encoder is the library's v1 text form, byte for byte,
     /// across every tail length (bytes mod 5): CIDs spelled in base16 with
     /// codec and hash shapes whose binary lengths are 24, 25, 36, 37, 68, 69.
