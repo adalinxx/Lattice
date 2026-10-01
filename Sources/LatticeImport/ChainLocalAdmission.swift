@@ -730,13 +730,11 @@ enum BlockImport {
     /// The one construction of an admission batch, whichever API admits the
     /// block: a block fact (with its child commitments) and its work, the
     /// validation last when the transition was executed; a work fact alone
-    /// for another grind; the exclusion alone for a proven-invalid block. A
-    /// genesis with no grind (`contribution` nil) has no work fact: it has no
-    /// work of its own (§5.1).
+    /// for another grind; the exclusion alone for a proven-invalid block.
     static func admissionFacts(
         blockHash: String,
         block: Block,
-        contribution: VerifiedWorkContribution?,
+        contribution: VerifiedWorkContribution,
         kind: PreparedImport.Kind,
         childCommitments: [String: String]?
     ) -> BlockImportBatch {
@@ -764,12 +762,10 @@ enum BlockImport {
         case .evidence, .exclusion:
             break
         }
-        if let contribution {
-            facts.append(.work(ChainWorkFact(
-                blockHash: blockHash,
-                contribution: contribution
-            )))
-        }
+        facts.append(.work(ChainWorkFact(
+            blockHash: blockHash,
+            contribution: contribution
+        )))
         // Last: execution is the newest judgment in the batch, and keeping the
         // block/work prefix stable leaves existing batch-shape expectations
         // positionally intact.
