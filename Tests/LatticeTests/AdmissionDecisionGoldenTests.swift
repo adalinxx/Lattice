@@ -243,8 +243,12 @@ private struct AdmissionFixtures {
         ))
 
         // A child chain block co-mined into a carrier on the parent chain.
-        let childGenesis = try fixtures.register("childGenesis", try await buildAndStoreGenesis(
-            spec: spec, timestamp: 1_000, target: easy, nonce: 1, fetcher: fixtures.fetcher
+        // Child genesis blocks commit the parent genesis's post-state (§5.1).
+        let childGenesis = try fixtures.register("childGenesis", try await storeBuiltBlock(
+            try await BlockBuilder.buildChildGenesis(
+                spec: spec, parentState: genesis.postState,
+                timestamp: 1_000, target: easy, nonce: 1, fetcher: fixtures.fetcher
+            ), in: fixtures.fetcher
         ))
         let childCandidate = try fixtures.register("childCandidate", try await buildAndStoreBlock(
             previous: childGenesis, parentChainBlock: genesis,
@@ -263,8 +267,11 @@ private struct AdmissionFixtures {
 
         // Roots of the child chain, each weighed by a carrier's proof: the
         // genesis, a rival genesis, and one block under the rival.
-        let rivalChildGenesis = try fixtures.register("rivalChildGenesis", try await buildAndStoreGenesis(
-            spec: spec, timestamp: 1_000, target: easy, nonce: 2, fetcher: fixtures.fetcher
+        let rivalChildGenesis = try fixtures.register("rivalChildGenesis", try await storeBuiltBlock(
+            try await BlockBuilder.buildChildGenesis(
+                spec: spec, parentState: genesis.postState,
+                timestamp: 1_000, target: easy, nonce: 2, fetcher: fixtures.fetcher
+            ), in: fixtures.fetcher
         ))
         let rivalChildBlock = try fixtures.register("rivalChildBlock", try await buildAndStoreBlock(
             previous: rivalChildGenesis, parentChainBlock: genesis,
@@ -275,10 +282,18 @@ private struct AdmissionFixtures {
             ("rivalChildGenesis", rivalChildGenesis),
             ("rivalChildBlock", rivalChildBlock),
         ].enumerated() {
-            let rootCarrier = try fixtures.register("\(name)Carrier", try await buildAndStoreGenesis(
-                spec: spec, children: [childDirectory: block],
-                timestamp: 3_000, target: easy, nonce: 20 + UInt64(index), fetcher: fixtures.fetcher
-            ))
+            // A carrier's `prevState` is its child's `parentState`: a block on
+            // the parent genesis for a child genesis, a genesis-shaped carrier
+            // for a block committing the empty parent state.
+            let rootCarrier = try fixtures.register("\(name)Carrier", block.parent == nil
+                ? try await buildAndStoreBlock(
+                    previous: genesis, children: [childDirectory: block],
+                    timestamp: 3_000, target: easy, nonce: 20 + UInt64(index), fetcher: fixtures.fetcher
+                )
+                : try await buildAndStoreGenesis(
+                    spec: spec, children: [childDirectory: block],
+                    timestamp: 3_000, target: easy, nonce: 20 + UInt64(index), fetcher: fixtures.fetcher
+                ))
             fixtures.packages[name] = ChildValidationPackage(proof: try await ChildBlockProof.generate(
                 rootHeader: try BlockHeader(node: rootCarrier),
                 childDirectory: childDirectory,
@@ -348,8 +363,15 @@ private struct AdmissionFixtures {
             genesis: try BlockHeader(node: block),
             evidence: try await evidence(genesis, path: path),
             fetcher: fetcher,
-            context: testChainContext(path: path)
+            context: testChainContext(path: path),
+            parentFacts: try parentFacts()
         ).get().tree
+    }
+
+    /// Parent facts attesting the parent genesis's post-state — the state
+    /// every child genesis fixture commits.
+    func parentFacts() throws -> ProducedParentStates {
+        ProducedParentStates(states: [try XCTUnwrap(blocks["genesis"]).postState.rawCID])
     }
 
     /// The stable classification the golden records for a failure.
@@ -519,7 +541,8 @@ final class AdmissionDecisionGoldenTests: XCTestCase {
         case .connect:
             let job = try XCTUnwrap(tree.connectJob(for: try BlockHeader(node: block).rawCID))
             let verdict = await ChainTree.connect(
-                job, fetcher: step.bodyless ? fixtures.bodyless : fixtures.fetcher
+                job, fetcher: step.bodyless ? fixtures.bodyless : fixtures.fetcher,
+                parentFacts: path.count > 1 ? try fixtures.parentFacts() : nil
             )
             return tree.applyConnect(verdict)
         }

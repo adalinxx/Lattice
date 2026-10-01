@@ -615,14 +615,14 @@ public extension Block {
 
     /// Header-local rules shared by every path that can accept a genesis. A
     /// root genesis has no parent chain, so it commits the empty parent state;
-    /// a child genesis commits a real one — its carrier's `prevState` — and
-    /// proves it like any child block, by continuity (§5.3).
+    /// a child genesis commits a real one — its carrier's `prevState`, never
+    /// the empty state — and proves it by continuity (§5.1 rule 4, §5.3).
     func hasGenesisShape(isRoot: Bool) -> Bool {
         version == Block.currentVersion
             && parent == nil
             && height == 0
             && prevState.rawCID == LatticeState.emptyHeader.rawCID
-            && (!isRoot || parentState.rawCID == LatticeState.emptyHeader.rawCID)
+            && (parentState.rawCID == LatticeState.emptyHeader.rawCID) == isRoot
             && nextTarget == target
             // Genesis mints only its premine: there is no reward to pay.
             && rewardRecipient == nil

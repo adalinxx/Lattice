@@ -251,10 +251,10 @@ A genesis block `B` is valid if and only if ALL of the following hold:
 4. `B.prevState == CID(emptyState())` and `B.rewardRecipient == nil` (a
    genesis mints only its premine; there is no reward to pay). A Nexus genesis
    commits `B.parentState == CID(emptyState())`; a child genesis commits its
-   carrier's `prevState` and proves it like any child block (§5.3). The one
-   exception: a child genesis whose `parentState` is `CID(emptyState())` — the
-   parent's own genesis pre-state — needs no continuity fact, as for any child
-   block anchored there (§5.3 step 6)
+   carrier's `prevState`, which is never `CID(emptyState())`, and proves it by
+   continuity (§5.3 step 6). That proof is the base case of parent continuity
+   along the child chain: every later block anchors to a parent state the
+   parent's executed set produced, starting from its genesis's
 5. `B.nextTarget == B.target`, and the target `B` commits is met by the hash
    that secures `B` at its own level (§5.4, §9.5): a Nexus genesis by its own
    grind, a child genesis by the root grind of its `ChildBlockProof`, like any
@@ -374,8 +374,9 @@ this order:
    `nextTarget == target`.
 6. Require an exact continuity link proving that the immediate parent's
    executed set produced `B.parentState` from `emptyHeader` — the parent's own
-   genesis pre-state — or that `B.parentState` is `emptyHeader` itself. This
-   applies at EVERY height, the genesis included. Step 3's terminal binding
+   genesis pre-state — or, for a non-genesis block, that `B.parentState` is
+   `emptyHeader` itself. This applies at EVERY height, the genesis included
+   (§5.1 rule 4). Step 3's terminal binding
    does not substitute for this — a carrier need not be imported, connected,
    valid or canonical, so it establishes no anchor.
 

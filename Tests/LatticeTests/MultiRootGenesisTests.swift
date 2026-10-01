@@ -44,7 +44,7 @@ final class MultiRootGenesisTests: XCTestCase {
     ) async throws -> (tree: ChainTree, facts: BlockImportBatch) {
         let bootstrapped = try await ChainTree.bootstrap(
             genesis: try BlockHeader(node: genesis), evidence: try evidence(genesis, work),
-            fetcher: fetcher, context: childContext
+            fetcher: fetcher, context: childContext, parentFacts: try await testParentFacts(fetcher: fetcher)
         ).get()
         return (bootstrapped.tree, bootstrapped.facts)
     }
@@ -144,8 +144,8 @@ final class MultiRootGenesisTests: XCTestCase {
     /// and is selected by weight, but executes only when connected.
     func testARivalRootWeighsByItsProofAndExecutesLikeAnyBlock() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
-        let rival = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 2)
+        let genesis = try await makeChildGenesis(fetcher: fetcher, nonce: 1)
+        let rival = try await makeChildGenesis(fetcher: fetcher, nonce: 2)
         let rivalChild = try await AdmissionFixture.makeChild(of: rival, fetcher: fetcher, timestamp: 2_000, nonce: 1)
         var (tree, _) = try await childTree(genesis, work: work("genesis"), fetcher: fetcher)
 
@@ -161,7 +161,7 @@ final class MultiRootGenesisTests: XCTestCase {
 
         let all = [genesis, rival, rivalChild]
         XCTAssertEqual(try executedSet(tree, among: all), [try cid(genesis)])
-        let rivalExecuted = try await TreeDriver.connect(try cid(rival), on: &tree, fetcher: fetcher)
+        let rivalExecuted = try await TreeDriver.connect(try cid(rival), on: &tree, fetcher: fetcher, parentFacts: try await testParentFacts(fetcher: fetcher))
         XCTAssertNotNil(rivalExecuted.update)
         XCTAssertTrue(tree.hasExecutedAncestry(blockHash: try cid(rival)))
         for hash in try executedSet(tree, among: all) {
@@ -175,8 +175,8 @@ final class MultiRootGenesisTests: XCTestCase {
     /// executed, never selected, its subtree still weighs.
     func testAnInvalidRootIsExcludedAndStillWeighs() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
-        let template = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 3)
+        let genesis = try await makeChildGenesis(fetcher: fetcher, nonce: 1)
+        let template = try await makeChildGenesis(fetcher: fetcher, nonce: 3)
         let invalid = try await TreeDriver.forgedPostState(of: template, seed: "invalid-root", fetcher: fetcher)
         let below = try await AdmissionFixture.makeChild(of: invalid, fetcher: fetcher, timestamp: 2_000, nonce: 1)
         var (tree, _) = try await childTree(genesis, work: work("genesis"), fetcher: fetcher)
@@ -186,7 +186,7 @@ final class MultiRootGenesisTests: XCTestCase {
         XCTAssertNotNil(weighedBelow.update)
         XCTAssertEqual(tree.canonicalTip, try cid(below))
 
-        let verdict = try await TreeDriver.connect(try cid(invalid), on: &tree, fetcher: fetcher)
+        let verdict = try await TreeDriver.connect(try cid(invalid), on: &tree, fetcher: fetcher, parentFacts: try await testParentFacts(fetcher: fetcher))
         XCTAssertEqual(verdict.update?.excluded, true)
         XCTAssertTrue(tree.isExcludedRoot(try cid(invalid)))
         XCTAssertFalse(tree.hasExecutedAncestry(blockHash: try cid(invalid)))
@@ -198,15 +198,15 @@ final class MultiRootGenesisTests: XCTestCase {
     /// executed root is never excluded at all (irrevocable), live or replayed.
     func testTheRootExclusionRuleHoldsAcrossRoots() async throws {
         let fetcher = StorableFetcher()
-        let template = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 4)
+        let template = try await makeChildGenesis(fetcher: fetcher, nonce: 4)
         let invalid = try await TreeDriver.forgedPostState(of: template, seed: "lone-root", fetcher: fetcher)
         var lone = ChainTree.empty(context: childContext)
         XCTAssertNotNil(lone.insertGenesis(invalid, spec: chainLocalSpec(), evidence: try evidence(invalid, work("lone"))).update)
-        let refused = try await TreeDriver.connect(try cid(invalid), on: &lone, fetcher: fetcher)
+        let refused = try await TreeDriver.connect(try cid(invalid), on: &lone, fetcher: fetcher, parentFacts: try await testParentFacts(fetcher: fetcher))
         XCTAssertEqual(refused.failure, .notYetValid, "no executed root to stand on")
         XCTAssertFalse(lone.isExcludedRoot(try cid(invalid)))
 
-        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let genesis = try await makeChildGenesis(fetcher: fetcher, nonce: 1)
         var (tree, facts) = try await childTree(genesis, work: work("genesis"), fetcher: fetcher)
         let contradiction = tree.applyConnect(ConnectVerdict(
             blockHash: try cid(genesis), outcome: .invalid(isGenesis: true)
@@ -243,18 +243,18 @@ final class MultiRootGenesisTests: XCTestCase {
             return XCTFail("a genesis proves its parent state like any child block, got \(refused)")
         }
 
-        let keyed = try await AdmissionFixture.makeGenesis(
-            fetcher: fetcher, timestamp: 1_000, nonce: 7,
+        let keyed = try await makeChildGenesis(
+            fetcher: fetcher, nonce: 7,
             transactions: [AdmissionFixture.unsignedStateChangingGenesisTransaction(
                 key: "weighed-only", chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
             )]
         )
-        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let genesis = try await makeChildGenesis(fetcher: fetcher, nonce: 1)
         var (tree, _) = try await childTree(genesis, work: work("genesis"), fetcher: fetcher)
         let weighed = try XCTUnwrap(tree.insertGenesis(keyed, spec: chainLocalSpec(), evidence: try evidence(keyed, work("keyed"))).update)
         XCTAssertNil(weighed.materializedPostState, "a weighed-only root issues nothing")
         XCTAssertFalse(tree.executedSetProduced(stateCID: keyed.postState.rawCID))
-        _ = try await TreeDriver.connect(try cid(keyed), on: &tree, fetcher: fetcher)
+        _ = try await TreeDriver.connect(try cid(keyed), on: &tree, fetcher: fetcher, parentFacts: try await testParentFacts(fetcher: fetcher))
         XCTAssertTrue(tree.executedSetProduced(stateCID: keyed.postState.rawCID), "continuity from any executed root")
     }
 
@@ -264,8 +264,8 @@ final class MultiRootGenesisTests: XCTestCase {
     /// in the chain, so it cannot weigh under two roots.
     func testGhostAcrossRootsDedupesGrinds() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
-        let rival = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 2)
+        let genesis = try await makeChildGenesis(fetcher: fetcher, nonce: 1)
+        let rival = try await makeChildGenesis(fetcher: fetcher, nonce: 2)
         let a = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
         let b = try await AdmissionFixture.makeChild(of: rival, fetcher: fetcher, timestamp: 2_000, nonce: 1)
         let shared = work("shared", 2)
@@ -295,11 +295,9 @@ final class MultiRootGenesisTests: XCTestCase {
     /// given, and a root without one only refuses headers beneath it.
     func testEveryRootHoldsItsOwnSpecAndSchedulesItsSubtree() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let genesis = try await makeChildGenesis(fetcher: fetcher, nonce: 1)
         let otherSpec = ChainSpec.test(premine: 7)
-        let rival = try await buildAndStoreGenesis(
-            spec: otherSpec, timestamp: 1_000, target: easy, nonce: 2, fetcher: fetcher
-        )
+        let rival = try await makeChildGenesis(fetcher: fetcher, nonce: 2, spec: otherSpec)
         var (tree, bootstrapFacts) = try await childTree(genesis, work: work("genesis"), fetcher: fetcher)
         let rivalEvidence = try evidence(rival, work("rival"))
         XCTAssertEqual(tree.insertGenesis(rival, spec: chainLocalSpec(), evidence: rivalEvidence).failure,
@@ -344,9 +342,9 @@ final class MultiRootGenesisTests: XCTestCase {
     /// the facts in any order.
     func testTwoRootRestoreIsIndependentOfReplayOrder() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
-        let rival = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 2)
-        let template = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 3)
+        let genesis = try await makeChildGenesis(fetcher: fetcher, nonce: 1)
+        let rival = try await makeChildGenesis(fetcher: fetcher, nonce: 2)
+        let template = try await makeChildGenesis(fetcher: fetcher, nonce: 3)
         let invalid = try await TreeDriver.forgedPostState(of: template, seed: "restore", fetcher: fetcher)
         let a = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
         let b = try await AdmissionFixture.makeChild(of: rival, fetcher: fetcher, timestamp: 2_000, nonce: 1)
@@ -362,9 +360,9 @@ final class MultiRootGenesisTests: XCTestCase {
         try keep(try await TreeDriver.insert(a, into: &tree, fetcher: fetcher, work: work("a", 1)))
         try keep(try await TreeDriver.insert(b, into: &tree, fetcher: fetcher, work: work("b", 2)))
         try keep(try await TreeDriver.insert(x, into: &tree, fetcher: fetcher, work: work("x", 9)))
-        try keep(try await TreeDriver.connect(try cid(rival), on: &tree, fetcher: fetcher))
-        try keep(try await TreeDriver.connect(try cid(invalid), on: &tree, fetcher: fetcher))
-        try keep(try await TreeDriver.connect(try cid(b), on: &tree, fetcher: fetcher))
+        try keep(try await TreeDriver.connect(try cid(rival), on: &tree, fetcher: fetcher, parentFacts: try await testParentFacts(fetcher: fetcher)))
+        try keep(try await TreeDriver.connect(try cid(invalid), on: &tree, fetcher: fetcher, parentFacts: try await testParentFacts(fetcher: fetcher)))
+        try keep(try await TreeDriver.connect(try cid(b), on: &tree, fetcher: fetcher, parentFacts: try await testParentFacts(fetcher: fetcher)))
         XCTAssertEqual(tree.canonicalTip, try cid(b))
 
         let all = [genesis, rival, invalid, a, b, x]
@@ -425,8 +423,8 @@ final class MultiRootGenesisTests: XCTestCase {
     /// and in `.full` mode when execution reaches no verdict.
     func testTheActorPathWeighsAChildGenesisLikeInsertGenesis() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
-        let rival = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 2)
+        let genesis = try await makeChildGenesis(fetcher: fetcher, nonce: 1)
+        let rival = try await makeChildGenesis(fetcher: fetcher, nonce: 2)
         let level = ChainLevel(chain: ChainState.fromGenesis(block: genesis), context: childContext)
         let package = try await carriedGenesisPackage(rival, fetcher: fetcher)
         let weighed = try await level.admit(rival, mode: .header, fetcher: fetcher, childPackage: package)
@@ -468,13 +466,13 @@ final class MultiRootGenesisTests: XCTestCase {
     /// fault.
     func testAValidVerdictOnAnExcludedBlockIsRefused() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let genesis = try await makeChildGenesis(fetcher: fetcher, nonce: 1)
         let block = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
         var (tree, facts) = try await childTree(genesis, work: work("genesis"), fetcher: fetcher)
         let inserted = try await TreeDriver.insert(block, into: &tree, fetcher: fetcher, work: work("block"))
         XCTAssertNotNil(inserted.update)
         let job = try XCTUnwrap(tree.connectJob(for: try cid(block)))
-        let verdict = await ChainTree.connect(job, fetcher: fetcher)
+        let verdict = await ChainTree.connect(job, fetcher: fetcher, parentFacts: try await testParentFacts(fetcher: fetcher))
         XCTAssertNil(verdict.retryFailure)
         XCTAssertFalse(verdict.provesInvalid)
         let exclusion = BlockImportBatch.staged([.exclusion(ChainExclusionFact(blockHash: try cid(block)))])
@@ -495,11 +493,44 @@ final class MultiRootGenesisTests: XCTestCase {
     /// restored without that spec.
     func testAHeldGenesisRepairsAMissingSpec() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let genesis = try await makeChildGenesis(fetcher: fetcher, nonce: 1)
         let (_, facts) = try await childTree(genesis, work: work("genesis"), fetcher: fetcher)
         var restored = try ChainTree.restore(replaying: [facts], context: childContext)
         XCTAssertTrue(restored.specs.isEmpty)
         _ = restored.insertGenesis(genesis, spec: chainLocalSpec(), evidence: try evidence(genesis, work("genesis")))
         XCTAssertEqual(restored.specs.count, 1)
+    }
+
+    /// L-2: a child genesis's continuity is the base case of parent
+    /// continuity along its chain, so one committing the empty parent state
+    /// is dropped — on both admission paths.
+    func testAChildGenesisCommittingTheEmptyParentStateIsDropped() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await makeChildGenesis(fetcher: fetcher, nonce: 1)
+        let unanchored = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 2)
+        XCTAssertEqual(unanchored.parentState.rawCID, LatticeState.emptyHeader.rawCID)
+        var (tree, _) = try await childTree(genesis, work: work("genesis"), fetcher: fetcher)
+        XCTAssertEqual(
+            tree.insertGenesis(unanchored, spec: chainLocalSpec(), evidence: try evidence(unanchored, work("u"))).failure,
+            .protocolInvalid
+        )
+        XCTAssertFalse(tree.contains(blockHash: try cid(unanchored)))
+
+        let level = ChainLevel(chain: ChainState.fromGenesis(block: genesis), context: childContext)
+        let carrier = try await buildAndStoreGenesis(
+            spec: chainLocalSpec(), children: ["Child": unanchored],
+            timestamp: 2_000, target: easy, nonce: 3, fetcher: fetcher
+        )
+        let proof = try await ChildBlockProof.generate(
+            rootHeader: try BlockHeader(node: carrier), childDirectory: "Child", fetcher: fetcher
+        )
+        for mode in [ImportMode.header, .full] {
+            let refused = try await level.admit(
+                unanchored, mode: mode, fetcher: fetcher, childPackage: ChildValidationPackage(proof: proof)
+            )
+            XCTAssertEqual(refused.failure, .protocolInvalid, "\(mode)")
+        }
+        let held = await level.chain.contains(blockHash: try cid(unanchored))
+        XCTAssertFalse(held)
     }
 }

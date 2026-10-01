@@ -151,8 +151,8 @@ final class HeaderAdmissionTests: XCTestCase {
     /// configured genesis alone.
     func testAGenesisExclusionIsRefusedUnlessAnotherExecutedRootExists() async throws {
         let fetcher = StorableFetcher()
-        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let rival = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 5)
+        let genesis = try await makeChildGenesis(fetcher: fetcher)
+        let rival = try await makeChildGenesis(fetcher: fetcher, nonce: 5)
         let spec = chainLocalSpec()
         let genesisCID = try cid(genesis)
         let rivalCID = try cid(rival)
@@ -176,7 +176,9 @@ final class HeaderAdmissionTests: XCTestCase {
 
         // With another executed root standing, the exclusion is recorded.
         XCTAssertNotNil(tree.insertGenesis(rival, spec: spec, evidence: rivalEvidence).update)
-        let rivalExecuted = try await TreeDriver.connect(rivalCID, on: &tree, fetcher: fetcher)
+        let rivalExecuted = try await TreeDriver.connect(
+            rivalCID, on: &tree, fetcher: fetcher, parentFacts: try await testParentFacts(fetcher: fetcher)
+        )
         XCTAssertNotNil(rivalExecuted.update)
         let excluded = tree.applyConnect(ConnectVerdict(blockHash: genesisCID, outcome: .invalid(isGenesis: true)))
         XCTAssertEqual(excluded.update?.excluded, true)
