@@ -14,7 +14,9 @@ public enum CIDIdentity {
     /// identity recurs across a block's facts and its successors' (hash,
     /// parent, state, spec), so each is proven once. A canonical string is its
     /// own canonical form, so membership is the whole answer. Bounded: the set
-    /// is dropped when full, so distinct inputs cost at most one set of memory.
+    /// is dropped when full and holds only strings of at most
+    /// `provenCanonicalMaxBytes` (a real CID is ~59), so distinct inputs —
+    /// near-64 KiB CIDs from a peer included — cost at most a few MiB.
     ///
     /// ASCII only: `String` equality is Unicode canonical equivalence, under
     /// which a non-ASCII spelling (U+212A KELVIN SIGN for "K") would match a
@@ -22,18 +24,24 @@ public enum CIDIdentity {
     /// strings equality is byte equality.
     private static let provenCanonical = Mutex<Set<String>>([])
     static let provenCanonicalCapacity = 1 << 16
+    static let provenCanonicalMaxBytes = 128
 
     public static func canonicalString(_ value: String) -> String? {
-        let ascii = value.utf8.allSatisfy { $0 < 0x80 }
-        if ascii, provenCanonical.withLock({ $0.contains(value) }) { return value }
+        let memoizable = value.utf8.count <= provenCanonicalMaxBytes
+            && value.utf8.allSatisfy { $0 < 0x80 }
+        if memoizable, provenCanonical.withLock({ $0.contains(value) }) { return value }
         guard let canonical = parseCanonicalString(value) else { return nil }
-        if ascii, canonical == value {
+        if memoizable, canonical == value {
             provenCanonical.withLock {
                 if $0.count >= provenCanonicalCapacity { $0.removeAll(keepingCapacity: true) }
                 $0.insert(value)
             }
         }
         return canonical
+    }
+
+    package static func isProvenCanonical(_ value: String) -> Bool {
+        provenCanonical.withLock { $0.contains(value) }
     }
 
     /// Start from an empty set, so a measurement sees cold-cache cost.
