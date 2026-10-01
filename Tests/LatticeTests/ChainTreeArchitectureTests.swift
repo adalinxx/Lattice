@@ -422,7 +422,7 @@ final class ChainTreeArchitectureTests: XCTestCase {
         }
         XCTAssertEqual(decoded, fixture.emitted)
 
-        var replayed = try ChainTree.restore(
+        var replayed = try ChainTree.restoreWithoutContext(
             replaying: [try testAdmissionBatch(for: fixture.genesis)] + decoded.reversed()
         )
         XCTAssertEqual(replayed.canonicalTip, fixture.tree.canonicalTip)

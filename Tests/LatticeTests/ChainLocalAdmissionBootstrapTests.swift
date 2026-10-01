@@ -179,7 +179,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         XCTAssertEqual(rootTip, header.rawCID)
         let batches = await recorder.recordedBatches()
         XCTAssertEqual(batches.count, 1)
-        let restored = try await ChainState.restore(replaying: batches)
+        let restored = try await ChainState.restoreWithoutContext(replaying: batches)
         let restoredTip = await restored.canonicalTip
         let restoredRevision = await restored.currentRevision()
         let liveRevision = await rootChain.currentRevision()

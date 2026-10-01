@@ -92,7 +92,7 @@ final class CrashRecoveryTests: XCTestCase {
         let data = try encoder.encode(batches)
         let decoded = try JSONDecoder().decode([BlockImportBatch].self, from: data)
 
-        let chain2 = try await ChainState.restore(replaying: decoded)
+        let chain2 = try await ChainState.restoreWithoutContext(replaying: decoded)
 
         let tip2 = await chain2.canonicalTip
         let tip1 = await chain1.canonicalTip

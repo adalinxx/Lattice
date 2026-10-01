@@ -211,7 +211,7 @@ final class MultiRootGenesisTests: XCTestCase {
         let contradiction = tree.applyConnect(ConnectVerdict(
             blockHash: try cid(genesis), outcome: .invalid(isGenesis: true)
         ))
-        XCTAssertEqual(contradiction.failure, .localVerificationFailure, "execution is never revoked")
+        XCTAssertEqual(contradiction.failure, .executedVerdictContradiction, "execution is never revoked")
         XCTAssertFalse(tree.isExcludedRoot(try cid(genesis)))
         // The reducer is the fail-closed twin: a durable contradiction does
         // not restore, whatever the order.
@@ -380,5 +380,126 @@ final class MultiRootGenesisTests: XCTestCase {
             XCTAssertTrue(restored.isExcludedRoot(try cid(invalid)))
             XCTAssertFalse(restored.isExcludedRoot(try cid(rival)))
         }
+    }
+
+    // MARK: - Review round 2
+
+    /// H-1: a data dir from before the flag day — its root genesis is the old
+    /// Nexus genesis — fails restore on every public path.
+    func testARestoreOfAnotherNexusGenesisFails() async throws {
+        let fetcher = StorableFetcher()
+        let old = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let pinnedGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 2)
+        let pinned = testChainContext(genesis: pinnedGenesis)
+        let preFlagDay = [try testAdmissionBatch(for: old)]
+        XCTAssertThrowsError(try ChainTree.restore(replaying: preFlagDay, context: pinned)) {
+            XCTAssertEqual($0 as? ChainStateRestoreError, .unpinnedRootGenesis)
+        }
+        do {
+            _ = try await ChainState.restore(replaying: preFlagDay, context: pinned)
+            XCTFail("ChainState.restore must enforce the pin")
+        } catch {
+            XCTAssertEqual(error as? ChainStateRestoreError, .unpinnedRootGenesis)
+        }
+        do {
+            _ = try await ChainLevel.restore(replaying: preFlagDay, context: pinned)
+            XCTFail("ChainLevel.restore must enforce the pin")
+        } catch {
+            XCTAssertEqual(error as? ChainStateRestoreError, .unpinnedRootGenesis)
+        }
+        let level = try await ChainLevel.restore(
+            replaying: [try testAdmissionBatch(for: pinnedGenesis)], context: pinned
+        )
+        let tip = await level.chain.canonicalTip
+        XCTAssertEqual(tip, try cid(pinnedGenesis))
+
+        // L-3: the executed pinned genesis re-executed is a duplicate.
+        let again = try await level.admit(pinnedGenesis, mode: .execution, fetcher: fetcher)
+        guard case .duplicate = again else {
+            return XCTFail("the executed Nexus genesis re-executes as a duplicate, got \(again)")
+        }
+    }
+
+    /// M-1: the actor path weighs a child genesis as `insertGenesis` does —
+    /// its proof's work, its spec, the block fact alone — in `.header` mode,
+    /// and in `.full` mode when execution reaches no verdict.
+    func testTheActorPathWeighsAChildGenesisLikeInsertGenesis() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let rival = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 2)
+        let level = ChainLevel(chain: ChainState.fromGenesis(block: genesis), context: childContext)
+        let package = try await carriedGenesisPackage(rival, fetcher: fetcher)
+        let weighed = try await level.admit(rival, mode: .header, fetcher: fetcher, childPackage: package)
+        guard case .accepted(let acceptance) = weighed else {
+            return XCTFail("a carried child genesis weighs from its header, got \(weighed)")
+        }
+        XCTAssertEqual(acceptance.facts.facts.count, 2, "block and work, no validation")
+        let executed = await level.chain.hasExecutedAncestry(blockHash: try cid(rival))
+        XCTAssertFalse(executed)
+
+        // `.full` with no continuity fact for a real parent state: weighed only.
+        let parentGenesis = try await AdmissionFixture.makeGenesis(
+            fetcher: fetcher, timestamp: 500, nonce: 5,
+            transactions: [AdmissionFixture.unsignedStateChangingGenesisTransaction(
+                key: "parent-state", chainPath: [DEFAULT_ROOT_DIRECTORY]
+            )]
+        )
+        let anchored = try await BlockBuilder.buildChildGenesis(
+            spec: chainLocalSpec(), parentState: parentGenesis.postState,
+            timestamp: 1_500, target: easy, nonce: 3, fetcher: fetcher
+        )
+        try await storeBuiltBlock(anchored, in: fetcher)
+        let carrier = try await buildAndStoreBlock(
+            previous: parentGenesis, children: ["Child": anchored],
+            timestamp: 2_000, target: easy, nonce: 4, fetcher: fetcher
+        )
+        let proof = try await ChildBlockProof.generate(
+            rootHeader: try BlockHeader(node: carrier), childDirectory: "Child", fetcher: fetcher
+        )
+        let full = try await level.admit(anchored, fetcher: fetcher, childPackage: ChildValidationPackage(proof: proof))
+        guard case .accepted(let fullAcceptance) = full else {
+            return XCTFail("a child genesis with no verdict yet is weighed only, got \(full)")
+        }
+        XCTAssertEqual(fullAcceptance.facts.facts.count, 2, "no validation without a verdict")
+    }
+
+    /// M-2: a proven-invalid block is never executed — the reverse of an
+    /// executed block never excluded — and a store holding both is a named
+    /// fault.
+    func testAValidVerdictOnAnExcludedBlockIsRefused() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let block = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
+        var (tree, facts) = try await childTree(genesis, work: work("genesis"), fetcher: fetcher)
+        let inserted = try await TreeDriver.insert(block, into: &tree, fetcher: fetcher, work: work("block"))
+        XCTAssertNotNil(inserted.update)
+        let job = try XCTUnwrap(tree.connectJob(for: try cid(block)))
+        let verdict = await ChainTree.connect(job, fetcher: fetcher)
+        XCTAssertNil(verdict.retryFailure)
+        XCTAssertFalse(verdict.provesInvalid)
+        let exclusion = BlockImportBatch.staged([.exclusion(ChainExclusionFact(blockHash: try cid(block)))])
+        _ = try tree.replay(exclusion)
+        XCTAssertTrue(tree.isExcludedRoot(try cid(block)))
+        XCTAssertEqual(tree.applyConnect(verdict).failure, .executedVerdictContradiction)
+        XCTAssertFalse(tree.isExecuted(blockHash: try cid(block)))
+        XCTAssertThrowsError(try tree.replay(BlockImportBatch.validation(blockHash: try cid(block)))) {
+            XCTAssertEqual($0 as? ChainStateRestoreError, .executedVerdictContradiction)
+        }
+        let contradiction = [facts] + inserted.update!.batches + [BlockImportBatch.validation(blockHash: try cid(block)), exclusion]
+        XCTAssertThrowsError(try ChainTree.restore(replaying: contradiction.reversed(), context: childContext)) {
+            XCTAssertEqual($0 as? ChainStateRestoreError, .executedVerdictContradiction)
+        }
+    }
+
+    /// L-1: a held genesis offered again with its spec repairs a tree
+    /// restored without that spec.
+    func testAHeldGenesisRepairsAMissingSpec() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
+        let (_, facts) = try await childTree(genesis, work: work("genesis"), fetcher: fetcher)
+        var restored = try ChainTree.restore(replaying: [facts], context: childContext)
+        XCTAssertTrue(restored.specs.isEmpty)
+        _ = restored.insertGenesis(genesis, spec: chainLocalSpec(), evidence: try evidence(genesis, work("genesis")))
+        XCTAssertEqual(restored.specs.count, 1)
     }
 }

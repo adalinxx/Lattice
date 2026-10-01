@@ -186,7 +186,7 @@ final class HeaderAdmissionTests: XCTestCase {
         // Execution is never revoked: an invalid verdict for the executed
         // rival is a local fault, recorded nowhere.
         let contradiction = tree.applyConnect(ConnectVerdict(blockHash: rivalCID, outcome: .invalid(isGenesis: true)))
-        XCTAssertEqual(contradiction.failure, .localVerificationFailure)
+        XCTAssertEqual(contradiction.failure, .executedVerdictContradiction)
         XCTAssertFalse(tree.isExcludedRoot(rivalCID))
         XCTAssertTrue(tree.hasExecutedAncestry(blockHash: rivalCID))
     }

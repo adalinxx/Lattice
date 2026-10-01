@@ -73,7 +73,7 @@ final class CumulativeWorkPrefixSumTests: XCTestCase {
         }
 
         let before = await chain.getTipCumulativeWork()
-        let restored = try await ChainState.restore(replaying: batches)
+        let restored = try await ChainState.restoreWithoutContext(replaying: batches)
 
         let after = await restored.getTipCumulativeWork()
         XCTAssertEqual(after, before)

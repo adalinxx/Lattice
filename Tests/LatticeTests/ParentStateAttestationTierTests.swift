@@ -280,7 +280,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         let genesis = testCID("legacy-genesis")
         let one = testCID("legacy-one")
 
-        let chain = try await ChainState.restore(replaying: [
+        let chain = try await ChainState.restoreWithoutContext(replaying: [
             legacyBatch(genesis, parent: nil, height: 0, from: empty, to: s1, nonce: 1),
             legacyBatch(one, parent: genesis, height: 1, from: s1, to: s2, nonce: 2),
         ])
@@ -289,7 +289,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         let replayedBlockAttestable = await chain.hasStateContinuity(from: s1, to: s2)
         XCTAssertFalse(replayedBlockAttestable)
 
-        let validated = try await ChainState.restore(replaying: [
+        let validated = try await ChainState.restoreWithoutContext(replaying: [
             legacyBatch(genesis, parent: nil, height: 0, from: empty, to: s1, nonce: 1),
             legacyBatch(one, parent: genesis, height: 1, from: s1, to: s2, nonce: 2),
             .validation(blockHash: genesis),
@@ -344,7 +344,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
 
         // Block 2 is executed on arrival; block 1 is possessed but NOT executed
         // yet, so block 2 cannot be anchored through it.
-        let chain = try await ChainState.restore(replaying: [
+        let chain = try await ChainState.restoreWithoutContext(replaying: [
             facts(g, parent: nil, height: 0, from: empty, to: sg, n: 1, executed: true),
             facts(one, parent: g, height: 1, from: sg, to: s1, n: 2, executed: false),
             facts(two, parent: one, height: 2, from: s1, to: s2, n: 3, executed: true),
@@ -424,7 +424,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
             .exclusion(ChainExclusionFact(blockHash: one)),
         ])
 
-        let live = try await ChainState.restore(replaying: history)
+        let live = try await ChainState.restoreWithoutContext(replaying: history)
         _ = try await live.applyStaged(exclusion)
         // Excluding block 1 keeps its executed descendant out of the frontier.
         let liveOne = await live.hasStateContinuity(from: empty, to: s1)
@@ -434,7 +434,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
 
         // The same log restored wholesale must agree: the frontier is built by
         // different code on that path.
-        let restored = try await ChainState.restore(replaying: history + [exclusion])
+        let restored = try await ChainState.restoreWithoutContext(replaying: history + [exclusion])
         let restoredOne = await restored.hasStateContinuity(from: empty, to: s1)
         let restoredTwo = await restored.hasStateContinuity(from: empty, to: s2)
         XCTAssertEqual(liveOne, restoredOne, "live and restored must agree")
@@ -449,7 +449,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
             XCTFail("an executed block cannot be excluded")
         } catch {}
         do {
-            _ = try await ChainState.restore(replaying: history + [executedExclusion])
+            _ = try await ChainState.restoreWithoutContext(replaying: history + [executedExclusion])
             XCTFail("a durable contradiction does not restore")
         } catch {}
     }
@@ -484,7 +484,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         ])
 
         do {
-            _ = try await ChainState.restore(replaying: [crossNamed])
+            _ = try await ChainState.restoreWithoutContext(replaying: [crossNamed])
             XCTFail("a validation naming another block must not be admitted")
         } catch {
             // Refused, as a malformed batch.
@@ -536,7 +536,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
         let sc = testCID("reorg-state-c")
 
         // `a` is canonical and executed; a child anchors at the state it made.
-        let chain = try await ChainState.restore(replaying: [
+        let chain = try await ChainState.restoreWithoutContext(replaying: [
             weightedBatch(g, parent: nil, height: 0, from: empty, to: sg, n: 1, work: 1),
             weightedBatch(a, parent: g, height: 1, from: sg, to: sa, n: 2, work: 1),
         ])
@@ -703,7 +703,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
                 ]))
                 parent = block; prev = post; last = post
             }
-            return (try await ChainState.restore(replaying: batches), last)
+            return (try await ChainState.restoreWithoutContext(replaying: batches), last)
         }
 
         for height in [8, 512] {
@@ -764,7 +764,7 @@ final class ParentStateAttestationTierTests: XCTestCase {
             batches.append(BlockImportBatch(facts: facts))
             parent = block; prev = post
         }
-        let parentChain = try await ChainState.restore(replaying: batches)
+        let parentChain = try await ChainState.restoreWithoutContext(replaying: batches)
         XCTAssertFalse(declaredOnly.isEmpty, "fixture must contain a weighed-only block")
 
         let anchors = await parentChain.hasStateContinuity(from: empty, to: declaredOnly)

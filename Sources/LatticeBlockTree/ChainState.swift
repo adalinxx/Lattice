@@ -50,12 +50,26 @@ public actor ChainState {
         ))
     }
 
-    /// See `ChainTree.restore(replaying:revisionFloor:)`.
+    /// See `ChainTree.restore(replaying:revisionFloor:context:specs:)`:
+    /// `context` is required, and on a root chain restore refuses any root
+    /// genesis but the pinned one.
     public static func restore(
+        replaying batches: [BlockImportBatch],
+        revisionFloor: UInt64 = 0,
+        context: ChainRuntimeContext,
+        specs: [ChainSpec] = []
+    ) async throws -> ChainState {
+        ChainState(tree: try ChainTree.restore(
+            replaying: batches, revisionFloor: revisionFloor, context: context, specs: specs
+        ))
+    }
+
+    /// See `ChainTree.restoreWithoutContext`: tests only; pins nothing.
+    package static func restoreWithoutContext(
         replaying batches: [BlockImportBatch],
         revisionFloor: UInt64 = 0
     ) async throws -> ChainState {
-        ChainState(tree: try ChainTree.restore(
+        ChainState(tree: try ChainTree.restoreWithoutContext(
             replaying: batches, revisionFloor: revisionFloor
         ))
     }
@@ -199,6 +213,10 @@ public actor ChainState {
 
     public func isExecuted(blockHash: String) -> Bool {
         tree.isExecuted(blockHash: blockHash)
+    }
+
+    public func isExcludedRoot(_ blockHash: String) -> Bool {
+        tree.isExcludedRoot(blockHash)
     }
 
     public func hasExecutedAncestry(blockHash: String) -> Bool {

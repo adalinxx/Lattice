@@ -129,7 +129,7 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
         let hs = heights(blocks)
         let facts = blocks.map { admission($0, height: hs[$0.name]!) }
         let genesis = blocks.firstIndex { $0.parent == nil }!
-        let live = try await ChainState.restore(replaying: [facts[genesis]])
+        let live = try await ChainState.restoreWithoutContext(replaying: [facts[genesis]])
         var pendingExclusions = Set(excluded)
         var present: Set<String> = [blocks[genesis].name]
         for i in order where i != genesis {
@@ -142,7 +142,7 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
         }
         for name in pendingExclusions { _ = try await live.replay(exclusion(name)) }
         let all = facts + excluded.map(exclusion)
-        let cold = try await ChainState.restore(replaying: all.shuffled(using: &rng))
+        let cold = try await ChainState.restoreWithoutContext(replaying: all.shuffled(using: &rng))
         return (live, cold)
     }
 
@@ -332,7 +332,7 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
             exclusion("g"), admission(Planned(name: "a2", parent: "a", work: 50), height: 2),
         ]
         for trial in 0..<12 {
-            let cold = try await ChainState.restore(replaying: facts.shuffled(using: &rng))
+            let cold = try await ChainState.restoreWithoutContext(replaying: facts.shuffled(using: &rng))
             let coldTip = await cold.canonicalTip
             let coldRoots = await cold.excludedRootsForTesting
             XCTAssertEqual(coldTip, h("z"), "cold \(trial)")
@@ -343,7 +343,7 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
         let unexecuted = facts.filter { $0 != BlockImportBatch.validation(blockHash: h("z")) }
         for trial in 0..<6 {
             do {
-                _ = try await ChainState.restore(replaying: unexecuted.shuffled(using: &rng))
+                _ = try await ChainState.restoreWithoutContext(replaying: unexecuted.shuffled(using: &rng))
                 XCTFail("order \(trial): a root exclusion with no executed root to stand on cannot replay")
             } catch ChainStateRestoreError.corruptConsensusGraph {}
         }

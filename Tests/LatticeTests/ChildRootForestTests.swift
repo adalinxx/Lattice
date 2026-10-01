@@ -101,12 +101,12 @@ final class ChildRootForestTests: XCTestCase {
 
         let harderFirstTip = await harderFirst.canonicalTip
         let easierFirstTip = await easierFirst.canonicalTip
-        let restoredHarderFirst = try await ChainState.restore(replaying: [
+        let restoredHarderFirst = try await ChainState.restoreWithoutContext(replaying: [
             testAdmissionBatch(for: genesis),
             testAdmissionBatch(for: harder),
             testAdmissionBatch(for: easier),
         ])
-        let restoredEasierFirst = try await ChainState.restore(replaying: [
+        let restoredEasierFirst = try await ChainState.restoreWithoutContext(replaying: [
             testAdmissionBatch(for: genesis),
             testAdmissionBatch(for: easier),
             testAdmissionBatch(for: harder),
@@ -311,7 +311,7 @@ final class ChildRootForestTests: XCTestCase {
         _ = await submitChildForestBlock(sideChild, to: chain)
         let canonicalTip = await chain.canonicalTip
 
-        let restored = try await ChainState.restore(replaying: [
+        let restored = try await ChainState.restoreWithoutContext(replaying: [
             testAdmissionBatch(for: incumbentRoot),
             testAdmissionBatch(for: sideRoot),
             testAdmissionBatch(for: sideChild),

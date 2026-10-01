@@ -10,8 +10,26 @@ public actor ChainLevel {
     public nonisolated let context: ChainRuntimeContext
     let importIdentity = UUID()
 
-    public init(chain: ChainState, context: ChainRuntimeContext) {
+    /// Package-only: a level made from an arbitrary chain would skip the
+    /// root chain's genesis pin. Public levels come from `bootstrap` or
+    /// `restore`, which enforce it.
+    package init(chain: ChainState, context: ChainRuntimeContext) {
         self.chain = chain
         self.context = context
+    }
+
+    /// The level of `context` restored from its durable facts. On a root
+    /// chain any root genesis but the pinned one fails the restore.
+    public static func restore(
+        replaying batches: [BlockImportBatch],
+        revisionFloor: UInt64 = 0,
+        context: ChainRuntimeContext
+    ) async throws -> ChainLevel {
+        ChainLevel(
+            chain: try await ChainState.restore(
+                replaying: batches, revisionFloor: revisionFloor, context: context
+            ),
+            context: context
+        )
     }
 }

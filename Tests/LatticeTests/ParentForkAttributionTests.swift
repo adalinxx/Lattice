@@ -141,7 +141,7 @@ final class ParentForkAttributionTests: XCTestCase {
         let batches = s.parent.map { parentBatch($0, height: ph[$0.name]!) }
         // The genesis must seed the restore; everything else in the given order.
         let genesisIndex = s.parent.firstIndex { $0.parent == nil }!
-        let parent = try await ChainState.restore(replaying: [batches[genesisIndex]])
+        let parent = try await ChainState.restoreWithoutContext(replaying: [batches[genesisIndex]])
         // Serve the directory before OR after the graph exists — the two paths
         // (per-block settle, whole-graph settle) must agree, so alternate by
         // the order's shape and let the oracle judge both.
@@ -487,7 +487,7 @@ final class ParentForkAttributionTests: XCTestCase {
                 blockHash: h("c2"), contribution: VerifiedWorkContribution(id: grind("x1"), work: UInt256(2))
             ))]),
         ]
-        let live = try await ChainState.restore(replaying: [facts[0]])
+        let live = try await ChainState.restoreWithoutContext(replaying: [facts[0]])
         for f in facts.dropFirst() { _ = try await live.replay(f) }
         for (committer, target) in [("p1", "c1"), ("p2", "c2"), ("x1", "c2")] {
             let served = await parent.parentRunReport(at: h(committer), directory: d)
@@ -505,7 +505,7 @@ final class ParentForkAttributionTests: XCTestCase {
         }
         var rng = SeededRNG(seed: 0xC01D)
         for trial in 0..<6 {
-            let cold = try await ChainState.restore(replaying: facts.shuffled(using: &rng))
+            let cold = try await ChainState.restoreWithoutContext(replaying: facts.shuffled(using: &rng))
             for c in s.child {
                 let w = await cold.subtreeWeight(forHash: h(c.name))
                 XCTAssertEqual(w, expected[c.name], "cold \(trial) \(c.name)")

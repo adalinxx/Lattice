@@ -432,7 +432,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         XCTAssertTrue(containsCandidate)
         XCTAssertEqual(stageCount, 1)
 
-        let restored = try await ChainState.restore(replaying:
+        let restored = try await ChainState.restoreWithoutContext(replaying:
             [genesisBatch] + (await recorder.recordedBatches())
         )
         let restoredCandidate = await restored.contains(blockHash: candidateHeader.rawCID)
@@ -482,7 +482,7 @@ final class ChainLocalAdmissionStagingTests: XCTestCase {
         XCTAssertFalse(containsSibling)
         let batches = await recorder.recordedBatches()
         XCTAssertEqual(batches.count, 1)
-        let restored = try await ChainState.restore(
+        let restored = try await ChainState.restoreWithoutContext(
             replaying: [fixture.seedBatch] + batches,
             revisionFloor: .max
         )

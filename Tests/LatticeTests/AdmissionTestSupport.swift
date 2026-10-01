@@ -232,7 +232,7 @@ enum AdmissionFixture {
     ) async throws -> (level: ChainLevel, seedBatch: BlockImportBatch) {
         let seedBatch = try testAdmissionBatch(for: genesis)
         return (
-            ChainLevel(testChain: try await ChainState.restore(
+            ChainLevel(testChain: try await ChainState.restoreWithoutContext(
                 replaying: [seedBatch],
                 revisionFloor: revision
             )),

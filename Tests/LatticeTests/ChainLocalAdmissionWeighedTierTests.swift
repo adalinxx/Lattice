@@ -704,7 +704,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         let orphanBatch = try testAdmissionBatch(for: held.blocks[1])
         let connectingBatch = try testAdmissionBatch(for: held.blocks[0])
 
-        let orphaned = ChainLevel(testChain: try await ChainState.restore(
+        let orphaned = ChainLevel(testChain: try await ChainState.restoreWithoutContext(
             replaying: [genesisBatch, orphanBatch]
         ))
         let orphanAnchor = await orphaned.chain.difficultyAnchor(forBlockHash: held.cids[1])
@@ -713,7 +713,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         XCTAssertEqual(parked.failure, .unavailableEvidence)
         XCTAssertEqual(parked.sameChainPredecessor?.predecessorCID, held.cids[1])
 
-        let connected = ChainLevel(testChain: try await ChainState.restore(
+        let connected = ChainLevel(testChain: try await ChainState.restoreWithoutContext(
             replaying: [genesisBatch, orphanBatch, connectingBatch]
         ))
         let resolved = await connected.chain.difficultyAnchor(forBlockHash: held.cids[1])

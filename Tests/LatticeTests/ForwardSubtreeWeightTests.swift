@@ -124,7 +124,7 @@ final class ForwardSubtreeWeightTests: XCTestCase {
         for blk in [a, b] {
             _ = await chain.submitTestBlock(blockHeader: try! VolumeImpl<Block>(node: blk), block: blk)
         }
-        let restored = try await ChainState.restore(replaying: [
+        let restored = try await ChainState.restoreWithoutContext(replaying: [
             testAdmissionBatch(for: genesis),
             testAdmissionBatch(for: a),
             testAdmissionBatch(for: b),

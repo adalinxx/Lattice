@@ -81,7 +81,7 @@ final class ForkChoiceInvariantTests: XCTestCase {
     }
 
     private func admitCheckingInvariants(_ order: [ForkChoiceGoldenEvent], _ label: String) async throws {
-        let chain = try await ChainState.restore(replaying: [order[0].batch])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [order[0].batch])
         await chain.serveRuns(for: ForkChoiceGoldenGraph.directory)
         await assertRoutedClosedUnderChildren(chain, "\(label): genesis")
         for event in order.dropFirst() {
@@ -103,7 +103,7 @@ final class ForkChoiceInvariantTests: XCTestCase {
         var batches = graph.events.map(\.batch)
         var random = GoldenRandom(seed: 0x5EED_5EED)
         random.shuffle(&batches)
-        let chain = try await ChainState.restore(replaying: batches)
+        let chain = try await ChainState.restoreWithoutContext(replaying: batches)
         await chain.serveRuns(for: ForkChoiceGoldenGraph.directory)
         await assertRoutedClosedUnderChildren(chain, "shuffled restore")
         await assertDescendsFromEveryRoutedBlock(chain, "shuffled restore")
@@ -117,7 +117,7 @@ final class ForkChoiceInvariantTests: XCTestCase {
             0x1234_5678, 0x8765_4321, 0x0DDC_0FFE, 0x51DE_CAFE,
         ] {
             let planned = SegmentBaseDifferentialFixtures.planned(seed: seed)
-            let chain = try await ChainState.restore(replaying: [planned[0].batch])
+            let chain = try await ChainState.restoreWithoutContext(replaying: [planned[0].batch])
             let order = [4, 3, 1, 2, 5] + Array(6..<planned.count)
             for index in order {
                 _ = try await chain.replay(planned[index].batch)

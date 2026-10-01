@@ -362,6 +362,7 @@ private struct AdmissionFixtures {
         case .notYetValid: return ("notYetAdmissible", nil, nil)
         case .notAcceptedAtCurrentChain: return ("notAcceptedAtCurrentChain", nil, nil)
         case .revisionExhausted: return ("revisionExhausted", nil, nil)
+        case .executedVerdictContradiction: return ("executedVerdictContradiction", nil, nil)
         case .proofOfWorkInvalid: return ("proofOfWorkInvalid", nil, nil)
         case .crossChainEvidenceRequired(let requirement):
             switch requirement {
