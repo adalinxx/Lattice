@@ -50,10 +50,10 @@ final class AdmissionStagingContextTests: XCTestCase {
         XCTAssertEqual(contexts.count, 1)
         XCTAssertTrue(context.issuesHierarchyFacts)
         XCTAssertTrue(context.parentGenesisLinks.isEmpty)
-        // block + work + validation: the eager tier weighs and validates in
-        // one gate, so it records execution alongside possession.
-        XCTAssertEqual(context.batch.facts.count, 3)
-        guard case .validation = context.batch.facts[2] else {
+        // block + validation: a genesis has no work of its own (§5.1), and the
+        // eager tier records execution alongside possession.
+        XCTAssertEqual(context.batch.facts.count, 2)
+        guard context.batch.facts.count == 2, case .validation = context.batch.facts[1] else {
             return XCTFail("eager admission must record that it executed the block")
         }
     }
