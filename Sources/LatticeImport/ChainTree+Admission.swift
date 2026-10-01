@@ -74,6 +74,11 @@ public struct ChainTreeUpdate: Sendable {
     public let commit: ChainCommit?
     /// The executed post-state (`applyConnect` of a valid block only).
     public let materializedPostState: LatticeState?
+    /// Every block whose credited work these batches added or raised, plus
+    /// every block they connected — a grafted orphan component in full
+    /// (`SubmissionResult.weighed`). What a child's derivation of this
+    /// level's runs needs, forwarded unchanged (`applyParentRun`).
+    public let weighed: [String]
 }
 
 public enum ChainTreeAdmission: Sendable {
@@ -656,6 +661,7 @@ extension ChainTree {
             return .rejected(.revisionExhausted)
         }
         var commit: ChainCommit?
+        var weighed: [String] = []
         for facts in batches {
             let submission: SubmissionResult?
             do {
@@ -665,13 +671,15 @@ extension ChainTree {
             }
             let next = submission == nil ? reevaluateForkChoice() : submission?.commit
             commit = ChainCommit.composing(commit, then: next)
+            weighed += submission?.weighed ?? []
         }
         return .applied(ChainTreeUpdate(
             blockHash: blockHash,
             batches: batches,
             excluded: excluded,
             commit: commit,
-            materializedPostState: materializedPostState
+            materializedPostState: materializedPostState,
+            weighed: weighed
         ))
     }
 }
