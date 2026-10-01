@@ -634,17 +634,13 @@ public struct ChainTree: Sendable {
         // projection is a derived cache and no replay step reads it, so it
         // is deferred across the whole replay and computed exactly once —
         // replay is O(batches), not O(batches × chain length).
+        // The context is set first so the reducer's pin check (`applyStaged`)
+        // covers every replayed root.
+        chain.context = context
         chain.beginReplayProjectionDeferral()
         try replay(batches[...], onto: &chain)
         chain.completeReplayProjectionDeferral()
         chain.sealRecovery(revisionFloor: revisionFloor)
-        chain.context = context
-        if let context {
-            for root in chain.indexToBlockHash[0] ?? []
-            where chain.graph.parent(of: root) == nil && !context.admitsGenesis(root) {
-                throw ChainStateRestoreError.unpinnedRootGenesis
-            }
-        }
         for spec in specs {
             guard let cid = try? VolumeImpl<ChainSpec>(node: spec).rawCID else {
                 throw ChainStateRestoreError.corruptConsensusGraph
@@ -1180,6 +1176,12 @@ public struct ChainTree: Sendable {
             }
         }
         if let input = trusted.block {
+            // The root chain's pin, at the one reducer every fact passes
+            // through: no root genesis but the configured one, live or replayed.
+            if input.parentBlockHash == nil, let context,
+               !context.admitsGenesis(input.blockHash) {
+                throw ChainStateRestoreError.unpinnedRootGenesis
+            }
             if let existing = graph[input.blockHash] {
                 guard matchesGraph(existing, input: input),
                       frontier.snapshot(of: input.blockHash).map({

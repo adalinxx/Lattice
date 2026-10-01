@@ -250,11 +250,11 @@ A genesis block `B` is valid if and only if ALL of the following hold:
    timestamp is deferred until real time reaches it, not permanently rejected)
 4. `B.prevState == CID(emptyState())` and `B.rewardRecipient == nil` (a
    genesis mints only its premine; there is no reward to pay). A Nexus genesis
-   commits `B.parentState == CID(emptyState())`; a child genesis commits its
-   carrier's `prevState`, which is never `CID(emptyState())`, and proves it by
-   continuity (§5.3 step 6). That proof is the base case of parent continuity
-   along the child chain: every later block anchors to a parent state the
-   parent's executed set produced, starting from its genesis's
+   commits `B.parentState == CID(emptyState())`. A child genesis commits its
+   carrier's `prevState` and proves it by continuity (§5.3 step 6); that proof
+   is the base case of parent continuity along the child chain. A child
+   genesis whose `parentState` is `CID(emptyState())` — one carried by a
+   genesis — is therefore invalid: it cannot anchor the induction
 5. `B.nextTarget == B.target`, and the target `B` commits is met by the hash
    that secures `B` at its own level (§5.4, §9.5): a Nexus genesis by its own
    grind, a child genesis by the root grind of its `ChildBlockProof`, like any
@@ -867,8 +867,7 @@ connected, valid, or canonical (§5.3, §9.5), so comparing a child's declared
 same party may have chosen:
 
 1. Every child block, its genesis included, proves its `parentState` by §5.3
-   step 6: continuity from `emptyHeader`, the parent's own genesis pre-state —
-   the anchor is "reachable from real parent history".
+   step 6.
 2. State continuity is attested only across blocks on the parent's
    EXECUTED-FROM-GENESIS FRONTIER: executed, every ancestor executed, and not
    under an excluded block (§9.9). Execution alone is not enough — a block

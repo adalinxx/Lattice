@@ -533,13 +533,7 @@ extension ChainTree {
         guard let blockHash = try? BlockHeader(node: block).rawCID else {
             return .rejected(.proofOfWorkInvalid)
         }
-        // Structure only; a met target (the work below) is positive too. A
-        // child genesis commits a real parent state (§5.1 rule 4).
-        guard block.parent == nil, block.height == 0,
-              block.nextTarget > .zero,
-              block.hasWellFormedRewardRecipient,
-              context.admitsGenesis(blockHash),
-              context.isRoot || block.parentState.rawCID != LatticeState.emptyHeader.rawCID else {
+        guard BlockImport.genesisAdmissible(block, blockHash: blockHash, context: context) else {
             return .rejected(.protocolInvalid)
         }
         let work: VerifiedWorkContribution
