@@ -43,9 +43,8 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             key: "bootstrap",
             chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
         )
-        let childGenesis = try await AdmissionFixture.makeGenesis(
+        let childGenesis = try await makeChildGenesis(
             fetcher: fetcher,
-            timestamp: 1_000,
             nonce: 1,
             transactions: [transaction]
         )
@@ -393,7 +392,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         let fetcher = StorableFetcher()
         let childGenesis = try await BlockBuilder.buildChildGenesis(
             spec: chainLocalSpec(),
-            parentState: LatticeState.emptyHeader,
+            parentState: try await testAnchorParentGenesis(fetcher: fetcher).postState,
             transactions: [AdmissionFixture.unsignedStateChangingGenesisTransaction(
                 key: "unsigned-child",
                 chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
@@ -530,12 +529,8 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
     /// the genesis's target yields no work, and nothing is staged.
     func testChildBootstrapDoesNotStageOnTargetMiss() async throws {
         let fetcher = StorableFetcher()
-        let childGenesis = try await buildAndStoreGenesis(
-            spec: chainLocalSpec(),
-            timestamp: 1_000,
-            target: UInt256(1),
-            nonce: 1,
-            fetcher: fetcher
+        let childGenesis = try await makeChildGenesis(
+            fetcher: fetcher, nonce: 1, target: UInt256(1)
         )
         let header = try BlockHeader(node: childGenesis)
         let recorder = AdmissionStageRecorder()

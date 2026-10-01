@@ -399,6 +399,11 @@ enum BlockImport {
         // shortcut bought nothing that is worth an induction.
         let fromStateCID = LatticeState.emptyHeader.rawCID
         let toStateCID = child.parentState.rawCID
+        // A child genesis's continuity is the base case of the induction
+        // along its chain: it always proves a real parent state (§5.1 rule 4).
+        if child.parent == nil, fromStateCID == toStateCID {
+            return .protocolInvalid
+        }
         if fromStateCID == toStateCID {
             // The block commits no parent state at all; there is nothing to
             // anchor, and no parent fact may be offered for it.
@@ -655,7 +660,8 @@ enum BlockImport {
         context: ChainRuntimeContext,
         predecessor: SameChainPredecessorRequirement?
     ) async -> Preparation {
-        guard !context.isRoot, block.height == 0, block.nextTarget > .zero else {
+        guard !context.isRoot, block.height == 0, block.nextTarget > .zero,
+              block.parentState.rawCID != LatticeState.emptyHeader.rawCID else {
             return .result(rejection(.protocolInvalid))
         }
         guard let spec = try? await block.spec.resolve(fetcher: fetcher).node else {

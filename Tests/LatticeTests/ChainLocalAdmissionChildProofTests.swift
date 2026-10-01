@@ -223,31 +223,18 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
             key: "materialized",
             chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
         )
-        let secondRoot = try await AdmissionFixture.makeGenesis(
+        let secondRoot = try await makeChildGenesis(
             fetcher: fetcher,
             timestamp: 2_000,
             nonce: 2,
             transactions: [transaction]
         )
-        let carrier = try await buildAndStoreGenesis(
-            spec: chainLocalSpec(),
-            children: ["Child": secondRoot],
-            timestamp: 3_000,
-            target: AdmissionFixture.easy,
-            nonce: 3,
-            fetcher: fetcher
-        )
         let childLevel = ChainLevel(
             chain: ChainState.fromGenesis(block: firstRoot),
             context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
         )
-        let proof = try await ChildBlockProof.generate(
-            rootHeader: try BlockHeader(node: carrier),
-            childDirectory: "Child",
-            fetcher: fetcher
-        )
         let secondHeader = try BlockHeader(node: secondRoot)
-        let package = try await childValidationPackage(proof: proof, fetcher: fetcher)
+        let package = try await carriedGenesisPackage(secondRoot, nonce: 3, fetcher: fetcher)
 
         let result = try await childLevel.admit(
             secondHeader,
@@ -283,7 +270,7 @@ final class ChainLocalAdmissionChildProofTests: XCTestCase {
     /// parent record authorizes it.
     func testACarriedChildGenesisBootstrapsFromItsProofAlone() async throws {
         let fetcher = StorableFetcher()
-        let parentGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let parentGenesis = try await testAnchorParentGenesis(fetcher: fetcher)
         let parentLevel = AdmissionFixture.makeLevel(genesis: parentGenesis)
         let childGenesis = try await BlockBuilder.buildChildGenesis(
             spec: chainLocalSpec(),

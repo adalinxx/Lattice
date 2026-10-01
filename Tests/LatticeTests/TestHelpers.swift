@@ -753,10 +753,55 @@ extension XCTestCase {
     }
 }
 
-/// A child genesis's `ChildBlockProof`: a genesis-shaped carrier on the
-/// parent chain commits `childGenesis` under `directory`. The carrier's
-/// `prevState` is the empty state, so a child genesis committing the empty
-/// parent state needs no continuity fact.
+/// The parent-chain genesis every test child genesis anchors to: its
+/// post-state is real, as a child genesis's `parentState` must be (§5.1).
+func testAnchorParentGenesis(fetcher: StorableFetcher) async throws -> Block {
+    try await buildAndStoreGenesis(
+        spec: chainLocalSpec(),
+        transactions: [AdmissionFixture.unsignedStateChangingGenesisTransaction(
+            key: "child-genesis-anchor", chainPath: [DEFAULT_ROOT_DIRECTORY]
+        )],
+        timestamp: 100,
+        target: UInt256.max,
+        fetcher: fetcher
+    )
+}
+
+/// A child genesis committing the anchor parent state.
+func makeChildGenesis(
+    fetcher: StorableFetcher,
+    timestamp: Int64 = 1_000,
+    nonce: UInt64 = 0,
+    spec: ChainSpec = chainLocalSpec(),
+    target: UInt256 = UInt256.max,
+    transactions: [Transaction] = []
+) async throws -> Block {
+    let anchor = try await testAnchorParentGenesis(fetcher: fetcher)
+    let block = try await BlockBuilder.buildChildGenesis(
+        spec: spec, parentState: anchor.postState, transactions: transactions,
+        timestamp: timestamp, target: target, nonce: nonce, fetcher: fetcher
+    )
+    return try await storeBuiltBlock(block, in: fetcher)
+}
+
+/// Parent facts attesting exactly `states` as produced by the parent's
+/// executed set.
+struct ProducedParentStates: ParentChainFacts {
+    let states: Set<String>
+
+    func hasContinuity(_ link: ParentStateContinuityLink) -> Bool {
+        link.fromStateCID == LatticeState.emptyHeader.rawCID && states.contains(link.toStateCID)
+    }
+}
+
+/// Parent facts attesting the anchor parent state.
+func testParentFacts(fetcher: StorableFetcher) async throws -> ProducedParentStates {
+    ProducedParentStates(states: [try await testAnchorParentGenesis(fetcher: fetcher).postState.rawCID])
+}
+
+/// A child genesis's `ChildBlockProof`: a carrier on the anchor parent
+/// genesis commits `childGenesis` under `directory`, its `prevState` the
+/// genesis's `parentState`. The package carries the continuity link.
 func carriedGenesisPackage(
     _ childGenesis: Block,
     directory: String = "Child",
@@ -764,10 +809,11 @@ func carriedGenesisPackage(
     target: UInt256 = UInt256.max,
     fetcher: StorableFetcher
 ) async throws -> ChildValidationPackage {
-    let carrier = try await buildAndStoreGenesis(
-        spec: chainLocalSpec(),
+    let anchor = try await testAnchorParentGenesis(fetcher: fetcher)
+    let carrier = try await buildAndStoreBlock(
+        previous: anchor,
         children: [directory: childGenesis],
-        timestamp: childGenesis.timestamp + 1,
+        timestamp: max(childGenesis.timestamp, anchor.timestamp) + 1,
         target: target,
         nonce: 10_000 + nonce,
         fetcher: fetcher
@@ -777,7 +823,14 @@ func carriedGenesisPackage(
         childDirectory: directory,
         fetcher: fetcher
     )
-    return ChildValidationPackage(proof: proof)
+    return ChildValidationPackage(
+        proof: proof,
+        parentStateContinuityLink: ParentStateContinuityLink(
+            parentPath: [DEFAULT_ROOT_DIRECTORY],
+            fromStateCID: LatticeState.emptyHeader.rawCID,
+            toStateCID: childGenesis.parentState.rawCID
+        )
+    )
 }
 
 /// The verified evidence of `carriedGenesisPackage` for `childGenesis`.
