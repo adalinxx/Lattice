@@ -439,12 +439,12 @@ extension ChainTree {
         case .success(let value): transition = value
         }
         let commitments: [String: String]?
-        if let recorded = job.recordedChildCommitments {
-            commitments = recorded
-        } else if isGenesis {
+        if isGenesis {
             // A genesis's commitments are not recorded, by the bootstrap
             // convention every genesis fact has always followed.
             commitments = nil
+        } else if let recorded = job.recordedChildCommitments {
+            commitments = recorded
         } else {
             switch await BlockImport.childCommitments(of: resolvedHeader, fetcher: fetcher) {
             case .success(let enumerated): commitments = enumerated
