@@ -250,8 +250,11 @@ A genesis block `B` is valid if and only if ALL of the following hold:
    timestamp is deferred until real time reaches it, not permanently rejected)
 4. `B.prevState == CID(emptyState())` and `B.rewardRecipient == nil` (a
    genesis mints only its premine; there is no reward to pay). A Nexus genesis
-   commits `B.parentState == CID(emptyState())`; a child genesis commits a real
-   parent state and proves it like any child block (§5.3)
+   commits `B.parentState == CID(emptyState())`; a child genesis commits its
+   carrier's `prevState` and proves it like any child block (§5.3). The one
+   exception: a child genesis whose `parentState` is `CID(emptyState())` — the
+   parent's own genesis pre-state — needs no continuity fact, as for any child
+   block anchored there (§5.3 step 6)
 5. `B.nextTarget == B.target`, and the target `B` commits is met by the hash
    that secures `B` at its own level (§5.4, §9.5): a Nexus genesis by its own
    grind, a child genesis by the root grind of its `ChildBlockProof`, like any
@@ -283,8 +286,8 @@ has no genesis authority: every child genesis carried by a valid
 among them (§9.4, §9.9). Signature and
 declared-signer fields on genesis transactions carry no authority and are not
 shape-constrained. All later transactions remain signature-strict. The
-reference node binds
-`bafyreiayw4z5qz4lt2sljf2enzn7uol3qa6bebadav7qwnqz7agxkiuwhq` locally.
+configured Nexus genesis CID's source of truth is the reference node's
+`NexusGenesis`, pinned at each relaunch.
 
 ### 5.2 Nexus Block Validation
 
@@ -472,9 +475,8 @@ the scheduled `parent.nextTarget`.
 Genesis has no parent-derived target. The `GenesisCeremony` commits the canonical
 maximum (easiest) target by convention — every hash satisfies it, so genesis needs
 no grinding, block 1's schedule is `max`, and the chain self-calibrates as early
-miners voluntarily mine harder. The committed value is unconstrained except that
-it is positive, and no hash is checked against it (§5.1 rule 5). Its `nextTarget`
-MUST equal that target. Each non-genesis block's
+miners voluntarily mine harder. What a genesis's target must satisfy is §5.1
+rule 5. Each non-genesis block's
 `nextTarget` is **absolutely scheduled from an anchor (ASERT)**: a pure function
 of one anchor block and the block being targeted, with no window and no
 intervening history.

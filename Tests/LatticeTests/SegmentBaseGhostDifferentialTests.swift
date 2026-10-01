@@ -22,7 +22,7 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
                 height: UInt64(index)
             ))
         }
-        let chain = try await ChainState.restore(replaying: [
+        let chain = try await ChainState.restoreWithoutContext(replaying: [
             admission(for: blocks[0]),
         ])
         for block in blocks.dropFirst() {
@@ -99,7 +99,7 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
                 height: UInt64(index)
             )
         }
-        let chain = try await ChainState.restore(replaying: [
+        let chain = try await ChainState.restoreWithoutContext(replaying: [
             admission(for: main[0]),
         ])
         for block in main.dropFirst() {
@@ -160,7 +160,7 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
             parentHash: parent.hash,
             height: 2
         )
-        let chain = try await ChainState.restore(replaying: [admission(for: root)])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [admission(for: root)])
         _ = try await chain.applyStaged(admission(for: child))
         let grafts = await chain.segmentGraftCount
 
@@ -185,7 +185,7 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
                 height: UInt64(index)
             ))
         }
-        let chain = try await ChainState.restore(replaying: [
+        let chain = try await ChainState.restoreWithoutContext(replaying: [
             admission(for: blocks[0]),
         ])
         let initialProjections = await chain.fullCanonicalProjectionCount
@@ -264,7 +264,7 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
                 height: UInt64(index)
             ))
         }
-        let chain = try await ChainState.restore(replaying: [
+        let chain = try await ChainState.restoreWithoutContext(replaying: [
             admission(for: history[0]),
         ])
         for block in history.dropFirst() {
@@ -326,7 +326,7 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
             var random = DifferentialRandom(seed: seed)
             let blocks = plannedBlocks(seed: seed, random: &random)
             var staged = [admission(for: blocks[0])]
-            let chain = try await ChainState.restore(replaying: staged)
+            let chain = try await ChainState.restoreWithoutContext(replaying: staged)
             var delivered = [blocks[0].hash]
             var strengthByGrind: [String: UInt64] = [:]
             var locationByGrind: [String: String] = [:]
@@ -437,7 +437,7 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
                 await assertMatchesReference(chain, seed: seed, event: "work update \(updateCount)")
             }
 
-            let restored = try await ChainState.restore(replaying: staged)
+            let restored = try await ChainState.restoreWithoutContext(replaying: staged)
             await assertMatchesReference(restored, seed: seed, event: "fact replay")
         }
     }
@@ -459,7 +459,7 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
                 height: UInt64(index)
             ))
         }
-        let chain = try await ChainState.restore(replaying: [
+        let chain = try await ChainState.restoreWithoutContext(replaying: [
             admission(for: main[0]),
         ])
         for block in main.dropFirst() {
@@ -575,7 +575,7 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
                 height: UInt64(index)
             ))
         }
-        let chain = try await ChainState.restore(replaying: [
+        let chain = try await ChainState.restoreWithoutContext(replaying: [
             admission(for: main[0]),
         ])
         await assertMatchesReference(chain, seed: 0, event: "genesis")
@@ -628,7 +628,7 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
             parentHash: nil,
             height: 0
         )
-        let chain = try await ChainState.restore(replaying: [
+        let chain = try await ChainState.restoreWithoutContext(replaying: [
             admission(for: genesis),
         ])
 
@@ -693,7 +693,7 @@ final class SegmentBaseGhostDifferentialTests: XCTestCase {
         for seed in UInt64(0)..<24 {
             var random = DifferentialRandom(seed: seed &* 2_654_435_761 &+ 1)
             let blocks = plannedBlocks(seed: seed, random: &random)
-            let chain = try await ChainState.restore(replaying: [
+            let chain = try await ChainState.restoreWithoutContext(replaying: [
                 admission(for: blocks[0]),
             ])
 

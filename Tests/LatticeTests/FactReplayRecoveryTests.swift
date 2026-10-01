@@ -36,8 +36,8 @@ final class FactReplayRecoveryTests: XCTestCase {
             try testAdmissionBatch(for: $0)
         }
 
-        let forward = try await ChainState.restore(replaying: batches)
-        let reverse = try await ChainState.restore(replaying: Array(batches.reversed()))
+        let forward = try await ChainState.restoreWithoutContext(replaying: batches)
+        let reverse = try await ChainState.restoreWithoutContext(replaying: Array(batches.reversed()))
         let heavyCID = try BlockHeader(node: heavy).rawCID
 
         let forwardTip = await forward.canonicalTip
@@ -69,7 +69,7 @@ final class FactReplayRecoveryTests: XCTestCase {
         let encoded = try JSONEncoder().encode(batches)
         let decoded = try JSONDecoder().decode([BlockImportBatch].self, from: encoded)
 
-        let restored = try await ChainState.restore(
+        let restored = try await ChainState.restoreWithoutContext(
             replaying: decoded + Array(decoded.reversed())
         )
 
@@ -98,7 +98,7 @@ final class FactReplayRecoveryTests: XCTestCase {
         let blockBatch = try testAdmissionBatch(for: block)
 
         await XCTAssertThrowsErrorAsync(
-            try await ChainState.restore(replaying: [blockBatch])
+            try await ChainState.restoreWithoutContext(replaying: [blockBatch])
         )
 
         guard case .block(let fact) = blockBatch.facts[0] else {
@@ -120,7 +120,7 @@ final class FactReplayRecoveryTests: XCTestCase {
             blockBatch.facts[1],
         ])
         await XCTAssertThrowsErrorAsync(
-            try await ChainState.restore(
+            try await ChainState.restoreWithoutContext(
                 replaying: [genesisBatch, blockBatch, conflicting]
             )
         )
@@ -146,7 +146,7 @@ final class FactReplayRecoveryTests: XCTestCase {
         }
 
         do {
-            _ = try await ChainState.restore(replaying: [batch])
+            _ = try await ChainState.restoreWithoutContext(replaying: [batch])
             XCTFail("a zero-work genesis must not restore")
         } catch {
             // expected: zero-work genesis is not a valid consensus graph
@@ -171,11 +171,11 @@ final class FactReplayRecoveryTests: XCTestCase {
             try testAdmissionBatch(for: $0)
         }
 
-        let first = try await ChainState.restore(
+        let first = try await ChainState.restoreWithoutContext(
             replaying: batches,
             revisionFloor: 100
         )
-        let second = try await ChainState.restore(
+        let second = try await ChainState.restoreWithoutContext(
             replaying: batches,
             revisionFloor: await first.currentRevision()
         )

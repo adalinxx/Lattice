@@ -7,6 +7,11 @@ import LatticePoW
 public enum ChainStateRestoreError: Error, Sendable, Equatable {
     case corruptConsensusGraph
     case missingBlockFact
+    /// The facts both execute and exclude one block. Execution and exclusion
+    /// are never revoked, so the store holds a contradiction.
+    case executedVerdictContradiction
+    /// A root genesis other than the root chain's configured one.
+    case unpinnedRootGenesis
 }
 
 // MARK: - Concrete Types
@@ -589,12 +594,32 @@ public struct ChainTree: Sendable {
     /// refused. The tree holds every spec in `specs` by its CID; a root whose
     /// spec is missing only refuses the headers beneath it. The durable
     /// revision is a final lower bound, applied after replay so restarts do
-    /// not create revisions.
+    /// not create revisions. `context` is required: on a root chain it
+    /// carries the pin restore enforces.
     public static func restore(
         replaying batches: [BlockImportBatch],
         revisionFloor: UInt64 = 0,
-        context: ChainRuntimeContext? = nil,
+        context: ChainRuntimeContext,
         specs: [ChainSpec] = []
+    ) throws -> ChainTree {
+        try restoring(batches, revisionFloor: revisionFloor, context: context, specs: specs)
+    }
+
+    /// A tree with no chain context — tests and the superseded actor path's
+    /// internals only; it pins nothing.
+    package static func restoreWithoutContext(
+        replaying batches: [BlockImportBatch],
+        revisionFloor: UInt64 = 0,
+        specs: [ChainSpec] = []
+    ) throws -> ChainTree {
+        try restoring(batches, revisionFloor: revisionFloor, context: nil, specs: specs)
+    }
+
+    private static func restoring(
+        _ batches: [BlockImportBatch],
+        revisionFloor: UInt64,
+        context: ChainRuntimeContext?,
+        specs: [ChainSpec]
     ) throws -> ChainTree {
         guard batches.contains(where: decodesAsGenesis) else {
             throw ChainStateRestoreError.corruptConsensusGraph
@@ -617,7 +642,7 @@ public struct ChainTree: Sendable {
         if let context {
             for root in chain.indexToBlockHash[0] ?? []
             where chain.graph.parent(of: root) == nil && !context.admitsGenesis(root) {
-                throw ChainStateRestoreError.corruptConsensusGraph
+                throw ChainStateRestoreError.unpinnedRootGenesis
             }
         }
         for spec in specs {
@@ -1122,6 +1147,14 @@ public struct ChainTree: Sendable {
         if let excluded = Self.exclusionTarget(of: batch) {
             return try applyExclusion(blockHash: excluded)
         }
+        // A proven-invalid block is never executed: a validation for one is
+        // the twin of excluding an executed block (`applyExclusion`).
+        for fact in batch.facts {
+            guard case .validation(let validation) = fact,
+                  let hash = CIDIdentity.canonicalString(validation.blockHash),
+                  forkChoice.excludedRoots.contains(hash) else { continue }
+            throw ChainStateRestoreError.executedVerdictContradiction
+        }
         if let validated = Self.validationTarget(of: batch) {
             // A validation for a block this chain does not hold is deferred by
             // the caller's replay loop exactly as a work fact would be, not an
@@ -1236,7 +1269,7 @@ public struct ChainTree: Sendable {
         // this reducer is the fail-closed twin, and replay orders validations
         // first, so the contradiction is found whatever the enumeration order.
         guard !frontier.validated.contains(blockHash) else {
-            throw ChainStateRestoreError.corruptConsensusGraph
+            throw ChainStateRestoreError.executedVerdictContradiction
         }
         guard hasUnreservedMutationCapacity else {
             throw ChainStateRestoreError.corruptConsensusGraph

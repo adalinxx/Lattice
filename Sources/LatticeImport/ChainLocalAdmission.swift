@@ -18,6 +18,12 @@ public enum BlockImportError: Error, Sendable, Equatable {
     case notYetValid
     case notAcceptedAtCurrentChain
     case revisionExhausted
+    /// A verdict contradicting an execution fact this chain already holds:
+    /// an executed block proven invalid, or a proven-invalid block proven
+    /// valid. Execution and exclusion are never revoked, so the verdict is a
+    /// local fault for the node to surface — never a fact, never a retry
+    /// that could succeed.
+    case executedVerdictContradiction
     /// The header proves no work the chain accepts: its grind misses its
     /// target, its target is off the schedule, or its bytes do not decode or
     /// match their CID. The one header failure that blames its sender.
@@ -548,11 +554,16 @@ enum BlockImport {
         // height, timestamp, target schedule) run here too, with the same
         // outcomes: a failed rule is a completed deterministic check, a
         // not-yet-admissible timestamp defers, a missing parent is unavailable
-        // evidence. A genesis is never weighed — only a self/pinned genesis is
-        // admitted, eagerly, through bootstrap.
+        // evidence. A child genesis is weighed with `insertGenesis`'s
+        // semantics (`weighedGenesis`); a root genesis only ever arrives
+        // through bootstrap.
         if case .header = mode {
             guard block.parent != nil else {
-                return .result(rejection(.protocolInvalid))
+                return await weighedGenesis(
+                    resolvedHeader: resolvedHeader, block: block, blockHash: blockHash,
+                    fetcher: fetcher, contribution: contribution, context: context,
+                    predecessor: predecessor
+                )
             }
             if let failure = await validateHeaderLinkage(
                 block: block,
@@ -597,6 +608,16 @@ enum BlockImport {
             validationContext: validationContext
         ) {
         case .failure(let failure):
+            // A child genesis weighs first, as `insertGenesis` does: without
+            // a verdict (a missing continuity fact, unavailable content) it is
+            // admitted weighed-only, and executed later.
+            if block.parent == nil, !isDeterministicInvalidity(failure) {
+                return await weighedGenesis(
+                    resolvedHeader: resolvedHeader, block: block, blockHash: blockHash,
+                    fetcher: fetcher, contribution: contribution, context: context,
+                    predecessor: predecessor
+                )
+            }
             return .result(rejection(failure, sameChainPredecessor: predecessor))
         case .success(let transition):
             let commitments: [String: String]
@@ -620,6 +641,39 @@ enum BlockImport {
                 childCommitments: commitments
             ))
         }
+    }
+
+    /// A child genesis weighed with `ChainTree.insertGenesis`'s semantics:
+    /// its proof's work (already verified), its spec bound by CID, and the
+    /// block fact alone — no execution, no commitments recorded.
+    private static func weighedGenesis(
+        resolvedHeader: BlockHeader,
+        block: Block,
+        blockHash: String,
+        fetcher: any Fetcher,
+        contribution: VerifiedWorkContribution,
+        context: ChainRuntimeContext,
+        predecessor: SameChainPredecessorRequirement?
+    ) async -> Preparation {
+        guard !context.isRoot, block.height == 0, block.nextTarget > .zero else {
+            return .result(rejection(.protocolInvalid))
+        }
+        guard let spec = try? await block.spec.resolve(fetcher: fetcher).node else {
+            return .result(rejection(.unavailableEvidence))
+        }
+        guard ChainTree.binds(spec, to: block.spec.rawCID) else {
+            return .result(rejection(.providerMalformedEvidence))
+        }
+        return .ready(PreparedImport(
+            resolvedHeader: resolvedHeader,
+            block: block,
+            fetcher: fetcher,
+            contribution: contribution,
+            chainPath: context.path,
+            sameChainPredecessor: predecessor,
+            kind: .block(StateDiff.empty, nil, validated: false),
+            defersBodyStore: true
+        ))
     }
 
     /// Execute a previously-weighed block and produce a validity verdict. A
@@ -654,7 +708,7 @@ enum BlockImport {
         }
         func excluded() -> Preparation {
             guard !alreadyExecuted else {
-                return .result(rejection(.localVerificationFailure, sameChainPredecessor: predecessor))
+                return .result(rejection(.executedVerdictContradiction, sameChainPredecessor: predecessor))
             }
             guard mayExclude else {
                 return .result(rejection(.notYetValid, sameChainPredecessor: predecessor))
@@ -677,10 +731,16 @@ enum BlockImport {
                 : .result(rejection(failure, sameChainPredecessor: predecessor))
         }
 
-        if block.parent == nil {
-            guard !context.isRoot, block.height == 0 else {
-                return excluded()
+        if block.parent == nil, context.isRoot {
+            // The root chain's only genesis is its pinned one, executed at
+            // bootstrap: re-executing it adds nothing.
+            guard context.admitsGenesis(blockHash), alreadyExecuted else {
+                return .result(rejection(.protocolInvalid, sameChainPredecessor: predecessor))
             }
+            return .result(.duplicate(sameChainPredecessor: predecessor))
+        }
+        if block.parent == nil, block.height != 0 {
+            return excluded()
         }
 
         switch await executeTransition(
@@ -695,6 +755,10 @@ enum BlockImport {
         case .failure(let failure):
             return rejected(failure)
         case .success(let transition):
+            // The reverse direction: a proven-invalid block is never executed.
+            if await level.chain.isExcludedRoot(blockHash) {
+                return .result(rejection(.executedVerdictContradiction, sameChainPredecessor: predecessor))
+            }
             // Commitments (§9.10) only on the one outcome that emits a block
             // fact, and after every verdict above — so a malformed trie is
             // classified by the same funnel as any other deterministic
@@ -836,7 +900,8 @@ enum BlockImport {
             return true
         case .unavailableEvidence, .providerMalformedEvidence,
              .crossChainEvidenceRequired, .localVerificationFailure,
-             .notYetValid, .notAcceptedAtCurrentChain, .revisionExhausted:
+             .notYetValid, .notAcceptedAtCurrentChain, .revisionExhausted,
+             .executedVerdictContradiction:
             return false
         }
     }
@@ -991,10 +1056,7 @@ enum BlockImport {
     }
 
     enum GenesisPreparation {
-        case unresolved(BlockImportError)
-        case notGenesis
-        case noWork
-        case invalid(BlockImportError)
+        case failed(BlockImportError)
         case ready(
             (header: BlockHeader, block: Block),
             VerifiedWorkContribution,
@@ -1015,29 +1077,29 @@ enum BlockImport {
     ) async -> GenesisPreparation {
         let resolved: (header: BlockHeader, block: Block)
         switch await resolveBlock(genesisHeader, fetcher: fetcher) {
-        case .failure(let failure): return .unresolved(failure)
+        case .failure(let failure): return .failed(failure)
         case .success(let value): resolved = value
         }
         let blockHash = resolved.header.rawCID
         guard resolved.block.parent == nil, resolved.block.height == 0,
               context.admitsGenesis(blockHash) else {
-            return .notGenesis
+            return .failed(.protocolInvalid)
         }
         let contribution: VerifiedWorkContribution?
         if context.isRoot {
             contribution = rootWork(of: resolved.block, blockHash: blockHash)
         } else {
             guard let childPackage else {
-                return .unresolved(.crossChainEvidenceRequired(.childProof(
+                return .failed(.crossChainEvidenceRequired(.childProof(
                     chainPath: context.path, childCID: blockHash
                 )))
             }
             switch await verifyChildProof(childPackage, child: resolved.block, context: context) {
             case .success(let verified): contribution = verified.contribution
-            case .failure(let failure): return .unresolved(failure)
+            case .failure(let failure): return .failed(failure)
             }
         }
-        guard let contribution else { return .noWork }
+        guard let contribution else { return .failed(.proofOfWorkInvalid) }
         switch await executeTransition(
             block: resolved.block,
             blockHash: blockHash,
@@ -1047,7 +1109,7 @@ enum BlockImport {
             context: context,
             validationContext: validationContext
         ) {
-        case .failure(let failure): return .invalid(failure)
+        case .failure(let failure): return .failed(failure)
         case .success(let transition): return .ready(resolved, contribution, transition)
         }
     }
@@ -1086,7 +1148,7 @@ enum BlockImport {
             to: materializedVolumeStorer
         )
         try await stage(stagingContext)
-        let chain = try await ChainState.restore(replaying: [prepared.facts])
+        let chain = try await ChainState.restore(replaying: [prepared.facts], context: context)
         return (
             ChainLevel(chain: chain, context: context),
             transition.stateDiff,
@@ -1361,7 +1423,7 @@ public extension ChainLevel {
             if await chain.isExecuted(blockHash: target) {
                 await chain.releaseImportRevision()
                 return BlockImport.rejection(
-                    .localVerificationFailure,
+                    .executedVerdictContradiction,
                     sameChainPredecessor: prepared.sameChainPredecessor
                 )
             }
@@ -1379,6 +1441,15 @@ public extension ChainLevel {
                     sameChainPredecessor: prepared.sameChainPredecessor
                 )
             }
+        }
+        // The reverse: a validation for a block excluded since preflight.
+        if case .block(_, _, true) = prepared.kind,
+           await chain.isExcludedRoot(prepared.resolvedHeader.rawCID) {
+            await chain.releaseImportRevision()
+            return BlockImport.rejection(
+                .executedVerdictContradiction,
+                sameChainPredecessor: prepared.sameChainPredecessor
+            )
         }
         let stagingContext = preflight.stagingContext
         do {
@@ -1484,9 +1555,7 @@ public extension ChainLevel {
             childPackage: nil,
             validationContext: validationContext
         ) {
-        case .unresolved(let failure), .invalid(let failure): throw failure
-        case .notGenesis: throw BlockImportError.protocolInvalid
-        case .noWork: throw BlockImportError.proofOfWorkInvalid
+        case .failed(let failure): throw failure
         case .ready(let resolved, let contribution, let transition):
             return try await BlockImport.finishBootstrap(
                 context: context,
@@ -1522,12 +1591,8 @@ public extension ChainLevel {
             childPackage: childPackage,
             validationContext: validationContext
         ) {
-        case .unresolved(let failure), .invalid(let failure):
+        case .failed(let failure):
             return .rejected(failure)
-        case .notGenesis:
-            return .rejected(.protocolInvalid)
-        case .noWork:
-            return .rejected(.proofOfWorkInvalid)
         case .ready(let resolved, let contribution, let transition):
             let accepted = try await BlockImport.finishBootstrap(
                 context: context,

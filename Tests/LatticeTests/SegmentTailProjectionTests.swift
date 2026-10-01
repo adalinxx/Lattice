@@ -28,7 +28,7 @@ final class SegmentTailProjectionTests: XCTestCase {
             height: 65
         )
 
-        let chain = try await ChainState.restore(replaying: [segmentTailAdmission(root)])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [segmentTailAdmission(root)])
         _ = try await chain.applyStaged(segmentTailAdmission(alternate))
         for block in canonicalTail {
             _ = try await chain.applyStaged(segmentTailAdmission(block))
@@ -75,7 +75,7 @@ final class SegmentTailProjectionTests: XCTestCase {
             )
         }
 
-        let chain = try await ChainState.restore(replaying: [segmentTailAdmission(root)])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [segmentTailAdmission(root)])
         _ = try await chain.applyStaged(segmentTailAdmission(alternate))
         for block in canonicalTail {
             _ = try await chain.applyStaged(segmentTailAdmission(block))
@@ -123,7 +123,7 @@ final class SegmentTailProjectionTests: XCTestCase {
                 height: UInt64(index + 1)
             )
         }
-        let chain = try await ChainState.restore(replaying: [segmentTailAdmission(root)])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [segmentTailAdmission(root)])
         _ = try await chain.applyStaged(segmentTailAdmission(alternate))
         for block in canonicalTail {
             _ = try await chain.applyStaged(segmentTailAdmission(block))
@@ -182,7 +182,7 @@ final class SegmentTailProjectionTests: XCTestCase {
         let c1 = segmentTailBlock(name: "reorg-c1", parent: c0.hash, height: 6, work: 2)
         let d0 = segmentTailBlock(name: "reorg-d0", parent: fork.hash, height: 5, work: 1)
 
-        let chain = try await ChainState.restore(replaying: [segmentTailAdmission(root)])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [segmentTailAdmission(root)])
         for block in [prefix, a0, a1, a2] {
             _ = try await chain.applyStaged(segmentTailAdmission(block))
         }
@@ -243,7 +243,7 @@ final class SegmentTailProjectionTests: XCTestCase {
         let e = segmentTailBlock(name: "extend-e", parent: d.hash, height: 5)
         let f = segmentTailBlock(name: "extend-f", parent: e.hash, height: 6)
 
-        let chain = try await ChainState.restore(replaying: [segmentTailAdmission(root)])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [segmentTailAdmission(root)])
         for block in [a, side, b, c] {
             _ = try await chain.applyStaged(segmentTailAdmission(block))
         }

@@ -65,7 +65,7 @@ final class QuotientDeletionCostTests: XCTestCase {
 
         for length in [200, 800] {
             let root = admission("root-\(length)", parent: nil, height: 0, work: 4)
-            let chain = try await ChainState.restore(replaying: [root.batch])
+            let chain = try await ChainState.restoreWithoutContext(replaying: [root.batch])
 
             let blocksBefore = await chain.canonicalProjectionBlockVisitCount
             let stepsBefore = await chain.canonicalProjectionSegmentVisitCount
@@ -109,7 +109,7 @@ final class QuotientDeletionCostTests: XCTestCase {
         var mergedFullSteps: [Int: UInt64] = [:]
         for length in [200, 800] {
             let root = admission("m-root-\(length)", parent: nil, height: 0, work: 4)
-            let chain = try await ChainState.restore(replaying: [root.batch])
+            let chain = try await ChainState.restoreWithoutContext(replaying: [root.batch])
             let stepsBefore = await chain.canonicalProjectionSegmentVisitCount
             var previousHash = root.hash
             for height in 1...length {

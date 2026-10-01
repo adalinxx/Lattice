@@ -896,7 +896,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
         let batchData = try JSONEncoder().encode(batches)
         let decodedGenesis = try JSONDecoder().decode(BlockImportBatch.self, from: snapshotData)
         let decodedBatches = try JSONDecoder().decode([BlockImportBatch].self, from: batchData)
-        let restored = try await ChainState.restore(replaying: [decodedGenesis] + decodedBatches)
+        let restored = try await ChainState.restoreWithoutContext(replaying: [decodedGenesis] + decodedBatches)
         let restoredRecord = await restored.workContribution(id: fixture.rootCID)
         XCTAssertEqual(try XCTUnwrap(restoredRecord).contribution, fixture.contribution)
     }

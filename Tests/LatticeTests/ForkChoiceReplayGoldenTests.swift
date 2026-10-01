@@ -615,7 +615,7 @@ final class ForkChoiceReplayGoldenTests: XCTestCase {
     ) async throws -> (chain: ChainState, trace: ForkChoiceTraceGolden.OrderTrace) {
         let names = graph.nameByHash
         func name(_ hash: String) -> String { names[hash] ?? hash }
-        let chain = try await ChainState.restore(replaying: [order[0].batch])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [order[0].batch])
         await chain.serveRuns(for: ForkChoiceGoldenGraph.directory)
         var reorgCommits = 0
         var reorgCommitsAfterDecisiveExclusion: [Int] = []
@@ -686,7 +686,7 @@ final class ForkChoiceReplayGoldenTests: XCTestCase {
         random.shuffle(&batches)
         XCTAssertNotEqual(batches, graph.events.map(\.batch), "the shuffle must move something")
 
-        let chain = try await ChainState.restore(replaying: batches)
+        let chain = try await ChainState.restoreWithoutContext(replaying: batches)
         await chain.serveRuns(for: ForkChoiceGoldenGraph.directory)
 
         let golden = try await ForkChoiceGolden.capture(chain, graph: graph)

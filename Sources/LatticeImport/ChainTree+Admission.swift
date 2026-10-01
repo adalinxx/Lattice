@@ -471,10 +471,11 @@ extension ChainTree {
     /// and joins the executed set; a proven-invalid one emits its exclusion,
     /// its work still weighing. A root may be excluded only while another
     /// executed root stands; otherwise, like a block this tree no longer
-    /// holds, the verdict is refused as `.notYetValid`. Execution is never
-    /// revoked: an invalid verdict for a block already executed contradicts
-    /// a recorded fact, so it is refused as `.localVerificationFailure` — a
-    /// local fault for the node to surface, never an exclusion.
+    /// holds, the verdict is refused as `.notYetValid`. Execution and
+    /// exclusion are never revoked: an invalid verdict for an executed block,
+    /// or a valid one for an excluded block, contradicts a recorded fact and
+    /// is refused as `.executedVerdictContradiction` — a local fault for the
+    /// node to surface, never a fact.
     public mutating func applyConnect(_ verdict: ConnectVerdict) -> ChainTreeAdmission {
         let blockHash = verdict.blockHash
         switch verdict.outcome {
@@ -482,7 +483,7 @@ extension ChainTree {
             return .rejected(failure)
         case .invalid(let isGenesis):
             guard !isExecuted(blockHash: blockHash) else {
-                return .rejected(.localVerificationFailure)
+                return .rejected(.executedVerdictContradiction)
             }
             guard contains(blockHash: blockHash),
                   !isGenesis || hasExecutedRoot(besides: blockHash) else {
@@ -496,6 +497,10 @@ extension ChainTree {
         case .valid(let facts, let materializedPostState):
             guard contains(blockHash: blockHash) else {
                 return .rejected(.notYetValid)
+            }
+            // The reverse direction: a proven-invalid block is never executed.
+            guard !isExcludedRoot(blockHash) else {
+                return .rejected(.executedVerdictContradiction)
             }
             return applyAdmission(
                 [facts],
@@ -528,7 +533,9 @@ extension ChainTree {
         guard let blockHash = try? BlockHeader(node: block).rawCID else {
             return .rejected(.proofOfWorkInvalid)
         }
+        // Structure only; a met target (the work below) is positive too.
         guard block.parent == nil, block.height == 0,
+              block.nextTarget > .zero,
               block.hasWellFormedRewardRecipient,
               context.admitsGenesis(blockHash) else {
             return .rejected(.protocolInvalid)
@@ -557,6 +564,9 @@ extension ChainTree {
             return .rejected(.providerMalformedEvidence)
         }
         if contains(blockHash: blockHash) {
+            // The spec is bound by CID above, so holding it here repairs a
+            // tree restored without it.
+            _ = holdSpec(spec, for: block.spec.rawCID)
             return addWork(work, to: blockHash)
         }
         guard acceptsWorkLocation(of: work.id, at: blockHash) else {
@@ -569,9 +579,6 @@ extension ChainTree {
             kind: .block(.empty, nil, validated: false),
             childCommitments: nil
         )
-        guard ChainTree.decodesAsGenesis(facts) else {
-            return .rejected(.protocolInvalid)
-        }
         let admission = applyAdmission([facts], of: blockHash)
         if admission.update != nil {
             _ = holdSpec(spec, for: block.spec.rawCID)

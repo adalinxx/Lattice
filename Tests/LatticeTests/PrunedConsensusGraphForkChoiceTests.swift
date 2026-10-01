@@ -76,7 +76,7 @@ final class ConsensusGraphRecoveryTests: XCTestCase {
         XCTAssertEqual(Set(root.childHashes), [firstHash, secondHash])
         XCTAssertEqual(branch.childHashes, [descendantHash])
 
-        let restored = try await ChainState.restore(replaying: [
+        let restored = try await ChainState.restoreWithoutContext(replaying: [
             testAdmissionBatch(for: genesis),
             testAdmissionBatch(for: first),
             testAdmissionBatch(for: second),

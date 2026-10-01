@@ -99,7 +99,7 @@ final class ReplayProjectionDeferralTests: XCTestCase {
 
         // Incremental reference: genesis restore, then every batch applied live
         // with per-event projection (the pre-existing behavior for live sync).
-        let incremental = try await ChainState.restore(replaying: [batches[0]])
+        let incremental = try await ChainState.restoreWithoutContext(replaying: [batches[0]])
         for batch in batches.dropFirst() {
             _ = try await incremental.applyStaged(batch)
         }
@@ -111,7 +111,7 @@ final class ReplayProjectionDeferralTests: XCTestCase {
         // reference above covers the natural order. (Deliberately not
         // shuffled(): a random permutation would turn any order-dependence
         // bug into an unreproducible flake.)
-        let restored = try await ChainState.restore(
+        let restored = try await ChainState.restoreWithoutContext(
             replaying: Array(batches.reversed())
         )
 
@@ -141,7 +141,7 @@ final class ReplayProjectionDeferralTests: XCTestCase {
 
     func testReevaluationIsFreeWhenNoFactChangedAndStillPromotesAfterMutation() async throws {
         let (batches, _) = Self.bushyBatches()
-        let chain = try await ChainState.restore(replaying: batches)
+        let chain = try await ChainState.restoreWithoutContext(replaying: batches)
 
         // A duplicate delivery that added nothing must not pay a projection.
         await chain.resetFullCanonicalProjectionCount()

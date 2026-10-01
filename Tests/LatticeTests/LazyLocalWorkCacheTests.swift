@@ -37,7 +37,7 @@ final class LazyLocalWorkCacheTests: XCTestCase {
         let rawBeforePersist = try XCTUnwrap(blocksBeforePersist[rootHash])
         XCTAssertEqual(rawBeforePersist.subtreeWeight, .zero)
 
-        let restored = try await ChainState.restore(replaying: hashes.indices.map {
+        let restored = try await ChainState.restoreWithoutContext(replaying: hashes.indices.map {
             lazyCacheAdmission(
                 index: $0,
                 hash: hashes[$0],
@@ -61,7 +61,7 @@ private func lazyCacheLinearChain(
 ) async throws -> (ChainState, [String]) {
     precondition(count > 0)
     let hashes = (0..<count).map { testCID("lazy-local-cache-\($0)") }
-    let chain = try await ChainState.restore(replaying: [
+    let chain = try await ChainState.restoreWithoutContext(replaying: [
         lazyCacheAdmission(index: 0, hash: hashes[0], parentHash: nil),
     ])
     for index in 1..<count {

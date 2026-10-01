@@ -182,7 +182,7 @@ final class ForkChoiceOracleTests: XCTestCase {
         let genesis = block("g", parent: nil, height: 0, work: 1)
         let located = block("a", parent: "g", height: 1, grind: "shared", work: 3)
         let other = block("b", parent: "g", height: 1, work: 2)
-        let chain = try await ChainState.restore(replaying: [genesis])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [genesis])
         var oracle = ForkChoiceOracle()
         for batch in [genesis, located, other] {
             _ = try await chain.replay(batch)
@@ -238,7 +238,7 @@ final class ForkChoiceOracleTests: XCTestCase {
 
     func testOracleAgreesWithChainStateOnTheGoldenGraph() async throws {
         let graph = ForkChoiceGoldenGraph.generate()
-        let chain = try await ChainState.restore(replaying: [graph.events[0].batch])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [graph.events[0].batch])
         var oracle = ForkChoiceOracle()
         oracle.apply(graph.events[0].batch)
         for event in graph.events.dropFirst() {
@@ -249,7 +249,7 @@ final class ForkChoiceOracleTests: XCTestCase {
             }
         }
         try await assertAgreement(chain, oracle, "final")
-        let restored = try await ChainState.restore(replaying: graph.events.map(\.batch).reversed())
+        let restored = try await ChainState.restoreWithoutContext(replaying: graph.events.map(\.batch).reversed())
         try await assertAgreement(restored, oracle, "reversed restore")
     }
 
@@ -259,7 +259,7 @@ final class ForkChoiceOracleTests: XCTestCase {
             0x1234_5678, 0x8765_4321, 0x0DDC_0FFE, 0x51DE_CAFE,
         ] {
             let planned = SegmentBaseDifferentialFixtures.planned(seed: seed)
-            let chain = try await ChainState.restore(replaying: [planned[0].batch])
+            let chain = try await ChainState.restoreWithoutContext(replaying: [planned[0].batch])
             var oracle = ForkChoiceOracle()
             oracle.apply(planned[0].batch)
             // Descendants before ancestors, as the differential test delivers
@@ -292,7 +292,7 @@ final class ForkChoiceOracleTests: XCTestCase {
         let (batches, _) = ReplayProjectionDeferralTests.bushyBatches()
         var oracle = ForkChoiceOracle()
         for batch in batches { oracle.apply(batch) }
-        let restored = try await ChainState.restore(replaying: Array(batches.reversed()))
+        let restored = try await ChainState.restoreWithoutContext(replaying: Array(batches.reversed()))
         try await assertAgreement(restored, oracle, "bushy reversed restore")
     }
 }
