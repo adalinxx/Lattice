@@ -112,17 +112,24 @@ public struct SubmissionResult: Sendable {
     public let addedContribution: Bool
     public let extendsCanonical: Bool
     public let commit: ChainCommit?
+    /// Every block whose credited work this mutation added or raised, plus
+    /// every block it CONNECTED: a block inserted under a connected parent
+    /// connects with the whole orphan component it grafts. What a run
+    /// (§9.10) can have moved by, reported by the code that moved it.
+    public let weighed: [String]
 
     init(
         addedBlock: Bool,
         addedContribution: Bool = false,
         extendsCanonical: Bool,
-        commit: ChainCommit? = nil
+        commit: ChainCommit? = nil,
+        weighed: [String] = []
     ) {
         self.addedBlock = addedBlock
         self.addedContribution = addedContribution
         self.extendsCanonical = extendsCanonical
         self.commit = commit
+        self.weighed = weighed
     }
 
     public static func discarded() -> Self {
@@ -959,7 +966,8 @@ public struct ChainTree: Sendable {
             addedContribution: result.addedContribution,
             extendsCanonical: extendsCanonical,
             commit: (canonicalChange ?? ChainCommit(tipHash: canonicalTip))
-                .atRevision(mutationGeneration)
+                .atRevision(mutationGeneration),
+            weighed: result.weighed
         )
     }
 
@@ -1064,7 +1072,8 @@ public struct ChainTree: Sendable {
         return SubmissionResult(
             addedBlock: true,
             addedContribution: addedContribution,
-            extendsCanonical: false
+            extendsCanonical: false,
+            weighed: forkChoice.isRouted(blockHash) ? graph.subtree(of: blockHash) : [blockHash]
         )
     }
 
@@ -1135,7 +1144,8 @@ public struct ChainTree: Sendable {
             addedContribution: true,
             extendsCanonical: false,
             commit: (canonicalChange ?? ChainCommit(tipHash: canonicalTip))
-                .atRevision(mutationGeneration)
+                .atRevision(mutationGeneration),
+            weighed: [blockHash]
         )
     }
 

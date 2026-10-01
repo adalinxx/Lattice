@@ -693,61 +693,70 @@ final class ParentRunAttributionTests: XCTestCase {
         XCTAssertEqual(wb, sum(45))
     }
 
-    /// A committed block held only after its committer's run has CLOSED (a
-    /// later committer took the descendants) and brought by another carrier
-    /// is credited live exactly as a restore credits it: the derivation is a
-    /// function of the graph, whichever step made it reachable. Every
-    /// interleaving of the two levels' facts, each step deriving only what it
-    /// changed, ends where the restore does.
-    func testABlockHeldAfterItsRunClosedIsCreditedLiveAsOnRestore() async throws {
-        let parentFacts: [(String, BlockImportBatch)] = [
-            ("g", batch("g", parent: nil, height: 0, work: 1)),
-            ("p1", batch("p1", parent: "g", height: 1, work: 5, commits: [d: h("c")])),
-            ("p1x", batch("p1x", parent: "p1", height: 2, work: 4)),
-            ("p2", batch("p2", parent: "p1x", height: 3, work: 3, commits: [d: h("c2")])),
-            ("q", batch("q", parent: "p2", height: 4, work: 6)),
+    /// Live equals restore after EVERY step, whatever order either level's
+    /// facts arrive in — parent committers arriving as orphans and grafted
+    /// by a later ancestor, child blocks held after their committer's run
+    /// closed (brought by another carrier), children before parents — when
+    /// the host forwards only what each mutation reported
+    /// (`SubmissionResult.weighed`), never a set of its own.
+    func testLiveDerivationFromReportedResultsEqualsRestoreAfterEveryStep() throws {
+        let parentFacts: [BlockImportBatch] = [
+            batch("g", parent: nil, height: 0, work: 1),
+            batch("p1", parent: "g", height: 1, work: 5, commits: [d: h("c")]),
+            batch("p1x", parent: "p1", height: 2, work: 4),
+            batch("p2", parent: "p1x", height: 3, work: 3, commits: [d: h("c2")]),
+            batch("q", parent: "p2", height: 4, work: 6),
+            batch("x", parent: "p1", height: 2, work: 9, commits: [d: h("c2")]),
+            batch("x1", parent: "x", height: 3, work: 2),
         ]
-        // c is credited under its own grind, none of p1's: another carrier.
-        let childFacts: [(String, BlockImportBatch)] = [
-            ("cg", batch("cg", parent: nil, height: 0, work: 1)),
-            ("c", batch("c", parent: "cg", height: 1, work: 2)),
-            ("c2", batch("c2", parent: "c", height: 2, work: 2)),
+        // c and c2 are credited under their own grinds: other carriers.
+        let childFacts: [BlockImportBatch] = [
+            batch("cg", parent: nil, height: 0, work: 1),
+            batch("c", parent: "cg", height: 1, work: 2),
+            batch("c2", parent: "c", height: 2, work: 2),
+            batch("c3", parent: "c2", height: 3, work: 2),
         ]
+        let childNames = ["cg", "c", "c2", "c3"]
         let context = testChainContext(path: [DEFAULT_ROOT_DIRECTORY, d])
-        var parentTree = try ChainTree.restoreWithoutContext(replaying: parentFacts.map(\.1))
-        parentTree.serveRuns(for: d)
-        let restored = try ChainTree.restore(replaying: childFacts.map(\.1), context: context, parent: parentTree)
-        XCTAssertEqual(weight(restored, "c"), sum(2, 4, 2, 6),
-                       "fixture: c + p1's closed run (p1x) + c2 + p2's run (q)")
-
+        // Arrivals after each genesis: 0 = a parent fact, 1 = a child fact.
+        // The pinned trigger first: the committer p1's descendants and the
+        // re-committer p2 arrive BEFORE p1 (an orphan component p1 grafts),
+        // then the child blocks after every run has closed.
+        let pinned: [(Int, Int)] = [(0, 3), (0, 4), (0, 2), (0, 1), (0, 5), (0, 6),
+                                    (1, 1), (1, 2), (1, 3)]
+        var orders = [pinned]
         var rng = SeededRNG(seed: 0xC1_05ED)
-        // The exact trigger first — the whole parent, then the child — then
-        // random merges of the two orders.
-        var orders = [Array(repeating: 0, count: parentFacts.count) + Array(repeating: 1, count: childFacts.count)]
-        for _ in 0..<10 { orders.append(orders[0].shuffled(using: &rng)) }
+        for _ in 0..<24 {
+            let arrivals = (1..<parentFacts.count).map { (0, $0) } + (1..<childFacts.count).map { (1, $0) }
+            orders.append(arrivals.shuffled(using: &rng))
+        }
         for (trial, order) in orders.enumerated() {
-            let parent = try await ChainState.restoreWithoutContext(replaying: [parentFacts[0].1])
-            await parent.serveRuns(for: d)
-            let child = try await ChainState.restoreWithoutContext(replaying: [childFacts[0].1])
-            var next = [1, 1]
-            for level in order {
-                let facts = level == 0 ? parentFacts : childFacts
-                guard next[level] < facts.count else { continue }
-                let (name, fact) = facts[next[level]]
-                next[level] += 1
+            var parent = try ChainTree.restoreWithoutContext(replaying: [parentFacts[0]])
+            parent.serveRuns(for: d)
+            var child = try ChainTree.restoreWithoutContext(replaying: [childFacts[0]])
+            var childSoFar = [childFacts[0]]
+            for (step, (level, index)) in order.enumerated() {
                 if level == 0 {
-                    _ = try await parent.replay(fact)
-                    await derive(child, from: parent, parentBlocks: [name])
+                    let reported = try parent.apply(parentFacts[index])?.weighed ?? []
+                    child.applyParentRun(from: parent, directory: d, parentBlocks: Set(reported))
                 } else {
-                    _ = try await child.replay(fact)
-                    await derive(child, from: parent, parentBlocks: [], held: [name])
+                    childSoFar.append(childFacts[index])
+                    let reported = try child.apply(childFacts[index])?.weighed ?? []
+                    child.applyParentRun(from: parent, directory: d, parentBlocks: [], held: Set(reported))
+                }
+                let restored = try ChainTree.restore(replaying: childSoFar, context: context, parent: parent)
+                for name in childNames {
+                    XCTAssertEqual(weight(child, name), weight(restored, name),
+                                   "trial \(trial) step \(step): \(name)")
                 }
             }
-            for name in ["cg", "c", "c2"] {
-                let live = await child.subtreeWeight(forHash: h(name))
-                XCTAssertEqual(live, weight(restored, name), "trial \(trial): \(name)")
-            }
         }
+        // Fixture guard: the pinned order's final weights include both runs.
+        var parent = try ChainTree.restoreWithoutContext(replaying: parentFacts)
+        parent.serveRuns(for: d)
+        let restored = try ChainTree.restore(replaying: childFacts, context: context, parent: parent)
+        XCTAssertEqual(weight(restored, "c"), sum(2, 4, 2, 6, 2, 2),
+                       "c + p1's run beyond p1 (p1x) + c2 + p2's (q) + x's (x1) + c3")
     }
 
     /// A genesis is just a block: a child-root genesis committing a

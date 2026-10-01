@@ -140,6 +140,17 @@ struct BlockGraph: Sendable {
         childrenByHash[hash] ?? []
     }
 
+    /// `hash` and every held descendant, parent before child.
+    func subtree(of hash: String) -> [String] {
+        var blocks: [String] = []
+        var stack = [hash]
+        while let next = stack.popLast() {
+            blocks.append(next)
+            stack.append(contentsOf: children(of: next))
+        }
+        return blocks
+    }
+
     func work(of hash: String) -> BlockWork? {
         workByHash[hash]
     }

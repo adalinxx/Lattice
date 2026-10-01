@@ -214,14 +214,15 @@ extension ChainTree {
     /// parent levels first, so a run attributed at `P` by ITS parent is in
     /// `runWork(P, d)` and reaches the next level down.
     ///
-    /// A step names what it changed, and the derivation covers exactly the
-    /// runs that change can move: the run of every `parentBlocks` entry (a
-    /// parent block weighed, connected or strengthened — every block of a
-    /// grafted component included), and every committer of every `held`
-    /// block (a block of THIS chain that became held, whichever carrier
-    /// brought it). With `parentBlocks` nil every run is derived, as restore
-    /// does. Returns the blocks credited, in order, and the canonical change,
-    /// if the projection moved.
+    /// A step derives exactly the runs it can have moved, from what the
+    /// mutating code itself reported — never from what a host remembered:
+    /// `parentBlocks` is the parent level's result, forwarded unchanged
+    /// (`ChainTreeUpdate.weighed`, or the `raised` of the parent's own
+    /// `applyParentRun`), whose runs are derived; `held` is this level's
+    /// `ChainTreeUpdate.weighed`, whose committers' runs are derived. With
+    /// `parentBlocks` nil every run is derived, as restore does. Returns the
+    /// blocks credited, in order, and the canonical change, if the
+    /// projection moved.
     @discardableResult
     public mutating func applyParentRun(
         from parent: ChainTree,
