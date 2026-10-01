@@ -1229,7 +1229,9 @@ fact:
   reward recipient, a genesis, or a child whose `parentState` is not its
   carrier's `prevState`. No weight, no blame.
 - **Held** — a timestamp after the node's `now`, an unknown parent, or a
-  difficulty anchor not in hand. Retried; never a verdict.
+  difficulty anchor not in hand. Retried; never a verdict. The schedule is
+  checked before `now`: a header off the schedule is a proof-of-work failure
+  even when its timestamp is after `now`.
 
 Weighed headers are never evicted. The exclusion is a separate batch from the
 block's own (a batch carries an exclusion alone); the node MUST make both
