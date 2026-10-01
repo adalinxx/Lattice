@@ -351,7 +351,7 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
 
     /// Continuity: an excluded subtree that had been executed is un-anchored
     /// and nothing below it is attested, while the rest of the frontier stays.
-    func testExclusionUnanchorsOnlyTheExcludedSubtree() async throws {
+    func testExclusionKeepsOnlyTheExcludedSubtreeOutOfTheExecutedSet() async throws {
         let blocks = [
             Planned(name: "g", parent: nil, work: 1),
             Planned(name: "a", parent: "g", work: 2),
@@ -360,11 +360,15 @@ final class WorkWeighsValiditySelectsTests: XCTestCase {
         ]
         var rng = SeededRNG(seed: 4)
         let (live, _) = try await build(blocks, excluded: [], order: Array(blocks.indices), rng: &rng)
-        for name in ["g", "a", "a2", "b"] {
+        // a2 is executed ahead of a, which is then proven invalid. An
+        // executed block is never excluded (execution is never revoked).
+        for name in ["g", "a2", "b"] {
             _ = try await live.replay(BlockImportBatch.validation(blockHash: h(name)))
         }
-        let before = await live.hasExecutedAncestry(blockHash: h("a2"))
-        XCTAssertTrue(before)
+        do {
+            _ = try await live.replay(exclusion("b"))
+            XCTFail("an executed block is never excluded")
+        } catch {}
         _ = try await live.replay(exclusion("a"))
         let a2 = await live.hasExecutedAncestry(blockHash: h("a2"))
         let a = await live.hasExecutedAncestry(blockHash: h("a"))
