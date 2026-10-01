@@ -175,11 +175,11 @@ final class ChainTreeFactEquivalenceGoldenTests: XCTestCase {
     }
 
     /// A child chain under a parent with a main branch, an executed side
-    /// branch, a subtree under an excluded root, and a side-branch block
-    /// whose `GenesisAction` authorizes the child genesis. Covers: genesis
-    /// bootstrap from `recordsGenesis`; work from a child proof and a second
-    /// proof (evidence / `addWork`); continuity via the side branch, under
-    /// the excluded subtree, and from facts for the wrong parent path.
+    /// branch and a subtree under an excluded root, its genesis carried
+    /// under the side branch's state. Covers: genesis bootstrap from its
+    /// proof and continuity via the side branch; work from a child proof and
+    /// a second proof (evidence / `addWork`); continuity via the side branch,
+    /// under the excluded subtree, and from facts for the wrong parent path.
     private func childChainSteps() async throws -> [Golden.Step] {
         let fetcher = StorableFetcher()
         let rootContext = testChainContext()
@@ -188,24 +188,15 @@ final class ChainTreeFactEquivalenceGoldenTests: XCTestCase {
         func reward(_ seed: String) -> String { testAddress(publicKey: "equivalence-\(seed)") }
 
         let parentGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let childGenesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 1)
-        let childGenesisCID = try BlockHeader(node: childGenesis).rawCID
         let a = try await buildAndStoreBlock(previous: parentGenesis, timestamp: 2_000, target: easy, nonce: 1, rewardRecipient: reward("a"), fetcher: fetcher)
         let a2 = try await AdmissionFixture.makeChild(of: a, fetcher: fetcher, timestamp: 3_000, nonce: 2)
         let a3 = try await AdmissionFixture.makeChild(of: a2, fetcher: fetcher, timestamp: 4_000, nonce: 3)
         let side = try await buildAndStoreBlock(previous: parentGenesis, timestamp: 2_100, target: easy, nonce: 4, rewardRecipient: reward("side"), fetcher: fetcher)
-        let keyPair = CryptoUtils.generateKeyPair()
-        let owner = testAddress(publicKey: keyPair.publicKey)
-        let genesisBody = TransactionBody(
-            accountActions: [], actions: [], depositActions: [],
-            genesisActions: [GenesisAction(directory: "Child", blockCID: childGenesisCID)],
-            receiptActions: [], withdrawalActions: [],
-            signers: [owner], nonce: 0, chainPath: [DEFAULT_ROOT_DIRECTORY]
+        let childGenesis = try await BlockBuilder.buildChildGenesis(
+            spec: chainLocalSpec(), parentState: side.postState,
+            timestamp: 1_000, target: easy, nonce: 1, fetcher: fetcher
         )
-        let issuer = try await buildAndStoreBlock(
-            previous: side, transactions: [signedTestTransaction(genesisBody, by: keyPair)],
-            timestamp: 3_100, target: easy, nonce: 5, rewardRecipient: owner, fetcher: fetcher
-        )
+        try await storeBuiltBlock(childGenesis, in: fetcher)
         // X declares a real state it does not produce; X1 on it executes, but
         // under a root that is then excluded.
         let rewarded = try await buildAndStoreBlock(previous: parentGenesis, timestamp: 2_200, target: easy, nonce: 6, rewardRecipient: reward("r"), fetcher: fetcher)
@@ -221,28 +212,26 @@ final class ChainTreeFactEquivalenceGoldenTests: XCTestCase {
         let x1 = try await buildAndStoreBlock(previous: x, timestamp: 3_300, target: easy, nonce: 8, rewardRecipient: reward("x1"), fetcher: fetcher)
 
         var parent = try await TreeDriver.tree(genesis: parentGenesis, context: rootContext, fetcher: fetcher)
-        var facts = ParentLevelFacts(tree: parent)
-        for block in [a, a2, a3, side, issuer, x, x1] {
+        for block in [a, a2, a3, side, x, x1] {
             _ = try await TreeDriver.insert(block, into: &parent, fetcher: fetcher)
         }
-        for block in [a, a2, a3, side, issuer, x1, x] {
-            let connected = try await TreeDriver.connect(try BlockHeader(node: block).rawCID, on: &parent, fetcher: fetcher)
-            if let update = connected.update { facts.record(update) }
+        for block in [a, a2, a3, side, x1, x] {
+            _ = try await TreeDriver.connect(try BlockHeader(node: block).rawCID, on: &parent, fetcher: fetcher)
         }
-        facts.tree = parent
+        let facts = ParentLevelFacts(tree: parent)
         XCTAssertTrue(parent.isExcludedRoot(try BlockHeader(node: x).rawCID))
         XCTAssertEqual(parent.canonicalTip, try BlockHeader(node: a3).rawCID)
 
-        // Child genesis, authorized by the executed side-branch issuer.
-        let link = ParentGenesisLink(
-            parentPath: [DEFAULT_ROOT_DIRECTORY], directory: "Child",
-            childGenesisCID: childGenesisCID, parentStateCID: LatticeState.emptyHeader.rawCID
+        // Child genesis, carried under the executed side branch's state.
+        let carried = try await proof(
+            of: childGenesis, carrierParent: side, nonce: 0, fetcher: fetcher, context: childContext,
+            link: continuityLink(for: childGenesis, facts: facts)
         )
-        XCTAssertTrue(facts.recordsGenesis(link))
+        XCTAssertNotNil(carried.package.parentStateContinuityLink)
         let recorder = AdmissionStageRecorder()
         let old = try await ChainLevel.bootstrap(
             context: childContext, genesisHeader: try BlockHeader(node: childGenesis),
-            fetcher: fetcher, parentGenesisLink: link,
+            fetcher: fetcher, childPackage: carried.package,
             validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
             stage: { await recorder.stage($0) }
         )
@@ -251,7 +240,7 @@ final class ChainTreeFactEquivalenceGoldenTests: XCTestCase {
             return []
         }
         let new = try await ChainTree.bootstrap(
-            genesis: try BlockHeader(node: childGenesis), fetcher: fetcher,
+            genesis: try BlockHeader(node: childGenesis), evidence: carried.evidence, fetcher: fetcher,
             context: childContext, parentFacts: facts
         ).get()
         let oldGenesisBatch = await recorder.recordedBatches().last
@@ -290,7 +279,7 @@ final class ChainTreeFactEquivalenceGoldenTests: XCTestCase {
                 try await child.header("child/\(name)/second-grind", block, package: second.package, evidence: second.evidence)
             }
             let answering = wrong
-                ? ParentLevelFacts(tree: parent, path: [DEFAULT_ROOT_DIRECTORY, "Other"], genesisIssuers: facts.genesisIssuers)
+                ? ParentLevelFacts(tree: parent, path: [DEFAULT_ROOT_DIRECTORY, "Other"])
                 : facts
             try await child.execute(
                 "child/\(name)", block, package: proved.package, parentFacts: answering,

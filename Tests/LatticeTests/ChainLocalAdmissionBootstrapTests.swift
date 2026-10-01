@@ -43,45 +43,36 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             key: "bootstrap",
             chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
         )
-        let childGenesis = try await AdmissionFixture.makeGenesis(
+        let childGenesis = try await makeChildGenesis(
             fetcher: fetcher,
-            timestamp: 1_000,
             nonce: 1,
             transactions: [transaction]
         )
         let context = testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"])
         let header = try BlockHeader(node: childGenesis)
-        // The self-contained genesis is authorized solely by the parent's record
-        // (ParentGenesisLink), bound to the empty parent state. No carrier proof.
-        let genesisLink = testParentGenesisLink(
-            directory: "Child",
-            childGenesisCID: header.rawCID,
-            parentStateCID: childGenesis.parentState.rawCID
-        )
+        // A child genesis is weighed by its proof like any child block: no
+        // parent record authorizes it.
+        let package = try await carriedGenesisPackage(childGenesis, fetcher: fetcher)
 
-        // A ParentGenesisLink that does not authorize this exact genesis (wrong
-        // recorded state) is rejected — the record gate is the sole authorization.
-        let wrongFact = try await ChainLevel.bootstrap(
+        // A proof of another block weighs nothing here.
+        let other = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000, nonce: 9)
+        let wrongProof = try await ChainLevel.bootstrap(
             context: context,
             genesisHeader: header,
             fetcher: fetcher,
-            parentGenesisLink: testParentGenesisLink(
-                directory: "Child",
-                childGenesisCID: header.rawCID,
-                parentStateCID: testCID("wrong-deployment-state")
-            ),
+            childPackage: try await carriedGenesisPackage(other, fetcher: fetcher),
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
         )
-        XCTAssertEqual(wrongFact.failure, .providerMalformedEvidence)
+        XCTAssertEqual(wrongProof.failure, .providerMalformedEvidence)
 
         do {
             _ = try await ChainLevel.bootstrap(
                 context: context,
                 genesisHeader: header,
                 fetcher: fetcher,
-                parentGenesisLink: genesisLink,
+                childPackage: package,
                 validationContentStorer: FailingAdmissionStorer(),
                 materializedVolumeStorer: FailingAdmissionStorer(),
                 stage: testAdmissionStage
@@ -93,7 +84,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             context: context,
             genesisHeader: header,
             fetcher: fetcher,
-            parentGenesisLink: genesisLink,
+            childPackage: package,
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
@@ -120,20 +111,16 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             timestamp: 2_000,
             nonce: 2
         )
-        do {
-            _ = try await ChainLevel.bootstrap(
-                context: context,
-                genesisHeader: try BlockHeader(node: nonGenesis),
-                fetcher: fetcher,
-                parentGenesisLink: genesisLink,
-                validationContentStorer: fetcher,
-                materializedVolumeStorer: fetcher,
-                stage: testAdmissionStage
-            )
-            XCTFail("a non-genesis block cannot create a child runtime")
-        } catch let failure as BlockImportError {
-            XCTAssertEqual(failure, .protocolInvalid)
-        }
+        let nonGenesisResult = try await ChainLevel.bootstrap(
+            context: context,
+            genesisHeader: try BlockHeader(node: nonGenesis),
+            fetcher: fetcher,
+            childPackage: package,
+            validationContentStorer: fetcher,
+            materializedVolumeStorer: fetcher,
+            stage: testAdmissionStage
+        )
+        XCTAssertEqual(nonGenesisResult.failure, .protocolInvalid, "a non-genesis block cannot create a child runtime")
     }
 
     func testPublicRootBootstrapStagesTransactionGenesisBeforeVisibility() async throws {
@@ -148,7 +135,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             transactions: [transaction]
         )
         let header = try BlockHeader(node: genesis)
-        let context = testChainContext(path: [DEFAULT_ROOT_DIRECTORY])
+        let context = testChainContext(genesisCID: header.rawCID)
 
         do {
             _ = try await ChainLevel.bootstrap(
@@ -191,7 +178,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         XCTAssertEqual(rootTip, header.rawCID)
         let batches = await recorder.recordedBatches()
         XCTAssertEqual(batches.count, 1)
-        let restored = try await ChainState.restore(replaying: batches)
+        let restored = try await ChainState.restoreWithoutContext(replaying: batches)
         let restoredTip = await restored.canonicalTip
         let restoredRevision = await restored.currentRevision()
         let liveRevision = await rootChain.currentRevision()
@@ -223,7 +210,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             fetcher: fetcher
         )
         let header = try BlockHeader(node: genesis)
-        let context = testChainContext()
+        let context = testChainContext(genesisCID: header.rawCID)
 
         // Default limit (2 MiB) < 33 pages (2.06 MiB): unavailable, not invalid.
         do {
@@ -260,7 +247,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             )]
         )
         let header = try BlockHeader(node: genesis)
-        let context = testChainContext(path: [DEFAULT_ROOT_DIRECTORY])
+        let context = testChainContext(genesisCID: header.rawCID)
 
         let direct = try await genesis.validateGenesis(
             fetcher: fetcher,
@@ -299,7 +286,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         )
         let genesisHeader = try BlockHeader(node: genesis)
         let bootstrap = try await ChainLevel.bootstrap(
-            context: testChainContext(),
+            context: testChainContext(genesisCID: (genesisHeader).rawCID),
             genesisHeader: genesisHeader,
             fetcher: fetcher,
             validationContentStorer: fetcher,
@@ -310,7 +297,6 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             accountActions: [],
             actions: [Action(key: "unsigned-height-one", oldValue: nil, newValue: "value")],
             depositActions: [],
-            genesisActions: [],
             receiptActions: [],
             withdrawalActions: [],
             signers: [],
@@ -347,7 +333,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         let header = try BlockHeader(node: genesis)
 
         _ = try await ChainLevel.bootstrap(
-            context: testChainContext(),
+            context: testChainContext(genesisCID: (header).rawCID),
             genesisHeader: header,
             fetcher: fetcher,
             validationContentStorer: fetcher,
@@ -365,7 +351,6 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
                 accountActions: [],
                 actions: [Action(key: "malformed-pair", oldValue: nil, newValue: "value")],
                 depositActions: [],
-                genesisActions: [],
                 receiptActions: [],
                 withdrawalActions: [],
                 signers: signers,
@@ -393,7 +378,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             )
             let header = try BlockHeader(node: genesis)
             _ = try await ChainLevel.bootstrap(
-                context: testChainContext(),
+                context: testChainContext(genesisCID: (header).rawCID),
                 genesisHeader: header,
                 fetcher: fetcher,
                 validationContentStorer: fetcher,
@@ -407,7 +392,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         let fetcher = StorableFetcher()
         let childGenesis = try await BlockBuilder.buildChildGenesis(
             spec: chainLocalSpec(),
-            parentState: LatticeState.emptyHeader,
+            parentState: try await testAnchorParentGenesis(fetcher: fetcher).postState,
             transactions: [AdmissionFixture.unsignedStateChangingGenesisTransaction(
                 key: "unsigned-child",
                 chainPath: [DEFAULT_ROOT_DIRECTORY, "Child"]
@@ -425,11 +410,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             ),
             genesisHeader: childHeader,
             fetcher: fetcher,
-            parentGenesisLink: testParentGenesisLink(
-                directory: "Child",
-                childGenesisCID: childHeader.rawCID,
-                parentStateCID: childGenesis.parentState.rawCID
-            ),
+            childPackage: try await carriedGenesisPackage(childGenesis, fetcher: fetcher),
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
             stage: testAdmissionStage
@@ -474,7 +455,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         let recorder = AdmissionStageRecorder()
         do {
             _ = try await ChainLevel.bootstrap(
-                context: testChainContext(),
+                context: testChainContext(genesis: forged),
                 genesisHeader: try BlockHeader(node: forged),
                 fetcher: fetcher,
                 validationContentStorer: durable,
@@ -491,6 +472,8 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         XCTAssertTrue(staged.isEmpty)
     }
 
+    /// The configured Nexus genesis keeps its own grind: a target miss is a
+    /// proof-of-work failure, staging nothing.
     func testRootBootstrapRejectsTargetMissWithoutStoring() async throws {
         let fetcher = StorableFetcher()
         let durable = RecordingAdmissionStorer()
@@ -506,7 +489,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         XCTAssertGreaterThan(hardGenesis.proofOfWorkHash(), hardGenesis.target)
         do {
             _ = try await ChainLevel.bootstrap(
-                context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY]),
+                context: testChainContext(genesis: hardGenesis),
                 genesisHeader: try BlockHeader(node: hardGenesis),
                 fetcher: fetcher,
                 validationContentStorer: durable,
@@ -523,14 +506,31 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         XCTAssertTrue(targetMissBatches.isEmpty)
     }
 
-    func testBootstrapDoesNotStageOnCurrentChainTargetMiss() async throws {
+    /// The root chain admits only its configured genesis (§5.1).
+    func testRootBootstrapRefusesAnUnpinnedGenesis() async throws {
         let fetcher = StorableFetcher()
-        let childGenesis = try await buildAndStoreGenesis(
-            spec: chainLocalSpec(),
-            timestamp: 1_000,
-            target: UInt256(1),
-            nonce: 1,
-            fetcher: fetcher
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        do {
+            _ = try await ChainLevel.bootstrap(
+                context: testChainContext(),
+                genesisHeader: try BlockHeader(node: genesis),
+                fetcher: fetcher,
+                validationContentStorer: fetcher,
+                materializedVolumeStorer: fetcher,
+                stage: testAdmissionStage
+            )
+            XCTFail("only the configured genesis may root the root chain")
+        } catch let failure as BlockImportError {
+            XCTAssertEqual(failure, .protocolInvalid)
+        }
+    }
+
+    /// A child genesis weighs only by its proof: a carrier hash that misses
+    /// the genesis's target yields no work, and nothing is staged.
+    func testChildBootstrapDoesNotStageOnTargetMiss() async throws {
+        let fetcher = StorableFetcher()
+        let childGenesis = try await makeChildGenesis(
+            fetcher: fetcher, nonce: 1, target: UInt256(1)
         )
         let header = try BlockHeader(node: childGenesis)
         let recorder = AdmissionStageRecorder()
@@ -539,11 +539,7 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
             context: testChainContext(path: [DEFAULT_ROOT_DIRECTORY, "Child"]),
             genesisHeader: header,
             fetcher: fetcher,
-            parentGenesisLink: testParentGenesisLink(
-                directory: "Child",
-                childGenesisCID: header.rawCID,
-                parentStateCID: childGenesis.parentState.rawCID
-            ),
+            childPackage: try await carriedGenesisPackage(childGenesis, fetcher: fetcher),
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
             stage: { record in await recorder.stage(record) }

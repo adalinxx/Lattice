@@ -109,7 +109,7 @@ final class ParentRunAttributionTests: XCTestCase {
 
     /// Served first, then built block by block: the live per-block path.
     private func linearByReplay() async throws -> ChainState {
-        let chain = try await ChainState.restore(replaying: [
+        let chain = try await ChainState.restoreWithoutContext(replaying: [
             batch("g", parent: nil, height: 0, work: 1),
         ])
         await chain.serveRuns(for: d)
@@ -181,7 +181,7 @@ final class ParentRunAttributionTests: XCTestCase {
             meta("q", parent: "p2", height: 3, work: 7),
         ])
         await byInit.serveRuns(for: d)
-        let byReplay = try await ChainState.restore(replaying: [batch("g", parent: nil, height: 0, work: 1)])
+        let byReplay = try await ChainState.restoreWithoutContext(replaying: [batch("g", parent: nil, height: 0, work: 1)])
         await byReplay.serveRuns(for: d)
         _ = try await byReplay.replay(batch("p1", parent: "g", height: 1, work: 5, commits: [d: testCID("c1")]))
         _ = try await byReplay.replay(batch("p2", parent: "p1", height: 2, work: 3, commits: [d: testCID("c2")]))
@@ -226,7 +226,7 @@ final class ParentRunAttributionTests: XCTestCase {
             meta("q", parent: "p2", height: 3, work: 7),
         ])
         await byInit.serveRuns(for: d)
-        let byReplay = try await ChainState.restore(replaying: [batch("g", parent: nil, height: 0, work: 1)])
+        let byReplay = try await ChainState.restoreWithoutContext(replaying: [batch("g", parent: nil, height: 0, work: 1)])
         await byReplay.serveRuns(for: d)
         _ = try await byReplay.replay(batch("p1", parent: "g", height: 1, work: 5,
                                             commits: [d: testCID("c1"), e: testCID("b1")]))
@@ -309,7 +309,7 @@ final class ParentRunAttributionTests: XCTestCase {
     /// changes are re-settled. A fact that DISAGREES with a recorded map is a
     /// graph conflict, never first-writer-wins.
     func testUnrecordedCommitmentsAreAdoptedFromALaterFactNotTreatedAsNone() async throws {
-        let chain = try await ChainState.restore(replaying: [batch("g", parent: nil, height: 0, work: 1)])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [batch("g", parent: nil, height: 0, work: 1)])
         await chain.serveRuns(for: d)
         _ = try await chain.replay(batch("p1", parent: "g", height: 1, work: 5, commits: [d: testCID("c")], recorded: false))
         _ = try await chain.replay(batch("p2", parent: "p1", height: 2, work: 3))
@@ -354,7 +354,7 @@ final class ParentRunAttributionTests: XCTestCase {
     /// Runs exist only for directories this node serves: a block committing
     /// into two hundred directories costs a node that serves one exactly one.
     func testUnservedDirectoriesCostNothingAndServeNothing() async throws {
-        let chain = try await ChainState.restore(replaying: [batch("g", parent: nil, height: 0, work: 1)])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [batch("g", parent: nil, height: 0, work: 1)])
         await chain.serveRuns(for: d)
         var commits = [d: testCID("c")]
         for i in 0..<200 { commits["junk-\(i)"] = testCID("j\(i)") }
@@ -374,7 +374,7 @@ final class ParentRunAttributionTests: XCTestCase {
     /// one algorithm.
     func testServingLateEqualsServingFirst() async throws {
         func build(serveFirst: Bool) async throws -> ChainState {
-            let chain = try await ChainState.restore(replaying: [batch("g", parent: nil, height: 0, work: 1)])
+            let chain = try await ChainState.restoreWithoutContext(replaying: [batch("g", parent: nil, height: 0, work: 1)])
             if serveFirst { await chain.serveRuns(for: d) }
             _ = try await chain.replay(batch("p1", parent: "g", height: 1, work: 5, commits: [d: testCID("c1")]))
             _ = try await chain.replay(batch("p2", parent: "p1", height: 2, work: 3, commits: [d: testCID("c2")]))
@@ -446,7 +446,7 @@ final class ParentRunAttributionTests: XCTestCase {
     }
 
     func testOrphanIsCreditedWhenItConnectsNotBefore() async throws {
-        let chain = try await ChainState.restore(replaying: [batch("g", parent: nil, height: 0, work: 1)])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [batch("g", parent: nil, height: 0, work: 1)])
         await chain.serveRuns(for: d)
         _ = try await chain.replay(batch("p1", parent: "g", height: 1, work: 5, commits: [d: testCID("c")]))
         // p3 arrives before its parent p2, and so does a strengthening of it.
@@ -466,7 +466,7 @@ final class ParentRunAttributionTests: XCTestCase {
     /// A committer that arrives as an orphan is not a committer yet: its run
     /// exists only once it is connected, and then holds its whole subtree.
     func testOrphanCommitterReportsNothingUntilConnected() async throws {
-        let chain = try await ChainState.restore(replaying: [batch("g", parent: nil, height: 0, work: 1)])
+        let chain = try await ChainState.restoreWithoutContext(replaying: [batch("g", parent: nil, height: 0, work: 1)])
         await chain.serveRuns(for: d)
         _ = try await chain.replay(batch("p2", parent: "p1", height: 2, work: 3, commits: [d: testCID("c")]))
         _ = try await chain.replay(batch("p3", parent: "p2", height: 3, work: 7))
@@ -522,7 +522,7 @@ final class ParentRunAttributionTests: XCTestCase {
                 contribution: VerifiedWorkContribution(id: grind("x"), work: UInt256(20))
             ))]),
         ]
-        let live = try await ChainState.restore(replaying: [facts[0]])
+        let live = try await ChainState.restoreWithoutContext(replaying: [facts[0]])
         await live.serveRuns(for: d)
         for fact in facts.dropFirst() { _ = try await live.replay(fact) }
         let liveP1 = await run(live, at: "p1")
@@ -533,7 +533,7 @@ final class ParentRunAttributionTests: XCTestCase {
         let seed = propertySeed()
         var generator = seed.generator()
         for _ in 0..<5 {
-            let cold = try await ChainState.restore(replaying: facts.shuffled(using: &generator))
+            let cold = try await ChainState.restoreWithoutContext(replaying: facts.shuffled(using: &generator))
             await cold.serveRuns(for: d) // served AFTER restore: the whole-graph settle
             let coldP1 = await run(cold, at: "p1")
             let coldP2 = await run(cold, at: "p2")
@@ -759,7 +759,7 @@ final class ParentRunAttributionTests: XCTestCase {
             batch("p2", parent: "p1", height: 2, work: 3),
             batch("p3", parent: "p2", height: 3, work: 7),
         ]
-        let a = try await ChainState.restore(replaying: [facts[0]])
+        let a = try await ChainState.restoreWithoutContext(replaying: [facts[0]])
         await a.serveRuns(for: d)
         for fact in facts.dropFirst() { _ = try await a.replay(fact) }
         // A's parent serves p1's run there: p1 is that chain's child block,
@@ -788,7 +788,7 @@ final class ParentRunAttributionTests: XCTestCase {
 
         // The credit landing before p1's block fact is deferred, not lost —
         // then applied — and a cold restore serves the same report.
-        let late = try await ChainState.restore(replaying: [facts[0]])
+        let late = try await ChainState.restoreWithoutContext(replaying: [facts[0]])
         await late.serveRuns(for: d)
         do {
             _ = try await late.replay(credit)
@@ -796,7 +796,7 @@ final class ParentRunAttributionTests: XCTestCase {
         } catch ChainStateRestoreError.missingBlockFact {}
         for fact in facts.dropFirst() { _ = try await late.replay(fact) }
         _ = try await late.replay(credit)
-        let cold = try await ChainState.restore(replaying: facts + [credit])
+        let cold = try await ChainState.restoreWithoutContext(replaying: facts + [credit])
         await cold.serveRuns(for: d)
         for chain in [late, cold] {
             let againValue = await chain.parentRunReport(at: h("p1"), directory: d)
@@ -888,7 +888,7 @@ final class ParentRunAttributionTests: XCTestCase {
     /// connected block — never O(height). Asserted exactly, and by ratio.
     func testRunUpdatesArePerDirectoryNotPerHeight() async throws {
         func build(depth: Int, directories: [String]) async throws -> UInt64 {
-            let chain = try await ChainState.restore(replaying: [batch("g", parent: nil, height: 0, work: 1)])
+            let chain = try await ChainState.restoreWithoutContext(replaying: [batch("g", parent: nil, height: 0, work: 1)])
             for directory in directories { await chain.serveRuns(for: directory) }
             let commits = Dictionary(uniqueKeysWithValues: directories.map { ($0, testCID("c-\($0)")) })
             _ = try await chain.replay(batch("p1", parent: "g", height: 1, work: 2, commits: commits))

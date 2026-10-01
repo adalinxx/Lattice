@@ -325,7 +325,6 @@ func buildPremineGenesis(
         accountActions: [AccountAction(owner: ownerAddress, delta: Int64(spec.premineAmount()))],
         actions: [],
         depositActions: [],
-        genesisActions: [],
         receiptActions: [],
         withdrawalActions: [],
         signers: [],
@@ -457,10 +456,24 @@ func storeWasmPolicy(
     return WasmPolicyRef(moduleCID: module.rawCID, scope: scope, entrypoint: entrypoint)
 }
 
+/// A root context pins a genesis CID (§5.1). Tests that never admit a root
+/// through `insertGenesis`, `connect` or `restore` with a context take the
+/// placeholder; the others pin their genesis (`testChainContext(genesis:)`).
+let testPlaceholderGenesisCID = testCID("test-placeholder-root-genesis")
+
 func testChainContext(
-    path: [String] = [DEFAULT_ROOT_DIRECTORY]
+    path: [String] = [DEFAULT_ROOT_DIRECTORY],
+    genesisCID: String? = nil
 ) -> ChainRuntimeContext {
-    try! ChainRuntimeContext(path: path)
+    try! ChainRuntimeContext(
+        path: path,
+        genesisCID: path.count == 1 ? (genesisCID ?? testPlaceholderGenesisCID) : nil
+    )
+}
+
+/// The root context pinned to `genesis`.
+func testChainContext(genesis: Block) -> ChainRuntimeContext {
+    testChainContext(genesisCID: try! BlockHeader(node: genesis).rawCID)
 }
 
 extension ChainLevel {
@@ -511,7 +524,13 @@ func testAdmissionBatch(
             stateDiff: .empty
         )),
         .work(ChainWorkFact(blockHash: header.rawCID, contribution: work)),
-    ])
+    ] + executedGenesisFacts(block, blockHash: header.rawCID))
+}
+
+/// A genesis batch as bootstrap persists it carries its validation: a root
+/// is executed only by a validation fact, never by being restored.
+private func executedGenesisFacts(_ block: Block, blockHash: String) -> [ChainFact] {
+    block.parent == nil ? [.validation(ChainValidationFact(blockHash: blockHash))] : []
 }
 
 func testAdmissionBatch(
@@ -534,7 +553,7 @@ func testAdmissionBatch(
             stateDiff: stateDiff
         )),
         .work(ChainWorkFact(blockHash: header.rawCID, contribution: contribution))
-    ])
+    ] + executedGenesisFacts(block, blockHash: header.rawCID))
 }
 
 func testWorkBatch(
@@ -548,27 +567,9 @@ func testWorkBatch(
 
 func childValidationPackage(
     proof: ChildBlockProof,
-    fetcher _: any Fetcher,
-    parentGenesisLink: ParentGenesisLink? = nil
+    fetcher _: any Fetcher
 ) async throws -> ChildValidationPackage {
-    return ChildValidationPackage(
-        proof: proof,
-        parentGenesisLink: parentGenesisLink
-    )
-}
-
-func testParentGenesisLink(
-    directory: String,
-    childGenesisCID: String,
-    parentStateCID: String = testCID("parent-genesis-state"),
-    parentPath: [String] = [DEFAULT_ROOT_DIRECTORY]
-) -> ParentGenesisLink {
-    ParentGenesisLink(
-        parentPath: parentPath,
-        directory: directory,
-        childGenesisCID: childGenesisCID,
-        parentStateCID: parentStateCID
-    )
+    ChildValidationPackage(proof: proof)
 }
 
 @discardableResult
@@ -750,4 +751,97 @@ extension XCTestCase {
                 + "swift test --filter LatticeTests.\(type(of: self))/\(test)"
         )
     }
+}
+
+/// The parent-chain genesis every test child genesis anchors to: its
+/// post-state is real, as a child genesis's `parentState` must be (§5.1).
+func testAnchorParentGenesis(fetcher: StorableFetcher) async throws -> Block {
+    try await buildAndStoreGenesis(
+        spec: chainLocalSpec(),
+        transactions: [AdmissionFixture.unsignedStateChangingGenesisTransaction(
+            key: "child-genesis-anchor", chainPath: [DEFAULT_ROOT_DIRECTORY]
+        )],
+        timestamp: 100,
+        target: UInt256.max,
+        fetcher: fetcher
+    )
+}
+
+/// A child genesis committing the anchor parent state.
+func makeChildGenesis(
+    fetcher: StorableFetcher,
+    timestamp: Int64 = 1_000,
+    nonce: UInt64 = 0,
+    spec: ChainSpec = chainLocalSpec(),
+    target: UInt256 = UInt256.max,
+    transactions: [Transaction] = []
+) async throws -> Block {
+    let anchor = try await testAnchorParentGenesis(fetcher: fetcher)
+    let block = try await BlockBuilder.buildChildGenesis(
+        spec: spec, parentState: anchor.postState, transactions: transactions,
+        timestamp: timestamp, target: target, nonce: nonce, fetcher: fetcher
+    )
+    return try await storeBuiltBlock(block, in: fetcher)
+}
+
+/// Parent facts attesting exactly `states` as produced by the parent's
+/// executed set.
+struct ProducedParentStates: ParentChainFacts {
+    let states: Set<String>
+
+    func hasContinuity(_ link: ParentStateContinuityLink) -> Bool {
+        link.fromStateCID == LatticeState.emptyHeader.rawCID && states.contains(link.toStateCID)
+    }
+}
+
+/// Parent facts attesting the anchor parent state.
+func testParentFacts(fetcher: StorableFetcher) async throws -> ProducedParentStates {
+    ProducedParentStates(states: [try await testAnchorParentGenesis(fetcher: fetcher).postState.rawCID])
+}
+
+/// A child genesis's `ChildBlockProof`: a carrier on the anchor parent
+/// genesis commits `childGenesis` under `directory`, its `prevState` the
+/// genesis's `parentState`. The package carries the continuity link.
+func carriedGenesisPackage(
+    _ childGenesis: Block,
+    directory: String = "Child",
+    nonce: UInt64 = 0,
+    target: UInt256 = UInt256.max,
+    fetcher: StorableFetcher
+) async throws -> ChildValidationPackage {
+    let anchor = try await testAnchorParentGenesis(fetcher: fetcher)
+    let carrier = try await buildAndStoreBlock(
+        previous: anchor,
+        children: [directory: childGenesis],
+        timestamp: max(childGenesis.timestamp, anchor.timestamp) + 1,
+        target: target,
+        nonce: 10_000 + nonce,
+        fetcher: fetcher
+    )
+    let proof = try await ChildBlockProof.generate(
+        rootHeader: try BlockHeader(node: carrier),
+        childDirectory: directory,
+        fetcher: fetcher
+    )
+    return ChildValidationPackage(
+        proof: proof,
+        parentStateContinuityLink: ParentStateContinuityLink(
+            parentPath: [DEFAULT_ROOT_DIRECTORY],
+            fromStateCID: LatticeState.emptyHeader.rawCID,
+            toStateCID: childGenesis.parentState.rawCID
+        )
+    )
+}
+
+/// The verified evidence of `carriedGenesisPackage` for `childGenesis`.
+func carriedGenesisEvidence(
+    _ childGenesis: Block,
+    path: [String] = [DEFAULT_ROOT_DIRECTORY, "Child"],
+    nonce: UInt64 = 0,
+    fetcher: StorableFetcher
+) async throws -> VerifiedChildEvidence {
+    let package = try await carriedGenesisPackage(
+        childGenesis, directory: path.last ?? "Child", nonce: nonce, fetcher: fetcher
+    )
+    return try await package.proof.verifySecuringWork(child: childGenesis, chainPath: path).get()
 }

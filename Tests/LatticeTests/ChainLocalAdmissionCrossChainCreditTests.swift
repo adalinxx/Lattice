@@ -185,30 +185,12 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
         )
         try await storeBuiltBlock(alternate, in: fetcher)
         let alternateHeader = try BlockHeader(node: alternate)
-        let keyPair = CryptoUtils.generateKeyPair()
-        let owner = testAddress(publicKey: keyPair.publicKey)
-        let anchorBody = TransactionBody(
-            accountActions: [],
-            actions: [],
-            depositActions: [],
-            genesisActions: [GenesisAction(
-                directory: "Child",
-                blockCID: alternateHeader.rawCID
-            )],
-            receiptActions: [],
-            withdrawalActions: [],
-            signers: [owner],
-            nonce: 0,
-            chainPath: [DEFAULT_ROOT_DIRECTORY]
-        )
         let root = try await buildAndStoreBlock(
             previous: nexusGenesis,
-            transactions: [signedTestTransaction(anchorBody, by: keyPair)],
             children: ["Child": alternate],
             timestamp: 2_000,
             target: AdmissionFixture.easy,
             nonce: 2,
-            rewardRecipient: owner,
             fetcher: fetcher
         )
         XCTAssertGreaterThan(root.proofOfWorkHash(), alternate.target)
@@ -216,12 +198,6 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
         let nexusLevel = AdmissionFixture.makeLevel(genesis: nexusGenesis)
         let rootHeader = try BlockHeader(node: root)
         _ = try await nexusLevel.admit(rootHeader, fetcher: fetcher)
-        let genesisLink = ParentGenesisLink(
-            parentPath: [DEFAULT_ROOT_DIRECTORY],
-            directory: "Child",
-            childGenesisCID: alternateHeader.rawCID,
-            parentStateCID: root.prevState.rawCID
-        )
         let proof = try await ChildBlockProof.generate(
             rootHeader: rootHeader,
             childDirectory: "Child",
@@ -239,10 +215,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
         let result = try await activeLevel.admit(
             alternateHeader,
             fetcher: fetcher,
-            childPackage: ChildValidationPackage(
-                proof: proof,
-                parentGenesisLink: genesisLink
-            )
+            childPackage: ChildValidationPackage(proof: proof)
         )
 
         XCTAssertEqual(result.failure, .proofOfWorkInvalid)
@@ -460,22 +433,8 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             childDirectory: "Middle",
             fetcher: fetcher
         )
-        let middleResult = try await ChainLevel.bootstrap(
-            context: testChainContext(
-                path: [DEFAULT_ROOT_DIRECTORY, "Middle"]
-            ),
-            genesisHeader: try BlockHeader(node: middle),
-            fetcher: fetcher,
-            parentGenesisLink: testParentGenesisLink(
-                directory: "Middle",
-                childGenesisCID: try BlockHeader(node: middle).rawCID,
-                parentStateCID: middle.parentState.rawCID
-            ),
-            validationContentStorer: fetcher,
-            materializedVolumeStorer: fetcher,
-            stage: testAdmissionStage
-        )
-        XCTAssertEqual(middleResult.failure, .proofOfWorkInvalid)
+        // The middle genesis is never bootstrapped: its chain need not exist
+        // for the share to relay through it.
 
         let leafHop = try await ChildBlockProof.generate(
             rootHeader: try BlockHeader(node: middle),
@@ -577,11 +536,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
             ),
             genesisHeader: middleHeader,
             fetcher: fetcher,
-            parentGenesisLink: testParentGenesisLink(
-                directory: "Middle",
-                childGenesisCID: middleHeader.rawCID,
-                parentStateCID: invalidMiddle.parentState.rawCID
-            ),
+            childPackage: ChildValidationPackage(proof: rootHop),
             validationContentStorer: fetcher,
             materializedVolumeStorer: fetcher,
             stage: { batch in await recorder.stage(batch) }
@@ -941,7 +896,7 @@ final class ChainLocalAdmissionCrossChainCreditTests: XCTestCase {
         let batchData = try JSONEncoder().encode(batches)
         let decodedGenesis = try JSONDecoder().decode(BlockImportBatch.self, from: snapshotData)
         let decodedBatches = try JSONDecoder().decode([BlockImportBatch].self, from: batchData)
-        let restored = try await ChainState.restore(replaying: [decodedGenesis] + decodedBatches)
+        let restored = try await ChainState.restoreWithoutContext(replaying: [decodedGenesis] + decodedBatches)
         let restoredRecord = await restored.workContribution(id: fixture.rootCID)
         XCTAssertEqual(try XCTUnwrap(restoredRecord).contribution, fixture.contribution)
     }

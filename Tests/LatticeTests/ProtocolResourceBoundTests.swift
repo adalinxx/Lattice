@@ -53,9 +53,6 @@ final class ProtocolResourceBoundTests: XCTestCase {
                     amountDeposited: 1
                 ),
             ],
-            genesisActions: [
-                GenesisAction(directory: "Child", blockCID: "ignored"),
-            ],
             receiptActions: [
                 ReceiptAction(
                     withdrawer: "withdrawer",
@@ -84,7 +81,6 @@ final class ProtocolResourceBoundTests: XCTestCase {
             accountActions: body.accountActions,
             actions: body.actions,
             depositActions: body.depositActions,
-            genesisActions: body.genesisActions,
             receiptActions: [
                 ReceiptAction(
                     withdrawer: "withdrawer",
@@ -139,7 +135,6 @@ final class ProtocolResourceBoundTests: XCTestCase {
                 accountActions: [],
                 actions: [],
                 depositActions: [],
-                genesisActions: [],
                 receiptActions: [],
                 withdrawalActions: nonces.map {
                     WithdrawalAction(
@@ -188,7 +183,6 @@ final class ProtocolResourceBoundTests: XCTestCase {
                 ),
             ],
             depositActions: [],
-            genesisActions: [],
             receiptActions: [],
             withdrawalActions: [],
             signers: [],

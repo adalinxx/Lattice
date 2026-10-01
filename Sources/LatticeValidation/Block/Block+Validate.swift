@@ -134,7 +134,7 @@ public extension Block {
         reportTemporalFailure: Bool = false,
         validationContext: ValidationContext
     ) async throws -> (Bool, StateDiff, LatticeState?) {
-        if !hasGenesisShape() { return (false, .empty, nil) }
+        if !hasGenesisShape(isRoot: chainPath.count == 1) { return (false, .empty, nil) }
         if !validationContext.permits(timestamp: timestamp) {
             if reportTemporalFailure { throw BlockValidationError.notYetValid }
             return (false, .empty, nil)
@@ -170,8 +170,7 @@ public extension Block {
         // that reaches this point — pass empty literals instead of collecting.
         assert(transactionBodies.allSatisfy { $0.depositActions.isEmpty && $0.withdrawalActions.isEmpty && $0.receiptActions.isEmpty })
         if try !validateBalanceChangesForGenesis(spec: specNode, allAccountActions: allAccountActions) { return (false, .empty, nil) }
-        if !validateGenesisTransactions(transactionBodies: transactionBodies) { return (false, .empty, nil) }
-        let (postStateValid, diff, materializedPostState) = try await validatePostState(transactionBodies: transactionBodies, allAccountActions: allAccountActions, allActions: transactionBodies.flatMap { $0.actions }, allDepositActions: [], allGenesisActions: transactionBodies.flatMap { $0.genesisActions }, allReceiptActions: [], allWithdrawalActions: [], fetcher: fetcher)
+        let (postStateValid, diff, materializedPostState) = try await validatePostState(transactionBodies: transactionBodies, allAccountActions: allAccountActions, allActions: transactionBodies.flatMap { $0.actions }, allDepositActions: [], allReceiptActions: [], allWithdrawalActions: [], fetcher: fetcher)
         if !postStateValid { return (false, .empty, nil) }
         return (true, diff, materializedPostState)
     }
@@ -464,9 +463,8 @@ public extension Block {
             withdrawalActions: allWithdrawalActions
         ) else { return (false, .empty, nil) }
         if let coinbase { allAccountActions.append(coinbase) }
-        if !validateGenesisTransactions(transactionBodies: transactionBodies) { return (false, .empty, nil) }
 
-        let (postStateValid, diff, materializedPostState) = try await validatePostState(transactionBodies: transactionBodies, allAccountActions: allAccountActions, allActions: transactionBodies.flatMap { $0.actions }, allDepositActions: allDepositActions, allGenesisActions: transactionBodies.flatMap { $0.genesisActions }, allReceiptActions: allReceiptActions, allWithdrawalActions: allWithdrawalActions, fetcher: fetcher)
+        let (postStateValid, diff, materializedPostState) = try await validatePostState(transactionBodies: transactionBodies, allAccountActions: allAccountActions, allActions: transactionBodies.flatMap { $0.actions }, allDepositActions: allDepositActions, allReceiptActions: allReceiptActions, allWithdrawalActions: allWithdrawalActions, fetcher: fetcher)
         if !postStateValid { return (false, .empty, nil) }
         return (true, diff, materializedPostState)
     }
@@ -527,11 +525,11 @@ public extension Block {
     }
 
 
-    func validatePostState(transactionBodies: [TransactionBody], allAccountActions: [AccountAction], allActions: [Action], allDepositActions: [DepositAction], allGenesisActions: [GenesisAction], allReceiptActions: [ReceiptAction], allWithdrawalActions: [WithdrawalAction], fetcher: Fetcher) async throws -> (Bool, StateDiff, LatticeState?) {
+    func validatePostState(transactionBodies: [TransactionBody], allAccountActions: [AccountAction], allActions: [Action], allDepositActions: [DepositAction], allReceiptActions: [ReceiptAction], allWithdrawalActions: [WithdrawalAction], fetcher: Fetcher) async throws -> (Bool, StateDiff, LatticeState?) {
         guard let prevStateNode = try await prevState.resolve(fetcher: fetcher).node else {
             return (false, .empty, nil)
         }
-        let (updatedState, diff) = try await prevStateNode.proveAndUpdateState(allAccountActions: allAccountActions, allActions: allActions, allDepositActions: allDepositActions, allGenesisActions: allGenesisActions, allReceiptActions: allReceiptActions, allWithdrawalActions: allWithdrawalActions, transactionBodies: transactionBodies, fetcher: fetcher)
+        let (updatedState, diff) = try await prevStateNode.proveAndUpdateState(allAccountActions: allAccountActions, allActions: allActions, allDepositActions: allDepositActions, allReceiptActions: allReceiptActions, allWithdrawalActions: allWithdrawalActions, transactionBodies: transactionBodies, fetcher: fetcher)
         // Compare the expected postState CID (computed from prev state + TXs) against the
         // block's declared postState CID. Avoids a CAS fetch for the new postState — the
         // new state nodes are computed inline and may not yet be stored to DiskBroker.
@@ -615,18 +613,16 @@ public extension Block {
         return !overflow && expected == height
     }
 
-    /// Header-local rules shared by every path that can accept a genesis.
-    func hasGenesisShape() -> Bool {
+    /// Header-local rules shared by every path that can accept a genesis. A
+    /// root genesis has no parent chain, so it commits the empty parent state;
+    /// a child genesis commits a real one — its carrier's `prevState`, never
+    /// the empty state — and proves it by continuity (§5.1 rule 4, §5.3).
+    func hasGenesisShape(isRoot: Bool) -> Bool {
         version == Block.currentVersion
             && parent == nil
             && height == 0
             && prevState.rawCID == LatticeState.emptyHeader.rawCID
-            // A genesis is self-contained: it commits to no parent state. A child
-            // is anchored by its parent RECORDING the genesis CID (a plain
-            // GenesisAction), never by binding the genesis to a carrier's
-            // prevState. Cross-chain flows begin at block 1. (Root genesis and the
-            // block builder already use emptyHeader here.)
-            && parentState.rawCID == LatticeState.emptyHeader.rawCID
+            && (parentState.rawCID == LatticeState.emptyHeader.rawCID) == isRoot
             && nextTarget == target
             // Genesis mints only its premine: there is no reward to pay.
             && rewardRecipient == nil
@@ -728,8 +724,5 @@ public extension Block {
         return transactionBodiesMaybe.map { $0! }
     }
 
-    func validateGenesisTransactions(transactionBodies: [TransactionBody]) -> Bool {
-        return !transactionBodies.contains { !$0.genesisActionsAreValid() }
-    }
 
 }

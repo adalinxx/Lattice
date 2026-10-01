@@ -47,9 +47,10 @@ The content graph may recurse to arbitrary depth. A Lattice runtime never does.
 ## Runtime Boundary
 
 An absolute path such as `Nexus/Payments` is the chain identity. A child genesis
-CID is one root in that path's accepted forest, not a new runtime identity.
-Competing parent histories may introduce competing child roots; the child process
-chooses among them with its own fork choice.
+CID is one root in that path's accepted forest, not a new runtime identity. Any
+genesis carried by a valid proof is a competing root; the child process chooses
+among them with its own fork choice. Only the root chain pins one genesis: its
+configured CID, carried by its `ChainRuntimeContext`.
 
 Each process owns:
 
@@ -75,8 +76,7 @@ At a vertical edge, the nested child commits the carrier's `prevState` as
 - same-chain predecessors are explicit block links and unresolved predecessors
   (absent or accepted-but-unconnected) are derived from the accepted graph;
 - cross-chain acquisition asks only the authenticated immediate-parent process
-  for an exact parent-state continuity fact and, for genesis, a parent-issued
-  genesis fact;
+  for an exact parent-state continuity fact — the genesis included;
 - Lattice never tries to invert `parentState` into a parent block.
 
 ### Why Parent Continuity Is Required
@@ -113,11 +113,12 @@ carrier may fail its own target, transition, timestamp rule, or proposed
 beats that child's target. Those carrier-local rules do not become descendant
 dependencies.
 
-A child genesis must meet its own target, like a root genesis: child
-bootstrap rejects a target miss as a proof-of-work failure, and a target hit
-that fails the local transition, without creating a runtime or durable local
-consensus fact. The same bytes may still sit on a descendant's proof path: a
-grind reaches a descendant only inside that descendant's `ChildBlockProof`.
+A child genesis weighs by its `ChildBlockProof` and executes like any child
+block (spec §5.3, §9.9 genesis admission); no parent record authorizes it. A
+target miss is a proof-of-work failure that creates no runtime or durable
+local consensus fact. The same bytes may still sit on a descendant's proof
+path: a grind reaches a descendant only inside that descendant's
+`ChildBlockProof`.
 
 The proof-derived contribution becomes ordinary same-chain work only after the
 terminal child is accepted and connected. See

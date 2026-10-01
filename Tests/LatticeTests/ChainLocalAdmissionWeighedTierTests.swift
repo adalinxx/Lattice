@@ -704,7 +704,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         let orphanBatch = try testAdmissionBatch(for: held.blocks[1])
         let connectingBatch = try testAdmissionBatch(for: held.blocks[0])
 
-        let orphaned = ChainLevel(testChain: try await ChainState.restore(
+        let orphaned = ChainLevel(testChain: try await ChainState.restoreWithoutContext(
             replaying: [genesisBatch, orphanBatch]
         ))
         let orphanAnchor = await orphaned.chain.difficultyAnchor(forBlockHash: held.cids[1])
@@ -713,7 +713,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
         XCTAssertEqual(parked.failure, .unavailableEvidence)
         XCTAssertEqual(parked.sameChainPredecessor?.predecessorCID, held.cids[1])
 
-        let connected = ChainLevel(testChain: try await ChainState.restore(
+        let connected = ChainLevel(testChain: try await ChainState.restoreWithoutContext(
             replaying: [genesisBatch, orphanBatch, connectingBatch]
         ))
         let resolved = await connected.chain.difficultyAnchor(forBlockHash: held.cids[1])
@@ -770,15 +770,7 @@ final class ChainLocalAdmissionWeighedTierTests: XCTestCase {
 
         XCTAssertNotNil(committed.commit)
         let stagedContexts = await recorder.recordedContexts()
-        let stagedContext = try XCTUnwrap(stagedContexts.first)
-        XCTAssertFalse(
-            stagedContext.issuesHierarchyFacts,
-            "weighed admission must not issue hierarchy facts"
-        )
-        XCTAssertTrue(
-            stagedContext.parentGenesisLinks.isEmpty,
-            "weighed admission must not issue parent-genesis links"
-        )
+        XCTAssertEqual(stagedContexts.count, 1)
     }
 }
 

@@ -35,8 +35,7 @@ private func premineGenesis(
     let addr = id(kp.publicKey)
     let body = TransactionBody(
         accountActions: [AccountAction(owner: addr, delta: Int64(spec.premineAmount()))],
-        actions: [], depositActions: [], genesisActions: [],
-        receiptActions: [], withdrawalActions: [], signers: [addr], nonce: 0,
+        actions: [], depositActions: [], receiptActions: [], withdrawalActions: [], signers: [addr], nonce: 0,
         chainPath: ["Nexus"]
     )
     return try await buildAndStoreGenesis(
@@ -93,7 +92,7 @@ final class CrashRecoveryTests: XCTestCase {
         let data = try encoder.encode(batches)
         let decoded = try JSONDecoder().decode([BlockImportBatch].self, from: data)
 
-        let chain2 = try await ChainState.restore(replaying: decoded)
+        let chain2 = try await ChainState.restoreWithoutContext(replaying: decoded)
 
         let tip2 = await chain2.canonicalTip
         let tip1 = await chain1.canonicalTip
@@ -232,95 +231,6 @@ final class TwoNodeConvergenceTests: XCTestCase {
 }
 
 // ============================================================================
-// MARK: - Invalid Child Genesis Specs
-// ============================================================================
-
-@MainActor
-final class ChildGenesisValidationTests: XCTestCase {
-    // testChildGenesisWithWrongDirectoryRejected removed: spec.directory no longer exists, so a directory mismatch is structurally impossible.
-
-    private func bodyAnchoring(
-        directory: String,
-        blockCID: String,
-        chainPath: [String] = [DEFAULT_ROOT_DIRECTORY]
-    ) -> TransactionBody {
-        TransactionBody(
-            accountActions: [], actions: [], depositActions: [],
-            genesisActions: [GenesisAction(
-                directory: directory,
-                blockCID: blockCID
-            )],
-            receiptActions: [], withdrawalActions: [],
-            signers: [], nonce: 0, chainPath: chainPath
-        )
-    }
-
-    func testGenesisActionAcceptsWellFormedAnchor() async {
-        XCTAssertTrue(bodyAnchoring(
-            directory: "Child",
-            blockCID: testCID("child")
-        ).genesisActionsAreValid())
-    }
-
-    func testGenesisActionRejectsEmptyDirectoryOrCID() async {
-        XCTAssertFalse(bodyAnchoring(directory: "", blockCID: testCID("child")).genesisActionsAreValid())
-        XCTAssertFalse(bodyAnchoring(directory: "Child", blockCID: "").genesisActionsAreValid())
-    }
-
-    func testGenesisActionNormalizesChildCID() async {
-        let alternateCID =
-            "f01711220e9eb6c60800df90fc8e237ed53246f396e87579aba406aaa7976a056859ee22d"
-        XCTAssertNotNil(CIDIdentity.canonicalString(alternateCID))
-        XCTAssertTrue(bodyAnchoring(
-            directory: "Child",
-            blockCID: alternateCID
-        ).genesisActionsAreValid())
-    }
-
-    func testGenesisActionEnforcesProofWireDirectoryAndDepthBounds() async {
-        let cid = testCID("child")
-        let maximumDirectory = String(
-            repeating: "x",
-            count: ChildProofWireLimits.maximumDirectoryBytes
-        )
-        XCTAssertTrue(bodyAnchoring(
-            directory: maximumDirectory,
-            blockCID: cid
-        ).genesisActionsAreValid())
-        XCTAssertFalse(bodyAnchoring(
-            directory: maximumDirectory + "x",
-            blockCID: cid
-        ).genesisActionsAreValid())
-
-        XCTAssertTrue(bodyAnchoring(
-            directory: "Child",
-            blockCID: cid,
-            chainPath: [DEFAULT_ROOT_DIRECTORY] + Array(
-                repeating: "Parent",
-                count: ChildProofWireLimits.maximumDepth - 1
-            )
-        ).genesisActionsAreValid())
-        XCTAssertFalse(bodyAnchoring(
-            directory: "Child",
-            blockCID: cid,
-            chainPath: [DEFAULT_ROOT_DIRECTORY] + Array(
-                repeating: "Parent",
-                count: ChildProofWireLimits.maximumDepth
-            )
-        ).genesisActionsAreValid())
-    }
-
-    func testGenesisActionRejectsDirectoryWithKeySeparator() async {
-        // A "/" in the directory would break ReceiptKey injectivity (two distinct
-        // (directory, demander) pairs could encode to the same receipt key), so it
-        // must be rejected at anchor creation — the single entry for directory names.
-        let cid = testCID("child")
-        XCTAssertFalse(bodyAnchoring(directory: "evil/x", blockCID: cid).genesisActionsAreValid())
-        XCTAssertFalse(bodyAnchoring(directory: "a/b/c", blockCID: cid).genesisActionsAreValid())
-    }
-}
-
-// ============================================================================
 // MARK: - Cross-Chain Claim Security
 // ============================================================================
 
@@ -346,7 +256,7 @@ final class ClaimSecurityTests: XCTestCase {
             accountActions: [AccountAction(owner: kpAddr, delta: -500)],
             actions: [],
             depositActions: [childSwap],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 1,
             chainPath: ["Nexus"]
         )
@@ -358,8 +268,7 @@ final class ClaimSecurityTests: XCTestCase {
         // The receipt's payment is funded by the coinbase.
         let settleBody = TransactionBody(
             accountActions: [],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: 500, directory: "Child")],
+            actions: [], depositActions: [], receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: 500, directory: "Child")],
             withdrawalActions: [],
             signers: [kpAddr], nonce: 0,
             chainPath: ["Nexus"]
@@ -373,7 +282,7 @@ final class ClaimSecurityTests: XCTestCase {
         let wrongNonceBody = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: 500)],
             actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [],
+            receiptActions: [],
             withdrawalActions: [
                 WithdrawalAction(withdrawer: kpAddr, nonce: 99, demander: kpAddr, amountDemanded: 500, amountWithdrawn: 500)
             ],
@@ -411,7 +320,7 @@ final class ClaimSecurityTests: XCTestCase {
             accountActions: [AccountAction(owner: kpAddr, delta: -500)],
             actions: [],
             depositActions: [childSwap],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 1,
             chainPath: ["Nexus"]
         )
@@ -423,8 +332,7 @@ final class ClaimSecurityTests: XCTestCase {
         // The receipt's payment is funded by the coinbase.
         let settleBody = TransactionBody(
             accountActions: [],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: 500, directory: "Child")],
+            actions: [], depositActions: [], receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: 500, directory: "Child")],
             withdrawalActions: [],
             signers: [kpAddr], nonce: 0,
             chainPath: ["Nexus"]
@@ -438,7 +346,7 @@ final class ClaimSecurityTests: XCTestCase {
         let wrongAmountBody = TransactionBody(
             accountActions: [AccountAction(owner: kpAddr, delta: 9999)],
             actions: [], depositActions: [],
-            genesisActions: [], receiptActions: [],
+            receiptActions: [],
             withdrawalActions: [
                 WithdrawalAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: 9999, amountWithdrawn: 9999)
             ],
@@ -487,8 +395,7 @@ final class FeeOnlyEconomyTests: XCTestCase {
             accountActions: [
                 AccountAction(owner: payerAddr, delta: Int64(premine - fee) - Int64(premine))
             ],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [], withdrawalActions: [],
+            actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
             signers: [payerAddr], nonce: 1, chainPath: ["Nexus"]
         )
         let block = try await buildAndStoreBlock(
@@ -522,8 +429,7 @@ final class DustAttackTests: XCTestCase {
         let genesis = try await buildAndStoreGenesis(
             spec: tinySpec, transactions: [tx(TransactionBody(
                 accountActions: [AccountAction(owner: funderAddr, delta: Int64(premine))],
-                actions: [], depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [], signers: [funderAddr], nonce: 0,
+                actions: [], depositActions: [], receiptActions: [], withdrawalActions: [], signers: [funderAddr], nonce: 0,
                 chainPath: ["Nexus"]
             ), funder)],
             timestamp: base, target: UInt256(1000), fetcher: fetcher
@@ -538,8 +444,7 @@ final class DustAttackTests: XCTestCase {
         func validates(_ actions: [Action]) async throws -> Bool {
             let body = TransactionBody(
                 accountActions: [],
-                actions: actions, depositActions: [], genesisActions: [],
-                receiptActions: [], withdrawalActions: [],
+                actions: actions, depositActions: [], receiptActions: [], withdrawalActions: [],
                 signers: [funderAddr], nonce: 1,
                 chainPath: ["Nexus"]
             )
@@ -622,7 +527,7 @@ final class CrossChainBalanceConservationTests: XCTestCase {
             accountActions: [AccountAction(owner: kpAddr, delta: -Int64(swapAmount))],
             actions: [],
             depositActions: [childSwap],
-            genesisActions: [], receiptActions: [], withdrawalActions: [],
+            receiptActions: [], withdrawalActions: [],
             signers: [kpAddr], nonce: 1,
             chainPath: ["Nexus"]
         )
@@ -635,8 +540,7 @@ final class CrossChainBalanceConservationTests: XCTestCase {
 
         let settleBody = TransactionBody(
             accountActions: [],
-            actions: [], depositActions: [], genesisActions: [],
-            receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: swapAmount, directory: "Child")],
+            actions: [], depositActions: [], receiptActions: [ReceiptAction(withdrawer: kpAddr, nonce: 1, demander: kpAddr, amountDemanded: swapAmount, directory: "Child")],
             withdrawalActions: [],
             signers: [kpAddr], nonce: 0, chainPath: ["Nexus"]
         )

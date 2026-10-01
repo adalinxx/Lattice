@@ -120,15 +120,13 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
         XCTAssertEqual(recordedAfter, recordedMap, "the recorded map is what the validate tier carried")
     }
 
-    /// A root exclusion may stand only on another EXECUTED root (§9.9). On the
-    /// only deployed shape — one root — the validate tier's verdict on a
-    /// parentless block is therefore parked as a non-verdict at the PRODUCER:
-    /// nothing is staged, nothing is excluded, and recovery has no fact whose
-    /// replay could depend on order.
-    func testValidateTierParksARootExclusionWithNoOtherExecutedRoot() async throws {
+    /// The root chain's only genesis is its pinned one, executed at
+    /// bootstrap: the validate tier re-executing it is a duplicate. Nothing
+    /// is staged, nothing is excluded.
+    func testValidateTierReExecutesTheNexusGenesisAsADuplicate() async throws {
         let fetcher = StorableFetcher()
         let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
-        let level = AdmissionFixture.makeLevel(genesis: genesis)
+        let level = ChainLevel(chain: ChainState.fromGenesis(block: genesis), context: testChainContext(genesis: genesis))
         let genesisHash = try BlockHeader(node: genesis).rawCID
         actor StageCounter { var count = 0; func bump() { count += 1 } }
         let stagedCounter = StageCounter()
@@ -139,10 +137,9 @@ final class ChainLocalAdmissionValidateTierTests: XCTestCase {
             stage: { _ in await stagedCounter.bump() }
         )
         let staged = await stagedCounter.count
-        guard case .rejected(let failure, _) = result else {
-            return XCTFail("a root exclusion with nothing to stand on must be parked, got \(result)")
+        guard case .duplicate = result else {
+            return XCTFail("the executed Nexus genesis re-executes as a duplicate, got \(result)")
         }
-        XCTAssertEqual(failure, .notYetValid, "a non-verdict, retried — never a written fact")
         XCTAssertEqual(staged, 0, "nothing is made durable")
         let roots = await level.chain.excludedRootsForTesting
         XCTAssertTrue(roots.isEmpty)
