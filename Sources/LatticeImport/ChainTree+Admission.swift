@@ -74,6 +74,11 @@ public struct ChainTreeUpdate: Sendable {
     public let commit: ChainCommit?
     /// The executed post-state (`applyConnect` of a valid block only).
     public let materializedPostState: LatticeState?
+    /// Every block whose credited work these batches added or raised, plus
+    /// every block they connected — a grafted orphan component in full
+    /// (`SubmissionResult.weighed`). What a child's derivation of this
+    /// level's runs needs, forwarded unchanged (`applyParentRun`).
+    public let weighed: [String]
 }
 
 public enum ChainTreeAdmission: Sendable {
@@ -438,13 +443,9 @@ extension ChainTree {
         case .failure(let failure): return rejected(failure)
         case .success(let value): transition = value
         }
-        let commitments: [String: String]?
+        let commitments: [String: String]
         if let recorded = job.recordedChildCommitments {
             commitments = recorded
-        } else if isGenesis {
-            // A genesis's commitments are not recorded, by the bootstrap
-            // convention every genesis fact has always followed.
-            commitments = nil
         } else {
             switch await BlockImport.childCommitments(of: resolvedHeader, fetcher: fetcher) {
             case .success(let enumerated): commitments = enumerated
@@ -522,11 +523,15 @@ extension ChainTree {
     ///
     /// Proof of content: the CID is computed from `block`, and `spec` must be
     /// the spec its `spec` field names (`.providerMalformedEvidence`
-    /// otherwise); the tree then holds it as this root's (`specs`). Emits the
-    /// block fact and its work fact. A held genesis takes `addWork`.
+    /// otherwise); the tree then holds it as this root's (`specs`), and
+    /// `childIndex` must be the one its `children` field names
+    /// (`.protocolInvalid` otherwise): a genesis records its commitments
+    /// like any block (§9.10). Emits the block fact and its work fact. A held
+    /// genesis takes `addWork`.
     public mutating func insertGenesis(
         _ block: Block,
         spec: ChainSpec,
+        childIndex: ChildIndex,
         evidence: VerifiedChildEvidence? = nil
     ) -> ChainTreeAdmission {
         guard let context else { return .rejected(.notAcceptedAtCurrentChain) }
@@ -559,6 +564,9 @@ extension ChainTree {
         guard ChainTree.binds(spec, to: block.spec.rawCID) else {
             return .rejected(.providerMalformedEvidence)
         }
+        guard (try? HeaderImpl<ChildIndex>(node: childIndex).rawCID) == block.children.rawCID else {
+            return .rejected(.protocolInvalid)
+        }
         if contains(blockHash: blockHash) {
             // The spec is bound by CID above, so holding it here repairs a
             // tree restored without it.
@@ -573,7 +581,7 @@ extension ChainTree {
             block: block,
             contribution: work,
             kind: .block(.empty, nil, validated: false),
-            childCommitments: nil
+            childCommitments: childIndex.entries.mapValues(\.rawCID)
         )
         let admission = applyAdmission([facts], of: blockHash)
         if admission.update != nil {
@@ -600,11 +608,14 @@ extension ChainTree {
         case .failure(let failure): return .failure(failure)
         case .success(let resolved): block = resolved.block
         }
-        guard let spec = try? await block.spec.resolve(fetcher: fetcher).node else {
+        guard let spec = try? await block.spec.resolve(fetcher: fetcher).node,
+              let childIndex = try? await block.children.resolve(fetcher: fetcher).node else {
             return .failure(.unavailableEvidence)
         }
         var tree = ChainTree.empty(context: context)
-        let inserted = tree.insertGenesis(block, spec: spec, evidence: evidence)
+        let inserted = tree.insertGenesis(
+            block, spec: spec, childIndex: childIndex, evidence: evidence
+        )
         guard let blockHash = inserted.update?.blockHash else {
             return .failure(inserted.failure ?? .protocolInvalid)
         }
@@ -650,6 +661,7 @@ extension ChainTree {
             return .rejected(.revisionExhausted)
         }
         var commit: ChainCommit?
+        var weighed: [String] = []
         for facts in batches {
             let submission: SubmissionResult?
             do {
@@ -659,13 +671,15 @@ extension ChainTree {
             }
             let next = submission == nil ? reevaluateForkChoice() : submission?.commit
             commit = ChainCommit.composing(commit, then: next)
+            weighed += submission?.weighed ?? []
         }
         return .applied(ChainTreeUpdate(
             blockHash: blockHash,
             batches: batches,
             excluded: excluded,
             commit: commit,
-            materializedPostState: materializedPostState
+            materializedPostState: materializedPostState,
+            weighed: weighed
         ))
     }
 }

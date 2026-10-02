@@ -15,7 +15,7 @@ import UInt256
 /// same facts.
 struct ForkChoiceGoldenEvent {
     enum Kind: String {
-        case block, secondGrind, strengthen, attributedRun, exclusion, validation
+        case block, secondGrind, strengthen, exclusion, validation
     }
 
     let index: Int
@@ -28,9 +28,9 @@ struct ForkChoiceGoldenEvent {
 /// A seeded single-chain graph of ~300 blocks: two competing genesis roots,
 /// several competing branches (siblings near the tip and deep forks), blocks
 /// arriving before their parents, second grinds and stronger observations on
-/// blocks already held, parent-attributed runs (§9.10) credited at this chain,
-/// exclusions (§9.9), validations, and commitments into one child directory so
-/// this chain also SERVES run reports.
+/// blocks already held, exclusions (§9.9), validations, and commitments into
+/// one child directory so this chain also keeps runs (§9.10). Attributed runs
+/// are derived, never facts, so they are not in the script.
 ///
 /// Every hash is a content id of a fixed seed string, every choice comes from
 /// `GoldenRandom`, and nothing reads a clock — so the script, and therefore the
@@ -298,27 +298,6 @@ struct ForkChoiceGoldenGraph {
                             )
                         )),
                     ]))
-                } else if roll < 40 {
-                    // A run this chain's own parent attributed at `target`:
-                    // credited like a grind, but no grind of the block (§9.10).
-                    extraCounter += 1
-                    let identity = AttributedRunIdentity(
-                        carrierBlockHash: cid(seed, "committer", extraCounter),
-                        directory: directory
-                    )
-                    guard let identityID = identity.contributionID else {
-                        preconditionFailure("attributed-run identity for \(target.name) has no CID")
-                    }
-                    add(.attributedRun, target, BlockImportBatch(facts: [
-                        .work(ChainWorkFact(
-                            blockHash: target.hash,
-                            contribution: VerifiedWorkContribution(
-                                id: identityID,
-                                work: UInt256(UInt64(2 + random.nextInt(8)))
-                            ),
-                            attributedRun: identity
-                        )),
-                    ]))
                 } else if roll < 65 {
                     let stronger = strength[target.index, default: 1] + UInt64(1 + random.nextInt(3))
                     strength[target.index] = stronger
@@ -379,7 +358,7 @@ struct ForkChoiceGolden: Codable, Equatable {
         let canonical: Bool
         /// On the executed-from-genesis frontier (`hasExecutedAncestry`).
         let executed: Bool
-        /// Credited work located at this block, grinds and attributed runs.
+        /// Credited work located at this block.
         let work: String
         /// `trueCumWork`: the grind-deduplicated subtree total (§9.2).
         let subtreeWork: String
@@ -389,7 +368,7 @@ struct ForkChoiceGolden: Codable, Equatable {
         let anchorTimestamp: Int64?
     }
 
-    struct RunReportRecord: Codable, Equatable {
+    struct RunRecord: Codable, Equatable {
         let committer: String
         let childBlock: String
         let grinds: [String]
@@ -405,8 +384,8 @@ struct ForkChoiceGolden: Codable, Equatable {
     let canonicalChain: [String]
     let excludedRoots: [String]
     let blocks: [BlockRecord]
-    /// Every §9.10 run report this chain serves for the fixture directory.
-    let runReports: [RunReportRecord]
+    /// Every §9.10 run this chain keeps for the fixture directory.
+    let runs: [RunRecord]
 
     static func capture(
         _ chain: ChainState,
@@ -449,21 +428,20 @@ struct ForkChoiceGolden: Codable, Equatable {
             ))
         }
 
-        var reports: [RunReportRecord] = []
+        var runs: [RunRecord] = []
+        let directory = ForkChoiceGoldenGraph.directory
         for block in graph.blocks where block.commitsChild {
-            let reportValue = await chain.parentRunReport(
-                at: block.hash, directory: ForkChoiceGoldenGraph.directory
-            )
-            let report = try XCTUnwrap(
-                reportValue,
-                "\(block.name) commits into \(ForkChoiceGoldenGraph.directory) but serves no report"
-            )
-            reports.append(RunReportRecord(
+            let runValue = await chain.runs.runWork[directory]?[block.hash]
+            let runWork = try XCTUnwrap(runValue, "\(block.name) commits into \(directory) but keeps no run")
+            let workValue = await chain.graph.work(of: block.hash)
+            let work = try XCTUnwrap(workValue)
+            let commitments = await chain.recordedChildCommitments(of: block.hash)
+            runs.append(RunRecord(
                 committer: block.name,
-                childBlock: report.childBlock,
-                grinds: report.grinds.sorted(),
-                runWork: report.runWork.toHexString(),
-                ownWork: report.ownWork.toHexString()
+                childBlock: try XCTUnwrap(commitments?[directory]),
+                grinds: work.grinds.sorted(),
+                runWork: runWork.toHexString(),
+                ownWork: work.grindWork.toHexString()
             ))
         }
 
@@ -477,7 +455,7 @@ struct ForkChoiceGolden: Codable, Equatable {
             canonicalChain: canonical,
             excludedRoots: excluded.map(name).sorted(),
             blocks: records,
-            runReports: reports
+            runs: runs
         )
     }
 
@@ -512,8 +490,8 @@ struct ForkChoiceGolden: Codable, Equatable {
         for name in Set(actualBlocks.keys).subtracting(expected.blocks.map(\.name)).sorted() {
             lines.append("\(name): unexpected in actual")
         }
-        let actualReports = Dictionary(uniqueKeysWithValues: actual.runReports.map { ($0.committer, $0) })
-        for report in expected.runReports {
+        let actualReports = Dictionary(uniqueKeysWithValues: actual.runs.map { ($0.committer, $0) })
+        for report in expected.runs {
             guard let other = actualReports[report.committer] else {
                 lines.append("run \(report.committer): missing from actual")
                 continue
@@ -525,7 +503,7 @@ struct ForkChoiceGolden: Codable, Equatable {
                 ("ownWork", report.ownWork, other.ownWork),
             ])
         }
-        for name in Set(actualReports.keys).subtracting(expected.runReports.map(\.committer)).sorted() {
+        for name in Set(actualReports.keys).subtracting(expected.runs.map(\.committer)).sorted() {
             lines.append("run \(name): unexpected in actual")
         }
         return lines
@@ -760,7 +738,7 @@ final class ForkChoiceReplayGoldenTests: XCTestCase {
 
         var kinds: [ForkChoiceGoldenEvent.Kind: Int] = [:]
         for event in graph.events { kinds[event.kind, default: 0] += 1 }
-        for kind in [ForkChoiceGoldenEvent.Kind.secondGrind, .strengthen, .attributedRun, .exclusion, .validation] {
+        for kind in [ForkChoiceGoldenEvent.Kind.secondGrind, .strengthen, .exclusion, .validation] {
             XCTAssertGreaterThan(kinds[kind, default: 0], 3, "\(kind.rawValue) events")
         }
         XCTAssertGreaterThan(graph.blocks.filter(\.commitsChild).count, 10, "committers")

@@ -253,21 +253,14 @@ public actor ChainState {
         tree.nearestCarrier(of: blockHash, directory: directory)
     }
 
-    public func parentRunReport(
-        at blockHash: String,
-        directory: String
-    ) -> ParentRunReport? {
-        tree.parentRunReport(at: blockHash, directory: directory)
-    }
-
-    public func strengthenFromParentReport(
-        child childHash: String,
+    @discardableResult
+    public func applyParentRun(
+        from parent: ChainTree,
         directory: String,
-        report: ParentRunReport
-    ) -> ParentReportStrengthening {
-        tree.strengthenFromParentReport(
-            child: childHash, directory: directory, report: report
-        )
+        parentBlocks: Set<String>? = nil,
+        held: Set<String> = []
+    ) -> (raised: [String], commit: ChainCommit?) {
+        tree.applyParentRun(from: parent, directory: directory, parentBlocks: parentBlocks, held: held)
     }
 
     public func recordedChildCommitments(of blockHash: String) -> [String: String]? {
@@ -291,9 +284,9 @@ public actor ChainState {
     func addWorkContribution(
         _ contribution: VerifiedWorkContribution,
         to blockHash: String,
-        attributedRun: AttributedRunIdentity? = nil
+        attributed: Bool = false
     ) -> SubmissionResult {
-        tree.addWorkContribution(contribution, to: blockHash, attributedRun: attributedRun)
+        tree.addWorkContribution(contribution, to: blockHash, attributed: attributed)
     }
 
     func applyStaged(_ batch: BlockImportBatch) throws -> SubmissionResult? {

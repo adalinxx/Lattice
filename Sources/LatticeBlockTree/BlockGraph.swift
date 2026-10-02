@@ -3,17 +3,13 @@ import LatticePrimitives
 import LatticePoW
 
 /// The immutable identity of one held block: what its PoW-bound content says
-/// about its place in the tree. Nothing here changes once the block is held,
-/// except that a fact written before `childCommitments` existed may later be
-/// supplied its commitments, which replaces the record
-/// (`BlockGraph.adoptChildCommitments`).
+/// about its place in the tree. Nothing here changes once the block is held.
 struct BlockRecord: Sendable, Equatable {
     let blockHash: String
     let parentBlockHash: String?
     let blockHeight: UInt64
-    /// Nil when NOT RECORDED, never "commits nothing" (see
-    /// `BlockMeta.childCommitments`).
-    let childCommitments: [String: String]?
+    /// See `BlockMeta.childCommitments`.
+    let childCommitments: [String: String]
 }
 
 /// One block's verified work facts: every contribution by ID, which of them
@@ -52,11 +48,6 @@ struct BlockWork: Sendable {
         }
         contributions[contribution.id] = contribution
         work = work + contribution.work
-        // Once attributed, always attributed: the marker is a function of the
-        // id. A fact for this id that arrived without the marker (the shape
-        // written before the field existed) counts as a grind until a marked,
-        // STRONGER one reclassifies it — the strict-increase gate above admits
-        // nothing weaker or equal, marked or not.
         if attributed {
             attributedRuns.insert(contribution.id)
         }
@@ -149,6 +140,17 @@ struct BlockGraph: Sendable {
         childrenByHash[hash] ?? []
     }
 
+    /// `hash` and every held descendant, parent before child.
+    func subtree(of hash: String) -> [String] {
+        var blocks: [String] = []
+        var stack = [hash]
+        while let next = stack.popLast() {
+            blocks.append(next)
+            stack.append(contentsOf: children(of: next))
+        }
+        return blocks
+    }
+
     func work(of hash: String) -> BlockWork? {
         workByHash[hash]
     }
@@ -234,19 +236,6 @@ struct BlockGraph: Sendable {
     mutating func adoptDifficultyAnchor(_ anchor: DifficultyAnchor, at hash: String) {
         guard contains(hash), anchorByHash[hash] == nil else { return }
         anchorByHash[hash] = anchor
-    }
-
-    /// Fill commitments a pre-field fact left unrecorded, by replacing the
-    /// record. Write-once: commitments are PoW-bound content, so a second value
-    /// for a block that has one would mean the content was misread.
-    mutating func adoptChildCommitments(_ commitments: [String: String], at hash: String) {
-        guard let record = recordByHash[hash], record.childCommitments == nil else { return }
-        recordByHash[hash] = BlockRecord(
-            blockHash: record.blockHash,
-            parentBlockHash: record.parentBlockHash,
-            blockHeight: record.blockHeight,
-            childCommitments: commitments
-        )
     }
 
     /// Rebuild the diagnostic prefix and subtree totals; see
