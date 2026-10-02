@@ -177,7 +177,7 @@ extension ChainTree {
     /// `insertHeader`.
     public mutating func insertRootHeader(
         _ block: Block,
-        childIndex: ChildIndex,
+        childIndex: FlatDictionary<BlockHeader>,
         validationContext: ValidationContext = .current
     ) -> ChainTreeAdmission {
         guard let context else { return .rejected(.notAcceptedAtCurrentChain) }
@@ -207,7 +207,7 @@ extension ChainTree {
     /// proof-of-work failure here.
     public mutating func insertChildHeader(
         _ block: Block,
-        childIndex: ChildIndex,
+        childIndex: FlatDictionary<BlockHeader>,
         evidence: VerifiedChildEvidence,
         validationContext: ValidationContext = .current
     ) -> ChainTreeAdmission {
@@ -263,7 +263,7 @@ extension ChainTree {
     private mutating func insertHeader(
         _ block: Block,
         blockHash: String,
-        childIndex: ChildIndex,
+        childIndex: FlatDictionary<BlockHeader>,
         work contribution: VerifiedWorkContribution,
         validationContext: ValidationContext
     ) -> ChainTreeAdmission {
@@ -291,7 +291,7 @@ extension ChainTree {
         guard let spec = scheduleSpec(underParent: parentHash) else {
             return .rejected(.notAcceptedAtCurrentChain)
         }
-        guard (try? HeaderImpl<ChildIndex>(node: childIndex).rawCID)
+        guard (try? HeaderImpl(node: childIndex).rawCID)
                 == block.children.rawCID else {
             return .rejected(.protocolInvalid)
         }
@@ -531,7 +531,7 @@ extension ChainTree {
     public mutating func insertGenesis(
         _ block: Block,
         spec: ChainSpec,
-        childIndex: ChildIndex,
+        childIndex: FlatDictionary<BlockHeader>,
         evidence: VerifiedChildEvidence? = nil
     ) -> ChainTreeAdmission {
         guard let context else { return .rejected(.notAcceptedAtCurrentChain) }
@@ -564,7 +564,7 @@ extension ChainTree {
         guard ChainTree.binds(spec, to: block.spec.rawCID) else {
             return .rejected(.providerMalformedEvidence)
         }
-        guard (try? HeaderImpl<ChildIndex>(node: childIndex).rawCID) == block.children.rawCID else {
+        guard (try? HeaderImpl(node: childIndex).rawCID) == block.children.rawCID else {
             return .rejected(.protocolInvalid)
         }
         if contains(blockHash: blockHash) {

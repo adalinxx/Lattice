@@ -53,7 +53,7 @@ B = (
     parentState:      CID(LatticeState),
     prevState:        CID(LatticeState),
     postState:        CID(LatticeState),
-    children:         CID(ChildIndex),            // directory -> CID(Block), one node
+    children:         CID({directory: CID(Block)}), // one DAG-CBOR map node
     height:           uint64,
     timestamp:        int64,
     rewardRecipient:  CID(PublicKey) | nil,       // omitted from the encoding when nil
@@ -63,6 +63,11 @@ B = (
 
 `rewardRecipient` is the account credited with the block's coinbase (reward
 plus fees, section 8.2). `nil` burns that amount.
+
+`children` is one plain DAG-CBOR map, so its canonical bytes are DAG-CBOR's.
+A block is built only with directory keys (visible ASCII, no `/`; the key grammar in section 3.5)
+and only as many as the DAG-CBOR decoder reads in one map, which the encoder
+enforces, so no node mints a block another cannot read.
 
 ### 3.2 Transaction
 
@@ -116,11 +121,6 @@ ChainSpec = (
     wasmPolicies:                   [WasmPolicyRef]
 )
 ```
-
-The child index is one node; the canonical decoder reads at most 65,536
-entries of it, a bound of the representation like the integer floor on a
-target, enforced where the bytes are made so no block is built that a node
-could not read.
 
 `maxBlockSize` bounds the canonical unique content bytes owned by one logical
 block. The measured closure is the block root Volume boundary (including its
