@@ -511,13 +511,13 @@ public struct BlockBuilder {
         return try HeaderImpl(node: dict)
     }
 
-    /// The block's `children`: every key a directory atom. The count needs no
+    /// The block's `children`: every key a valid child directory. The count needs no
     /// check here: the DAG-CBOR encoder refuses a map longer than
     /// `DagCBOR.maxCollectionCount`, so no CID names one no node could decode.
     static func buildChildren(
         _ children: [String: Block]
     ) throws -> HeaderImpl<FlatDictionary<BlockHeader>> {
-        if let invalid = children.keys.first(where: { !isValidDirectoryAtom($0) }) {
+        if let invalid = children.keys.first(where: { !isValidChildDirectory($0) }) {
             throw BlockBuilderError.invalidChildDirectory(invalid)
         }
         return try HeaderImpl(node: FlatDictionary(

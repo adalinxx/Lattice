@@ -65,9 +65,11 @@ B = (
 plus fees, section 8.2). `nil` burns that amount.
 
 `children` is one plain DAG-CBOR map, so its canonical bytes are DAG-CBOR's.
-A block is built only with directory keys (visible ASCII, no `/`; the key grammar in section 3.5)
-and only as many as the DAG-CBOR decoder reads in one map, which the encoder
-enforces, so no node mints a block another cannot read.
+Every key is a directory (visible ASCII, no `/`, within the child-proof wire's
+`UInt16` length; the key grammar in section 3.5): a block is built only so, and
+a received block whose `children` name anything else is protocol-invalid, as
+is any child proof that steps through it. A map holds at most as many entries
+as the DAG-CBOR decoder reads, which the encoder enforces.
 
 ### 3.2 Transaction
 

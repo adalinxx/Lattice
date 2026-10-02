@@ -291,7 +291,8 @@ extension ChainTree {
         guard let spec = scheduleSpec(underParent: parentHash) else {
             return .rejected(.notAcceptedAtCurrentChain)
         }
-        guard (try? HeaderImpl(node: childIndex).rawCID)
+        guard childIndex.hasValidDirectories,
+              (try? HeaderImpl(node: childIndex).rawCID)
                 == block.children.rawCID else {
             return .rejected(.protocolInvalid)
         }
@@ -564,7 +565,8 @@ extension ChainTree {
         guard ChainTree.binds(spec, to: block.spec.rawCID) else {
             return .rejected(.providerMalformedEvidence)
         }
-        guard (try? HeaderImpl(node: childIndex).rawCID) == block.children.rawCID else {
+        guard childIndex.hasValidDirectories,
+              (try? HeaderImpl(node: childIndex).rawCID) == block.children.rawCID else {
             return .rejected(.protocolInvalid)
         }
         if contains(blockHash: blockHash) {

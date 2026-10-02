@@ -33,8 +33,8 @@ public struct Block: Hashable {
     public let parentState: LatticeStateHeader
     public let prevState: LatticeStateHeader
     public let postState: LatticeStateHeader
-    /// Directory → child block, in one flat node. `BlockBuilder` admits only
-    /// directory atoms as keys.
+    /// Directory → child block, in one flat node; every key a valid child
+    /// directory (`hasValidDirectories`).
     public let children: HeaderImpl<FlatDictionary<BlockHeader>>
     public let height: UInt64
     public let timestamp: Int64
@@ -161,3 +161,11 @@ extension Block: Node {
 }
 
 public typealias BlockHeader = VolumeImpl<Block>
+
+package extension FlatDictionary where Value == BlockHeader {
+    /// Every child is carried under a valid child directory. A received block
+    /// whose `children` fail this is structurally invalid.
+    var hasValidDirectories: Bool {
+        entries.keys.allSatisfy(isValidChildDirectory)
+    }
+}

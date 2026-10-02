@@ -178,4 +178,75 @@ final class BlockChildrenTests: XCTestCase {
             return XCTFail("a present child's proof does not prove it under another directory")
         }
     }
+
+    // MARK: - Received blocks
+
+    /// Names a block may not carry a child under: each passes canonical
+    /// decode, and the Kelvin sign is Swift-equal to "K".
+    private static let invalidDirectories = [
+        "\u{212A}", "", "Pay/ments", "Zahlung\u{FC}",
+        String(repeating: "a", count: ChildProofWireLimits.maximumDirectoryBytes + 1),
+    ]
+
+    /// `block` carrying `children` instead of its own: a block a peer could mine.
+    private func carrying(_ children: [String: BlockHeader], _ block: Block) throws -> (Block, FlatDictionary<BlockHeader>) {
+        let map = FlatDictionary(children)
+        return (Block(
+            version: block.version, parent: block.parent, transactions: block.transactions,
+            target: block.target, nextTarget: block.nextTarget, spec: block.spec,
+            parentState: block.parentState, prevState: block.prevState, postState: block.postState,
+            children: try HeaderImpl(node: map), height: block.height, timestamp: block.timestamp,
+            rewardRecipient: block.rewardRecipient, nonce: block.nonce
+        ), map)
+    }
+
+    func testReceivedBlockWithAnInvalidDirectoryIsDropped() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await AdmissionFixture.makeGenesis(fetcher: fetcher, timestamp: 1_000)
+        let tree = try await TreeDriver.tree(genesis: genesis, context: testChainContext(genesis: genesis), fetcher: fetcher)
+        let base = try await AdmissionFixture.makeChild(of: genesis, fetcher: fetcher, timestamp: 2_000, nonce: 1)
+        let someChild = try BlockHeader(node: genesis)
+
+        var control = tree
+        let (valid, validMap) = try carrying(["K": someChild], base)
+        XCTAssertNotNil(control.insertRootHeader(valid, childIndex: validMap).update, "a valid directory weighs")
+
+        for name in Self.invalidDirectories {
+            var header = tree
+            let (block, map) = try carrying([name: someChild], base)
+            XCTAssertEqual(header.insertRootHeader(block, childIndex: map).failure, .protocolInvalid, name.prefix(16).description)
+
+            let (forgedGenesis, genesisMap) = try carrying([name: someChild], genesis)
+            var root = ChainTree.empty(context: testChainContext(genesis: forgedGenesis))
+            XCTAssertEqual(
+                root.insertGenesis(forgedGenesis, spec: chainLocalSpec(), childIndex: genesisMap).failure,
+                .protocolInvalid, name.prefix(16).description
+            )
+
+            try await BlockHeader(node: block).storeBlock(storer: fetcher)
+            let commitments = await BlockImport.childCommitments(of: try BlockHeader(node: block), fetcher: fetcher)
+            guard case .failure(.protocolInvalid) = commitments else {
+                return XCTFail("child commitments of \(name.prefix(16)) are read")
+            }
+        }
+    }
+
+    /// A proof that steps through a carrier naming an invalid directory proves
+    /// nothing, even when Swift reads the name as a valid one ("K").
+    func testProofThroughAnInvalidDirectoryIsRejected() async throws {
+        let fetcher = StorableFetcher()
+        let s = spec()
+        let child = try await buildAndStoreGenesis(spec: s, timestamp: 500, target: .max, fetcher: fetcher)
+        let childHeader = try BlockHeader(node: child)
+        let built = try await buildAndStoreGenesis(spec: s, timestamp: 1_000, target: .max, fetcher: fetcher)
+        let (root, _) = try carrying(["\u{212A}": childHeader], built)
+        let rootHeader = try BlockHeader(node: root)
+        try await rootHeader.storeBlock(storer: fetcher)
+        let proof = try await ChildBlockProof.generate(rootHeader: rootHeader, childDirectory: "K", fetcher: fetcher)
+        guard case .failure(.protocolInvalid) = await proof.verifySecuringWork(child: child, chainPath: ["Nexus", "K"]) else {
+            return XCTFail("a proof through an invalid directory verifies")
+        }
+        let hop = await proof.directHop()
+        XCTAssertNil(hop)
+    }
 }
