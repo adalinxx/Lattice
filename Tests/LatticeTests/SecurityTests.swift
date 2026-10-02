@@ -492,7 +492,7 @@ final class BalanceConservationTests: XCTestCase {
             parentState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             prevState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             postState: try! LatticeStateHeader(node: LatticeState.emptyState()),
-            children: try! HeaderImpl(node: ChildIndex()),
+            children: try! HeaderImpl(node: FlatDictionary<BlockHeader>()),
             height: 0, timestamp: 1_000_000, rewardRecipient: nil, nonce: 0
         )
         let accountActions = [AccountAction(owner: "miner", delta: Int64(999_999_999))]
@@ -511,7 +511,7 @@ final class BalanceConservationTests: XCTestCase {
             parentState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             prevState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             postState: try! LatticeStateHeader(node: LatticeState.emptyState()),
-            children: try! HeaderImpl(node: ChildIndex()),
+            children: try! HeaderImpl(node: FlatDictionary<BlockHeader>()),
             height: 1, timestamp: 2_000_000, rewardRecipient: nil, nonce: 0
         )
         let s = spec()
@@ -546,7 +546,7 @@ final class BalanceConservationTests: XCTestCase {
             parentState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             prevState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             postState: try! LatticeStateHeader(node: LatticeState.emptyState()),
-            children: try! HeaderImpl(node: ChildIndex()),
+            children: try! HeaderImpl(node: FlatDictionary<BlockHeader>()),
             height: 0, timestamp: 1_000_000, rewardRecipient: nil, nonce: 0
         )
         let s = spec()
@@ -668,7 +668,7 @@ final class BlockValidationAdversarialTests: XCTestCase {
             parentState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             prevState: g.postState.removingNode(),
             postState: g.postState,
-            children: try! HeaderImpl(node: ChildIndex()),
+            children: try! HeaderImpl(node: FlatDictionary<BlockHeader>()),
             height: 5, timestamp: 2_000_000, rewardRecipient: nil, nonce: 0
         )
         XCTAssertFalse(wrongIndex.validateHeight(parent: g), "Non-sequential index must fail")
@@ -684,7 +684,7 @@ final class BlockValidationAdversarialTests: XCTestCase {
             parentState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             prevState: g.postState.removingNode(),
             postState: g.postState,
-            children: try! HeaderImpl(node: ChildIndex()),
+            children: try! HeaderImpl(node: FlatDictionary<BlockHeader>()),
             height: 1, timestamp: 4_000_000, rewardRecipient: nil, nonce: 0
         )
         XCTAssertFalse(pastBlock.validateTimestamp(parent: g), "Timestamp before parent must fail")
@@ -707,7 +707,7 @@ final class BlockValidationAdversarialTests: XCTestCase {
             parentState: try! LatticeStateHeader(node: LatticeState.emptyState()).removingNode(),
             prevState: g.postState.removingNode(),
             postState: g.postState,
-            children: try! HeaderImpl(node: ChildIndex()),
+            children: try! HeaderImpl(node: FlatDictionary<BlockHeader>()),
             height: 1, timestamp: 2_000_000, rewardRecipient: nil, nonce: 0
         )
         XCTAssertFalse(wrongSpec.validateSpec(parent: g), "Changed spec must fail")
@@ -724,7 +724,7 @@ final class BlockValidationAdversarialTests: XCTestCase {
             parentState: wrongState.removingNode(),
             prevState: wrongState.removingNode(),
             postState: wrongState,
-            children: try! HeaderImpl(node: ChildIndex()),
+            children: try! HeaderImpl(node: FlatDictionary<BlockHeader>()),
             height: 1, timestamp: 2_000_000, rewardRecipient: nil, nonce: 0
         )
         let stateValid = b.validateState(parent: g)

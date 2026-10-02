@@ -53,7 +53,7 @@ final class HomesteadContinuityTests: XCTestCase {
             parentState: LatticeState.emptyHeader.removingNode(),
             prevState: LatticeState.emptyHeader.removingNode(),
             postState: LatticeState.emptyHeader,
-            children: try BlockBuilder.buildChildIndex([:]),
+            children: try BlockBuilder.buildChildren([:]),
             height: 7, // WRONG: genesis must be height 0
             timestamp: now,
             rewardRecipient: nil,
@@ -96,7 +96,7 @@ final class HomesteadContinuityTests: XCTestCase {
             parentState: LatticeState.emptyHeader.removingNode(),
             prevState: nexusBlock1.postState.removingNode(), // WRONG: genesis must start from the empty state
             postState: nexusBlock1.postState,
-            children: try BlockBuilder.buildChildIndex([:]),
+            children: try BlockBuilder.buildChildren([:]),
             height: 0,
             timestamp: now,
             rewardRecipient: nil,
@@ -145,7 +145,7 @@ final class HomesteadContinuityTests: XCTestCase {
             parentState: LatticeState.emptyHeader.removingNode(),
             prevState: genesis.postState.removingNode(), // WRONG: should equal block1.postState
             postState: genesis.postState,
-            children: try BlockBuilder.buildChildIndex([:]),
+            children: try BlockBuilder.buildChildren([:]),
             height: 2,
             timestamp: now - 30_000,
             rewardRecipient: nil,

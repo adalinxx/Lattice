@@ -17,7 +17,7 @@ enum TreeDriver {
     static func headerInputs(
         _ block: Block,
         fetcher: any Fetcher
-    ) async throws -> (spec: ChainSpec, childIndex: ChildIndex) {
+    ) async throws -> (spec: ChainSpec, childIndex: FlatDictionary<BlockHeader>) {
         let spec = try await block.spec.resolve(fetcher: fetcher).node
         let childIndex = try await block.children.resolve(fetcher: fetcher).node
         return (try XCTUnwrap(spec), try XCTUnwrap(childIndex))
@@ -114,6 +114,6 @@ enum TreeDriver {
 }
 
 /// A test block's own child index: every fixture builds its blocks in memory.
-func testChildIndex(_ block: Block) -> ChildIndex {
-    block.children.node ?? ChildIndex()
+func testChildIndex(_ block: Block) -> FlatDictionary<BlockHeader> {
+    block.children.node ?? FlatDictionary<BlockHeader>()
 }

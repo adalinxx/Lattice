@@ -165,7 +165,7 @@ creates no local consensus fact and does not tell Lattice to retain the carrier.
 
 ```text
 Sources/
-|- LatticePrimitives/  blocks, ChildIndex, ChainSpec, transactions, actions, state, CIDs
+|- LatticePrimitives/  blocks, ChainSpec, transactions, actions, state, CIDs
 |- LatticePoW/         proof-of-work preimage, work, ASERT schedule, WorkSum
 |- LatticeValidation/  block, transaction, state-transition and spec validity, genesis
 |- LatticeProofs/      ChildBlockProof and child validation packages

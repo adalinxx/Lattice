@@ -413,7 +413,7 @@ final class CoinbaseRuleTests: XCTestCase {
             target: UInt256? = nil, nextTarget: UInt256? = nil,
             spec: VolumeImpl<ChainSpec>? = nil, parentState: LatticeStateHeader? = nil,
             prevState: LatticeStateHeader? = nil, postState: LatticeStateHeader? = nil,
-            children: HeaderImpl<ChildIndex>? = nil, height: UInt64? = nil,
+            children: HeaderImpl<FlatDictionary<BlockHeader>>? = nil, height: UInt64? = nil,
             timestamp: Int64? = nil, rewardRecipient: String?? = nil, nonce: UInt64? = nil
         ) -> Block {
             Block(

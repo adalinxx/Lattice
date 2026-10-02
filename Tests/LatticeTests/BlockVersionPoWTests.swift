@@ -129,7 +129,7 @@ final class BlockVersionPoWTests: XCTestCase {
         let block = try await deterministicGenesis()
         let preimage = Block.makeProofOfWorkPreimage(block: block, nonce: 0)
         let digest = UInt256.hash(preimage).toHexString()
-        let goldenDigest = "865b2e172b73248aeedd39ed52a1ada26ee4ee3dd56ca1a494b67d1e337ee40e"
+        let goldenDigest = "7338ebe21969647356e63731a9b4ea5f48654aa655ebbc671189590e23fa7b8c"
 
         XCTAssertEqual(
             digest,
