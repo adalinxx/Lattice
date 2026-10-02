@@ -46,15 +46,6 @@ public struct WasmPolicyRef: Codable, Hashable, Sendable {
         self.scope = scope
         self.entrypoint = entrypoint ?? scope.defaultEntrypoint
     }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        moduleCID = try container.decode(String.self, forKey: .moduleCID)
-        sourceCID = try container.decodeIfPresent(String.self, forKey: .sourceCID)
-        abiVersion = try container.decodeIfPresent(UInt16.self, forKey: .abiVersion) ?? WasmPolicyRef.currentABIVersion
-        scope = try container.decode(Scope.self, forKey: .scope)
-        entrypoint = try container.decodeIfPresent(String.self, forKey: .entrypoint) ?? scope.defaultEntrypoint
-    }
 }
 
 public extension WasmPolicyRef.Scope {

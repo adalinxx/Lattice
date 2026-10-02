@@ -16,9 +16,9 @@ func emptyTransactions() -> HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Transacti
     try! HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Transaction>>>(node: MerkleDictionaryImpl<VolumeImpl<Transaction>>())
 }
 
-func emptyChildBlocks() -> HeaderImpl<ChildIndex> {
+func emptyChildBlocks() -> HeaderImpl<FlatDictionary<BlockHeader>> {
     // known-valid local node; CID computation cannot fail (no Float/Double fields)
-    try! HeaderImpl<ChildIndex>(node: ChildIndex())
+    try! HeaderImpl(node: FlatDictionary<BlockHeader>())
 }
 
 func emptyLatticeState() -> LatticeStateHeader {
@@ -62,7 +62,7 @@ func makeBlock(
     timestamp: Int64,
     target: UInt256 = UInt256(1000),
     nonce: UInt64 = 0,
-    children: HeaderImpl<ChildIndex>? = nil
+    children: HeaderImpl<FlatDictionary<BlockHeader>>? = nil
 ) -> Block {
     // known-valid local node; CID computation cannot fail (no Float/Double fields)
     let prevHeader = try! VolumeImpl<Block>(node: previous)

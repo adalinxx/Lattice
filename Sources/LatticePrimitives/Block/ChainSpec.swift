@@ -67,7 +67,7 @@ public struct ChainSpec: Scalar {
         let legacyContainer = try decoder.container(keyedBy: LegacyCodingKeys.self)
         maxNumberOfTransactionsPerBlock = try container.decode(UInt64.self, forKey: .maxNumberOfTransactionsPerBlock)
         maxStateGrowth = try container.decode(Int.self, forKey: .maxStateGrowth)
-        maxBlockSize = try container.decodeIfPresent(Int.self, forKey: .maxBlockSize) ?? 1_000_000
+        maxBlockSize = try container.decode(Int.self, forKey: .maxBlockSize)
         premine = try container.decode(UInt64.self, forKey: .premine)
         targetBlockTime = try container.decode(UInt64.self, forKey: .targetBlockTime)
         initialReward = try container.decode(UInt64.self, forKey: .initialReward)
@@ -80,7 +80,7 @@ public struct ChainSpec: Scalar {
                 debugDescription: "Legacy JavaScript filters are not supported; migrate to wasmPolicies"
             )
         }
-        wasmPolicies = try container.decodeIfPresent([WasmPolicyRef].self, forKey: .wasmPolicies) ?? []
+        wasmPolicies = try container.decode([WasmPolicyRef].self, forKey: .wasmPolicies)
     }
 }
 

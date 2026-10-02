@@ -33,7 +33,9 @@ public struct Block: Hashable {
     public let parentState: LatticeStateHeader
     public let prevState: LatticeStateHeader
     public let postState: LatticeStateHeader
-    public let children: HeaderImpl<ChildIndex>
+    /// Directory → child block, in one flat node. `BlockBuilder` admits only
+    /// directory atoms as keys.
+    public let children: HeaderImpl<FlatDictionary<BlockHeader>>
     public let height: UInt64
     public let timestamp: Int64
     /// Account credited with this block's reward plus its fees (the coinbase).
@@ -43,7 +45,7 @@ public struct Block: Hashable {
     public let rewardRecipient: String?
     public let nonce: UInt64
 
-    public init(version: UInt16 = Block.currentVersion, parent: VolumeImpl<Block>?, transactions: HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Transaction>>>, target: UInt256, nextTarget: UInt256, spec: VolumeImpl<ChainSpec>, parentState: LatticeStateHeader, prevState: LatticeStateHeader, postState: LatticeStateHeader, children: HeaderImpl<ChildIndex>, height: UInt64, timestamp: Int64, rewardRecipient: String?, nonce: UInt64) {
+    public init(version: UInt16 = Block.currentVersion, parent: VolumeImpl<Block>?, transactions: HeaderImpl<MerkleDictionaryImpl<VolumeImpl<Transaction>>>, target: UInt256, nextTarget: UInt256, spec: VolumeImpl<ChainSpec>, parentState: LatticeStateHeader, prevState: LatticeStateHeader, postState: LatticeStateHeader, children: HeaderImpl<FlatDictionary<BlockHeader>>, height: UInt64, timestamp: Int64, rewardRecipient: String?, nonce: UInt64) {
         self.version = version
         self.parent = parent
         self.transactions = transactions
@@ -149,7 +151,7 @@ extension Block: Node {
             parentState: properties[PARENT_STATE_PROPERTY] as? LatticeStateHeader ?? parentState,
             prevState: properties[PREV_STATE_PROPERTY] as? LatticeStateHeader ?? prevState,
             postState: properties[POST_STATE_PROPERTY] as? LatticeStateHeader ?? postState,
-            children: properties[CHILDREN_PROPERTY] as? HeaderImpl<ChildIndex> ?? children,
+            children: properties[CHILDREN_PROPERTY] as? HeaderImpl<FlatDictionary<BlockHeader>> ?? children,
             height: height,
             timestamp: timestamp,
             rewardRecipient: rewardRecipient,

@@ -1,29 +1,29 @@
 {
   "fixtures" : {
-    "badPrevState" : "bafyreif5tqph5jo4c2ohmgw34xpj6lzkywtxtqkmlntxozkuv2ifa6sxpq",
-    "carrier" : "bafyreiedzzy6f6rqx7jtdgg4pxbl36wyjm3r7orygx55yvschsbbnhutiy",
-    "childCandidate" : "bafyreicgaaqvblrrcmbrn2bv2j2vey43s44nqfwmtvkmoh5p25zvbove7q",
-    "childGenesis" : "bafyreig4orln3rgl5gif5hoxvlwm4nj33uo3oroptlh6imadyxmu4uk4ze",
-    "childGenesisCarrier" : "bafyreiaywablvfmj7ysgrju75scq4jptlgji5ipyasw5xgwndqui4rsfiq",
-    "forgedPostState" : "bafyreihf2snl45tm7fyhmgwsizrlrarslodxhufeudpcjoq7cdu3xzwtkm",
-    "genesis" : "bafyreigs4zpcbuxj3itrbt6knya5xhwfe3rthkqd2oskkyqnrd2mytpdzu",
-    "grandchild" : "bafyreib4hbqvddmchrqz4i3a7p23tmp6krt6oet2ohcdawm5mvr4yxc5x4",
-    "hardChildGenesis" : "bafyreichyth7zx7dwkjw3bmxel4ko4tjfgi7uznmpy6eunejgbhihp3klu",
-    "hardGenesis" : "bafyreicybhn3t7zfmp2acnyo2sq4w5ey3b3ypcvtiy55pvkdc45nxjedbm",
-    "missCarrier" : "bafyreihtwztmxx5rtebrgex5feta2xxdupnt4ja7jzfffi3ibl76xva6fa",
-    "missedChild" : "bafyreibpzratpepyibta2lm4e5uosq3dqphfncam3mdm74bi5hlqs7vbbm",
-    "otherSpec" : "bafyreigc52rvdqch54xodmbbsczw56vwg2r62c7x75mral24qpkwjthkaq",
-    "rivalChildBlock" : "bafyreihnu4ydpfjieoj65wnbwhfrrsixy5ib3hjkp6qgzxa5bwdrfx6mra",
-    "rivalChildBlockCarrier" : "bafyreiad3t6k75tv4mle7j5giizrqy35bxeb6x5honzfi7fno5f4gqmixi",
-    "rivalChildGenesis" : "bafyreig6rsz4edyjqjim3uhinys7koozyndzuowh2qpg3ode2b7vhzz57i",
-    "rivalChildGenesisCarrier" : "bafyreictlh2gz2x7xeojtz22zbyai27njlqfbrowghvaia3s4pu7fd4s2e",
-    "rivalGenesis" : "bafyreibtguin7vmw4ndpogvd74wba3sd5ttxh7jd5xux5k7w5adcpciip4",
-    "side" : "bafyreieuagz6zhgkjjupnyxoz6zhacqpxwni3cvn4x4gt5mdrnoqmkdete",
-    "staleTimestamp" : "bafyreia7q6nezrdi5dn34du6d2tl374mqdvsf25y3pq23cjyx7lv2j3kse",
-    "tooEasy" : "bafyreibj6z2ujihvihsfd2q67qjuziq6m2ic6usklkaffxlmeqkmza4jam",
-    "valid" : "bafyreiettxkomvhzehv5fp6qmwzwwugqvsazvkfdwldpnsjfr5yyolf6qu",
-    "wrongHeight" : "bafyreifv7ksqwkgtlziib7a4vabergccghw4qktiwkr3piaxp4qg5j6g5e",
-    "wrongNextTarget" : "bafyreibgcejsmzpuvzb27t4urifhabqh2owiw34szlglgzrauwnjsqglk4"
+    "badPrevState" : "bafyreihbioxuivzb3nzo3d4ivk55ctjqtdqcdqyfc2u3jkm6r5dxhhmhdy",
+    "carrier" : "bafyreibdyympsqsyrtuur7rhv6psezote4zxrdzsf4fgfnrr3xztlo67l4",
+    "childCandidate" : "bafyreid7whsmpgrh72wgbo3oreigjexz4hmy3duakv6crlhibvb6jzze24",
+    "childGenesis" : "bafyreigkuihfudoykkg3ul46pjfqd64eypguyxqxcs7ljedtdtglrnybq4",
+    "childGenesisCarrier" : "bafyreid5lqpb7bd53chptz6oltb3vftqo6yc5lktkfdscmxlwihc4btbeu",
+    "forgedPostState" : "bafyreids7gqywf2w3f323l4cwn3ilk5h7kaasaav4ri3fxgua3cywkrln4",
+    "genesis" : "bafyreiaokww7mhyfbk45exvvaixtyzhfrjwlk4ndioz7x6qwkphu7s4you",
+    "grandchild" : "bafyreiaewzgnzcf4but35jsj52krhugdg7c4tvtz2bctpbgg4xpxxeeqom",
+    "hardChildGenesis" : "bafyreiauhz7c7o3bp4waliobqnlmok6s6fmgfn62eqvryjqrdp7e25sdim",
+    "hardGenesis" : "bafyreihhcyplqw4xyqcugphh67rvo7vt2brugoewt3kpzdzytrhiyyru34",
+    "missCarrier" : "bafyreiamhcjbi6imirqy5lgz4uo2br75qtdtz5qxkqo4gtq56pjz5sghwu",
+    "missedChild" : "bafyreie33uhqdexmfxq3y623ahdjsig2eiv4tsdbyhjnfjsgmr6zgi4cru",
+    "otherSpec" : "bafyreiespd3enxiqloocbqbmjiyktomxidurp4a3refslymrvmfvsewfsm",
+    "rivalChildBlock" : "bafyreibx6yjvqlgys6756s7dcux6ahjcgrljw7ruigyk2apantgzi2fsn4",
+    "rivalChildBlockCarrier" : "bafyreihqz6nn5cvjl5aozv7eofkqvgde36rdhqflqin63a7ypfsqnwojb4",
+    "rivalChildGenesis" : "bafyreidtnlf5bfrb7erv5rxegg3dk2apheuh52ahxmbl6ygxjjckh2pk7u",
+    "rivalChildGenesisCarrier" : "bafyreid2vgq7iinucgth5oxt74dettyohqcg6vupoxam6wnyfhrh3eyovm",
+    "rivalGenesis" : "bafyreiae2d5k56ifaw76u7uxr5lvv6attrcujb7ydqsdxfcrgfy72u6ct4",
+    "side" : "bafyreidumnr4a7f2h347gpx75rzcedi6zfzkdhynoi3xlxnx7ybauclzrq",
+    "staleTimestamp" : "bafyreicfvw4vvkwzfcsfje7vzzflzedtuu3haszcbtloub5let33phtyxy",
+    "tooEasy" : "bafyreihzftjna3tron3a6qyqhxgx2pawdbc4z3dwvxzfoopmmeeuxeif5u",
+    "valid" : "bafyreibw3xs3gzvngzbo2qj6zll424cdyifutkc5e4dyjvwiyetkkeryya",
+    "wrongHeight" : "bafyreicmsktggbbatv67kfpafd4kulklqawdl4fos6vpbbgzylkgs4vhkm",
+    "wrongNextTarget" : "bafyreicyfysfyjrs37inzgr6xut4mg6gtrrudblapztmwbrhjzncnowuvu"
   },
   "steps" : [
     {
@@ -511,7 +511,7 @@
       "excluded" : false,
       "excludedAfter" : false,
       "executedAfter" : false,
-      "failure" : "proofOfWorkInvalid",
+      "failure" : "protocolInvalid",
       "materializedPostState" : false,
       "operation" : "header",
       "possessedAfter" : false,
@@ -796,13 +796,13 @@
       ],
       "candidate" : "rivalChildGenesis",
       "commitAdded" : [
-
+        "rivalChildGenesis"
       ],
       "commitRemoved" : [
-
+        "childGenesis"
       ],
       "commitRevision" : 2,
-      "commitTip" : "childGenesis",
+      "commitTip" : "rivalChildGenesis",
       "excluded" : false,
       "excludedAfter" : false,
       "executedAfter" : false,
@@ -887,13 +887,13 @@
       ],
       "candidate" : "rivalChildGenesis",
       "commitAdded" : [
-
+        "rivalChildGenesis"
       ],
       "commitRemoved" : [
-
+        "childGenesis"
       ],
       "commitRevision" : 2,
-      "commitTip" : "childGenesis",
+      "commitTip" : "rivalChildGenesis",
       "excluded" : false,
       "excludedAfter" : false,
       "executedAfter" : false,
@@ -921,11 +921,10 @@
       ],
       "candidate" : "rivalChildBlock",
       "commitAdded" : [
-        "rivalChildBlock",
-        "rivalChildGenesis"
+        "rivalChildBlock"
       ],
       "commitRemoved" : [
-        "childGenesis"
+
       ],
       "commitRevision" : 3,
       "commitTip" : "rivalChildBlock",
@@ -1060,13 +1059,15 @@
       ],
       "candidate" : "rivalChildBlock",
       "commitAdded" : [
-
+        "rivalChildBlock",
+        "rivalChildGenesis"
       ],
       "commitRemoved" : [
-
+        "childCandidate",
+        "childGenesis"
       ],
       "commitRevision" : 4,
-      "commitTip" : "childCandidate",
+      "commitTip" : "rivalChildBlock",
       "excluded" : false,
       "excludedAfter" : false,
       "executedAfter" : false,

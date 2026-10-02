@@ -16,6 +16,8 @@ public enum BlockBuilderError: Error {
     /// The transactions and `rewardRecipient` admit no valid coinbase
     /// (see `Block.coinbaseCredit`), so no block built from them would validate.
     case invalidCoinbase(CoinbaseError)
+    /// A child is carried under a name that is not a directory atom.
+    case invalidChildDirectory(String)
 }
 
 public struct BlockBuildResult: Sendable {
@@ -166,7 +168,7 @@ public struct BlockBuilder {
             parentState: parentState.removingNode(),
             prevState: prevState.removingNode(),
             postState: postState,
-            children: try buildChildIndex(children),
+            children: try buildChildren(children),
             height: 0,
             timestamp: timestamp,
             rewardRecipient: nil,
@@ -306,7 +308,7 @@ public struct BlockBuilder {
             parentState: parentState,
             prevState: prevState.removingNode(),
             postState: postState,
-            children: try buildChildIndex(children),
+            children: try buildChildren(children),
             height: height,
             timestamp: timestamp,
             rewardRecipient: rewardRecipient,
@@ -509,11 +511,17 @@ public struct BlockBuilder {
         return try HeaderImpl(node: dict)
     }
 
-    static func buildChildIndex(
+    /// The block's `children`: every key a directory atom. The count needs no
+    /// check here: the DAG-CBOR encoder refuses a map longer than
+    /// `DagCBOR.maxCollectionCount`, so no CID names one no node could decode.
+    static func buildChildren(
         _ children: [String: Block]
-    ) throws -> HeaderImpl<ChildIndex> {
-        try HeaderImpl(node: ChildIndex(
-            entries: try children.mapValues { try VolumeImpl<Block>(node: $0) }
+    ) throws -> HeaderImpl<FlatDictionary<BlockHeader>> {
+        if let invalid = children.keys.first(where: { !isValidDirectoryAtom($0) }) {
+            throw BlockBuilderError.invalidChildDirectory(invalid)
+        }
+        return try HeaderImpl(node: FlatDictionary(
+            try children.mapValues { try BlockHeader(node: $0) }
         ))
     }
 }
