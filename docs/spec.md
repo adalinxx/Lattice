@@ -1222,73 +1222,44 @@ each child directory `d`: a parent block `Q` belongs to the run of the nearest
 block at or above it — by parent pointer, never by canonical chain — that
 commits into `d`. `nearestCarrier(Q, d)` is inherited from `Q`'s parent at
 connection, like `DifficultyAnchor`, so it is reorg-safe and replay-identical;
-it is held only for the directories a node SERVES — the child chains it hosts,
-an operator choice — so the run bookkeeping per block is O(#served), never
-O(height) and never a function of how many directories a stranger's block
-commits into. (The block's commitment map itself is stored in full — on disk,
-where the boundary already retains the index, and in memory, per block, for
-the life of the graph. The index is inside `maxBlockSize` (§3.5), which counts
-the block boundary including the child index, so a validated block's entry
-count is bounded by the chain's committed size rule. The weighed tier cannot
-evaluate that rule — it has no body — so until the validate tier applies §3.5
-a not-yet-validated block's map is bounded only by what the boundary store
-will fetch, and it is retained through a later exclusion.)
-`runWork(P, d)` is the sum of credited work — grinds and attributed runs
-alike — over the connected blocks whose nearest carrier into `d` is `P`. Runs partition the graph: each parent grind
-is in at most one run per directory — none where no ancestor commits into it —
-and a parent fork below `P` places each branch's blocks
-in the run of that branch's own nearest carrier — no branch missed, none
-counted twice. A block's commitments are read from its PoW-bound `children`
-index at import and carried on its durable block fact, so live import and
-replay see the same commitments. A fact written before this field existed
-records NO commitments, which is not "commits nothing": replay tolerates it,
-and a later fact for the same block supplies them. The parent serves the run
-report `(P, d, childBlock, grinds(P), runWork(P, d), ownWork(P), revision)` in
-O(1) plus `P`'s grind set. `grinds(P)` is `P`'s proofs of work — never an
-attributed run — and `ownWork(P)` is their credited work. A run `P`'s OWN
-parent attributed at `P` is part of `runWork(P, d)` and no part of
-`ownWork(P)`: it is work the child does not hold, so it reaches the child
-through `P` exactly as the run's other blocks do, and the recursion
-Nexus → A → B holds at the carrier itself, not only at the blocks above it.
-A work fact records whether its contribution is an attributed run, so a
-restored parent serves the same `ownWork` the live one did.
+it is held only for the directories a node hosts, so the bookkeeping per block
+is O(#hosted), never O(height). A block's commitments are read from its
+PoW-bound `children` index at import and carried on its durable block fact,
+so live import and replay see the same commitments. (The index is inside
+`maxBlockSize` (§3.5); until the validate tier applies that rule a
+not-yet-validated block's map is bounded only by what the boundary store will
+fetch, and it is retained through a later exclusion.)
 
-The child first binds the report: it must be for the child's own directory,
-must name `C` as the block it claims `P` commits, and one of `P`'s grinds must already be
-credited at `C` — otherwise it is refused, visibly. It then credits the run
-under an identity keyed by the carrier and the directory, separate from any
-grind:
+`runWork(P, d)` is the sum of credited work — grinds and attributed runs
+alike — over the connected blocks whose nearest carrier into `d` is `P`. Runs
+partition the graph: each parent grind is in at most one run per directory,
+and a parent fork below `P` places each branch in the run of that branch's
+own nearest carrier — no branch missed, none counted twice. A run only grows,
+including when a block in it is later excluded: proof-of-work is a physical
+fact and exclusion is a judgment about state (§9.5, §9.9).
+
+**The rule.** For every parent block `P` that commits `C = P.children[d]`,
+where the child chain holds `C`:
 
 ```text
-attributed(C, P, d) = runWork(P, d) − ownWork(P)
+attributed(C, P, d) = runWork(P, d) − grindWork(P)
 ```
 
-`P`'s own grinds are already credited at `C` at this chain's price (§9.5) and
-stay so; subtracting `ownWork` keeps them counted exactly once — once, not
-once per grind, because the identity is the carrier's, not a grind's — and
-leaves the child's terminal-target raise untouched. The attributed contribution is
-its own location-bound value: a repeated report is not a strict increase and
-is refused, so the crediting is idempotent. It is applied only if it is a
-strict increase over the attributed value already held, as a work-only batch
-(§9.8). `trueCumWork` of a child block is then its subtree total as always —
-each child block's own grinds plus each carrier's attributed run — so a
-parent fork whose branches commit into different blocks of one child subtree
-contributes every branch exactly once, wherever the fork sits.
-The child never accepts a decrease; never accepts a value one contribution
-cannot represent — it refuses rather than saturates, which would erase the
-ordering §9.2 requires; and never revokes. A run only grows, including when a
-block in it is later excluded on the parent chain: proof-of-work is a physical
-fact and exclusion is a judgment about state (§9.5, §9.9), so runs are
-maintained independently of exclusion and are not rebuilt by it.
+credited at `C` under the contribution ID `CID(AttributedRunIdentity(P, d))`,
+separate from any grind, and only ever raised. `grindWork(P)` is the credited
+work of `P`'s own grinds — never an attributed run. Subtracting all of it
+keeps the value monotone (a stronger grind at `P` raises both terms alike) and
+never counts a grind the child may already hold at `C` twice; a run that `P`'s
+OWN parent attributed at `P` is in `runWork(P, d)` and not in
+`grindWork(P)`, so it reaches the child, and the recursion Nexus → A → B
+holds level by level. `trueCumWork` of a child block is then its subtree total
+as always.
 
-This is an EVIDENCE path, not a change to what `trueCumWork` means: the same
-number is reachable by a child that verifies the parent's blocks itself, so the
-reported path may later be replaced by a verified one with no change to
-consensus. The quantity is the configured immediate parent process's word —
-the child already trusts that process for state continuity (§5.3), which
-gates minting outright, so no new trust class is introduced; the location and
-the binding are checked locally. Child weight never depends on parent CANONICITY: runs follow parent
-pointers, not the parent's canonical chain.
+Attributed values are DERIVED, never facts: a node applies the rule from its
+own copy of the parent level, parent levels first, live and again at restore.
+The result is a function of the parent graph alone — independent of arrival
+or replay order — and, like every run, independent of exclusion and of
+parent canonicity.
 
 ## 10. Economic Model
 
@@ -1412,10 +1383,9 @@ state); withdrawals return it.
 4. Work measures union by grind ID before totaling, so shared work is counted once
    while distinct grinds sum
 5. Effective `trueCumWork` contains only connected, accepted same-chain
-   locations derived from verified proof bytes; a location's quantity may be
-   strengthened by its parent's run work at the committing block (§9.10),
-   reported by the configured parent process, bound locally to this child
-   block and directory, and only ever raised
+   locations derived from verified proof bytes, plus each committed block's
+   attributed parent run (§9.10), derived from the parent level and only
+   ever raised
 6. Equal-work same-chain child blocks prefer the lexicographically smaller
    canonical block CID; `nextTarget` is not a comparator
 7. Parent canonicity alone cannot change child validity, weight, or fork choice
