@@ -31,6 +31,14 @@ package func isValidDirectoryAtom(_ value: String) -> Bool {
     isDeterministicKeyAtom(value) && !value.contains(DIRECTORY_KEY_SEPARATOR)
 }
 
+/// A name a block may carry a child under: a directory atom the child-proof
+/// wire can carry. The one rule for `children` keys, applied where blocks are
+/// built and where they are received.
+package func isValidChildDirectory(_ value: String) -> Bool {
+    isValidDirectoryAtom(value)
+        && value.utf8.count <= ChildProofWireLimits.maximumDirectoryBytes
+}
+
 package func isValidGeneralAtom(_ value: String) -> Bool {
     isDeterministicKeyAtom(value)
 }

@@ -51,7 +51,7 @@ final class ChainSpecTests: XCTestCase {
         )
         XCTAssertEqual(
             try BlockHeader(node: block).rawCID,
-            "bafyreiaqxtdw5gvjlwokecppy4naggfvrudxxshshvpxjmbspq3zfxxbrm"
+            "bafyreigsvcxa7kveg7ywaykwqqwvakgtcujds634k4cc6mejyh43pmoqny"
         )
     }
 
@@ -85,11 +85,11 @@ final class ChainSpecTests: XCTestCase {
     /// block time: a spec without it is not a spec, and zero is no schedule.
     func testHalfLifeIsRequiredAndPositive() throws {
         let withoutHalfLife = Data("""
-        {"maxNumberOfTransactionsPerBlock":1000,"maxStateGrowth":500000,"maxBlockSize":1000000,"premine":0,"targetBlockTime":600000,"initialReward":1048576,"halvingInterval":210000}
+        {"maxNumberOfTransactionsPerBlock":1000,"maxStateGrowth":500000,"maxBlockSize":1000000,"premine":0,"targetBlockTime":600000,"initialReward":1048576,"halvingInterval":210000,"wasmPolicies":[]}
         """.utf8)
         XCTAssertThrowsError(try JSONDecoder().decode(ChainSpec.self, from: withoutHalfLife))
         let withHalfLife = Data("""
-        {"maxNumberOfTransactionsPerBlock":1000,"maxStateGrowth":500000,"maxBlockSize":1000000,"premine":0,"targetBlockTime":600000,"initialReward":1048576,"halvingInterval":210000,"halfLife":120}
+        {"maxNumberOfTransactionsPerBlock":1000,"maxStateGrowth":500000,"maxBlockSize":1000000,"premine":0,"targetBlockTime":600000,"initialReward":1048576,"halvingInterval":210000,"halfLife":120,"wasmPolicies":[]}
         """.utf8)
         XCTAssertEqual(try JSONDecoder().decode(ChainSpec.self, from: withHalfLife).halfLife, 120)
         let zero = ChainSpec(
@@ -104,10 +104,10 @@ final class ChainSpecTests: XCTestCase {
         XCTAssertFalse(zero.isValid)
     }
 
-    func testLegacyChainSpecDecodesWithoutWasmPolicies() throws {
+    /// Every field is committed: a spec missing one is not a spec.
+    func testChainSpecMissingAFieldDoesNotDecode() throws {
         let json = """
         {
-          "directory": "Nexus",
           "maxNumberOfTransactionsPerBlock": 1000,
           "maxStateGrowth": 500000,
           "maxBlockSize": 1000000,
@@ -118,8 +118,7 @@ final class ChainSpecTests: XCTestCase {
           "halfLife": 120
         }
         """
-        let spec = try JSONDecoder().decode(ChainSpec.self, from: Data(json.utf8))
-        XCTAssertEqual(spec.wasmPolicies, [])
+        XCTAssertThrowsError(try JSONDecoder().decode(ChainSpec.self, from: Data(json.utf8)))
     }
 
     func testLegacyJavaScriptFiltersRejectOnDecode() throws {
@@ -134,22 +133,24 @@ final class ChainSpecTests: XCTestCase {
           "initialReward": 1048576,
           "halvingInterval": 210000,
           "halfLife": 120,
+          "wasmPolicies": [],
           "transactionFilters": ["function transactionFilter(tx) { return true; }"]
         }
         """
         XCTAssertThrowsError(try JSONDecoder().decode(ChainSpec.self, from: Data(json.utf8)))
     }
 
-    func testWasmPolicyRefDecodesDefaultEntrypoint() throws {
+    func testWasmPolicyRefMissingAFieldDoesNotDecode() throws {
         let json = """
         {
           "moduleCID": "bafy-policy",
           "scope": "action"
         }
         """
-        let policy = try JSONDecoder().decode(WasmPolicyRef.self, from: Data(json.utf8))
-        XCTAssertEqual(policy.abiVersion, WasmPolicyRef.currentABIVersion)
-        XCTAssertEqual(policy.entrypoint, WasmPolicyRef.Scope.action.defaultEntrypoint)
+        XCTAssertThrowsError(try JSONDecoder().decode(WasmPolicyRef.self, from: Data(json.utf8)))
+        let policy = WasmPolicyRef(moduleCID: "bafy-policy", scope: .action)
+        let decoded = try DagCBOR.decode(WasmPolicyRef.self, from: DagCBOR.encode(policy))
+        XCTAssertEqual(decoded, policy)
     }
 
     func testValidation() {

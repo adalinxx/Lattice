@@ -72,9 +72,7 @@ public struct DirectChildEdge: Hashable, Scalar {
     private func canonicalHop() async -> DirectChildHop? {
         guard CIDIdentity.isCanonical(parentCarrierCID),
               CIDIdentity.isCanonical(childCID),
-              !directory.isEmpty,
-              directory.utf8.count <= ChildProofWireLimits.maximumDirectoryBytes,
-              !directory.contains("/"),
+              isValidChildDirectory(directory),
               let proof,
               proof.rootCID == parentCarrierCID,
               proof.directoryPath == [directory],
@@ -227,6 +225,7 @@ public struct ChildBlockProof: Sendable {
                     paths: [[directory]: .targeted],
                     fetcher: source
                   ).node,
+                  children.hasValidDirectories,
                   let next: BlockHeader = children[directory],
                   CIDIdentity.isCanonical(next.rawCID) else { return nil }
             carrier = next
@@ -237,6 +236,7 @@ public struct ChildBlockProof: Sendable {
                 paths: [[directory]: .targeted],
                 fetcher: source
               ).node,
+              children.hasValidDirectories,
               let child: BlockHeader = children[directory],
               CIDIdentity.isCanonical(child.rawCID),
               let proof = try? await Self.generate(
@@ -299,6 +299,7 @@ public struct ChildBlockProof: Sendable {
                 paths: [[directory]: .targeted],
                 fetcher: fetcher
             ).node,
+                  children.hasValidDirectories,
                   let childHeader: BlockHeader = children[directory] else {
                 return nil
             }
@@ -380,6 +381,7 @@ public struct ChildBlockProof: Sendable {
                   ).node,
                   let childHeader: VolumeImpl<Block> = children[directory]
             else { return .failure(.malformedEvidence) }
+            guard children.hasValidDirectories else { return .failure(.protocolInvalid) }
 
             if index == directoryPath.count - 1 {
                 guard childHeader.rawCID == childCID else {

@@ -81,7 +81,7 @@ final class SerializationPinningTests: XCTestCase {
     func testGenesisCIDMatchesGolden() async throws {
         let (_, cid) = try await deterministicGenesis()
 
-        let golden = "bafyreigpyhfuoyirf3adenkl3jwnxjp3eqrdurfiudawiflgjwxuofk6ra"
+        let golden = "bafyreieq7pwonjmp3azvp3mkgqmaknqhtzvt3aw634zgulbvhhvfcvu3ia"
         XCTAssertEqual(cid, golden,
             "genesis CID changed — this is a consensus-breaking change. If intentional, update the golden value.")
     }
@@ -93,7 +93,7 @@ final class SerializationPinningTests: XCTestCase {
         let hash = block.proofOfWorkHash()
         let hashHex = hash.toHexString()
 
-        let golden = "15b7d9fce7d6809c260c4d5531e291e6b79b6a33490833f3d4c730ae18b23ba9"
+        let golden = "ae6610161723772d77741acd0c8bfcc495c1980856ec234dc1a9bf972c10f69b"
         XCTAssertEqual(hashHex, golden,
             "PoW hash changed — the preimage construction changed. If intentional, update the golden value.")
     }
@@ -111,8 +111,8 @@ final class SerializationPinningTests: XCTestCase {
     // MARK: - children CID stability
 
     func testChildBlocksCIDStability() async throws {
-        let emptyChildren1 = try BlockBuilder.buildChildIndex([:])
-        let emptyChildren2 = try BlockBuilder.buildChildIndex([:])
+        let emptyChildren1 = try BlockBuilder.buildChildren([:])
+        let emptyChildren2 = try BlockBuilder.buildChildren([:])
         XCTAssertEqual(emptyChildren1.rawCID, emptyChildren2.rawCID,
             "empty children dict must have a stable CID")
     }
@@ -136,8 +136,8 @@ final class SerializationPinningTests: XCTestCase {
             fetcher: fetcher
         )
 
-        let dict1 = try BlockBuilder.buildChildIndex(["Child": child])
-        let dict2 = try BlockBuilder.buildChildIndex(["Child": child])
+        let dict1 = try BlockBuilder.buildChildren(["Child": child])
+        let dict2 = try BlockBuilder.buildChildren(["Child": child])
         XCTAssertEqual(dict1.rawCID, dict2.rawCID,
             "children dict with same content must have identical CID")
         XCTAssertEqual(
