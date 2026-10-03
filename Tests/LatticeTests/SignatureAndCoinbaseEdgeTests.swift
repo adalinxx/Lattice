@@ -9,9 +9,15 @@ import XCTest
 import cashew
 import UInt256
 
-/// A block is rejected if validation returns false or throws.
-private func isRejected(_ block: Block, fetcher: Fetcher) async -> Bool {
-    do { return !(try await block.validateNexus(fetcher: fetcher).0) } catch { return true }
+/// A replayed-nonce block is rejected if validation returns false or throws
+/// `StateErrors.nonceGap`. Any other error is unexpected and is rethrown so
+/// the test fails.
+private func isRejectedForNonceReplay(_ block: Block, fetcher: Fetcher) async throws -> Bool {
+    do {
+        return !(try await block.validateNexus(fetcher: fetcher).0)
+    } catch StateErrors.nonceGap {
+        return true
+    }
 }
 
 // MARK: - Signature malleability and same-body replay
@@ -52,9 +58,10 @@ final class SignatureEdgeTests: XCTestCase {
         let malleated = Data(bytes[0..<32] + malleatedS).hexString
         XCTAssertNotEqual(malleated, signature)
 
-        if CryptoUtils.verify(message: message, signature: malleated, publicKeyHex: key.publicKey) {
-            throw XCTSkip("BUG: CryptoUtils.verify accepts non-canonical S + L (signature malleability)")
-        }
+        XCTAssertFalse(
+            CryptoUtils.verify(message: message, signature: malleated, publicKeyHex: key.publicKey),
+            "non-canonical S + L must not verify (signature malleability)"
+        )
     }
 
     func testSameBodySignedTwoWaysYieldsDistinctTransactionsButOneSpend() async throws {
@@ -81,34 +88,37 @@ final class SignatureEdgeTests: XCTestCase {
         }
 
         // Both in one block: the shared nonce makes the second a replay.
-        do {
-            let both = try await f.block([txA, txB], recipient: nil)
-            let rejected = await isRejected(both, fetcher: f.fetcher)
-            XCTAssertTrue(rejected, "builder accepted both twins; validation must reject")
-        } catch {
-            // Builder refused; also check a forged block carrying both.
-        }
         // Applying the body twice fails (nonceGap), so the strongest forgery
         // carries both twins over a post-state that applies the body once.
         let forgedBoth = try await f.unchecked([body], [txA, txB], recipient: nil)
-        let forgedBothRejected = await isRejected(forgedBoth, fetcher: f.fetcher)
+        let forgedBothRejected = try await isRejectedForNonceReplay(forgedBoth, fetcher: f.fetcher)
         XCTAssertTrue(forgedBothRejected, "both twins in one block must be rejected")
 
-        // Twin in the next block after the first: nonce already consumed.
+        // Twin in the next block after the first: nonce already consumed. The
+        // builder would refuse it (and re-applying the body throws
+        // nonceGap), so forge block 2 directly: it carries txB over the
+        // unchanged post-state of block 1 — what a producer bypassing the
+        // builder's checks would emit.
         let first = try await f.block([txA], recipient: nil)
         let firstValid = try await first.validateNexus(fetcher: f.fetcher).0
         XCTAssertTrue(firstValid)
-        do {
-            let second = try await buildAndStoreBlock(
-                previous: first, transactions: [txB],
-                timestamp: f.base + 2000, target: UInt256(1000), nonce: 2,
-                fetcher: f.fetcher
-            )
-            let rejected = await isRejected(second, fetcher: f.fetcher)
-            XCTAssertTrue(rejected, "replayed twin in the following block must be rejected")
-        } catch {
-            // Builder refused the replay; that is a rejection too.
-        }
+        let honestEmpty = try await buildAndStoreBlock(
+            previous: first, transactions: [],
+            timestamp: f.base + 2000, target: UInt256(1000), nonce: 2,
+            fetcher: f.fetcher
+        )
+        let second = Block(
+            version: honestEmpty.version, parent: honestEmpty.parent,
+            transactions: try BlockBuilder.buildTransactionsDictionary([txB]),
+            target: honestEmpty.target, nextTarget: honestEmpty.nextTarget, spec: honestEmpty.spec,
+            parentState: honestEmpty.parentState, prevState: honestEmpty.prevState,
+            postState: first.postState, children: honestEmpty.children,
+            height: honestEmpty.height, timestamp: honestEmpty.timestamp,
+            rewardRecipient: nil, nonce: honestEmpty.nonce
+        )
+        _ = try await storeBuiltBlock(second, in: f.fetcher)
+        let secondRejected = try await isRejectedForNonceReplay(second, fetcher: f.fetcher)
+        XCTAssertTrue(secondRejected, "replayed twin in the following block must be rejected")
     }
 }
 
