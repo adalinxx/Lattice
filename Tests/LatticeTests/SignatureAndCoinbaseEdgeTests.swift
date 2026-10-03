@@ -46,7 +46,7 @@ final class SignatureEdgeTests: XCTestCase {
         return carry == 0 ? out : nil
     }
 
-    func testNonCanonicalScalarSPlusLIsRejected() throws {
+    func testNonCanonicalScalarSPlusLIsRejected() async throws {
         let key = CryptoUtils.generateKeyPair()
         let message = "edge-malleability"
         let signature = try XCTUnwrap(CryptoUtils.sign(message: message, privateKeyHex: key.privateKey))
