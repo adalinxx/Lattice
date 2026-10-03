@@ -14,7 +14,8 @@ import UInt256
 /// the test fails.
 private func isRejectedForNonceReplay(_ block: Block, fetcher: Fetcher) async throws -> Bool {
     do {
-        return !(try await block.validateNexus(fetcher: fetcher).0)
+        _ = try await block.validateNexus(fetcher: fetcher)
+        return false  // only a thrown nonceGap proves the replay rule fired
     } catch StateErrors.nonceGap {
         return true
     }
