@@ -151,35 +151,60 @@ private struct SwapFixture {
     }
 
     /// Builds a child withdrawal block anchored on `carrier` (so its
-    /// parentState is `carrier.prevState`) and returns the block when it
-    /// validates, nil when the builder or validator refuses it.
+    /// parentState is `carrier.prevState`) and validates it. Returns the
+    /// block on success, or the error the builder or validator raised
+    /// (`ValidationReturnedFalse` when validation returned false).
     func withdrawal(
         previous: Block, carrier: Block, directory: String, timestamp: Int64, txNonce: UInt64 = 0
-    ) async throws -> Block? {
-        let block: Block
+    ) async -> Result<Block, Error> {
         do {
-            block = try await buildAndStoreBlock(
+            let block = try await buildAndStoreBlock(
                 previous: previous, transactions: [withdrawalTx(directory: directory, txNonce: txNonce)],
                 parentChainBlock: carrier,
                 timestamp: timestamp, target: .max,
                 rewardRecipient: withdrawerAddr, fetcher: fetcher
             )
-        } catch StateErrors.conflictingActions {
-            return nil
-        }
-        XCTAssertEqual(block.parentState.rawCID, carrier.prevState.rawCID,
-                       "fixture: child parentState must be the carrier's entering state")
-        do {
+            XCTAssertEqual(block.parentState.rawCID, carrier.prevState.rawCID,
+                           "fixture: child parentState must be the carrier's entering state")
             let valid = try await block.validateNexus(
                 fetcher: fetcher, chainPath: [DEFAULT_ROOT_DIRECTORY, directory]
             ).0
-            return valid ? block : nil
-        } catch let error where error is StateErrors || error is ProofErrors {
-            // A missing receipt fails the existence proof (ProofErrors); both
-            // classes are deterministic consensus rejections
-            // (`classifyValidationFailure` -> `.protocolInvalid`).
-            return nil
+            return valid ? .success(block) : .failure(ValidationReturnedFalse())
+        } catch {
+            return .failure(error)
         }
+    }
+}
+
+private struct ValidationReturnedFalse: Error {}
+
+/// The receipt existence proof failed: the parent state holds no receipt
+/// under this withdrawal's (directory-bound) key.
+private func assertMissingReceipt(
+    _ result: Result<Block, Error>, _ message: String, file: StaticString = #filePath, line: UInt = #line
+) {
+    guard case .failure(let error) = result else {
+        return XCTFail("expected rejection: \(message)", file: file, line: line)
+    }
+    guard case ProofErrors.invalidProofType(let reason) = error,
+          reason.contains("mutation proof on non-existent") else {
+        return XCTFail("expected missing-receipt proof failure, got \(error): \(message)", file: file, line: line)
+    }
+}
+
+/// The deposit spend failed: the deposit key holds `SPENT_DEPOSIT_MARKER`
+/// in `spentIn`'s state, so the stored amount no longer matches.
+private func assertSpentDeposit(
+    _ result: Result<Block, Error>, spentIn: Block, depositKey: String, _ message: String,
+    file: StaticString = #filePath, line: UInt = #line
+) {
+    let marker: UInt64? = try? spentIn.postState.node?.depositState.node?.get(key: depositKey)
+    XCTAssertEqual(marker, SPENT_DEPOSIT_MARKER, "fixture: deposit must be spent", file: file, line: line)
+    guard case .failure(let error) = result else {
+        return XCTFail("expected rejection: \(message)", file: file, line: line)
+    }
+    guard case StateErrors.conflictingActions = error else {
+        return XCTFail("expected spent-deposit rejection, got \(error): \(message)", file: file, line: line)
     }
 }
 
@@ -206,13 +231,23 @@ final class CrossChainReorgReplayEdgeTests: XCTestCase {
         let r2 = try await f.emptyNexusBlock(previous: r1, timestamp: f.t - 60_000, nonce: 12)
         let r3 = try await f.emptyNexusBlock(previous: r2, timestamp: f.t - 50_000, nonce: 13)
         XCTAssertNotEqual(r1.postState.rawCID, l1.postState.rawCID, "fixture: L and R must diverge")
-        XCTAssertGreaterThan(r3.height, lCarrier.height, "fixture: R must be the heavier branch")
+        // Fork choice over both branches picks R: L is non-canonical.
+        let chain = ChainState.fromGenesis(block: f.nexusGenesis)
+        for block in [l1, lCarrier, r1, r2, r3] {
+            _ = await chain.submitTestBlock(blockHeader: try BlockHeader(node: block), block: block)
+        }
+        let r3CID = try BlockHeader(node: r3).rawCID
+        let tip = await chain.canonicalTip
+        XCTAssertEqual(tip, r3CID, "fixture: R must be canonical")
+        let canonical = await chain.canonicalHashes
+        XCTAssertFalse(canonical.contains(try BlockHeader(node: lCarrier).rawCID),
+                       "fixture: L must be non-canonical")
 
-        let onL = try await f.withdrawal(previous: deposit, carrier: lCarrier, directory: "Child", timestamp: f.t - 40_000)
-        XCTAssertNotNil(onL, "a withdrawal anchored on a real, non-canonical parent state must validate")
+        let onL = await f.withdrawal(previous: deposit, carrier: lCarrier, directory: "Child", timestamp: f.t - 40_000)
+        XCTAssertNoThrow(try onL.get(), "a withdrawal anchored on a real, non-canonical parent state must validate")
 
-        let onR = try await f.withdrawal(previous: deposit, carrier: r3, directory: "Child", timestamp: f.t - 40_000)
-        XCTAssertNil(onR, "R's state holds no receipt, so a withdrawal anchored there must be rejected")
+        let onR = await f.withdrawal(previous: deposit, carrier: r3, directory: "Child", timestamp: f.t - 40_000)
+        assertMissingReceipt(onR, "R's state holds no receipt, so a withdrawal anchored there must be rejected")
     }
 
     /// After the withdrawal executed on the child (anchored on L), a later
@@ -231,20 +266,18 @@ final class CrossChainReorgReplayEdgeTests: XCTestCase {
         let r2 = try await f.emptyNexusBlock(previous: r1, timestamp: f.t - 60_000, nonce: 12)
         let r3 = try await f.emptyNexusBlock(previous: r2, timestamp: f.t - 50_000, nonce: 13)
 
-        let withdrawn = try await f.withdrawal(previous: deposit, carrier: lCarrier, directory: "Child", timestamp: f.t - 40_000)
-        let spentBlock = try XCTUnwrap(withdrawn, "the first withdrawal must validate")
-        let marker: UInt64? = try? spentBlock.postState.node?.depositState.node?.get(key: f.depositKey)
-        XCTAssertEqual(marker, SPENT_DEPOSIT_MARKER)
+        let withdrawn = await f.withdrawal(previous: deposit, carrier: lCarrier, directory: "Child", timestamp: f.t - 40_000)
+        let spentBlock = try withdrawn.get() // the first withdrawal must validate
 
-        let replayOnR = try await f.withdrawal(
+        let replayOnR = await f.withdrawal(
             previous: spentBlock, carrier: r3, directory: "Child", timestamp: f.t - 30_000, txNonce: 1
         )
-        XCTAssertNil(replayOnR, "a replay anchored on the reorged-to parent fork must be rejected")
+        assertSpentDeposit(replayOnR, spentIn: spentBlock, depositKey: f.depositKey, "a replay anchored on the reorged-to parent fork must be rejected")
 
-        let replayOnL = try await f.withdrawal(
+        let replayOnL = await f.withdrawal(
             previous: spentBlock, carrier: lCarrier2, directory: "Child", timestamp: f.t - 30_000, txNonce: 1
         )
-        XCTAssertNil(replayOnL, "a replay with the receipt still visible must be rejected: the deposit is spent")
+        assertSpentDeposit(replayOnL, spentIn: spentBlock, depositKey: f.depositKey, "a replay with the receipt still visible must be rejected: the deposit is spent")
     }
 
     // MARK: 2a — receipt insert-only
@@ -289,11 +322,11 @@ final class CrossChainReorgReplayEdgeTests: XCTestCase {
         let n1 = try await f.receiptBlock(previous: f.nexusGenesis, directory: "ChildA", timestamp: f.t - 70_000)
         let carrier = try await f.emptyNexusBlock(previous: n1, timestamp: f.t - 60_000)
 
-        let onB = try await f.withdrawal(previous: depositB, carrier: carrier, directory: "ChildB", timestamp: f.t - 50_000)
-        XCTAssertNil(onB, "a receipt for ChildA must not settle ChildB's identical deposit")
+        let onB = await f.withdrawal(previous: depositB, carrier: carrier, directory: "ChildB", timestamp: f.t - 50_000)
+        assertMissingReceipt(onB, "a receipt for ChildA must not settle ChildB's identical deposit")
 
-        let onA = try await f.withdrawal(previous: depositA, carrier: carrier, directory: "ChildA", timestamp: f.t - 50_000)
-        XCTAssertNotNil(onA, "the receipt must settle ChildA's deposit")
+        let onA = await f.withdrawal(previous: depositA, carrier: carrier, directory: "ChildA", timestamp: f.t - 50_000)
+        XCTAssertNoThrow(try onA.get(), "the receipt must settle ChildA's deposit")
     }
 
     // MARK: 2c — child sibling forks
@@ -309,20 +342,20 @@ final class CrossChainReorgReplayEdgeTests: XCTestCase {
         let carrier = try await f.emptyNexusBlock(previous: n1, timestamp: f.t - 60_000)
         let carrier2 = try await f.emptyNexusBlock(previous: carrier, timestamp: f.t - 50_000)
 
-        let x = try await f.withdrawal(previous: deposit, carrier: carrier, directory: "Child", timestamp: f.t - 40_000)
-        let y = try await f.withdrawal(previous: deposit, carrier: carrier, directory: "Child", timestamp: f.t - 39_000)
-        let xBlock = try XCTUnwrap(x, "fork X's withdrawal must validate on its branch")
-        let yBlock = try XCTUnwrap(y, "fork Y's withdrawal must validate on its branch")
+        let x = await f.withdrawal(previous: deposit, carrier: carrier, directory: "Child", timestamp: f.t - 40_000)
+        let y = await f.withdrawal(previous: deposit, carrier: carrier, directory: "Child", timestamp: f.t - 39_000)
+        let xBlock = try x.get() // fork X's withdrawal must validate on its branch
+        let yBlock = try y.get() // fork Y's withdrawal must validate on its branch
         XCTAssertNotEqual(try BlockHeader(node: xBlock).rawCID, try BlockHeader(node: yBlock).rawCID,
                           "fixture: X and Y must be distinct siblings")
 
-        let againOnX = try await f.withdrawal(
+        let againOnX = await f.withdrawal(
             previous: xBlock, carrier: carrier2, directory: "Child", timestamp: f.t - 30_000, txNonce: 1
         )
-        XCTAssertNil(againOnX, "a second withdrawal within branch X must be rejected")
-        let againOnY = try await f.withdrawal(
+        assertSpentDeposit(againOnX, spentIn: xBlock, depositKey: f.depositKey, "a second withdrawal within branch X must be rejected")
+        let againOnY = await f.withdrawal(
             previous: yBlock, carrier: carrier2, directory: "Child", timestamp: f.t - 30_000, txNonce: 1
         )
-        XCTAssertNil(againOnY, "a second withdrawal within branch Y must be rejected")
+        assertSpentDeposit(againOnY, spentIn: yBlock, depositKey: f.depositKey, "a second withdrawal within branch Y must be rejected")
     }
 }

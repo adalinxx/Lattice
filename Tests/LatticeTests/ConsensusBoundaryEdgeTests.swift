@@ -255,7 +255,9 @@ final class ConsensusBoundaryEdgeTests: XCTestCase {
             g2, spec: chainLocalSpec(), childIndex: testChildIndex(g2), evidence: e2
         ).update)
         let g1CID = try BlockHeader(node: g1).rawCID, g2CID = try BlockHeader(node: g2).rawCID
-        let expected = forkChoicePrefersBlock(g1CID, over: g2CID) ? g1CID : g2CID
+        // Equal work: the tie breaks by the smaller raw CID, decided here
+        // with the CID library alone, not with the consensus helper.
+        let expected = try rawBytes(g1CID).lexicographicallyPrecedes(try rawBytes(g2CID)) ? g1CID : g2CID
         let tipBefore = child.canonicalTip
         XCTAssertEqual(tipBefore, expected, "equal-work roots: smaller CID")
         let w1Before = child.subtreeWeight(forHash: g1CID)
@@ -381,7 +383,10 @@ final class ConsensusBoundaryEdgeTests: XCTestCase {
 
     func testFiveHundredOneMillisecondBlocksHardenNeverToZeroAndNormalTimingHolds() async throws {
         let fetcher = StorableFetcher()
-        let launch = Int64(Date().timeIntervalSince1970 * 1_000)
+        // The last block lands back on the hourly schedule at height ~507,
+        // i.e. ~507 hours after launch: start far enough back that no block
+        // lands in the future.
+        let launch = Int64(Date().timeIntervalSince1970 * 1_000) - 520 * 3_600_000
         let genesis = try await buildAndStoreGenesis(
             spec: Self.nexusLikeSpec, timestamp: launch, target: UInt256(1) << 200, fetcher: fetcher
         )
@@ -424,6 +429,7 @@ final class ConsensusBoundaryEdgeTests: XCTestCase {
         }
         // A block that lands back on schedule recovers the anchor target.
         let onSchedule = anchorTime + Int64(previous.height) * 3_600_000
+        XCTAssertLessThan(onSchedule, Int64(Date().timeIntervalSince1970 * 1_000), "fixture: no future blocks")
         let recovered = try await BlockBuilder.buildBlock(
             previous: previous, timestamp: onSchedule, nonce: 2_000, difficultyAnchor: anchor, fetcher: fetcher
         )
@@ -473,8 +479,9 @@ final class ConsensusBoundaryEdgeTests: XCTestCase {
             fetcher: fetcher, chainPath: [DEFAULT_ROOT_DIRECTORY], validationContext: ValidationContext(nowMilliseconds: 10)
         ).0
         XCTAssertFalse(overValid, "limit = size - 1 is invalid")
-        // The same block without children fits under that limit: the
-        // children are exactly what pushed it over.
+        // The same block without children fits under that limit, so the
+        // children's bytes are what pushed it over.
+        XCTAssertLessThan(withoutSize, size - 1)
         let withoutFits = try await without.validateBlockSize(spec: sizeSpec(size - 1), fetcher: fetcher)
         XCTAssertTrue(withoutFits)
     }
