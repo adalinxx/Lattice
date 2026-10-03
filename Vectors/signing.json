@@ -1,5 +1,5 @@
 {
-  "description" : "Ed25519 over signedBytes = UTF8(\"lattice-tx-v1:\" || message). For scheme \"transaction\" the message is the lattice-tx-v1 envelope of the body (or, legacy, the body CID) and verification is TransactionSigning.verify.",
+  "description" : "Ed25519 over signedBytes = UTF8(\"lattice-tx-v1:\" || message). For scheme \"transaction\" the message is the lattice-tx-v1 envelope of the body (the only valid signing input; a bare body-CID message is invalid) and verification is TransactionSigning.verify.",
   "spec" : "docs/spec.md#71-signature-verification",
   "vectors" : [
     {
@@ -85,7 +85,7 @@
       "signedBytesHex" : "6c6174746963652d74782d76313a62616679726569646f67366c7a616c33676a667662766d6d64636370336962796e64737933686376623232666876746d78697673726d6f64697979",
       "transactionBodyCid" : "bafyreidog6lzal3gjfvbvmmdccp3ibyndsy3hcvb22fhvtmxivsrmodiyy",
       "transactionBodyDagCborHex" : "a8656e6f6e63650067616374696f6e7380677369676e65727381783b62616679726569667262703678346e63666271616b7766637766716b6c37716862736465796773616b6a786978656b776b647072626f6d7975743469636861696e5061746881654e657875736e6163636f756e74416374696f6e7382a26564656c74613864656f776e6572783b62616679726569667262703678346e63666271616b7766637766716b6c37716862736465796773616b6a786978656b776b647072626f6d79757434a26564656c74611864656f776e6572783b626166797265696864706371653672706f72366d616d7362347236643669767a63663274777437646463687a3663776336796463346d36797a36656e6465706f736974416374696f6e73806e72656365697074416374696f6e7380717769746864726177616c416374696f6e7380",
-      "valid" : true
+      "valid" : false
     },
     {
       "message" : "domain:13:lattice-tx-v1\nchainPath.count:1\nchainPath.component:5:Nexus\nnonce:1\nbodyCID:59:bafyreigfaloe4kdhsiht77pnunuvxmnk6n2vyq2qpd5m7qalqpofpinhh4",

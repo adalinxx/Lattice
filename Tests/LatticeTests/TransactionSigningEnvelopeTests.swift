@@ -61,7 +61,7 @@ final class TransactionSigningEnvelopeTests: XCTestCase {
         XCTAssertFalse(TransactionSigning.verify(bodyHeader: try! HeaderImpl<TransactionBody>(node: wrongNonceBody), signature: signature, publicKeyHex: key.publicKey))
     }
 
-    func testTransactionSignaturesAcceptEnvelopeAndLegacyBodyCID() throws {
+    func testTransactionSignaturesRejectLegacyBodyCID() throws {
         let key = CryptoUtils.generateKeyPair()
         let signer = CryptoUtils.createAddress(from: key.publicKey)
         let body = TransactionBody(
@@ -79,7 +79,7 @@ final class TransactionSigningEnvelopeTests: XCTestCase {
         let legacySignature = try XCTUnwrap(CryptoUtils.sign(message: header.rawCID, privateKeyHex: key.privateKey))
 
         XCTAssertTrue(Transaction(signatures: [key.publicKey: envelopeSignature], body: header).signaturesAreValid())
-        XCTAssertTrue(Transaction(signatures: [key.publicKey: legacySignature], body: header).signaturesAreValid())
+        XCTAssertFalse(Transaction(signatures: [key.publicKey: legacySignature], body: header).signaturesAreValid())
 
         let changed = TransactionBody(
             accountActions: body.accountActions,
@@ -113,7 +113,7 @@ final class TransactionSigningEnvelopeTests: XCTestCase {
         ))
     }
 
-    func testMixedEnvelopeAndLegacyMultisignatureIsValid() throws {
+    func testMixedEnvelopeAndLegacyMultisignatureIsRejected() throws {
         let first = CryptoUtils.generateKeyPair()
         let second = CryptoUtils.generateKeyPair()
         let body = TransactionBody(
@@ -143,7 +143,7 @@ final class TransactionSigningEnvelopeTests: XCTestCase {
             body: header
         )
 
-        XCTAssertTrue(transaction.signaturesAreValid())
+        XCTAssertFalse(transaction.signaturesAreValid())
         XCTAssertTrue(transaction.signaturesMatchSigners())
     }
 

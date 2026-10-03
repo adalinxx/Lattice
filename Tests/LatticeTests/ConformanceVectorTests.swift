@@ -585,7 +585,7 @@ final class ConformanceVectorTests: XCTestCase {
         return SigningFile(
             version: vectorVersion,
             spec: "docs/spec.md#71-signature-verification",
-            description: "Ed25519 over signedBytes = UTF8(\"lattice-tx-v1:\" || message). For scheme \"transaction\" the message is the lattice-tx-v1 envelope of the body (or, legacy, the body CID) and verification is TransactionSigning.verify.",
+            description: "Ed25519 over signedBytes = UTF8(\"lattice-tx-v1:\" || message). For scheme \"transaction\" the message is the lattice-tx-v1 envelope of the body (the only valid signing input; a bare body-CID message is invalid) and verification is TransactionSigning.verify.",
             vectors: [
                 try vector("message/valid", scheme: "message", signer: alice,
                            message: message, signature: messageSignature, valid: true),
@@ -604,7 +604,7 @@ final class ConformanceVectorTests: XCTestCase {
                 try vector("transaction/envelope", scheme: "transaction", signer: alice, body: body,
                            message: envelope, signature: envelopeSignature, valid: true),
                 try vector("transaction/legacy-body-cid", scheme: "transaction", signer: alice, body: body,
-                           message: bodyCID, signature: legacySignature, valid: true),
+                           message: bodyCID, signature: legacySignature, valid: false),
                 try vector("transaction/tampered-nonce", scheme: "transaction", signer: alice, body: tamperedBody,
                            message: TransactionSigning.preimage(body: tamperedBody),
                            signature: envelopeSignature, valid: false),

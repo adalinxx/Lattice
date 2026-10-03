@@ -9,19 +9,7 @@ import XCTest
 import cashew
 import UInt256
 
-/// A replayed-nonce block is rejected if validation returns false or throws
-/// `StateErrors.nonceGap`. Any other error is unexpected and is rethrown so
-/// the test fails.
-private func isRejectedForNonceReplay(_ block: Block, fetcher: Fetcher) async throws -> Bool {
-    do {
-        _ = try await block.validateNexus(fetcher: fetcher)
-        return false  // only a thrown nonceGap proves the replay rule fired
-    } catch StateErrors.nonceGap {
-        return true
-    }
-}
-
-// MARK: - Signature malleability and same-body replay
+// MARK: - Signature malleability and one signature form per body
 
 @MainActor
 final class SignatureEdgeTests: XCTestCase {
@@ -65,61 +53,33 @@ final class SignatureEdgeTests: XCTestCase {
         )
     }
 
-    func testSameBodySignedTwoWaysYieldsDistinctTransactionsButOneSpend() async throws {
+    /// One body has exactly one valid signature form per key: the
+    /// lattice-tx-v1 envelope. A signature over the bare body CID (the removed
+    /// legacy form) must be rejected, so one body cannot be signed into two
+    /// distinct valid transaction CIDs.
+    func testLegacyBodyCIDSignatureIsRejectedSoOneBodyHasOneSignatureForm() async throws {
         let f = try await CoinbaseFixture.make()
         let payee = freshAddress()
         let body = f.transfer(debit: 10, credits: [(payee, 10)], nonce: 0).body
         let header = try HeaderImpl<TransactionBody>(node: body)
         let envelope = try XCTUnwrap(TransactionSigning.sign(bodyHeader: header, privateKeyHex: f.payer.privateKey))
         let legacy = try XCTUnwrap(CryptoUtils.sign(message: header.rawCID, privateKeyHex: f.payer.privateKey))
+        XCTAssertNotEqual(envelope, legacy)
         let txA = Transaction(signatures: [f.payer.publicKey: envelope], body: header)
         let txB = Transaction(signatures: [f.payer.publicKey: legacy], body: header)
 
-        let cidA = try HeaderImpl<Transaction>(node: txA).rawCID
-        let cidB = try HeaderImpl<Transaction>(node: txB).rawCID
-        XCTAssertNotEqual(cidA, cidB, "two signatures over one body are two transaction identities")
         XCTAssertTrue(txA.signaturesAreValid())
-        XCTAssertTrue(txB.signaturesAreValid())
+        XCTAssertFalse(txB.signaturesAreValid(), "a legacy body-CID signature must not verify")
 
-        // Each is valid alone.
-        for tx in [txA, txB] {
-            let block = try await f.block([tx], recipient: nil)
-            let valid = try await block.validateNexus(fetcher: f.fetcher).0
-            XCTAssertTrue(valid)
-        }
+        let block = try await f.block([txA], recipient: nil)
+        let valid = try await block.validateNexus(fetcher: f.fetcher).0
+        XCTAssertTrue(valid)
 
-        // Both in one block: the shared nonce makes the second a replay.
-        // Applying the body twice fails (nonceGap), so the strongest forgery
-        // carries both twins over a post-state that applies the body once.
-        let forgedBoth = try await f.unchecked([body], [txA, txB], recipient: nil)
-        let forgedBothRejected = try await isRejectedForNonceReplay(forgedBoth, fetcher: f.fetcher)
-        XCTAssertTrue(forgedBothRejected, "both twins in one block must be rejected")
-
-        // Twin in the next block after the first: nonce already consumed. The
-        // builder would refuse it (and re-applying the body throws
-        // nonceGap), so forge block 2 directly: it carries txB over the
-        // unchanged post-state of block 1 — what a producer bypassing the
-        // builder's checks would emit.
-        let first = try await f.block([txA], recipient: nil)
-        let firstValid = try await first.validateNexus(fetcher: f.fetcher).0
-        XCTAssertTrue(firstValid)
-        let honestEmpty = try await buildAndStoreBlock(
-            previous: first, transactions: [],
-            timestamp: f.base + 2000, target: UInt256(1000), nonce: 2,
-            fetcher: f.fetcher
-        )
-        let second = Block(
-            version: honestEmpty.version, parent: honestEmpty.parent,
-            transactions: try BlockBuilder.buildTransactionsDictionary([txB]),
-            target: honestEmpty.target, nextTarget: honestEmpty.nextTarget, spec: honestEmpty.spec,
-            parentState: honestEmpty.parentState, prevState: honestEmpty.prevState,
-            postState: first.postState, children: honestEmpty.children,
-            height: honestEmpty.height, timestamp: honestEmpty.timestamp,
-            rewardRecipient: nil, nonce: honestEmpty.nonce
-        )
-        _ = try await storeBuiltBlock(second, in: f.fetcher)
-        let secondRejected = try await isRejectedForNonceReplay(second, fetcher: f.fetcher)
-        XCTAssertTrue(secondRejected, "replayed twin in the following block must be rejected")
+        // A producer bypassing the builder: the legacy-signed twin over a
+        // post-state that applies the body must be rejected.
+        let forged = try await f.unchecked([body], [txB], recipient: nil)
+        let forgedValid = try await forged.validateNexus(fetcher: f.fetcher).0
+        XCTAssertFalse(forgedValid, "a block carrying a legacy-signed transaction must be rejected")
     }
 }
 

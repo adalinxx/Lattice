@@ -121,8 +121,9 @@ extension TransactionBody {
 
     package func withdrawalsAreValid(directory: String, prevState: LatticeState, parentState: LatticeState, fetcher: Fetcher) async throws -> Bool {
         if withdrawalActions.isEmpty { return true }
-        // Both proofs THROW (StateErrors.conflictingActions) on a missing or
-        // mismatched deposit/receipt, so awaiting without throwing IS the
+        // Both proofs THROW on a missing or mismatched deposit/receipt (a
+        // missing key surfaces as cashew's ProofErrors.invalidProofType, a
+        // mismatch as StateErrors.conflictingActions), so awaiting without throwing IS the
         // validation — the returned proof headers are intentionally discarded.
         // (The authoritative enforcement of deposit existence + amount is the
         // post-state transition, DepositState.proveAndSpendForWithdrawals.)
