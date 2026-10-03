@@ -78,7 +78,7 @@ final class SignatureEdgeTests: XCTestCase {
         // A producer bypassing the builder: the legacy-signed twin over a
         // post-state that applies the body must be rejected.
         let forged = try await f.unchecked([body], [txB], recipient: nil)
-        let forgedValid = (try? await forged.validateNexus(fetcher: f.fetcher).0) ?? false
+        let forgedValid = try await forged.validateNexus(fetcher: f.fetcher).0
         XCTAssertFalse(forgedValid, "a block carrying a legacy-signed transaction must be rejected")
     }
 }
