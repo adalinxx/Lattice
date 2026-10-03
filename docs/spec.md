@@ -670,13 +670,11 @@ signaturePayload = UTF8("lattice-tx-v1:" || envelope)
 Both domain markers are consensus bytes; there is no newline between the outer
 prefix and the first envelope line.
 
-Writers MUST sign this exact preimage. For compatibility, validators accept
-either that signature or the historical body-CID input to the same outer
-domain: `UTF8("lattice-tx-v1:" || CID(tx.body))`. A truly bare
-`UTF8(CID(tx.body))` signature is not accepted. The body CID commits the complete
-transaction body, including its absolute `chainPath` and nonce, so mutation or
-cross-path replay still fails. This fallback does not accept bare public-key
-encodings; signing keys remain canonical Multikey values.
+Signers MUST sign this exact preimage, and it is the only accepted signing
+input: a signature over any other message, including the bare body CID under
+the same outer domain (`UTF8("lattice-tx-v1:" || CID(tx.body))`), is invalid.
+One body therefore has exactly one valid signature form per key, and so one
+transaction CID per signer set. Signing keys remain canonical Multikey values.
 
 For each `(publicKeyHex, signatureHex)` in an ordinary transaction's
 `tx.signatures`, one accepted Ed25519 verification MUST succeed. At least one

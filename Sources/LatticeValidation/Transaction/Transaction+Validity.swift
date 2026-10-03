@@ -4,7 +4,7 @@ import LatticePrimitives
 
 extension Transaction {
     /// The consensus signature rule: every attached signature must verify over
-    /// the current envelope or historical body-CID preimage, and at least one
+    /// the lattice-tx-v1 envelope preimage, and at least one
     /// signature must be present. Requires a resolved body.
     public func signaturesAreValid() -> Bool {
         guard let bodyNode = body.node else { return false }

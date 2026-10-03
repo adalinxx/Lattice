@@ -37,15 +37,10 @@ public enum TransactionSigning {
     }
 
     public static func verify(body: TransactionBody, bodyCID: String, signature: String, publicKeyHex: String) -> Bool {
-        // Writers emit the versioned envelope. Validators also accept the
-        // historical body-CID input under CryptoUtils's unchanged outer domain;
-        // the CID still commits path and nonce.
+        // The lattice-tx-v1 envelope is the only valid signing input: one body
+        // has exactly one valid signature form per key.
         CryptoUtils.verify(
             message: preimage(body: body, bodyCID: bodyCID),
-            signature: signature,
-            publicKeyHex: publicKeyHex
-        ) || CryptoUtils.verify(
-            message: bodyCID,
             signature: signature,
             publicKeyHex: publicKeyHex
         )
