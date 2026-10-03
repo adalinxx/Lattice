@@ -155,6 +155,25 @@ public struct ChildBlockProof: Sendable {
         childDirectory: String,
         fetcher: Fetcher
     ) async throws -> ChildBlockProof {
+        try await resolveHop(
+            rootHeader: rootHeader,
+            childDirectory: childDirectory,
+            fetcher: fetcher
+        ).proof
+    }
+
+    /// Resolve `rootHeader` along `children/childDirectory` once, returning the
+    /// single-hop proof together with the resolved block and children map so
+    /// callers that also inspect them do not resolve the same map twice.
+    private static func resolveHop(
+        rootHeader: VolumeImpl<Block>,
+        childDirectory: String,
+        fetcher: Fetcher
+    ) async throws -> (
+        proof: ChildBlockProof,
+        block: Block?,
+        children: FlatDictionary<BlockHeader>?
+    ) {
         guard childDirectory.utf8.count <= ChildProofWireLimits.maximumDirectoryBytes else {
             throw ChildProofSerializationError.valueTooLarge
         }
@@ -163,11 +182,13 @@ public struct ChildBlockProof: Sendable {
         let storer = _CollectingStorer()
         try await resolvedRoot.store(paths: path, storer: storer)
 
-        return ChildBlockProof(
+        let proof = ChildBlockProof(
             rootCID: rootHeader.rawCID,
             directoryPath: [childDirectory],
             entries: storer.entries
         )
+        let block = resolvedRoot.node
+        return (proof, block, block?.children.node)
     }
 
     // MARK: - Composition
@@ -231,19 +252,17 @@ public struct ChildBlockProof: Sendable {
             carrier = next
         }
 
-        guard let block = try? await carrier.resolve(fetcher: source).node,
-              let children = try? await block.children.resolve(
-                paths: [[directory]: .targeted],
-                fetcher: source
-              ).node,
-              children.hasValidDirectories,
-              let child: BlockHeader = children[directory],
-              CIDIdentity.isCanonical(child.rawCID),
-              let proof = try? await Self.generate(
+        guard let hop = try? await Self.resolveHop(
                 rootHeader: carrier,
                 childDirectory: directory,
                 fetcher: source
-              ) else { return nil }
+              ),
+              let block = hop.block,
+              let children = hop.children,
+              children.hasValidDirectories,
+              let child: BlockHeader = children[directory],
+              CIDIdentity.isCanonical(child.rawCID) else { return nil }
+        let proof = hop.proof
 
         return DirectChildHop(
             proof: proof,
@@ -284,21 +303,18 @@ public struct ChildBlockProof: Sendable {
         var canonicalEntries: [String: Data] = [:]
 
         for (index, directory) in directoryPath.enumerated() {
-            guard let hop = try? await Self.generate(
+            guard let hop = try? await Self.resolveHop(
                 rootHeader: BlockHeader(node: current),
                 childDirectory: directory,
                 fetcher: fetcher
             ) else { return nil }
-            for entry in hop.entries {
+            for entry in hop.proof.entries {
                 if let existing = canonicalEntries[entry.cid], existing != entry.data {
                     return nil
                 }
                 canonicalEntries[entry.cid] = entry.data
             }
-            guard let children = try? await current.children.resolve(
-                paths: [[directory]: .targeted],
-                fetcher: fetcher
-            ).node,
+            guard let children = hop.children,
                   children.hasValidDirectories,
                   let childHeader: BlockHeader = children[directory] else {
                 return nil
