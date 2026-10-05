@@ -15,7 +15,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/adalinxx/cashew.git",
       "state" : {
-        "revision" : "424757e724a0861cd7522481889e45b8de859d92",
+        "revision" : "f5c3721e31c129fa46827d6f176f491c7ffdb5a8",
         "version" : "5.0.0"
       }
     },
