@@ -1031,46 +1031,55 @@ final class WasmPolicyTests: XCTestCase {
         XCTAssertNoThrow(try WasmPolicyEvaluator.validate(policy: policy, moduleBytes: module))
     }
 
-    func testPolicyModuleWithMemoryGrowIsRejectedAsNondeterministic() async throws {
-        // memory.grow returns -1 (not a trap) to the guest when a node-local
-        // limiter denies growth, letting a policy branch to different verdicts on
-        // nodes with different limits — a consensus fork. It is rejected at scan
-        // time on every node identically (protocol-invalid, not resource-local).
-        let growModule = Data(try wat2wasm("""
-        (module
-          (memory (export "memory") 1)
-          (func (export "lattice_alloc") (param $len i32) (result i32) i32.const 1024)
-          (func (export "lattice_validate_transaction") (param $ptr i32) (param $len i32) (result i32)
-            i32.const 1
-            drop
-            i32.const 1
-            memory.grow
-            drop
-            i32.const 1)
-        )
-        """))
-        let policy = WasmPolicyRef(moduleCID: "inline-grow", scope: .transaction)
-        XCTAssertThrowsError(try WasmPolicyEvaluator.validate(
-            policy: policy, moduleBytes: growModule)) { error in
-            guard case WasmPolicyError.nondeterministicConstruct = error else {
-                return XCTFail("expected nondeterministicConstruct, got \(error)")
-            }
+    func testPolicyGrowingMemoryPastTwoMiBGetsItsOwnVerdict() async throws {
+        // memory.grow has no node-local limit to be denied by, so growing from
+        // 1 page to 41 (past the old 2 MiB cap) succeeds and the policy's own
+        // return value is the verdict. `acceptOnSuccess` picks which outcome of
+        // the grow the module accepts on, so a denied grow (-1) would flip both.
+        func module(acceptOnSuccess: Bool) throws -> Data {
+            Data(try wat2wasm("""
+            (module
+              (memory (export "memory") 1)
+              (func (export "lattice_alloc") (param $len i32) (result i32) i32.const 1024)
+              (func (export "lattice_validate_transaction") (param $ptr i32) (param $len i32) (result i32)
+                i32.const 40
+                memory.grow
+                i32.const 1
+                i32.eq
+                memory.size
+                i32.const 41
+                i32.eq
+                i32.and
+                i32.const \(acceptOnSuccess ? 1 : 0)
+                i32.eq)
+            )
+            """))
         }
+        let policy = WasmPolicyRef(moduleCID: "inline-grow", scope: .transaction)
 
-        // memory.size (constant without grow) stays allowed.
-        let sizeModule = Data(try wat2wasm("""
+        XCTAssertTrue(try WasmPolicyEvaluator.evaluate(
+            policy: policy, contextData: Data(), moduleBytes: try module(acceptOnSuccess: true)))
+        XCTAssertFalse(try WasmPolicyEvaluator.evaluate(
+            policy: policy, contextData: Data(), moduleBytes: try module(acceptOnSuccess: false)))
+    }
+
+    func testPolicyMemoryGrowFailsOnlyAtTheModuleDeclaredMaximum() async throws {
+        // The one bound left on growth is the module's own declared maximum:
+        // part of the module, so every node sees the same -1.
+        let module = Data(try wat2wasm("""
         (module
-          (memory (export "memory") 1)
+          (memory (export "memory") 1 2)
           (func (export "lattice_alloc") (param $len i32) (result i32) i32.const 1024)
           (func (export "lattice_validate_transaction") (param $ptr i32) (param $len i32) (result i32)
-            memory.size
-            drop
-            i32.const 1)
+            i32.const 2
+            memory.grow
+            i32.const -1
+            i32.eq)
         )
         """))
-        XCTAssertNoThrow(try WasmPolicyEvaluator.validate(
-            policy: WasmPolicyRef(moduleCID: "inline-size", scope: .transaction),
-            moduleBytes: sizeModule))
+        XCTAssertTrue(try WasmPolicyEvaluator.evaluate(
+            policy: WasmPolicyRef(moduleCID: "inline-grow-max", scope: .transaction),
+            contextData: Data(), moduleBytes: module))
     }
 
     // MARK: - compiled-module cache
