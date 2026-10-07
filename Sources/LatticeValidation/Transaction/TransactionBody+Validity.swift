@@ -246,8 +246,7 @@ extension TransactionBody {
         height: UInt64,
         timestamp: Int64,
         fetcher: Fetcher,
-        scopes: Set<WasmPolicyRef.Scope>? = nil,
-        resourceLimits: WasmPolicyResourceLimits = .default
+        scopes: Set<WasmPolicyRef.Scope>? = nil
     ) async throws -> Bool {
         guard chainPath.first == DEFAULT_ROOT_DIRECTORY else { return false }
         let policies = scopes.map { allowedScopes in
@@ -270,8 +269,7 @@ extension TransactionBody {
             return try WasmPolicyEvaluator.evaluate(
                 policy: policy,
                 contextData: context.canonicalData(),
-                moduleBytes: moduleBytes,
-                resourceLimits: resourceLimits
+                moduleBytes: moduleBytes
             )
         }
 
@@ -306,8 +304,7 @@ extension TransactionBody {
     /// entrypoint must be valid even when genesis has no matching context.
     public static func validateConfiguredPolicyModules(
         spec: ChainSpec,
-        fetcher: Fetcher,
-        resourceLimits: WasmPolicyResourceLimits = .default
+        fetcher: Fetcher
     ) async throws -> Bool {
         guard spec.wasmPolicies.allSatisfy({
             $0.abiVersion == WasmPolicyRef.currentABIVersion
@@ -323,14 +320,8 @@ extension TransactionBody {
             do {
                 try WasmPolicyEvaluator.validate(
                     policy: policy,
-                    moduleBytes: bytes,
-                    resourceLimits: resourceLimits
+                    moduleBytes: bytes
                 )
-            } catch WasmPolicyError.resourceUnavailable {
-                // Node-local resource guard, not module invalidity — propagate so
-                // admission classifies it as unavailable, never `protocolInvalid`.
-                // Every other error is a genuine module fault (→ `false`).
-                throw WasmPolicyError.resourceUnavailable
             } catch {
                 return false
             }

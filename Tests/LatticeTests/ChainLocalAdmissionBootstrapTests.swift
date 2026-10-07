@@ -186,12 +186,9 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         XCTAssertEqual(restoredRevision, liveRevision)
     }
 
-    func testGenesisPolicyResourceLimitIsUnavailableNotConsensus() async throws {
-        // A policy module declaring more initial memory than THIS node's limit
-        // must yield an UNAVAILABLE verdict (this node cannot verify), never
-        // protocolInvalid — otherwise two nodes with different limits fork on the
-        // same genesis. Raising the node-local limit (injected via
-        // ValidationContext) admits the very same block.
+    func testGenesisPolicyDeclaringMemoryAboveTwoMiBIsAdmitted() async throws {
+        // No node-local memory cap: a policy module declaring 33 pages (2 MiB +
+        // 64 KiB) of initial memory is admitted at genesis like any other.
         let fetcher = StorableFetcher()
         let module = try WasmPolicyModuleHeader(node: WasmPolicyModule(bytes: Data(try wat2wasm("""
         (module
@@ -212,24 +209,8 @@ final class ChainLocalAdmissionBootstrapTests: XCTestCase {
         let header = try BlockHeader(node: genesis)
         let context = testChainContext(genesisCID: header.rawCID)
 
-        // Default limit (2 MiB) < 33 pages (2.06 MiB): unavailable, not invalid.
-        do {
-            _ = try await ChainLevel.bootstrap(
-                context: context, genesisHeader: header, fetcher: fetcher,
-                validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
-                stage: testAdmissionStage)
-            XCTFail("oversized policy must fail admission on the limited node")
-        } catch let failure as BlockImportError {
-            XCTAssertEqual(failure, .unavailableEvidence)
-        }
-
-        // Same block, node with a raised limit injected via ValidationContext.
-        let raised = ValidationContext(
-            nowMilliseconds: 10_000,
-            wasmResourceLimits: WasmPolicyResourceLimits(maxMemoryBytes: 4 * 1024 * 1024))
         let result = try await ChainLevel.bootstrap(
             context: context, genesisHeader: header, fetcher: fetcher,
-            validationContext: raised,
             validationContentStorer: fetcher, materializedVolumeStorer: fetcher,
             stage: testAdmissionStage)
         let tip = await result.level.chain.canonicalTip

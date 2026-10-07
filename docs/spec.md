@@ -702,8 +702,27 @@ Chain policies are content-addressed validation modules referenced by `ChainSpec
 
 Genesis validates every configured policy reference and entrypoint, even when
 genesis contains no transaction or Action to exercise that scope. This prevents
-an immutable spec from admitting a latent missing, oversized, nondeterministic,
-or malformed module that would fail only after deployment.
+an immutable spec from admitting a latent missing, nondeterministic, or
+malformed module that would fail only after deployment.
+
+Neither the protocol nor a node limits a policy module's size, memory, or
+table. The only bounds are WebAssembly's own: 32-bit linear memory and the
+maxima the module declares. A verdict is therefore a function of the module and
+the context alone, the same on every node. A node that cannot afford a chain's
+policies declines to operate that chain.
+
+A policy's call stack is 512 KiB of engine stack, because exhausting it traps
+and a trap is observable in the verdict. The call depth that reaches it also
+depends on the engine's frame layout, so nodes agree only while they run the
+same engine version: an engine change is a consensus change.
+
+A policy may grow its memory. `memory.grow` MUST fail (return -1) only when
+the growth would exceed the maximum the module declares, or WebAssembly's own
+ceiling when it declares none: both are properties of the module. A node MUST
+NOT report a growth failure for a reason of its own, such as lacking the
+memory, because a policy can branch on that result and nodes would then reach
+different verdicts. A node that cannot supply the memory stops; it does not
+return a verdict.
 
 Policy modules MUST export:
 

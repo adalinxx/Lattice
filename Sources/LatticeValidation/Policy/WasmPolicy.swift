@@ -60,13 +60,6 @@ public enum WasmPolicyError: Error, Sendable {
     case invalidAllocation
     case invalidReturn
     case contextEncodingFailed
-    /// A node-local resource guard (module size, declared memory, or table)
-    /// tripped, so this node cannot produce a verdict for the policy. This is NOT
-    /// a consensus verdict: another node with a higher bound may verify the same
-    /// module. Admission classifies it as unavailable (the verdict is unavailable
-    /// here, retryable if the evidence or the node's limits change), never
-    /// `protocolInvalid` and never a hard local drop.
-    case resourceUnavailable
     case nondeterministicConstruct(String)
 }
 
@@ -162,72 +155,25 @@ private extension WasmPolicyRef.Scope {
     }
 }
 
-/// Node-local guard on how much memory/table a policy module may allocate at
-/// instantiation. This is NOT a protocol consensus limit — the protocol imposes
-/// no module-size ceiling, and verdict determinism comes from
-/// `WasmPolicyDeterminismScan` (no floats/NaN) plus WASM integer semantics, not
-/// from these bounds. It exists purely to stop a module whose DECLARED initial
-/// memory (valid WASM can declare up to 4 GiB) or table would OOM-kill the
-/// validator: WasmKit allocates that at instantiation, before any execution, so
-/// the bound must be applied there. An operator may inject different bounds; at
-/// the shared default all nodes trap at the same point, so the verdict stays
-/// uniform.
-public struct WasmPolicyResourceLimits: Sendable, Equatable {
-    public let maxMemoryBytes: Int
-    public let maxTableElements: Int
-    /// Ceiling on the raw module bytes this node will copy and parse. Enforced
-    /// before the O(bytes) copy/parse so an oversized module cannot exhaust
-    /// memory/CPU before the declared-memory guard above ever runs.
-    public let maxModuleBytes: Int
-
-    public init(
-        maxMemoryBytes: Int = 2 * 1024 * 1024,
-        maxTableElements: Int = 1024,
-        maxModuleBytes: Int = 16 * 1024 * 1024
-    ) {
-        self.maxMemoryBytes = maxMemoryBytes
-        self.maxTableElements = maxTableElements
-        self.maxModuleBytes = maxModuleBytes
-    }
-
-    public static let `default` = WasmPolicyResourceLimits()
-}
-
-/// Reference type so `instantiate` can read, after a thrown instantiation trap,
-/// whether the trap was this limiter denying growth (→ `resourceUnavailable`,
-/// an unavailable verdict) versus an unrelated module fault (→ propagated as-is).
-private final class WasmPolicyResourceLimiter: ResourceLimiter {
-    let limits: WasmPolicyResourceLimits
-    private(set) var denied = false
-
-    init(limits: WasmPolicyResourceLimits) {
-        self.limits = limits
-    }
-
-    func limitMemoryGrowth(to desired: Int) throws -> Bool {
-        if desired > limits.maxMemoryBytes { denied = true; return false }
-        return true
-    }
-
-    func limitTableGrowth(to desired: Int) throws -> Bool {
-        if desired > limits.maxTableElements { denied = true; return false }
-        return true
-    }
-}
-
 public enum WasmPolicyEvaluator {
     // A chain's WasmPolicy is its own committed, opt-in validity rule, not
-    // permissionless metered code — so the protocol imposes no module-size ceiling
-    // and no consensus memory/table limit. The only bound is a node-local resource
-    // guard (`WasmPolicyResourceLimits`) applied before instantiation to keep a
-    // module's declared initial memory/table from OOM-killing the validator.
+    // permissionless metered code — so neither the protocol nor the node imposes
+    // a module-size, memory, or table limit. The only bounds are WebAssembly's
+    // own (32-bit linear memory, the module's declared maxima), so a verdict is
+    // a pure function of (module, context): the same on every node.
     public static let executionFeatureSet: WasmFeatureSet = [.referenceTypes]
+
+    /// The policy call stack, in bytes. A policy that recurses past it traps,
+    /// and a trap is part of the verdict, so the depth is fixed here rather
+    /// than left to the engine's default: it must be the same on every node.
+    /// The call depth that reaches it also depends on the engine's frame
+    /// layout, so an engine upgrade is a consensus change.
+    public static let callStackBytes = 1 << 19
 
     public static func evaluate(
         policy: WasmPolicyRef,
         context: WasmPolicyContext,
-        fetcher: Fetcher,
-        resourceLimits: WasmPolicyResourceLimits = .default
+        fetcher: Fetcher
     ) async throws -> Bool {
         guard policy.abiVersion == WasmPolicyRef.currentABIVersion else {
             throw WasmPolicyError.unsupportedABI(policy.abiVersion)
@@ -239,18 +185,16 @@ public enum WasmPolicyEvaluator {
         return try evaluate(
             policy: policy,
             contextData: context.canonicalData(),
-            moduleBytes: moduleNode.bytes,
-            resourceLimits: resourceLimits)
+            moduleBytes: moduleNode.bytes)
     }
 
     public static func evaluate(
         policy: WasmPolicyRef,
         contextData: Data,
-        moduleBytes: Data,
-        resourceLimits: WasmPolicyResourceLimits = .default
+        moduleBytes: Data
     ) throws -> Bool {
         let (memory, alloc, entrypoint) = try instantiate(
-            policy: policy, moduleBytes: moduleBytes, resourceLimits: resourceLimits)
+            policy: policy, moduleBytes: moduleBytes)
 
         let contextBytes = Array(contextData)
         // Only the WASM32 address-space bound applies; the module's actual memory
@@ -292,10 +236,9 @@ public enum WasmPolicyEvaluator {
 
     public static func validate(
         policy: WasmPolicyRef,
-        moduleBytes: Data,
-        resourceLimits: WasmPolicyResourceLimits = .default
+        moduleBytes: Data
     ) throws {
-        _ = try instantiate(policy: policy, moduleBytes: moduleBytes, resourceLimits: resourceLimits)
+        _ = try instantiate(policy: policy, moduleBytes: moduleBytes)
     }
 
     /// Process-wide cache of parsed/compiled modules, keyed by module content id.
@@ -303,8 +246,7 @@ public enum WasmPolicyEvaluator {
 
     private static func instantiate(
         policy: WasmPolicyRef,
-        moduleBytes: Data,
-        resourceLimits: WasmPolicyResourceLimits
+        moduleBytes: Data
     ) throws -> (
         memory: WasmKit.Memory,
         alloc: Function,
@@ -312,15 +254,6 @@ public enum WasmPolicyEvaluator {
     ) {
         guard policy.abiVersion == WasmPolicyRef.currentABIVersion else {
             throw WasmPolicyError.unsupportedABI(policy.abiVersion)
-        }
-        // Node-local bound applied BEFORE the O(bytes) copy/parse below: an
-        // oversized module is a memory/CPU DoS on the copy and parser themselves,
-        // which the declared-memory limiter (post-parse) cannot prevent. Reject
-        // here (never truncate — parsing a prefix would parse different, invalid
-        // WASM); a node that stops here has only run out of its own budget, so the
-        // verdict is unavailable, not a consensus verdict on the module.
-        guard moduleBytes.count <= resourceLimits.maxModuleBytes else {
-            throw WasmPolicyError.resourceUnavailable
         }
         // Cache key is the module's content id (CID of the immutable bytes).
         // Reusing the parsed `Module` across evaluations is safe: `instantiate`
@@ -333,24 +266,11 @@ public enum WasmPolicyEvaluator {
             try WasmPolicyDeterminismScan.scan(moduleBytes: bytes, features: Self.executionFeatureSet)
             return try parseWasm(bytes: bytes, features: Self.executionFeatureSet)
         }
-        let engine = Engine(configuration: EngineConfiguration(features: Self.executionFeatureSet))
+        let engine = Engine(configuration: EngineConfiguration(
+            stackSize: Self.callStackBytes, features: Self.executionFeatureSet
+        ))
         let store = Store(engine: engine)
-        // Node-local guard applied BEFORE instantiation: WasmKit allocates a
-        // module's declared initial memory/table here, and valid WASM can declare
-        // gigabytes — without this the validator could be OOM-killed. Growth beyond
-        // the limit fails as a WasmKit trap (a thrown error, handled by the caller),
-        // never an uncaught allocation crash. Not a protocol consensus limit.
-        let limiter = WasmPolicyResourceLimiter(limits: resourceLimits)
-        store.resourceLimiter = limiter
-        let instance: Instance
-        do {
-            instance = try module.instantiate(store: store)
-        } catch {
-            // A trap caused by our own limiter denying declared memory/table
-            // growth is a node-local resource shortfall, not module invalidity.
-            if limiter.denied { throw WasmPolicyError.resourceUnavailable }
-            throw error
-        }
+        let instance = try module.instantiate(store: store)
         guard let memory = instance.exports[memory: "memory"] else {
             throw WasmPolicyError.missingMemory
         }
