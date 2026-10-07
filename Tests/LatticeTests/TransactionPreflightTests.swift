@@ -8,6 +8,7 @@ import XCTest
 @testable import LatticeImport
 import cashew
 import UInt256
+import WAT
 
 @MainActor
 final class TransactionPreflightTests: XCTestCase {
@@ -413,6 +414,95 @@ final class TransactionPreflightTests: XCTestCase {
                 !ChainLevel.isDeterministicInvalidityForTesting(imported),
                 "preflight and import disagree on \(error)"
             )
+        }
+    }
+
+    /// A transaction policy whose entrypoint runs `body`.
+    private func storePolicy(
+        entrypointBody body: String,
+        fetcher: StorableFetcher
+    ) async throws -> WasmPolicyRef {
+        let wat = """
+        (module
+          (memory (export "memory") 1)
+          (table 1 funcref)
+          (type $nullary (func))
+          (func $recurse (result i32) call $recurse)
+          (func (export "lattice_alloc") (param i32) (result i32) i32.const 1024)
+          (func (export "lattice_validate_transaction") (param i32 i32) (result i32)
+            \(body))
+        )
+        """
+        let module = try WasmPolicyModuleHeader(
+            node: WasmPolicyModule(bytes: Data(try wat2wasm(wat)))
+        )
+        try await module.storeRecursively(storer: fetcher)
+        return WasmPolicyRef(moduleCID: module.rawCID, scope: .transaction)
+    }
+
+    func testPreflightAndImportClassifyEveryPolicyOutcomeAlike() async throws {
+        // Every outcome of a policy evaluation, judged on the same transaction
+        // by preflight and by import of a block carrying it. A trap is a
+        // completed verdict — a function of (module, input) on the pinned
+        // engine — so both exclude; only a module this node cannot obtain or
+        // run is unavailable.
+        enum Outcome { case accepted, invalid, unavailable }
+        let cases: [(name: String, body: String, entrypoint: String?, denyModule: Bool, expected: Outcome)] = [
+            ("accept", "i32.const 1", nil, false, .accepted),
+            ("reject", "i32.const 0", nil, false, .invalid),
+            ("unreachable", "unreachable", nil, false, .invalid),
+            ("out-of-bounds load", "(i32.load (i32.const 0x7fffffff))", nil, false, .invalid),
+            ("divide by zero", "(i32.div_u (i32.const 1) (i32.const 0))", nil, false, .invalid),
+            ("divide overflow", "(i32.div_s (i32.const 0x80000000) (i32.const -1))", nil, false, .invalid),
+            ("indirect call to null", "(call_indirect (type $nullary) (i32.const 0)) i32.const 1", nil, false, .invalid),
+            ("call stack exhaustion", "call $recurse", nil, false, .invalid),
+            ("missing module", "i32.const 1", nil, true, .unavailable),
+            ("missing entrypoint", "i32.const 1", "absent_entrypoint", false, .unavailable),
+        ]
+        for testCase in cases {
+            let store = StorableFetcher()
+            var policy = try await storePolicy(entrypointBody: testCase.body, fetcher: store)
+            if let entrypoint = testCase.entrypoint {
+                policy = WasmPolicyRef(
+                    moduleCID: policy.moduleCID, scope: .transaction, entrypoint: entrypoint
+                )
+            }
+            let genesis = try await buildAndStoreGenesis(
+                spec: spec(policies: [policy]),
+                timestamp: 1_000,
+                target: easy,
+                fetcher: store
+            )
+            let tx = transaction(signers: [CryptoUtils.generateKeyPair()], nonce: 0)
+            let block = try await buildAndStoreBlock(
+                previous: genesis,
+                transactions: [tx],
+                timestamp: 2_000,
+                target: easy,
+                nonce: 1,
+                fetcher: store
+            )
+            let fetcher = DenyingFetcher(
+                backing: store,
+                denied: testCase.denyModule ? [policy.moduleCID] : []
+            )
+
+            let preflight = await ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
+                .preflightTransaction(tx, fetcher: fetcher)
+            let imported = try await ChainLevel(testChain: ChainState.fromGenesis(block: genesis))
+                .admit(block, fetcher: fetcher, storer: store)
+
+            switch testCase.expected {
+            case .accepted:
+                XCTAssertEqual(preflight.disposition, .ready, testCase.name)
+                XCTAssertNil(imported.failure, testCase.name)
+            case .invalid:
+                XCTAssertEqual(preflight.disposition, .invalid, testCase.name)
+                XCTAssertEqual(imported.failure, .protocolInvalid, testCase.name)
+            case .unavailable:
+                XCTAssertEqual(preflight.disposition, .unavailable, testCase.name)
+                XCTAssertEqual(imported.failure, .unavailableEvidence, testCase.name)
+            }
         }
     }
 

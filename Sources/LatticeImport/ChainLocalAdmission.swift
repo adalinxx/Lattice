@@ -5,6 +5,7 @@ import LatticePoW
 import LatticeValidation
 import LatticeProofs
 import LatticeBlockTree
+import struct WasmKit.Trap
 
 public enum BlockImportError: Error, Sendable, Equatable {
     case unavailableEvidence
@@ -1278,8 +1279,8 @@ func classifyValidationFailure(_ error: Error) -> BlockImportError {
             return .protocolInvalid
         }
     }
-    if let policyError = error as? WasmPolicyError {
-        switch wasmPolicyErrorVerdict(policyError) {
+    if let verdict = wasmPolicyErrorVerdict(error) {
+        switch verdict {
         case .unavailable: return .unavailableEvidence
         case .invalid: return .protocolInvalid
         }
@@ -1293,12 +1294,14 @@ func classifyValidationFailure(_ error: Error) -> BlockImportError {
     return .unavailableEvidence
 }
 
-/// What a Wasm policy error says about the input it was evaluated on. Block
-/// import and transaction preflight both classify through this one function,
-/// so the two paths cannot drift apart: a transaction preflight evicts is one
-/// import would exclude, and one import retries stays pooled. The switch is
-/// exhaustive with no `default`, so a new `WasmPolicyError` case fails to
-/// compile until it is given a verdict here.
+/// What a Wasm policy trap or error says about the input it was evaluated on.
+/// Block import and transaction preflight both classify these through this one
+/// function, so on them the two paths cannot drift apart: a transaction
+/// preflight evicts is one import would exclude, and one import retries stays
+/// pooled. The switch is exhaustive with no `default`, so a new
+/// `WasmPolicyError` case fails to compile until it is given a verdict here.
+/// Any other error is not classified here (`nil`): each caller applies its own
+/// rule for an unenumerated error.
 enum WasmPolicyErrorVerdict: Sendable, Equatable {
     /// No verdict: retry, never exclude.
     case unavailable
@@ -1306,7 +1309,13 @@ enum WasmPolicyErrorVerdict: Sendable, Equatable {
     case invalid
 }
 
-func wasmPolicyErrorVerdict(_ error: WasmPolicyError) -> WasmPolicyErrorVerdict {
+func wasmPolicyErrorVerdict(_ error: Error) -> WasmPolicyErrorVerdict? {
+    // A trap (unreachable, an out-of-bounds access, an integer divide trap, a
+    // bad indirect call, call stack exhaustion) is a function of the module
+    // and the input on the pinned engine, so every node reaches it: a
+    // completed verdict, never an availability gap.
+    if error is Trap { return .invalid }
+    guard let error = error as? WasmPolicyError else { return nil }
     switch error {
     case .contextEncodingFailed:
         // The policy input itself cannot be encoded (a field past the length

@@ -716,6 +716,12 @@ and a trap is observable in the verdict. The call depth that reaches it also
 depends on the engine's frame layout, so nodes agree only while they run the
 same engine version: an engine change is a consensus change.
 
+A policy that traps — `unreachable`, an out-of-bounds memory or table access,
+an integer divide by zero or overflow, a null or mismatched indirect call, or
+call stack exhaustion — has rejected: a trap is a function of the module and
+the context, so it is a completed verdict of invalidity, never an
+availability gap. A node that cannot obtain the module has no verdict.
+
 A policy may grow its memory. `memory.grow` MUST fail (return -1) only when
 the growth would exceed the maximum the module declares, or WebAssembly's own
 ceiling when it declares none: both are properties of the module. A node MUST

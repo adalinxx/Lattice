@@ -163,9 +163,9 @@ func transactionPreflightEvidenceUnavailable(_ error: Error) -> Bool {
             return false
         }
     }
-    if let error = error as? WasmPolicyError {
+    if let verdict = wasmPolicyErrorVerdict(error) {
         // Import's classification, shared so the two never drift apart.
-        return wasmPolicyErrorVerdict(error) == .unavailable
+        return verdict == .unavailable
     }
     if let error = error as? TransformErrors,
        case .missingData = error {
