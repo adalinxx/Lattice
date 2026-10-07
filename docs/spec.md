@@ -1134,9 +1134,12 @@ imported at one of two tiers:
 "Accepted" in this section means *weighed*: present in the graph with verified
 work. Ranking is defined over weight; being *acted upon* — extended, served as
 head, or asserted as the node's state — requires the *validated* tier. A node
-MUST NOT act on a merely weighed tip; it builds on its heaviest validated tip
-and treats missing bodies of a heavier weighed branch as an availability gap
-(9.5-style: retried indefinitely, never a verdict).
+MUST NOT act on a merely weighed tip; it acts on the validated prefix of its
+heaviest weighed chain — the deepest block on that chain whose ancestry is
+validated from genesis — and treats the missing bodies above it as an
+availability gap (9.5-style: retried indefinitely, never a verdict). It does
+not act on a validated block off the heaviest weighed chain. A block whose
+body is not held is weighed and unvalidated, never invalid.
 
 Failure to obtain a body is availability, never invalidity. Only a **completed**
 deterministic check — a `postState` mismatch or a committed validity rule —
