@@ -15,11 +15,13 @@ final class BlockSizeDuringFetchTests: XCTestCase {
     func testEarlyVerdictEqualsFullClosureVerdictAroundTheBoundary() async throws {
         let fetcher = StorableFetcher()
         for (name, block) in try await generatedBlocks(fetcher: fetcher) {
-            let full = try await fullClosureSize(of: block, fetcher: fetcher)
+            let full = try await rawClosureSize(of: block, fetcher: fetcher)
             let decoded = try XCTUnwrap(Block(data: XCTUnwrap(block.toData())))
+            let candidates = [("materialized", block), ("unresolved", decoded)]
+                + (try await partiallyMaterialized(decoded, fetcher: fetcher))
             for limit in [1, full / 2, full - 1, full, full + 1, full * 2] {
                 let expected = full <= limit
-                for (held, candidate) in [("materialized", block), ("unresolved", decoded)] {
+                for (held, candidate) in candidates {
                     let label = "\(name) \(held) limit \(limit) of \(full)"
                     let fits = try await candidate.validateBlockSize(
                         spec: sizeSpec(limit), fetcher: fetcher
@@ -149,7 +151,10 @@ final class BlockSizeDuringFetchTests: XCTestCase {
         XCTAssertFalse(requested.contains(transaction.body.rawCID))
     }
 
-    func testOversizedBlockIsDecidedAfterResolvingAboutTheLimit() async throws {
+    /// Once the limit is passed no further request completes: those still
+    /// outstanding are abandoned, so what is served past the limit is bounded
+    /// by what the fetcher already had in flight (here, one item).
+    func testNoRequestIsServedOnceTheLimitIsPassed() async throws {
         let fetcher = StorableFetcher()
         let block = try await buildAndStoreGenesis(
             spec: ChainSpec.test(maxNumberOfTransactionsPerBlock: 1_000),
@@ -158,15 +163,14 @@ final class BlockSizeDuringFetchTests: XCTestCase {
         )
         let full = try await fullClosureSize(of: block, fetcher: fetcher)
         let decoded = try XCTUnwrap(Block(data: XCTUnwrap(block.toData())))
-        // One fetch at a time, abandoned on cancellation: what this serves is
-        // what a bounded acquisition downloads.
-        let serial = SerialFetcher(base: fetcher)
         let limit = full / 20
-        let fits = try await decoded.validateBlockSize(spec: sizeSpec(limit), fetcher: serial)
+        let gated = LimitGatedFetcher(base: fetcher, limit: limit)
+        let fits = try await decoded.validateBlockSize(spec: sizeSpec(limit), fetcher: gated)
         XCTAssertFalse(fits)
-        let served = await serial.servedBytes
-        XCTAssertGreaterThan(served, limit - (try XCTUnwrap(block.toData())).count)
-        XCTAssertLessThan(served, full / 4, "served \(served) of \(full), limit \(limit)")
+        let (servedBytes, largest, servedPastLimit) = await gated.served
+        XCTAssertEqual(servedPastLimit, 0)
+        XCTAssertGreaterThan(servedBytes + (try XCTUnwrap(block.toData())).count, limit)
+        XCTAssertLessThanOrEqual(servedBytes, limit + largest)
     }
 
     // MARK: - Acquisition and admission
@@ -188,6 +192,41 @@ final class BlockSizeDuringFetchTests: XCTestCase {
             XCTAssertEqual(error as? BlockContentSizeError, .exceedsLimit)
         }
         XCTAssertTrue(destination.entries.isEmpty)
+    }
+
+    func testStoreBlockStoresABlockWhoseTransactionsAreExactlyTheLimit() async throws {
+        let source = StorableFetcher()
+        let transactions = (0..<8).map { contentTransaction(nonce: $0, payloadBytes: 256) }
+        func genesis(_ maxBlockSize: Int) async throws -> Block {
+            try await buildAndStoreGenesis(
+                spec: sizeSpec(maxBlockSize), transactions: transactions,
+                timestamp: 1, target: UInt256.max, fetcher: source
+            )
+        }
+        // The bytes `storeBlock` fetches under the limit: everything below the
+        // transaction index. The spec is its own Volume, so they do not move
+        // with the limit it carries.
+        let underTransactions = StorableFetcher()
+        _ = try await genesis(1_000_000).transactions.removingNode()
+            .resolveRecursive(fetcher: source, cache: underTransactions)
+        let exact = underTransactions.entries.values.reduce(0) { $0 + $1.count }
+
+        let atLimit = try await genesis(exact)
+        let stored = StorableFetcher()
+        try await BlockHeader(rawCID: BlockHeader(node: atLimit).rawCID)
+            .storeBlock(fetcher: source, storer: stored)
+        XCTAssertTrue(stored.volumeRoots().contains(try BlockHeader(node: atLimit).rawCID))
+
+        let oneOver = try await genesis(exact - 1)
+        let refused = StorableFetcher()
+        do {
+            try await BlockHeader(rawCID: BlockHeader(node: oneOver).rawCID)
+                .storeBlock(fetcher: source, storer: refused)
+            XCTFail("one byte over the limit is not stored")
+        } catch {
+            XCTAssertEqual(error as? BlockContentSizeError, .exceedsLimit)
+        }
+        XCTAssertTrue(refused.entries.isEmpty)
     }
 
     /// The block's content exceeds its chain's limit and part of it cannot be
@@ -215,6 +254,80 @@ final class BlockSizeDuringFetchTests: XCTestCase {
             let verdict = await ChainTree.connect(job, fetcher: source)
             XCTAssertTrue(verdict.provesInvalid, "\(String(describing: verdict.retryFailure))")
         }
+    }
+
+    // MARK: - A proof of invalidity is not lost to other content being unavailable
+
+    /// An ordinary block with an invalid transaction whose child index cannot
+    /// be had: the transaction decides it, the size rule (which needs the
+    /// index) is never reached.
+    func testInvalidTransactionDecidesAnOrdinaryBlockWithoutItsChildIndex() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await buildAndStoreGenesis(
+            spec: sizeSpec(1_000_000), timestamp: 1_000, target: UInt256.max, fetcher: fetcher
+        )
+        let block = try await withInvalidTransaction(try await buildAndStoreBlock(
+            previous: genesis, timestamp: 2_000, target: UInt256.max, fetcher: fetcher
+        ), fetcher: fetcher)
+        let blockHash = try BlockHeader(node: block).rawCID
+        var tree = try await TreeDriver.tree(
+            genesis: genesis, context: testChainContext(), fetcher: fetcher
+        )
+        let inserted = try await TreeDriver.insert(block, into: &tree, fetcher: fetcher)
+        XCTAssertNotNil(inserted.update, "\(inserted)")
+
+        let job = try XCTUnwrap(tree.connectJob(for: blockHash))
+        let verdict = await ChainTree.connect(
+            job, fetcher: HidingFetcher(base: fetcher, hidden: [block.children.rawCID])
+        )
+        XCTAssertTrue(verdict.provesInvalid, "\(String(describing: verdict.retryFailure))")
+    }
+
+    /// The genesis spec carries the limit the transactions are fetched under,
+    /// so without it there is no verdict, even from an invalid transaction.
+    func testGenesisWithoutItsSpecGetsNoVerdict() async throws {
+        let fetcher = StorableFetcher()
+        let genesis = try await withInvalidTransaction(try await buildAndStoreGenesis(
+            spec: sizeSpec(1_000_000), timestamp: 1, target: UInt256.max, fetcher: fetcher
+        ), fetcher: fetcher)
+        let context = ValidationContext(nowMilliseconds: 10)
+        let complete = try await genesis.validateGenesis(
+            fetcher: fetcher, chainPath: [DEFAULT_ROOT_DIRECTORY], validationContext: context
+        ).0
+        XCTAssertFalse(complete, "the transaction is invalid")
+        do {
+            _ = try await genesis.validateGenesis(
+                fetcher: HidingFetcher(base: fetcher, hidden: [genesis.spec.rawCID]),
+                chainPath: [DEFAULT_ROOT_DIRECTORY], validationContext: context
+            )
+            XCTFail("no spec, no limit, no verdict")
+        } catch {
+            XCTAssertEqual(ChainLevel.classifyValidationFailureForTesting(error), .unavailableEvidence)
+        }
+    }
+
+    /// An invalid spec is a verdict whether or not the transactions can be had.
+    func testInvalidGenesisSpecIsAVerdictWithoutTheTransactions() async throws {
+        let fetcher = StorableFetcher()
+        let transaction = contentTransaction(nonce: 0, payloadBytes: 64)
+        let valid = try await buildAndStoreGenesis(
+            spec: sizeSpec(1_000_000), transactions: [transaction],
+            timestamp: 1, target: UInt256.max, fetcher: fetcher
+        )
+        let invalidSpec = try VolumeImpl<ChainSpec>(node: sizeSpec(0))
+        XCTAssertFalse(sizeSpec(0).isValid)
+        try await invalidSpec.store(storer: fetcher)
+        let genesis = try XCTUnwrap(Block(data: XCTUnwrap(
+            valid.set(properties: [SPEC_PROPERTY: invalidSpec]).toData()
+        )))
+        let withoutTransactions = HidingFetcher(
+            base: fetcher, hidden: [try VolumeImpl<Transaction>(node: transaction).rawCID]
+        )
+        let verdict = try await genesis.validateGenesis(
+            fetcher: withoutTransactions, chainPath: [DEFAULT_ROOT_DIRECTORY],
+            validationContext: ValidationContext(nowMilliseconds: 10)
+        ).0
+        XCTAssertFalse(verdict)
     }
 
     // MARK: - Fixtures
@@ -267,6 +380,58 @@ final class BlockSizeDuringFetchTests: XCTestCase {
 
     private func fullClosureSize(of block: Block, fetcher: any Fetcher) async throws -> Int {
         try await fullClosureEntries(of: block, fetcher: fetcher).values.reduce(0) { $0 + $1.count }
+    }
+
+    /// The same size from stored bytes alone, with no counter and no
+    /// re-serialization: the block's own bytes plus the stored bytes of each
+    /// distinct CID a plain walk of the counted content asks for.
+    private func rawClosureSize(of block: Block, fetcher: StorableFetcher) async throws -> Int {
+        let rootData = try XCTUnwrap(block.toData())
+        let recording = RecordingFetcher(base: fetcher)
+        _ = try await BlockHeader(node: try XCTUnwrap(Block(data: rootData))).resolve(
+            paths: [
+                [TRANSACTIONS_PROPERTY]: .recursive,
+                [CHILDREN_PROPERTY]: .targeted,
+            ],
+            fetcher: recording
+        )
+        let stored = fetcher.entries
+        return try await recording.requested.reduce(rootData.count) {
+            $0 + (try XCTUnwrap(stored[$1])).count
+        }
+    }
+
+    /// The block as a node that holds part of it would have it: the
+    /// transaction index alone, and the index with one transaction resolved.
+    private func partiallyMaterialized(_ block: Block, fetcher: any Fetcher) async throws -> [(String, Block)] {
+        let indexed = try await BlockHeader(node: block).resolve(
+            paths: [[TRANSACTIONS_PROPERTY, ""]: .list], fetcher: fetcher
+        )
+        var held = [("index held", try XCTUnwrap(indexed.node))]
+        if let key = try indexed.node?.transactions.node?.allKeysAndValues().keys.sorted().first {
+            let one = try await indexed.resolve(
+                paths: [[TRANSACTIONS_PROPERTY, key]: .recursive], fetcher: fetcher
+            )
+            held.append(("one transaction held", try XCTUnwrap(one.node)))
+        }
+        return held
+    }
+
+    /// `block` carrying one transaction no chain accepts (a debit its owner
+    /// did not sign), stored, and returned as a node that holds none of it
+    /// would have it.
+    private func withInvalidTransaction(_ block: Block, fetcher: StorableFetcher) async throws -> Block {
+        let body = TransactionBody(
+            accountActions: [AccountAction(owner: "alice", delta: -1)], actions: [],
+            depositActions: [], receiptActions: [], withdrawalActions: [],
+            signers: [], nonce: 0, chainPath: ["Nexus"]
+        )
+        XCTAssertFalse(body.accountActionsAreValid())
+        let transaction = Transaction(signatures: [:], body: try HeaderImpl(node: body))
+        let invalid = try await storeBuiltBlock(block.set(properties: [
+            TRANSACTIONS_PROPERTY: try BlockBuilder.buildTransactionsDictionary([transaction]),
+        ]), in: fetcher)
+        return try XCTUnwrap(Block(data: XCTUnwrap(invalid.toData())))
     }
 
     private func sizeSpec(_ maxBlockSize: Int) -> ChainSpec {
@@ -339,20 +504,36 @@ private actor RecordingFetcher: Fetcher {
     }
 }
 
-private actor SerialFetcher: Fetcher {
-    private let base: any Fetcher
-    private var busy = false
-    private(set) var servedBytes = 0
+/// Serves until the unique bytes it has served pass `limit`. A request that
+/// arrives after that is one the resolver had already issued; it waits to be
+/// abandoned, and counts as served past the limit only if it never is.
+private actor LimitGatedFetcher: Fetcher {
+    private let base: StorableFetcher
+    private let limit: Int
+    private var servedCIDs: Set<String> = []
+    private var servedBytes = 0
+    private var largest = 0
+    private var servedPastLimit = 0
 
-    init(base: any Fetcher) { self.base = base }
+    init(base: StorableFetcher, limit: Int) {
+        self.base = base
+        self.limit = limit
+    }
+
+    var served: (bytes: Int, largest: Int, pastLimit: Int) {
+        (servedBytes, largest, servedPastLimit)
+    }
 
     func fetch(rawCid: String) async throws -> Data {
-        while busy { try await Task.sleep(nanoseconds: 200_000) }
-        busy = true
-        defer { busy = false }
-        try await Task.sleep(nanoseconds: 2_000_000)
-        let data = try await base.fetch(rawCid: rawCid)
-        servedBytes += data.count
+        if servedBytes > limit {
+            try await Task.sleep(nanoseconds: 30_000_000_000)
+            servedPastLimit += 1
+        }
+        let data = try base.fetchSync(rawCid: rawCid)
+        if servedCIDs.insert(rawCid).inserted {
+            servedBytes += data.count
+            largest = max(largest, data.count)
+        }
         return data
     }
 }
