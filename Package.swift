@@ -34,7 +34,8 @@ let package = Package(
         .package(url: "https://github.com/swift-libp2p/swift-cid.git", from: "0.0.1"),
         .package(url: "https://github.com/swift-libp2p/swift-multicodec.git", .upToNextMinor(from: "0.2.1")),
         .package(url: "https://github.com/JohnSundell/CollectionConcurrencyKit.git", from: "0.2.0"),
-        .package(url: "https://github.com/swiftwasm/WasmKit.git", .upToNextMinor(from: "0.2.0")),
+        // Exact: the policy engine decides verdicts, so an engine change is a consensus change.
+        .package(url: "https://github.com/swiftwasm/WasmKit.git", exact: "0.2.2"),
     ],
     targets: [
         .target(
