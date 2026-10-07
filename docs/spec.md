@@ -700,7 +700,8 @@ Credits (`delta > 0`) do not require signer authorization.
 
 Chain policies are content-addressed validation modules referenced by `ChainSpec.wasmPolicies`. In ABI version 1, policies are implemented as WASM modules. A policy declares a scope (`transaction` or `action`), ABI version, module CID, and exported entrypoint. The host passes a versioned canonical binary policy context containing the height and timestamp of the block being validated, the chain spec, chain path, and the transaction/action under validation. The policy returns `1` to accept and any other value to reject.
 
-Genesis validates every configured policy reference and entrypoint, even when
+Genesis validates every configured policy reference and entrypoint, and every
+function body of each module whether or not anything calls it, even when
 genesis contains no transaction or Action to exercise that scope. This prevents
 an immutable spec from admitting a latent missing, nondeterministic, or
 malformed module that would fail only after deployment.
@@ -716,11 +717,15 @@ and a trap is observable in the verdict. The call depth that reaches it also
 depends on the engine's frame layout, so nodes agree only while they run the
 same engine version: an engine change is a consensus change.
 
-A policy that traps — `unreachable`, an out-of-bounds memory or table access,
-an integer divide by zero or overflow, a null or mismatched indirect call, or
-call stack exhaustion — has rejected: a trap is a function of the module and
-the context, so it is a completed verdict of invalidity, never an
-availability gap. A node that cannot obtain the module has no verdict.
+Every outcome of a policy evaluation that is a function of the module and the
+context is a completed verdict, the same for a block being validated and for a
+transaction being considered for one. A policy rejects — the verdict is
+invalidity — when it returns anything but `1`; when it traps (`unreachable`,
+an out-of-bounds memory or table access, an integer divide by zero or
+overflow, a null or mismatched indirect call, call stack exhaustion); when its
+allocator or entrypoint returns something unusable; and when the module or its
+reference is defective. Only what depends on the node is availability, never a
+verdict: a module the node cannot obtain, or a failure of the node itself.
 
 A policy may grow its memory. `memory.grow` MUST fail (return -1) only when
 the growth would exceed the maximum the module declares, or WebAssembly's own

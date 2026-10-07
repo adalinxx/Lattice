@@ -153,32 +153,9 @@ public extension ChainLevel {
     }
 }
 
+/// Preflight evicts exactly what import would exclude: an error is a verdict
+/// on the transaction only where import records it as a deterministic
+/// invalidity. Everything else is retried.
 func transactionPreflightEvidenceUnavailable(_ error: Error) -> Bool {
-    if error is FetcherError { return true }
-    if let error = error as? DataErrors {
-        switch error {
-        case .nodeNotAvailable, .keyNotFound:
-            return true
-        default:
-            return false
-        }
-    }
-    if let verdict = wasmPolicyErrorVerdict(error) {
-        // Import's classification, shared so the two never drift apart.
-        return verdict == .unavailable
-    }
-    if let error = error as? TransformErrors,
-       case .missingData = error {
-        return true
-    }
-    if let error = error as? ValidationErrors {
-        switch error {
-        case .transactionNotResolved, .prevStateNotResolved,
-             .postStateNotResolved:
-            return true
-        case .serializationError:
-            return false
-        }
-    }
-    return false
+    !BlockImport.isDeterministicInvalidity(classifyValidationFailure(error))
 }
