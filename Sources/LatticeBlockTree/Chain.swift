@@ -229,8 +229,8 @@ private struct ConsensusBlockInput: Sendable {
               let postStateCID = CIDIdentity.canonicalString(fact.postStateCID),
               let prevStateCID = CIDIdentity.canonicalString(fact.prevStateCID),
               let specCID = CIDIdentity.canonicalString(fact.specCID),
-              let target = UInt256(fact.target, radix: 16),
-              let nextTarget = UInt256(fact.nextTarget, radix: 16),
+              let target = UInt256.fromHexDigits(fact.target),
+              let nextTarget = UInt256.fromHexDigits(fact.nextTarget),
               // Every block, genesis included, commits a positive target and
               // nextTarget: a genesis's target is block 1's schedule input
               // (§5.1 rule 5), and a zero target is not admissible.
