@@ -410,12 +410,16 @@ final class TransactionPreflightTests: XCTestCase {
                 "import: \(error)"
             )
             XCTAssertEqual(preflightUnavailable, !isVerdict, "preflight: \(error)")
-            XCTAssertEqual(
-                preflightUnavailable,
-                !ChainLevel.isDeterministicInvalidityForTesting(imported),
-                "preflight and import disagree on \(error)"
-            )
         }
+    }
+
+    func testAProviderFaultOrAnUnknownErrorIsRetriedNotEvicted() {
+        // Bytes that do not hash to the id asked for are a provider's fault,
+        // and an error nothing enumerates is not known to be the
+        // transaction's: neither is a verdict on it.
+        struct Unenumerated: Error {}
+        XCTAssertTrue(transactionPreflightEvidenceUnavailable(DataErrors.cidMismatch))
+        XCTAssertTrue(transactionPreflightEvidenceUnavailable(Unenumerated()))
     }
 
     /// Fails the fetch of one content id with `error`; serves the rest.
