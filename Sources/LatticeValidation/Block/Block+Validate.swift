@@ -130,11 +130,16 @@ public extension Block {
             if reportTemporalFailure { throw BlockValidationError.notYetValid }
             return (false, .empty, nil)
         }
+        guard let specNode = try await spec.resolve(fetcher: fetcher).node else { return (false, .empty, nil) }
+        guard specNode.isValid else { return (false, .empty, nil) }
+        // The size rule first: it stops fetching at the chain's limit, so an
+        // oversized block is decided without its whole content.
+        if try await !validateBlockSize(spec: specNode, fetcher: fetcher) {
+            return (false, .empty, nil)
+        }
         guard let transactionBodies = try await resolveTransactionBodies(fetcher: fetcher, validator: { tx in
             try await tx.validateTransactionForGenesis(fetcher: fetcher)
         }) else { return (false, .empty, nil) }
-        guard let specNode = try await spec.resolve(fetcher: fetcher).node else { return (false, .empty, nil) }
-        guard specNode.isValid else { return (false, .empty, nil) }
         guard chainPath.first == DEFAULT_ROOT_DIRECTORY else {
             return (false, .empty, nil)
         }
@@ -150,9 +155,6 @@ public extension Block {
         if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: chainPath, height: height, timestamp: timestamp, fetcher: fetcher)) { return (false, .empty, nil) }
         if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
-        if try await !validateBlockSize(spec: specNode, fetcher: fetcher) {
-            return (false, .empty, nil)
-        }
         let allAccountActions = transactionBodies.flatMap { $0.accountActions }
         // R4: the per-transaction gate above (validateTransactionForGenesis)
         // rejects any genesis transaction carrying deposit, withdrawal, or
@@ -403,6 +405,9 @@ public extension Block {
         // one sequential wait from the block validation critical path.
         let txResolveFetcher = fetcher
         async let txBodiesFuture: [TransactionBody]? = {
+            // The size rule first: it stops fetching at the chain's limit, so
+            // an oversized block is decided without its whole content.
+            guard try await validateBlockSize(spec: specNode, fetcher: txResolveFetcher) else { return nil }
             let validator: @Sendable (Transaction) async throws -> Bool = { tx in
                 try await tx.validateTransactionForNexus(fetcher: txResolveFetcher)
             }
@@ -425,9 +430,6 @@ public extension Block {
         if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, height: height, timestamp: timestamp, fetcher: fetcher)) { return (false, .empty, nil) }
         if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
-        if try await !validateBlockSize(spec: specNode, fetcher: fetcher) {
-            return (false, .empty, nil)
-        }
         if !validateChainPaths(transactionBodies: transactionBodies, expectedPath: expectedChainPath) { return (false, .empty, nil) }
         if !validateNoDepositsOrWithdrawalsOnRoot(transactionBodies: transactionBodies, expectedPath: expectedChainPath) { return (false, .empty, nil) }
 
@@ -670,8 +672,8 @@ public extension Block {
         fetcher: any Fetcher
     ) async throws -> Bool {
         do {
-            return try await logicalContentByteSize(fetcher: fetcher)
-                <= spec.maxBlockSize
+            _ = try await logicalContentByteSize(fetcher: fetcher, limit: spec.maxBlockSize)
+            return true
         } catch is BlockContentSizeError {
             return false
         }

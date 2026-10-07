@@ -4,14 +4,28 @@ import cashew
 public enum BlockContentSizeError: Error, Sendable, Equatable {
     case conflictingCID(String)
     case overflow
+    /// The unique content counted so far already exceeds the limit.
+    case exceedsLimit
 }
 
-actor BlockContentByteCounter: VolumeStorer {
+/// Sums the canonical bytes of each unique CID it is given and throws
+/// `exceedsLimit` once the sum passes `limit`. The sum only grows, so a limit
+/// passed on part of a block's content is passed on all of it.
+actor BlockContentByteCounter: VolumeStorer, Storer {
+    private let limit: Int
     private var dataByCID: [String: Data] = [:]
     private var byteCount = 0
 
+    init(limit: Int = .max) {
+        self.limit = limit
+    }
+
     func store(volume: SerializedVolume) throws {
-        for (cid, data) in volume.entries {
+        try store(entries: volume.entries)
+    }
+
+    func store(entries: [String: Data]) throws {
+        for (cid, data) in entries {
             if let existing = dataByCID[cid] {
                 guard existing == data else {
                     throw BlockContentSizeError.conflictingCID(cid)
@@ -23,6 +37,7 @@ actor BlockContentByteCounter: VolumeStorer {
             dataByCID[cid] = data
             byteCount = next.partialValue
         }
+        guard byteCount <= limit else { throw BlockContentSizeError.exceedsLimit }
     }
 
     func total() -> Int { byteCount }
@@ -102,16 +117,23 @@ public extension Block {
     /// index. CIDs shared across those boundaries are counted once. Independent
     /// spec, policy, state, parent-block, child-block, and evidence Volumes are
     /// deliberately excluded.
-    func logicalContentByteSize(fetcher: any Fetcher) async throws -> Int {
+    ///
+    /// Throws `BlockContentSizeError.exceedsLimit` when the size exceeds
+    /// `limit`, as soon as the content resolved so far proves it: everything
+    /// fetched here is CID-verified content this size counts, so its unique
+    /// bytes exceeding `limit` means the whole does, and nothing further is
+    /// requested.
+    func logicalContentByteSize(fetcher: any Fetcher, limit: Int = .max) async throws -> Int {
         let resolved = try await VolumeImpl<Block>(node: self).resolve(
             paths: [
                 [TRANSACTIONS_PROPERTY]: .recursive,
                 [CHILDREN_PROPERTY]: .targeted,
             ],
-            fetcher: fetcher
+            fetcher: fetcher,
+            cache: BlockContentByteCounter(limit: limit)
         )
         guard let block = resolved.node else { throw DataErrors.nodeNotAvailable }
-        let counter = BlockContentByteCounter()
+        let counter = BlockContentByteCounter(limit: limit)
         try await VolumeImpl<Block>(node: block).store(
             paths: [[TRANSACTIONS_PROPERTY]: .recursive],
             storer: counter
@@ -155,10 +177,20 @@ public extension VolumeImpl where NodeType == Block {
     /// Store the complete block Volume and exactly the nested Volumes needed to
     /// validate it. Policy modules are independent Volumes; parent blocks and
     /// post-state remain independent roots with caller-owned retention policy.
+    ///
+    /// The transactions are fetched under the chain's own `maxBlockSize`: once
+    /// their verified unique bytes exceed it the block is invalid, so this
+    /// throws `BlockContentSizeError.exceedsLimit`, requests nothing further,
+    /// and stores nothing.
     func storeBlock(fetcher: any Fetcher, storer: any VolumeStorer) async throws {
-        let content = try await resolveBlockContent(fetcher: fetcher)
+        let header = try await resolve(paths: [[SPEC_PROPERTY]: .targeted], fetcher: fetcher)
+        guard let spec = header.node?.spec.node else { throw DataErrors.nodeNotAvailable }
+        let content = try await header.resolve(
+            paths: Block.contentResolutionPaths,
+            fetcher: fetcher,
+            cache: BlockContentByteCounter(limit: spec.maxBlockSize)
+        )
         guard let block = content.node,
-              let spec = block.spec.node,
               let transactionNode = block.transactions.node else {
             throw DataErrors.nodeNotAvailable
         }
