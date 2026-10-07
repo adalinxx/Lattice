@@ -711,9 +711,10 @@ maxima the module declares. A verdict is therefore a function of the module and
 the context alone, the same on every node. A node that cannot afford a chain's
 policies declines to operate that chain.
 
-The depth of a policy's call stack is fixed by the protocol (512 KiB of
-engine stack), because exhausting it traps and a trap is observable in the
-verdict.
+A policy's call stack is 512 KiB of engine stack, because exhausting it traps
+and a trap is observable in the verdict. The call depth that reaches it also
+depends on the engine's frame layout, so nodes agree only while they run the
+same engine version: an engine change is a consensus change.
 
 A policy may grow its memory. `memory.grow` MUST fail (return -1) only when
 the growth would exceed the maximum the module declares, or WebAssembly's own

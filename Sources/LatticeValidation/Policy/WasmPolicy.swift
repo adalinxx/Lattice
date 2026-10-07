@@ -166,6 +166,8 @@ public enum WasmPolicyEvaluator {
     /// The policy call stack, in bytes. A policy that recurses past it traps,
     /// and a trap is part of the verdict, so the depth is fixed here rather
     /// than left to the engine's default: it must be the same on every node.
+    /// The call depth that reaches it also depends on the engine's frame
+    /// layout, so an engine upgrade is a consensus change.
     public static let callStackBytes = 1 << 19
 
     public static func evaluate(

@@ -1082,6 +1082,28 @@ final class WasmPolicyTests: XCTestCase {
             contextData: Data(), moduleBytes: module))
     }
 
+    func testPolicyMemoryGrowPastTheFormatCeilingFailsWithoutADeclaredMaximum() async throws {
+        // No declared maximum: the bound is WebAssembly's 65,536 pages. The
+        // check precedes any allocation, so the largest operand costs nothing
+        // and every node answers -1.
+        for pages in ["65536", "-1"] {
+            let module = Data(try wat2wasm("""
+            (module
+              (memory (export "memory") 1)
+              (func (export "lattice_alloc") (param $len i32) (result i32) i32.const 1024)
+              (func (export "lattice_validate_transaction") (param $ptr i32) (param $len i32) (result i32)
+                i32.const \(pages)
+                memory.grow
+                i32.const -1
+                i32.eq)
+            )
+            """))
+            XCTAssertTrue(try WasmPolicyEvaluator.evaluate(
+                policy: WasmPolicyRef(moduleCID: "inline-grow-ceiling-\(pages)", scope: .transaction),
+                contextData: Data(), moduleBytes: module), "grow by \(pages) pages")
+        }
+    }
+
     // MARK: - compiled-module cache
 
     private func cacheTestSpec(policy: WasmPolicyRef) -> ChainSpec {
