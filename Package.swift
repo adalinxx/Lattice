@@ -95,6 +95,7 @@ let package = Package(
                 "LatticeBlockTree",
                 .product(name: "cashew", package: "cashew"),
                 .product(name: "UInt256", package: "UInt256"),
+                .product(name: "WasmKit", package: "WasmKit"),
             ]),
         // Umbrella: re-exports the six modules so `import Lattice` keeps working.
         .target(
