@@ -18,8 +18,13 @@ public extension UInt256 {
         let cleanHex = hexString.hasPrefix("0x") || hexString.hasPrefix("0X") 
             ? String(hexString.dropFirst(2))
             : hexString
-        // Up to 64 plain hex digits fill the four words directly; every other
-        // spelling goes to the general parser, so the accepted set is the same.
+        return fromHexDigits(cleanHex)
+    }
+
+    /// `UInt256(_:radix: 16)`, without its multiply per digit: up to 64 plain
+    /// hex digits fill the four words directly, and every other spelling goes
+    /// to the general parser, so the accepted set is the same.
+    static func fromHexDigits(_ cleanHex: String) -> UInt256? {
         let digits = cleanHex.utf8
         guard (1...64).contains(digits.count) else { return UInt256(cleanHex, radix: 16) }
         var parts: [UInt64] = [0, 0, 0, 0]

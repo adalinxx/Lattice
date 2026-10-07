@@ -172,6 +172,7 @@ final class UInt256ExtensionsTests: XCTestCase {
             spellings.append(digits)
         }
         for spelling in spellings {
+            XCTAssertEqual(UInt256.fromHexDigits(spelling), UInt256(spelling, radix: 16), spelling)
             XCTAssertEqual(UInt256.fromHexString(spelling), UInt256(spelling, radix: 16), spelling)
             XCTAssertEqual(UInt256.fromHexString("0x" + spelling), UInt256(spelling, radix: 16), spelling)
         }
