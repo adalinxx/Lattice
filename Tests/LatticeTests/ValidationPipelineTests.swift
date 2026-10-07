@@ -986,49 +986,36 @@ final class WasmPolicyTests: XCTestCase {
         }
     }
 
-    func testPolicyMemoryLimiterRejectsOversizedWithoutCrashing() async throws {
-        // No PROTOCOL memory ceiling, but a NODE-LOCAL resource limiter caps a
-        // module's declared initial memory so an oversized module fails as a
-        // WasmKit trap (thrown error) rather than OOM-killing the validator.
-        func moduleWith(pages: Int) throws -> Data {
-            Data(try wat2wasm("""
-            (module
-              (memory (export "memory") \(pages))
-              (func (export "lattice_alloc") (param $len i32) (result i32)
-                i32.const 1024)
-              (func (export "lattice_validate_transaction") (param $ptr i32) (param $len i32) (result i32)
-                i32.const 1)
-            )
-            """))
-        }
+    func testPolicyDeclaringMemoryAboveTwoMiBInstantiatesAndEvaluates() async throws {
+        // No node-local memory cap: 33 pages (2 MiB + 64 KiB) of declared
+        // initial memory instantiates, and the policy's own result — it accepts
+        // only if a byte stored above the 2 MiB mark reads back — is the verdict.
+        let module = Data(try wat2wasm("""
+        (module
+          (memory (export "memory") 33)
+          (func (export "lattice_alloc") (param $len i32) (result i32)
+            i32.const 1024)
+          (func (export "lattice_validate_transaction") (param $ptr i32) (param $len i32) (result i32)
+            i32.const 2100000
+            i32.const 7
+            i32.store8
+            i32.const 2100000
+            i32.load8_u
+            i32.const 7
+            i32.eq)
+        )
+        """))
         let policy = WasmPolicyRef(moduleCID: "inline", scope: .transaction)
 
-        // 33 pages = 2 MiB + 64 KiB, over the 2 MiB default → rejected as a
-        // node-local resource failure (NOT module invalidity), not crashed.
-        XCTAssertThrowsError(try WasmPolicyEvaluator.validate(
-            policy: policy, moduleBytes: try moduleWith(pages: 33))) { error in
-            guard case WasmPolicyError.resourceUnavailable = error else {
-                return XCTFail("expected resourceUnavailable, got \(error)")
-            }
-        }
-
-        // 16 pages = 1 MiB, within the default → validates.
-        XCTAssertNoThrow(try WasmPolicyEvaluator.validate(
-            policy: policy, moduleBytes: try moduleWith(pages: 16)))
-
-        // The limit is injectable: an operator can raise it to accept the module.
-        XCTAssertNoThrow(try WasmPolicyEvaluator.validate(
-            policy: policy,
-            moduleBytes: try moduleWith(pages: 33),
-            resourceLimits: WasmPolicyResourceLimits(maxMemoryBytes: 4 * 1024 * 1024)))
+        XCTAssertNoThrow(try WasmPolicyEvaluator.validate(policy: policy, moduleBytes: module))
+        XCTAssertTrue(try WasmPolicyEvaluator.evaluate(
+            policy: policy, contextData: Data(), moduleBytes: module))
     }
 
-    func testPolicyModuleByteBoundRejectsBeforeParseAsUnavailable() async throws {
-        // A node-local ceiling on the raw module bytes, enforced before the
-        // copy/parse (reject, never truncate). Excess is an unavailable verdict,
-        // never module invalidity, so nodes with different bounds never disagree
-        // on validity.
-        let module = Data(try wat2wasm("""
+    func testPolicyModuleAboveSixteenMiBValidates() async throws {
+        // No node-local module-size cap: a module padded past 16 MiB with a
+        // custom section validates like the unpadded one.
+        var module = Data(try wat2wasm("""
         (module
           (memory (export "memory") 1)
           (func (export "lattice_alloc") (param $len i32) (result i32) i32.const 1024)
@@ -1036,21 +1023,12 @@ final class WasmPolicyTests: XCTestCase {
             i32.const 1)
         )
         """))
+        // Custom section: id 0, LEB128 size 0x1000001, one-byte name "p", padding.
+        module.append(contentsOf: [0x00, 0x81, 0x80, 0x80, 0x08, 0x01, 0x70])
+        module.append(Data(count: 16 * 1024 * 1024 - 1))
         let policy = WasmPolicyRef(moduleCID: "inline", scope: .transaction)
-        let tiny = WasmPolicyResourceLimits(maxModuleBytes: module.count - 1)
 
-        XCTAssertThrowsError(try WasmPolicyEvaluator.validate(
-            policy: policy, moduleBytes: module, resourceLimits: tiny)) { error in
-            guard case WasmPolicyError.resourceUnavailable = error else {
-                return XCTFail("expected resourceUnavailable, got \(error)")
-            }
-        }
-        // At or above the module size (the default is far larger) it validates.
-        XCTAssertNoThrow(try WasmPolicyEvaluator.validate(
-            policy: policy, moduleBytes: module,
-            resourceLimits: WasmPolicyResourceLimits(maxModuleBytes: module.count)))
-        XCTAssertNoThrow(try WasmPolicyEvaluator.validate(
-            policy: policy, moduleBytes: module))
+        XCTAssertNoThrow(try WasmPolicyEvaluator.validate(policy: policy, moduleBytes: module))
     }
 
     func testPolicyModuleWithMemoryGrowIsRejectedAsNondeterministic() async throws {

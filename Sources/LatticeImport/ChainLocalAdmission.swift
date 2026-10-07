@@ -1313,12 +1313,9 @@ func wasmPolicyErrorVerdict(_ error: WasmPolicyError) -> WasmPolicyErrorVerdict 
         // prefix's range, a negative action index): a property of the input,
         // so every node reaches the same verdict.
         return .invalid
-    case .missingModule, .resourceUnavailable:
-        // Missing module bytes, or a node-local resource guard (module size,
-        // declared memory, or table) tripping: this node cannot reach a
-        // verdict, but the policy is not proven invalid. Unavailable, never
-        // invalid, otherwise nodes with different limits fork on the same
-        // block.
+    case .missingModule:
+        // Missing module bytes: this node cannot reach a verdict, but the
+        // policy is not proven invalid. Unavailable, never invalid.
         return .unavailable
     case .unsupportedABI, .invalidModule, .missingMemory, .missingAllocator,
          .missingEntrypoint, .invalidFunctionSignature, .invalidAllocation,

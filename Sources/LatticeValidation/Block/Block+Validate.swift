@@ -80,18 +80,9 @@ public struct HeaderLinkageParent: Sendable, Equatable {
 
 public struct ValidationContext: Sendable, Equatable {
     public let nowMilliseconds: Int64
-    /// Node-local WASM policy resource guard, carried alongside the clock because
-    /// both are node-local admission parameters an operator may tune — never
-    /// consensus rules. Exceeding these bounds yields a local/unavailable failure,
-    /// so nodes with different limits never fork on the same block.
-    public let wasmResourceLimits: WasmPolicyResourceLimits
 
-    public init(
-        nowMilliseconds: Int64,
-        wasmResourceLimits: WasmPolicyResourceLimits = .default
-    ) {
+    public init(nowMilliseconds: Int64) {
         self.nowMilliseconds = nowMilliseconds
-        self.wasmResourceLimits = wasmResourceLimits
     }
 
     public static var current: ValidationContext {
@@ -152,12 +143,11 @@ public extension Block {
         }
         if !(try await TransactionBody.validateConfiguredPolicyModules(
             spec: specNode,
-            fetcher: fetcher,
-            resourceLimits: validationContext.wasmResourceLimits
+            fetcher: fetcher
         )) {
             return (false, .empty, nil)
         }
-        if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: chainPath, height: height, timestamp: timestamp, fetcher: fetcher, resourceLimits: validationContext.wasmResourceLimits)) { return (false, .empty, nil) }
+        if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: chainPath, height: height, timestamp: timestamp, fetcher: fetcher)) { return (false, .empty, nil) }
         if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try await !validateBlockSize(spec: specNode, fetcher: fetcher) {
@@ -432,7 +422,7 @@ public extension Block {
 
         // Directory is positional (the anchor context / chainPath), not in the
         // spec; nil chainPath ⇒ root.
-        if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, height: height, timestamp: timestamp, fetcher: fetcher, resourceLimits: validationContext.wasmResourceLimits)) { return (false, .empty, nil) }
+        if !(try await TransactionBody.batchVerifyPolicies(bodies: transactionBodies, spec: specNode, chainPath: expectedChainPath, height: height, timestamp: timestamp, fetcher: fetcher)) { return (false, .empty, nil) }
         if !validateMaxTransactionCount(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try !validateStateDeltaSize(spec: specNode, transactionBodies: transactionBodies) { return (false, .empty, nil) }
         if try await !validateBlockSize(spec: specNode, fetcher: fetcher) {

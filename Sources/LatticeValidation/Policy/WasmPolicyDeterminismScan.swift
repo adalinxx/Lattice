@@ -25,9 +25,8 @@ import WasmParser
 ///   LLVM/Rust emit memory.copy/fill by default for wasm32 targets.
 /// - REJECTED: floats, atomics, tail calls, function-references ops, all
 ///   table.* instructions, and memory.grow — outside the intended policy
-///   subset. memory.grow additionally makes the verdict node-dependent (it
-///   returns -1, not a trap, when a local limiter denies growth), so it is a
-///   cross-host nondeterminism source, not merely out-of-subset.
+///   subset. memory.grow returns -1, not a trap, when growth is refused, so
+///   a policy could branch on whether its host granted the memory.
 /// - SIMD instruction opcodes (0xFD) have no decoder in WasmKit 0.2.x and
 ///   fail closed in the parser as unknown opcodes; the v128 STORAGE type does
 ///   decode and is rejected here. Unknown opcodes fail closed via
@@ -137,13 +136,13 @@ private struct OpcodeAllowListVisitor: AnyInstructionVisitor {
              .i32Eqz, .i64Eqz:
             break
 
-        // memory.grow returns -1 to the guest (NOT a trap) when a node-local
-        // resource limiter denies growth, so a policy could branch on the result
-        // and reach different verdicts on nodes with different limits — a
-        // consensus fork. Disallowed at scan time (deterministic, module-content
-        // based, so every node rejects identically). Policies declare sufficient
-        // initial memory upfront, bounded at instantiation; memory.size stays
-        // allowed (constant without grow). table.grow is already rejected below.
+        // memory.grow returns -1 to the guest (NOT a trap) when growth is
+        // refused, so a policy could branch on whether its host granted the
+        // memory and reach different verdicts on different hosts. Disallowed
+        // at scan time (deterministic, module-content based, so every node
+        // rejects identically). Policies declare the memory they need
+        // upfront; memory.size stays allowed (constant without grow).
+        // table.grow is already rejected below.
         case .memoryGrow:
             try reject("memory.grow")
 
