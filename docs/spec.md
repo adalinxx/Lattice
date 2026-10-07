@@ -700,7 +700,8 @@ Credits (`delta > 0`) do not require signer authorization.
 
 Chain policies are content-addressed validation modules referenced by `ChainSpec.wasmPolicies`. In ABI version 1, policies are implemented as WASM modules. A policy declares a scope (`transaction` or `action`), ABI version, module CID, and exported entrypoint. The host passes a versioned canonical binary policy context containing the height and timestamp of the block being validated, the chain spec, chain path, and the transaction/action under validation. The policy returns `1` to accept and any other value to reject.
 
-Genesis validates every configured policy reference and entrypoint, even when
+Genesis validates every configured policy reference and entrypoint, and every
+function body of each module whether or not anything calls it, even when
 genesis contains no transaction or Action to exercise that scope. This prevents
 an immutable spec from admitting a latent missing, nondeterministic, or
 malformed module that would fail only after deployment.
