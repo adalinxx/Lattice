@@ -18,7 +18,24 @@ public extension UInt256 {
         let cleanHex = hexString.hasPrefix("0x") || hexString.hasPrefix("0X") 
             ? String(hexString.dropFirst(2))
             : hexString
-        return UInt256(cleanHex, radix: 16)
+        // Up to 64 plain hex digits fill the four words directly; every other
+        // spelling goes to the general parser, so the accepted set is the same.
+        let digits = cleanHex.utf8
+        guard (1...64).contains(digits.count) else { return UInt256(cleanHex, radix: 16) }
+        var parts: [UInt64] = [0, 0, 0, 0]
+        var position = 64 - digits.count
+        for digit in digits {
+            let value: UInt64
+            switch digit {
+            case UInt8(ascii: "0")...UInt8(ascii: "9"): value = UInt64(digit - UInt8(ascii: "0"))
+            case UInt8(ascii: "a")...UInt8(ascii: "f"): value = UInt64(digit - UInt8(ascii: "a") + 10)
+            case UInt8(ascii: "A")...UInt8(ascii: "F"): value = UInt64(digit - UInt8(ascii: "A") + 10)
+            default: return UInt256(cleanHex, radix: 16)
+            }
+            parts[position / 16] |= value << UInt64(4 * (15 - position % 16))
+            position += 1
+        }
+        return UInt256(parts)
     }
 
 }
