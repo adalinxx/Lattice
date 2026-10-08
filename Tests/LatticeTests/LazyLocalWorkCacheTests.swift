@@ -106,6 +106,21 @@ final class LazyLocalWorkCacheTests: XCTestCase {
             let recomputed = await fork.chain.subtreeWeight(forHash: hash)
             XCTAssertEqual(weight, recomputed)
         }
+        // Reading the totals is what rebuilds them: the counter is live.
+        let visitsAfterTotals = await fork.chain.localWorkCacheBlockVisitCount
+        XCTAssertGreaterThan(visitsAfterTotals, visitsAfter)
+
+        // The direct question answers as the block's full view does, for every
+        // grind at every block, a grind asked at another block, and an unknown
+        // grind or block.
+        let ids = credits.indices.map { testCID("lazy-local-cache-credit-\($0)") } + [testCID("lazy-local-cache-unknown")]
+        for hash in [fork.root] + fork.left + fork.right + [testCID("lazy-local-cache-no-block")] {
+            let view = await fork.chain.getConsensusBlock(hash: hash)
+            for id in ids {
+                let direct = await fork.chain.workContribution(id: id, at: hash)
+                XCTAssertEqual(direct != nil, view?.workContributions[id] != nil, "\(id) at \(hash)")
+            }
+        }
     }
 
     func testCreditingAGrindDoesNotScaleWithTheTree() async throws {
