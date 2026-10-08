@@ -369,6 +369,10 @@ public struct ChainTree: Sendable {
     /// Diagnostic prefix/subtree totals are derived local views. They are not
     /// fork-choice inputs and are rebuilt only when an API exposes them.
     var localWorkCachesDirty: Bool
+#if DEBUG
+    /// Blocks visited by every rebuild of the diagnostic totals so far.
+    var localWorkCacheBlockVisitCount: UInt64 = 0
+#endif
 
     /// Restore-replay defers the derived canonical projection: batches are
     /// durable, already-admitted facts, their commits are discarded, and no
@@ -853,6 +857,9 @@ public struct ChainTree: Sendable {
         )
     }
 
+    /// The public read view of one block, with its diagnostic totals: after any
+    /// block or work mutation this rebuilds them over the whole tree. To ask
+    /// only whether a grind is credited, use `workContribution(id:at:)`.
     public mutating func getConsensusBlock(hash: String) -> BlockMeta? {
         guard graph.contains(hash) else { return nil }
         materializeLocalWorkCachesIfNeeded()

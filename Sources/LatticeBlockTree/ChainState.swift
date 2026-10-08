@@ -101,6 +101,7 @@ public actor ChainState {
 #if DEBUG
     var excludedRootsForTesting: Set<String> { tree.excludedRootsForTesting }
     var segmentWorkUpdateCellCount: UInt64 { tree.segmentWorkUpdateCellCount }
+    var localWorkCacheBlockVisitCount: UInt64 { tree.localWorkCacheBlockVisitCount }
     var segmentGraftCount: UInt64 { tree.segmentGraftCount }
     var segmentGraftBlockVisitCount: UInt64 { tree.segmentGraftBlockVisitCount }
     var fullCanonicalProjectionCount: UInt64 { tree.fullCanonicalProjectionCount }

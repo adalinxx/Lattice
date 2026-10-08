@@ -421,6 +421,16 @@ extension ChainTree {
     var segmentGraftBlockVisitCount: UInt64 { forkChoice.graftBlockVisitCount }
 #endif
 
+    /// The grind `id` as credited at `blockHash`, or nil if it is not credited
+    /// there. Reads the block's own work fact, never the derived totals, so
+    /// asking whether a proof is already credited costs nothing as the tree grows.
+    public func workContribution(
+        id: String,
+        at blockHash: String
+    ) -> VerifiedWorkContribution? {
+        graph.contribution(id: id, at: blockHash)
+    }
+
     /// Whether `blockHash` belongs to a complete accepted path ending at one of
     /// this path-defined chain's admitted genesis roots — i.e. it is CONNECTED,
     /// so its work routes into fork choice (excluded or not: work weighs, §9.9).
@@ -720,13 +730,9 @@ extension ChainTree {
         guard localWorkCachesDirty else { return }
         graph.recomputeWorkCaches()
         localWorkCachesDirty = false
-    }
-
-    package func workContribution(
-        id: String,
-        at blockHash: String
-    ) -> VerifiedWorkContribution? {
-        graph.contribution(id: id, at: blockHash)
+#if DEBUG
+        localWorkCacheBlockVisitCount += UInt64(graph.records.count)
+#endif
     }
 
     /// GHOST descent chooses the child with greatest deduplicated verified
