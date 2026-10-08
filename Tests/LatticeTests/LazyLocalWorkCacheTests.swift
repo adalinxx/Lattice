@@ -105,6 +105,11 @@ final class LazyLocalWorkCacheTests: XCTestCase {
             let weight = await fork.chain.forkChoice.weight(of: hash)
             let recomputed = await fork.chain.subtreeWeight(forHash: hash)
             XCTAssertEqual(weight, recomputed)
+            // The public read is the snapshot's weight, without the descent.
+            let read = await fork.chain.forkChoiceWeight(of: hash)
+            let snapshot = await fork.chain.forkChoiceSnapshot(startingAt: hash)
+            XCTAssertEqual(read, snapshot?.subtreeWork)
+            XCTAssertEqual(read, weight)
         }
         // Reading the totals is what rebuilds them: the counter is live.
         let visitsAfterTotals = await fork.chain.localWorkCacheBlockVisitCount
@@ -116,6 +121,12 @@ final class LazyLocalWorkCacheTests: XCTestCase {
         let ids = credits.indices.map { testCID("lazy-local-cache-credit-\($0)") } + [testCID("lazy-local-cache-unknown")]
         for hash in [fork.root] + fork.left + fork.right + [testCID("lazy-local-cache-no-block")] {
             let view = await fork.chain.getConsensusBlock(hash: hash)
+            if view == nil {
+                let read = await fork.chain.forkChoiceWeight(of: hash)
+                let snapshot = await fork.chain.forkChoiceSnapshot(startingAt: hash)
+                XCTAssertNil(read)
+                XCTAssertNil(snapshot)
+            }
             for id in ids {
                 let direct = await fork.chain.workContribution(id: id, at: hash)
                 XCTAssertEqual(direct != nil, view?.workContributions[id] != nil, "\(id) at \(hash)")
