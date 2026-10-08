@@ -186,6 +186,10 @@ public actor ChainState {
         tree.forkChoiceSnapshot(startingAt: hash)
     }
 
+    public func forkChoiceWeight(of hash: String) -> WorkSum? {
+        tree.forkChoiceWeight(of: hash)
+    }
+
     func chainWithMostWork(
         startingBlock: BlockMeta
     ) -> (subtreeWork: WorkSum, tipHash: String, blocks: Set<String>) {

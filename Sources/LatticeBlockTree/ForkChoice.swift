@@ -467,6 +467,14 @@ extension ChainTree {
         return graph.subtreeWeight(of: hash)
     }
 
+    /// The work fork choice weighs `hash`'s subtree by: what
+    /// `forkChoiceSnapshot(startingAt:)` reports as `subtreeWork`, read from
+    /// the weight index without descending the subtree.
+    public func forkChoiceWeight(of hash: String) -> WorkSum? {
+        guard graph.contains(hash), forkChoice.isRouted(hash) else { return nil }
+        return forkChoice.weight(of: hash)
+    }
+
     /// Public simulator/test view of the real local fork-choice descent.
     public func forkChoiceSnapshot(startingAt hash: String) -> ForkChoiceSnapshot? {
         guard graph.contains(hash),
